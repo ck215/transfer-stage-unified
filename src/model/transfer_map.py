@@ -30,7 +30,11 @@ only its own controls, and the Panel refuses the rest.
 
 **Tips are records** (`tips` table): created on demand by the first trial
 on a tip (or an import naming one), with the trial it broke on and whether
-it is retired; which trials used it is derived from `trials.tip_id`.
+it is retired; which trials used it is derived from `trials.tip_id`. The
+setup step has ONE tip control (approved proposal, 2026-10-07): the Tip
+dropdown, every tip labelled "<tip_id> · <n> trials", retired ones last;
+the tip picked there is the trial's tip. "New tip…" opens the `new_tip`
+step, a prompt of its own (Tip ID, Add tip, Cancel).
 
 **Force** has no sensor. It is approximated from the red-percent trace of
 the lowering (`model.transfer_map_analysis`): several definitions, computed
@@ -633,11 +637,16 @@ class TransferMap(Model):
 
     #: The trial's procedure, in order (owner ruling 2026-10-07): `phase`
     #: says which step the operator is at; the schema draws each step's
-    #: controls only in it.
-    PHASES = ("setup", "region", "live", "marked", "finish")
+    #: controls only in it. `new_tip` is the New tip prompt, entered from
+    #: `setup` and left back to it (Add tip or Cancel); it arms nothing.
+    PHASES = ("setup", "new_tip", "region", "live", "marked", "finish")
 
     PARAMS = {p.name: p for p in (
-        Param("tip_id", "text", default="", label="Tip ID"),
+        # The trial's tip: set by the Tip dropdown (`pick_tip`) or Add tip,
+        # never typed on the setup row (approved proposal, 2026-10-07).
+        Param("tip_id", "text", default="", label="Tip"),
+        # The New tip prompt's one entry (the `new_tip` step).
+        Param("new_tip_id", "text", default="", label="Tip ID"),
         Param("tip_note", "text", default="", label="Tip note"),
         # Text, so blank means "no tilt" rather than a default of 0 degrees.
         Param("typed_tilt", "text", default="",
@@ -720,6 +729,8 @@ class TransferMap(Model):
         #: Armed and waiting for the capture region (`_Pending`, the
         #: `region` step), or None.
         self._pending = None
+        #: The New tip prompt is open (the `new_tip` step).
+        self._adding_tip = False
         #: The trial being started (V8): subscribed to before a run starts,
         #: so the run's first row is its own; numbered and made `_trial` once
         #: its row is written, dropped if the start fails.
@@ -946,17 +957,22 @@ class TransferMap(Model):
         """The procedure step, from the model's own state (never from the
         mode): `setup` nothing armed; `region` armed, waiting for the capture
         region; `live` recording, no Mark yet; `marked` recording, marked;
-        `finish` the recording ended, the trial to review and keep."""
+        `finish` the recording ended, the trial to review and keep;
+        `new_tip` the New tip prompt is open (nothing armed)."""
         trial = self._trial
         if trial is not None:
             if trial.ended:
                 return "finish"
             return "live" if trial.operator_t is None else "marked"
-        return "region" if self._pending is not None else "setup"
+        if self._pending is not None:
+            return "region"
+        return "new_tip" if self._adding_tip else "setup"
 
     def _halt_hardware(self):
         """Disarm now; write the aborted trial on a worker. No I/O here and
-        no lock wait without a timeout: the stop is never held by the disk."""
+        no lock wait without a timeout: the stop is never held by the disk.
+        A New tip prompt that is open closes (the stop returns to setup)."""
+        adding, self._adding_tip = self._adding_tip, False
         pending, self._pending = self._pending, None
         if pending is not None:
             self._discard_still(pending, wait=False)   # nothing was recorded
@@ -973,7 +989,7 @@ class TransferMap(Model):
                                       daemon=True, name="transfer-map-abort")
             self._persisting.append(writer)
             writer.start()
-        if pending is not None or trial is not None:
+        if pending is not None or trial is not None or adding:
             self._touch()                  # the step went back to setup
         return True
 
@@ -1153,6 +1169,7 @@ class TransferMap(Model):
 
     #: What `next_step` says in each step after `setup`.
     STEP_WORDS = {
+        "new_tip": "Type the new tip's ID, then press Add tip",
         "region": "Drag the capture region on the picture of the stage",
         "live": "Lower the tip; press Mark force when the force is right",
         "marked": "Press End recording when the cut is done",
@@ -1172,7 +1189,7 @@ class TransferMap(Model):
         if red is None:
             return "Open Red Percent"
         if not (self.tip_id or "").strip():
-            return "Type a tip ID"
+            return "Pick a tip, or press New tip…"
         if getattr(red, "is_running", False):
             return "Stop Red Percent's run, then press Arm trial"
         return "Press Arm trial"
@@ -1222,8 +1239,8 @@ class TransferMap(Model):
             raise Refused("Tilt without a rotator must be a number of degrees, "
                           "or left blank.")
         if not tip:
-            raise Refused("Type a tip ID before arming, so the trial can be "
-                          "traced to its tip.")
+            raise Refused("Pick a tip before arming (or press New tip…), so "
+                          "the trial can be traced to its tip.")
         if getattr(red, "is_running", False):
             # The trial's run starts on the region picked after Arm; a run
             # already going measures some other region, and Red Percent
@@ -1250,8 +1267,8 @@ class TransferMap(Model):
             doubt = self._tip_doubt(tip)
             raise NeedsConfirm(doubt + "\n\n" + prompt if doubt else prompt,
                                "arm_trial",
-                               inputs={"tip_id": self.tip_id or "",
-                                       "typed_tilt": self.typed_tilt or ""})
+                               inputs={"typed_tilt": self.typed_tilt or "",
+                                       "typed_speed": self.typed_speed or ""})
         still, size = self._take_still()
         pending = _Pending(tip, still, size, self._display_bounds())
         with self._lock:
@@ -1886,8 +1903,8 @@ class TransferMap(Model):
 
     @property
     def tip_status(self):
-        """The typed tip, in a word or four: "new", "in use since trial 3",
-        "broke on trial 12", "retired". None (blank) while the entry is."""
+        """The trial's tip, in a word or four: "new", "in use since trial 3",
+        "broke on trial 12", "retired". None (blank) while no tip is picked."""
         tip = (self.tip_id or "").strip()
         if not tip:
             return None
@@ -1903,53 +1920,87 @@ class TransferMap(Model):
             return f"in use since trial {record['trials'][0]}"
         return "new"
 
-    #: The dropdown's blank line: the typed tip is not a known one.
-    NO_TIP = "-"
+    @staticmethod
+    def tip_label(record):
+        """A tip as the Tip dropdown shows it: "T7 · 3 trials", "T8 · 1
+        trial", "T3 · 5 trials · retired" (`record` from `TrialStore.tips`)."""
+        n = int(record["count"])
+        label = f"{record['tip_id']} · {n} trial{'' if n == 1 else 's'}"
+        return label + " · retired" if record["retired_at"] else label
 
     @property
     def tip_options(self):
-        """Every tip on record, for the Known tips dropdown (bench
-        2026-09-28: the operator could not see the tips that existed)."""
-        return [self.NO_TIP] + [t["tip_id"] for t in self._store.tips()]
+        """The Tip dropdown: every tip on record, in the order they were
+        created, the retired ones last (bench 2026-09-28: the operator could
+        not see the tips that existed; 2026-10-07: the only tip control)."""
+        records = self._store.tips()
+        in_use = [r for r in records if not r["retired_at"]]
+        retired = [r for r in records if r["retired_at"]]
+        return [self.tip_label(r) for r in in_use + retired]
 
     @property
     def tip_pick(self):
+        """The trial's tip as its dropdown line; "" (nothing chosen) while
+        no tip is picked or the tip has no record yet."""
         tip = (self.tip_id or "").strip()
-        return tip if tip and tip in self.tip_options else self.NO_TIP
+        record = self._tip_record(tip)
+        return self.tip_label(record) if record is not None else ""
 
     def pick_tip(self, label):
-        """The Known tips dropdown: fills the Tip ID entry with a tip on
-        record. The blank line changes nothing."""
-        if label == self.NO_TIP:
-            return None
-        if label not in self.tip_options:
-            raise Refused(f"{label!r} is not a tip on record. Type a new ID "
-                          "in Tip ID and press New tip.")
-        self.tip_id = label
-        self._changed()
-        return label
+        """The Tip dropdown: the tip on that line becomes the trial's tip.
+        Its line or its bare ID are accepted."""
+        for record in self._store.tips():
+            if label in (self.tip_label(record), record["tip_id"]):
+                self.tip_id = record["tip_id"]
+                self._changed()
+                return record["tip_id"]
+        raise Refused(f"{label!r} is not a tip on record. Press New tip… to "
+                      "add it.")
 
     def new_tip(self):
-        """A tip record made on demand from the typed ID, before any trial
-        (bench 2026-09-28: "I can't create new tips")."""
+        """New tip…: the `setup` -> `new_tip` step, the prompt for a tip
+        record made on demand before any trial (bench 2026-09-28: "I can't
+        create new tips"). Nothing is written until Add tip."""
         self._need_store()
-        tip = (self.tip_id or "").strip()
+        if self.is_armed or self._pending is not None:
+            raise Refused("A trial is armed. Finish or abort it first.")
+        self.new_tip_id = ""
+        self._adding_tip = True
+        self._touch()
+        return None
+
+    def add_tip(self):
+        """Add tip: the typed ID becomes a tip record (created now, no trial
+        yet), it is picked for the trial, and the step returns to setup. An
+        empty ID, or one already on record, is refused and the prompt
+        stays."""
+        self._need_store()
+        tip = (self.new_tip_id or "").strip()
         if not tip:
-            raise Refused("Type the new tip's ID in Tip ID first, then press "
-                          "New tip.")
+            raise Refused("Type the new tip's ID, then press Add tip.")
         if self._store.tip(tip) is not None:
-            raise Refused(f"Tip {tip} is already on record: pick it under "
-                          "Known tips.")
+            raise Refused(f"{tip} already exists. Choose it from the list or "
+                          "type a different ID.")
         self._store.create_tip(tip, _now())
+        self.tip_id, self.new_tip_id = tip, ""
+        self._adding_tip = False
         self._changed()
         events.info("Tip Created", f"Tip {tip} created.", source=self.NAME)
         return tip
 
-    def _typed_tip(self):
-        """(tip, record) for the typed tip, or Refused naming what is missing."""
+    def cancel_new_tip(self):
+        """Cancel: back to setup; nothing is written."""
+        self._adding_tip = False
+        self.new_tip_id = ""
+        self._touch()
+        return None
+
+    def _picked_tip(self):
+        """(tip, record) for the trial's tip, or Refused naming what is
+        missing."""
         tip = (self.tip_id or "").strip()
         if not tip:
-            raise Refused("Type the tip ID first.")
+            raise Refused("Pick the tip first (Tip, on the trial's setup).")
         record = self._tip_record(tip)
         if record is None:
             raise Refused(f"Tip {tip} has no record yet: it is created when a "
@@ -1958,7 +2009,7 @@ class TransferMap(Model):
 
     def retire_tip(self, confirmed=False):
         self._need_store()
-        tip, record = self._typed_tip()
+        tip, record = self._picked_tip()
         if record["retired_at"]:
             raise Refused(f"Tip {tip} is already retired.")
         armed = self._trial or self._pending
@@ -1968,8 +2019,7 @@ class TransferMap(Model):
         if not confirmed:
             raise NeedsConfirm(f"Retire tip {tip}? Its {record['count']} "
                                "trial(s) are kept; arming on it later asks "
-                               "first.", "retire_tip",
-                               inputs={"tip_id": self.tip_id or ""})
+                               "first.", "retire_tip")
         self._store.set_tip(tip, {"retired_at": _now()})
         self._changed()
         events.info("Tip Retired", f"Tip {tip} retired after "
@@ -1978,7 +2028,7 @@ class TransferMap(Model):
 
     def unretire_tip(self):
         self._need_store()
-        tip, record = self._typed_tip()
+        tip, record = self._picked_tip()
         if not record["retired_at"]:
             raise Refused(f"Tip {tip} is not retired.")
         self._store.set_tip(tip, {"retired_at": None})
@@ -1990,7 +2040,7 @@ class TransferMap(Model):
         self._need_store()
         tip = (self.tip_id or "").strip()
         if not tip:
-            raise Refused("Type the tip ID first.")
+            raise Refused("Pick the tip first (Tip, on the trial's setup).")
         if self._store.tip(tip) is None:
             # A note before the first trial creates the record (owner call
             # 2026-09-28).
@@ -2473,13 +2523,6 @@ class TransferMap(Model):
         return self._store.count()
 
     @property
-    def tip_trial_count(self):
-        """Stored trials on the typed tip: None (shown blank) while the Tip
-        ID entry is blank, 0 for a tip the database has not seen."""
-        tip = (self.tip_id or "").strip()
-        return self._store.count_for_tip(tip) if tip else None
-
-    @property
     def trial_status(self):
         trial = self._trial
         if trial is not None:
@@ -2618,14 +2661,15 @@ class TransferMap(Model):
                 sch.readonly("Tilt", "tilt_now", rail=True, param=P["tilt_now"]),
                 sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
             ),
-            # setup: the preliminary information, then Arm.
+            # setup: the preliminary information, then Arm. One tip
+            # control (approved proposal 2026-10-07): the dropdown, whose
+            # line carries the tip's trial count; New tip… opens the
+            # `new_tip` step.
             sch.section(
                 "Start",
-                sch.entry("Tip ID", "tip_id", P["tip_id"]),
-                sch.dropdown("Known tips", "tip_pick", "pick_tip", "tip_options"),
-                sch.button("New tip", "new_tip", inputs=("tip_id",)),
-                sch.readonly("Trials on this tip", "tip_trial_count"),
-                sch.readonly("Tip", "tip_status"),
+                sch.dropdown("Tip", "tip_pick", "pick_tip", "tip_options"),
+                sch.button("New tip…", "new_tip"),
+                sch.readonly("Tip status", "tip_status"),
                 # Bench 2026-09-28: the tilt varies between trials of one
                 # tip and was buried two tiers down; it is asked here, per
                 # trial. Collected, never demanded (TM-3, 2026-10-07).
@@ -2634,9 +2678,19 @@ class TransferMap(Model):
                 sch.entry("Speed for this trial (steps/s)", "typed_speed",
                           P["typed_speed"]),
                 sch.button("Arm trial", "arm_trial",
-                           inputs=("tip_id", "typed_tilt", "typed_speed"),
+                           inputs=("typed_tilt", "typed_speed"),
                            role="go", disabled_when=("armed", "latched")),
                 phases=("setup",),
+            ),
+            # new_tip: the New tip prompt. Add tip refuses an empty or a
+            # known ID and stays; Add tip or Cancel returns to setup.
+            sch.section(
+                "New tip",
+                sch.entry("Tip ID", "new_tip_id", P["new_tip_id"]),
+                sch.button("Add tip", "add_tip", inputs=("new_tip_id",),
+                           role="go"),
+                sch.button("Cancel", "cancel_new_tip"),
+                phases=("new_tip",),
             ),
             # region: picked ON the stage still Arm took.
             sch.section(
@@ -2705,12 +2759,13 @@ class TransferMap(Model):
             ),
             sch.section(
                 "Tip",
+                # The tip these act on: the one picked for the trial.
+                sch.readonly("Tip", "tip_id"),
                 sch.entry("Tip note", "tip_note", P["tip_note"]),
                 sch.button("Save tip note", "set_tip_note",
-                           inputs=("tip_id", "tip_note")),
-                sch.button("Retire tip", "retire_tip", inputs=("tip_id",)),
-                sch.button("Return tip to use", "unretire_tip",
-                           inputs=("tip_id",)),
+                           inputs=("tip_note",)),
+                sch.button("Retire tip", "retire_tip"),
+                sch.button("Return tip to use", "unretire_tip"),
                 # After the fact: the armed trial's, else the last trial's
                 # (the sheet's own Tip broke is drawn in marked and finish).
                 sch.toggle("Tip broke", "is_broke", "mark_broke", "Broke",

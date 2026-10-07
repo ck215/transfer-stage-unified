@@ -263,9 +263,12 @@ REGION = (0, 0, 10, 10)
 
 
 def _arm_only(model, tip=None):
-    """Arm, as a view does: answer its question. -> the `region` step."""
-    _confirmed(model, "arm_trial",
-               {"tip_id": tip if tip is not None else model.tip_id})
+    """Arm, as a view does: answer its question. -> the `region` step.
+    `tip` is the trial's tip (the Tip dropdown's pick; 2026-10-07 there is
+    no Tip ID entry on the setup row)."""
+    if tip is not None:
+        model.tip_id = tip
+    _confirmed(model, "arm_trial")
     assert model.phase == "region", model.phase
 
 
@@ -365,11 +368,11 @@ def test_opening_without_a_store_warns_and_creates_nothing(no_store, tmp_path):
 
 
 @pytest.mark.parametrize("command, inputs", [
-    ("arm_trial", {"tip_id": "tip-A"}),
-    ("new_tip", {"tip_id": "tip-A"}),
-    ("set_tip_note", {"tip_id": "tip-A", "tip_note": "sharp"}),
-    ("retire_tip", {"tip_id": "tip-A"}),
-    ("unretire_tip", {"tip_id": "tip-A"}),
+    ("arm_trial", None),
+    ("new_tip", None),
+    ("set_tip_note", {"tip_note": "sharp"}),
+    ("retire_tip", None),
+    ("unretire_tip", None),
     ("attach_afm", {"afm_trial_id": "1", "width_um": "2"}),
     ("set_trial_tilt", {"afm_trial_id": "1", "typed_tilt": "3"}),
     ("set_trial_speed", {"afm_trial_id": "1", "typed_speed": "3"}),
@@ -410,7 +413,8 @@ def test_a_new_store_is_created_where_the_operator_says_and_remembered(no_store,
     assert model.state["store"] == {"path": str(path), "chosen": True}
     assert tm_module.TransferMap.choices.read("map_store") == str(path)
     # Recording works now.
-    assert model.run("new_tip", {"tip_id": "tip-A"}).is_ok
+    assert model.run("new_tip").is_ok
+    assert model.run("add_tip", {"new_tip_id": "tip-A"}).is_ok
     # A new session remembers it: no question.
     again = TransferMap()
     assert again.db_path == path and again.state["store"]["chosen"] is True
@@ -675,14 +679,14 @@ def test_arm_needs_no_capture_region_and_starts_nothing(tmp_path, private_db):
 def test_arm_refuses_without_a_tip_id(station):
     model = station[0]
     model.tip_id = "  "
-    with pytest.raises(Refused, match="tip ID"):
+    with pytest.raises(Refused, match="Pick a tip"):
         model.arm_trial()
 
 
 def test_arm_refuses_while_latched(station):
     model = station[0]
     model.estop()
-    result = model.run("arm_trial", {"tip_id": "tip-A"})
+    result = model.run("arm_trial")
     assert result.is_refused
 
 
@@ -727,7 +731,7 @@ def test_tilt_is_none_until_a_rotator_reads_or_the_operator_types_one(red):
 
 def test_arm_refuses_a_typed_tilt_that_is_not_a_number(station):
     model = station[0]
-    result = model.run("arm_trial", {"tip_id": "t", "typed_tilt": "steep"})
+    result = model.run("arm_trial", {"typed_tilt": "steep"})
     assert result.is_refused and "Tilt" in result.reason
 
 
@@ -1020,7 +1024,7 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
             tiers[key] = section.get("tier", 1)
     # 2026-10-07: + the region step's still and the End recording step.
     for key in ("arm_trial", "mark_force", "finish_trial", "abort_trial",
-                "figure", "tip_id", "tilt_now", "speed_now", "red_now",
+                "figure", "pick_tip", "tilt_now", "speed_now", "red_now",
                 "trial_count", "trial_status", "db_path", "new_database",
                 "mark_full_image", "video_status",
                 "tip_status", "stage_still", "end_recording", "trial_figure"):
@@ -1028,7 +1032,7 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
     for key in ("set_figure_type", "set_force_definition", "attach_afm",
                 "export_csv", "import_csv", "before_full_image",
                 "export_tips_csv", "retire_tip", "unretire_tip",
-                "set_tip_note", "tip_note"):
+                "set_tip_note", "tip_note", "tip_id"):
         assert tiers[key] == 2, key
     for key in ("trials_log", "tips_log", "delete_trial", "last_trial_numbers",
                 "video_encoder"):
@@ -1053,36 +1057,36 @@ def test_the_trials_log_lists_one_line_per_trial(station):
 
 # -- T5: trials on this tip -----------------------------------------------------
 
-def test_trials_on_this_tip_counts_the_typed_tip(station):
+def test_the_tip_line_counts_the_trials_on_the_picked_tip(station):
     """Bench 2026-09-27: "I need to see how many trials have been done on a
-    given tip ID"."""
+    given tip ID". Since 2026-10-07 the count is on the Tip dropdown's line
+    (the "Trials on this tip" readout is gone)."""
     model, red, *_ = station
     values = lambda: model.state["values"]            # noqa: E731
     model.tip_id = ""
-    assert values()["tip_trial_count"] == ""          # blank entry: nothing
+    assert values()["tip_pick"] == ""                 # nothing picked
     model.tip_id = "tip-A"
-    assert values()["tip_trial_count"] == "0"         # a new tip
+    assert values()["tip_pick"] == ""                 # no record until Arm
     _record(model, red)
     _record(model, red)
     model.tip_id = "  tip-A "
-    assert values()["tip_trial_count"] == "2"         # stripped
+    assert values()["tip_pick"] == "tip-A · 2 trials"  # stripped
     model.tip_id = "tip-B"
-    assert values()["tip_trial_count"] == "0"
     _record(model, red)
-    assert values()["tip_trial_count"] == "1"
+    assert values()["tip_pick"] == "tip-B · 1 trial"
     assert model._store.count_for_tip("tip-A") == 2
     assert model._store.count_for_tip("tip-A", up_to=1) == 1
+    keys = _keys(next(s for s in model.schema["sections"]
+                      if s["title"] == "Start"))
+    assert "tip_trial_count" not in keys
 
 
-def test_trials_on_this_tip_sits_under_the_tip_id_entry():
+def test_the_tip_line_comes_first_then_new_tip_then_its_status():
     model = TransferMap()
-    # 2026-10-07: the tip's entries are the setup step's "Start" section.
+    # 2026-10-07: the tip's controls are the setup step's "Start" section.
     trial = next(s for s in model.schema["sections"] if s["title"] == "Start")
     keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
-    at = keys.index("tip_id")
-    assert keys[at + 3] == "tip_trial_count"     # after Known tips and New tip
-    element = trial["elements"][at + 3]
-    assert element["type"] == "readonly" and element["text"] == "Trials on this tip"
+    assert keys[:3] == ["tip_pick", "new_tip", "tip_status"]
 
 
 @pytest.mark.parametrize("n, word", [(1, "1st"), (2, "2nd"), (3, "3rd"),
@@ -1193,7 +1197,7 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     assert step() == "Open Red Percent"
     model.on_model_added("Red Percent", red)
     model.tip_id = " "
-    assert step() == "Type a tip ID"
+    assert step() == "Pick a tip, or press New tip…"
     model.tip_id = "tip-A"
     assert step() == "Press Arm trial"            # TM-3: no tilt demanded
     model.typed_tilt = "6.5"
@@ -1267,7 +1271,7 @@ def test_a_trial_without_a_tilt_is_armed_recorded_and_mapped(idle_station,
     model, red = idle_station
     assert model.tilt_now is None
     assert model.next_step == "Press Arm trial"
-    asked = model.run("arm_trial", {"tip_id": "tip-A", "typed_tilt": ""})
+    asked = model.run("arm_trial", {"typed_tilt": ""})
     assert asked.needs_confirm and "tilt" not in asked.reason.lower()
     trial = _arm(model)
     assert _wait_for(lambda: len(model._trial.samples) >= 5)
@@ -1329,6 +1333,9 @@ def _to_step(model, step):
     """Drive the procedure to `step` through the Panel, as a view does."""
     if step == "setup":
         return
+    if step == "new_tip":
+        assert model.run("new_tip").is_ok
+        return
     _arm_only(model)
     if step == "region":
         return
@@ -1349,7 +1356,8 @@ def _staged(model):
 def test_the_procedure_runs_through_its_steps_on_real_commands(station,
                                                                private_db):
     model, red, *_ = station
-    assert TransferMap.PHASES == ("setup", "region", "live", "marked", "finish")
+    assert TransferMap.PHASES == ("setup", "new_tip", "region", "live",
+                                  "marked", "finish")
     seen = []
 
     def step():
@@ -1359,7 +1367,7 @@ def test_the_procedure_runs_through_its_steps_on_real_commands(station,
         seen.append((model.phase, model.mode_name))
 
     step()
-    assert model.run("arm_trial", {"tip_id": "tip-A"}, (True,)).is_ok
+    assert model.run("arm_trial", None, (True,)).is_ok
     step()
     assert model.trial_count == 0 and not red.is_running
     trial = model.run("set_region", None, REGION).value
@@ -1396,7 +1404,8 @@ def test_the_phase_and_the_next_step_agree_in_every_step(station, step):
         assert words == "Press Arm trial" and model.mode_name == "ready"
     else:
         assert words == TransferMap.STEP_WORDS[step]
-        assert model.mode_name == "armed"
+        # The New tip prompt arms nothing.
+        assert model.mode_name == ("ready" if step == "new_tip" else "armed")
     others = {w for s, w in TransferMap.STEP_WORDS.items() if s != step}
     assert words not in others
     model.estop()
@@ -1406,7 +1415,10 @@ def test_the_phase_and_the_next_step_agree_in_every_step(station, step):
 #: Per step: commands whose controls the step does not show.
 HIDDEN = {
     "setup": ("mark_force", "end_recording", "finish_trial", "set_region",
-              "stage_still"),
+              "stage_still", "add_tip", "cancel_new_tip"),
+    "new_tip": ("arm_trial", "new_tip", "pick_tip", "mark_force",
+                "end_recording", "finish_trial", "set_region",
+                "new_database"),
     "region": ("arm_trial", "mark_force", "end_recording", "finish_trial",
                "new_database", "new_tip"),
     "live": ("arm_trial", "set_region", "end_recording", "finish_trial",
@@ -1424,12 +1436,15 @@ def test_a_hidden_command_is_refused_in_the_wrong_step(station, step):
     model, red, *_ = station
     _to_step(model, step)
     for command in HIDDEN[step]:
-        result = model.run(command, {"tip_id": "tip-A"} if command == "new_tip"
-                           else None, REGION if command == "set_region" else ())
+        args = (REGION if command == "set_region" else
+                ("tip-A",) if command == "pick_tip" else ())
+        result = model.run(command, None, args)
         assert result.is_refused, (step, command)
         assert f"{step} step" in result.reason, (step, command, result.reason)
         assert model.phase == step
-    if step != "setup":
+    if step == "new_tip":
+        model.cancel_new_tip()
+    elif step != "setup":
         model.abort_trial()
 
 
@@ -1439,7 +1454,7 @@ def test_abort_from_every_step(station, private_db, step):
     _to_step(model, step)
     trial = model._trial.id if model._trial is not None else None
     result = model.run("abort_trial", {"width_um": "not a number"})
-    if step == "setup":
+    if step in ("setup", "new_tip"):
         assert result.is_refused and "no trial is armed" in result.reason
         return
     assert result.is_ok, result
@@ -1609,7 +1624,7 @@ def test_arm_refuses_while_red_percent_runs_a_run_of_its_own(station):
     model, red, *_ = station
     red.start_run(confirmed=True)
     run = red.run_token
-    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    result = model.run("arm_trial", None, (True,))
     assert result.is_refused and "run of its own" in result.reason
     assert model.phase == "setup" and red.run_token is run
     red.end_run()
@@ -1690,7 +1705,8 @@ PNG = b"\x89PNG\r\n\x1a\n"
 def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     """Bench 2026-09-27: "No prompt for a before or after image"."""
     model, red = idle_station
-    result = model.run("arm_trial", {"tip_id": "T7", "typed_tilt": ""})
+    model.tip_id = "T7"
+    result = model.run("arm_trial", {"typed_tilt": ""})
     assert result.needs_confirm, result
     # 2026-10-07: Continue takes the stage still; the region comes next.
     # TM-3: without a tilt the prompt says nothing of one (never demanded).
@@ -1699,7 +1715,7 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
                              "300 steps/s (Stepper Probe); you then pick the "
                              "capture region on it, and the recording starts.")
     assert result.command == "arm_trial"
-    assert result.inputs == {"tip_id": "T7", "typed_tilt": ""}
+    assert result.inputs == {"typed_tilt": "", "typed_speed": ""}
     assert not model.is_armed and model.trial_count == 0
     assert model.phase == "setup" and model.stage_still == b""
     assert not red.is_running                 # nothing started either
@@ -1715,15 +1731,16 @@ def test_the_arm_prompt_names_the_number_the_trial_will_get(station):
     second = _record(model, red)
     model.trial_pick = second
     model.delete_trial(True)
-    result = model.run("arm_trial", {"tip_id": "tip-A"})
+    result = model.run("arm_trial")
     assert "for trial 3 on tip tip-A" in result.reason
     assert _arm(model, "tip-A") == 3
 
 
 def test_arm_refuses_before_it_asks(station):
     model = station[0]
-    result = model.run("arm_trial", {"tip_id": "  "})
-    assert result.is_refused and "tip ID" in result.reason
+    model.tip_id = "  "
+    result = model.run("arm_trial")
+    assert result.is_refused and "Pick a tip" in result.reason
 
 
 def test_finish_asks_before_the_after_picture(station, private_db):
@@ -1851,14 +1868,15 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     # it is the start screen's (2026-10-07), like the session.
     assert tier_one == [("Session", ["setup"]), ("Store", ["setup"]),
                         ("Trial", None),
-                        ("Start", ["setup"]), ("Capture region", ["region"]),
+                        ("Start", ["setup"]), ("New tip", ["new_tip"]),
+                        ("Capture region", ["region"]),
                         ("Recording", ["live", "marked"]),
                         ("Review", ["finish"]), ("This trial", None),
                         ("Map", ["setup"])]
     by_title = {s["title"]: s for s in sections}
     assert _keys(by_title["Trial"]) == ["next_step", "tilt_now", "speed_now"]
     assert _keys(by_title["Start"]) == [
-        "tip_id", "tip_pick", "new_tip", "tip_trial_count", "tip_status",
+        "tip_pick", "new_tip", "tip_status",
         "typed_tilt", "typed_speed", "arm_trial"]
     assert _keys(by_title["Capture region"]) == ["set_region"]
     # TM-2: no live plot in the recording steps; the trace is the review's.
@@ -1973,7 +1991,7 @@ def test_a_still_that_cannot_be_taken_refuses_arm(station, private_db):
     model, red, *_ = station
     model._recorder_factory = lambda *a: _Recorder(
         fail=RuntimeError("the screen could not be grabbed for a still"))
-    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    result = model.run("arm_trial", None, (True,))
     assert result.is_refused and "No picture of the stage" in result.reason
     assert "could not be grabbed" in result.reason
     assert model.phase == "setup" and model.trial_count == 0
@@ -2021,7 +2039,7 @@ def test_a_stop_during_the_arm_pictures_arms_nothing(idle_station, private_db):
     inside it must win, and leave no still behind."""
     model, red = idle_station
     model._recorder_factory = lambda *a: _Recorder(then=model.estop)
-    result = model.run("arm_trial", {"tip_id": "tip-A"}, (True,))
+    result = model.run("arm_trial", None, (True,))
     assert result.is_refused and "stopped" in result.reason
     assert model.phase == "setup" and model.trial_count == 0
     assert not red.is_running
@@ -2219,7 +2237,7 @@ def test_a_migrated_database_records_a_trial_with_its_full_pictures(
         _finish(model)
         row = _rows(private_db, "SELECT * FROM trials WHERE id=?", trial)[0]
         assert row["before_full_path"] and row["video_path"]
-        assert model.tip_trial_count == 2
+        assert model._store.count_for_tip("T7") == 2
     finally:
         model.close()
 
@@ -2485,8 +2503,8 @@ def test_tip_status_reads_under_trials_on_this_tip(station):
     # 2026-10-07: the tip's lines are the setup step's "Start" section.
     trial = next(s for s in model.schema["sections"] if s["title"] == "Start")
     keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
-    assert keys[keys.index("tip_trial_count") + 1] == "tip_status"
-    assert _element(model, "tip_status")["text"] == "Tip"
+    assert keys[keys.index("new_tip") + 1] == "tip_status"
+    assert _element(model, "tip_status")["text"] == "Tip status"
 
 
 def test_arming_on_a_broken_tip_asks_once(station):
@@ -2494,7 +2512,7 @@ def test_arming_on_a_broken_tip_asks_once(station):
     model.tip_id = "T7"
     broke = _record(model, red)
     model.mark_broke(True)
-    result = model.run("arm_trial", {"tip_id": "T7"})
+    result = model.run("arm_trial")
     assert result.needs_confirm
     # (2026-10-07: Continue takes the stage still; the region comes next)
     assert result.reason == (
@@ -2512,8 +2530,8 @@ def test_arming_on_a_retired_tip_asks_once(station):
     model, red, *_ = station
     model.tip_id = "T7"
     _record(model, red)
-    assert _confirmed(model, "retire_tip", {"tip_id": "T7"}) == "T7"
-    result = model.run("arm_trial", {"tip_id": "T7"})
+    assert _confirmed(model, "retire_tip") == "T7"
+    result = model.run("arm_trial")
     assert result.needs_confirm
     assert result.reason.startswith("Tip T7 is retired. Arm on it anyway?\n\n"
                                     "Frame the sample now.")
@@ -2526,39 +2544,41 @@ def test_retire_asks_and_unretire_returns_the_tip(station):
     model, red, *_ = station
     model.tip_id = "T7"
     first = _record(model, red)
-    asked = model.run("retire_tip", {"tip_id": "T7"})
+    asked = model.run("retire_tip")
     assert asked.needs_confirm and asked.reason.startswith("Retire tip T7? Its 1 trial(s)")
-    assert asked.inputs == {"tip_id": "T7"}
+    assert asked.inputs == {}
     assert model._store.tip("T7")["retired_at"] is None       # nothing yet
     assert model.run(asked.command, asked.inputs, (*asked.args, True)).is_ok
     assert model._store.tip("T7")["retired_at"] and model.tip_status == "retired"
-    again = model.run("retire_tip", {"tip_id": "T7"}, (True,))
+    again = model.run("retire_tip", None, (True,))
     assert again.is_refused and "already retired" in again.reason
-    assert model.run("unretire_tip", {"tip_id": "T7"}).is_ok
+    assert model.run("unretire_tip").is_ok
     assert model.tip_status == f"in use since trial {first}"
-    assert model.run("unretire_tip", {"tip_id": "T7"}).is_refused
+    assert model.run("unretire_tip").is_refused
 
 
 def test_the_tip_commands_refuse_a_blank_an_unknown_or_an_armed_tip(station):
     model, red, *_ = station
+    model.tip_id = " "
     for command in ("retire_tip", "unretire_tip", "set_tip_note"):
-        blank = model.run(command, {"tip_id": " "})
-        assert blank.is_refused and "tip ID" in blank.reason, command
+        blank = model.run(command)
+        assert blank.is_refused and "Pick the tip" in blank.reason, command
+    model.tip_id = "T99"
     for command in ("retire_tip", "unretire_tip"):
-        unknown = model.run(command, {"tip_id": "T99"})
+        unknown = model.run(command)
         assert unknown.is_refused and "no record yet" in unknown.reason, command
-    # A note on an unknown tip creates its record (owner call 2026-09-28).
-    assert model.run("set_tip_note", {"tip_id": "T98", "tip_note": "n"}).is_ok
+    # A note on a tip with no record creates it (owner call 2026-09-28).
+    model.tip_id = "T98"
+    assert model.run("set_tip_note", {"tip_note": "n"}).is_ok
     _arm(model, "tip-A")
-    armed = model.run("retire_tip", {"tip_id": "tip-A"}, (True,))
+    armed = model.run("retire_tip", None, (True,))
     assert armed.is_refused and "armed on tip tip-A" in armed.reason
 
 
 def test_a_tip_note_is_saved_on_its_record(station):
     model, red, *_ = station
     _record(model, red)
-    result = model.run("set_tip_note", {"tip_id": "tip-A",
-                                        "tip_note": " box B, 2 um "})
+    result = model.run("set_tip_note", {"tip_note": " box B, 2 um "})
     assert result.is_ok, result
     assert model._store.tip("tip-A")["note"] == "box B, 2 um"
 
@@ -2570,8 +2590,8 @@ def test_the_tips_log_has_one_line_per_tip(station):
     model.mark_broke(True)
     model.tip_id = "T8"
     third = _record(model, red)
-    assert _confirmed(model, "retire_tip", {"tip_id": "T8"}) == "T8"
-    model.run("set_tip_note", {"tip_id": "T8", "tip_note": "chipped"})
+    assert _confirmed(model, "retire_tip") == "T8"
+    model.run("set_tip_note", {"tip_note": "chipped"})
     assert model.tips_log == [
         f"tip-A  2 trial(s), trials {first}-{second}  broke on trial {second}",
         f"T8  1 trial(s), trial {third}  retired  chipped"]
@@ -2630,10 +2650,12 @@ def test_the_tip_section_sits_under_configure():
     assert section.get("disclosure") == "Configure Transfer Map"
     assert [(e["type"], e.get("command") or e.get("model_attr"),
              tuple(e.get("inputs") or ())) for e in section["elements"]] == [
+        # 2026-10-07: they act on the tip picked for the trial, shown here.
+        ("readonly", "tip_id", ()),
         ("entry", "tip_note", ()),
-        ("button", "set_tip_note", ("tip_id", "tip_note")),
-        ("button", "retire_tip", ("tip_id",)),
-        ("button", "unretire_tip", ("tip_id",)),
+        ("button", "set_tip_note", ("tip_note",)),
+        ("button", "retire_tip", ()),
+        ("button", "unretire_tip", ()),
         # 2026-10-07: the sheet's Tip broke is the marked and finish steps';
         # this one marks the last trial after the fact.
         ("toggle", "mark_broke", ())]
@@ -2645,22 +2667,17 @@ def test_the_tip_section_sits_under_configure():
 # when it lands, from a fresh baseline; a run before that would measure a
 # stale region and spend the loop (CAP-5) for nothing on the sheet.
 
-def _commit_tip(model, tip):
-    result = model.set_value("tip_id", tip)          # what a view's entry sends
-    assert result.is_ok, result
-    return result
-
-
 def test_nothing_polls_before_the_region_is_picked(idle_station):
-    """A tip committed, picked or created, with Red Percent holding a
-    region from before: no run starts until the trial's region lands."""
+    """A tip created or picked, with Red Percent holding a region from
+    before: no run starts until the trial's region lands."""
     model, red = idle_station
     controller = Controller()
     controller.add("Transfer Map", model, {})
     try:
-        assert controller.set_value("Transfer Map", "tip_id", "T7").is_ok
-        assert model.run("new_tip", {"tip_id": "T7"}).is_ok
-        assert model.run("pick_tip", None, ("T7",)).is_ok
+        assert controller.run("Transfer Map", "new_tip").is_ok
+        assert controller.run("Transfer Map", "add_tip",
+                              {"new_tip_id": "T7"}).is_ok
+        assert model.run("pick_tip", None, ("T7 · 0 trials",)).is_ok
         model.typed_tilt = "5"
         assert not red.is_running and red._subscribers == ()
         assert model.state["values"]["next_step"] == "Press Arm trial"
@@ -2685,46 +2702,140 @@ def test_the_trials_run_starts_from_a_fresh_baseline_when_the_region_lands(
     model.abort_trial()
 
 
-# -- Known tips and New tip (bench 2026-09-28) -------------------------------
+# -- TR-1 (approved proposal 2026-10-07): one tip dropdown, one prompt ---------
+# The setup row has no Tip ID entry: the Tip dropdown is the only tip control
+# and its pick is the trial's tip; New tip… opens the `new_tip` step.
 
 def _map_with_tip(tmp_path, tip="T7"):
+    """A map with a store and one tip added through the prompt, by `run`."""
     from model.transfer_map import TransferMap
     tm = TransferMap(db_path=tmp_path / "map.sqlite")
-    tm.tip_id = tip
-    assert tm.run("new_tip", inputs={"tip_id": tip}).is_ok
+    assert tm.run("new_tip").is_ok and tm.phase == "new_tip"
+    assert tm.run("add_tip", {"new_tip_id": tip}).is_ok
+    assert tm.phase == "setup"
     return tm
 
 
-def test_new_tip_creates_a_record_before_any_trial(tmp_path):
-    tm = _map_with_tip(tmp_path)
-    assert tm.tip_options == [tm.NO_TIP, "T7"]
-    assert tm.tip_status == "new"
-    assert tm.tip_pick == "T7"
+def test_the_setup_row_has_one_tip_control_and_no_tip_entry():
+    model = TransferMap()
+    start = next(s for s in model.schema["sections"] if s["title"] == "Start")
+    shown = [(e["type"], e.get("command") or e.get("model_attr"))
+             for e in start["elements"]]
+    assert ("entry", "tip_id") not in shown
+    assert not [e for e in start["elements"]
+                if e["type"] == "entry" and "tip" in e["model_attr"]]
+    tip = next(e for e in start["elements"] if e.get("model_attr") == "tip_pick")
+    assert tip["type"] == "dropdown" and tip["text"] == "Tip"
+    assert (tip["command"], tip["options_command"]) == ("pick_tip", "tip_options")
+    new = next(e for e in start["elements"] if e.get("command") == "new_tip")
+    assert new["type"] == "button" and new["text"] == "New tip…"
+    assert new["inputs"] == []
+    arm = next(e for e in start["elements"] if e.get("command") == "arm_trial")
+    assert "tip_id" not in arm["inputs"]
+    # Its step: the New tip prompt's own section, nothing else in it.
+    prompt = next(s for s in model.schema["sections"] if s["title"] == "New tip")
+    assert prompt["phases"] == ["new_tip"]
+    assert [(e["type"], e.get("command") or e.get("model_attr"), e["text"])
+            for e in prompt["elements"]] == [
+        ("entry", "new_tip_id", "Tip ID"), ("button", "add_tip", "Add tip"),
+        ("button", "cancel_new_tip", "Cancel")]
+    assert TransferMap.PHASES[:2] == ("setup", "new_tip")
 
 
-def test_new_tip_refuses_a_blank_or_known_id(tmp_path):
-    tm = _map_with_tip(tmp_path)
-    again = tm.run("new_tip", inputs={"tip_id": "T7"})
-    assert again.status == "refused" and "already on record" in again.reason
-    blank = tm.run("new_tip", inputs={"tip_id": ""})
-    assert blank.status == "refused"
+def test_the_tip_dropdown_lists_every_tip_with_its_count_retired_last(tmp_path):
+    tm = TransferMap(db_path=tmp_path / "map.sqlite")
+    store = tm._store
+    for tip in ("T1", "T2", "T3", "T4"):
+        store.create_tip(tip, "2026-10-07T09:00:00")
+    for tip in ("T1", "T1", "T3", "T4"):
+        trial = store.insert({"tip_id": tip, "status": "recorded"})
+        store.use_tip(tip, trial, "2026-10-07T09:10:00")
+    store.set_tip("T3", {"retired_at": "2026-10-07T10:00:00"})
+    options = tm.options("tip_options")
+    assert options == ["T1 · 2 trials", "T2 · 0 trials", "T4 · 1 trial",
+                       "T3 · 1 trial · retired"]
 
 
-def test_picking_a_known_tip_fills_the_entry(tmp_path):
-    tm = _map_with_tip(tmp_path)
+def test_picking_a_tip_makes_it_the_trials_tip(station, private_db):
+    model, red, *_ = station
+    model.tip_id = ""
+    assert model.run("new_tip").is_ok
+    assert model.run("add_tip", {"new_tip_id": "T5"}).is_ok
+    model.tip_id = ""
+    assert model.state["values"]["tip_pick"] == ""
+    assert "Pick a tip" in model.state["values"]["next_step"]
+    assert model.run("pick_tip", None, ("T5 · 0 trials",)).is_ok
+    assert model.tip_id == "T5"
+    assert model.state["values"]["tip_pick"] == "T5 · 0 trials"
+    trial = _arm(model)
+    assert _rows(private_db, "SELECT tip_id FROM trials WHERE id=?",
+                 trial) == [{"tip_id": "T5"}]
+    _finish(model)
+    assert model.state["values"]["tip_pick"] == "T5 · 1 trial"
+    refused = model.run("pick_tip", None, ("T99 · 0 trials",))
+    assert refused.is_refused and "New tip…" in refused.reason
+    assert model.tip_id == "T5"
+
+
+def test_add_tip_makes_the_record_picks_it_and_returns_to_setup(tmp_path):
+    tm = _map_with_tip(tmp_path, "T12")
+    record = tm._store.tip("T12")
+    assert record["created_at"] and record["first_trial_id"] is None
+    assert record["count"] == 0 and record["trials"] == []
+    assert tm.tip_id == "T12" and tm.tip_pick == "T12 · 0 trials"
+    assert tm.tip_status == "new" and tm.new_tip_id == ""
+    assert tm.tip_options == ["T12 · 0 trials"]
+
+
+def test_add_tip_refuses_an_empty_or_an_existing_id_and_stays(tmp_path):
+    tm = _map_with_tip(tmp_path, "T12")
+    assert tm.run("new_tip").is_ok
+    again = tm.run("add_tip", {"new_tip_id": " T12 "})
+    assert again.is_refused
+    assert again.reason == ("T12 already exists. Choose it from the list or "
+                            "type a different ID.")
+    blank = tm.run("add_tip", {"new_tip_id": "  "})
+    assert blank.is_refused and "Type the new tip's ID" in blank.reason
+    assert tm.phase == "new_tip"
+    assert [t["tip_id"] for t in tm._store.tips()] == ["T12"]
+
+
+def test_cancel_returns_to_setup_and_adds_nothing(tmp_path):
+    tm = TransferMap(db_path=tmp_path / "map.sqlite")
     tm.tip_id = ""
-    assert tm.tip_pick == tm.NO_TIP
-    assert tm.run("pick_tip", args=("T7",)).is_ok
-    assert tm.tip_id == "T7"
-    assert tm.run("pick_tip", args=(tm.NO_TIP,)).is_ok and tm.tip_id == "T7"
-    assert tm.run("pick_tip", args=("T99",)).status == "refused"
+    assert tm.run("new_tip").is_ok and tm.phase == "new_tip"
+    assert tm.state["values"]["next_step"] == TransferMap.STEP_WORDS["new_tip"]
+    tm.new_tip_id = "T40"
+    assert tm.run("cancel_new_tip").is_ok
+    assert tm.phase == "setup" and tm._store.tips() == []
+    assert tm.tip_id == ""
+
+
+def test_the_tip_prompt_is_its_own_step(station):
+    """The prompt hides the setup row (Arm included) and shows only its
+    own section; the setup row's commands are refused by the step, and a
+    stop closes the prompt."""
+    model, red, *_ = station
+    assert model.run("new_tip").is_ok
+    shown = {e.get("command") or e.get("model_attr")
+             for e in sch.shown_elements(model.schema, model.phase)}
+    assert {"new_tip_id", "add_tip", "cancel_new_tip"} <= shown
+    assert not shown & {"arm_trial", "tip_pick", "new_tip", "typed_tilt"}
+    for command in ("arm_trial", "new_tip"):
+        result = model.run(command)
+        assert result.is_refused and "new_tip step" in result.reason, command
+    assert model.mode_name == "ready" and model.phase == "new_tip"
+    model.estop()
+    assert model.phase == "setup"
+    model.clear_estop(confirmed=True)
+    assert model.run("add_tip", {"new_tip_id": "T9"}).is_refused   # setup now
 
 
 def test_a_note_creates_the_tip_record_when_there_is_none(tmp_path):
     from model.transfer_map import TransferMap
     tm = TransferMap(db_path=tmp_path / "map.sqlite")
     tm.tip_id, tm.tip_note = "T8", "fresh"
-    assert tm.run("set_tip_note", inputs={"tip_id": "T8", "tip_note": "fresh"}).is_ok
+    assert tm.run("set_tip_note", inputs={"tip_note": "fresh"}).is_ok
     assert tm._store.tip("T8")["note"] == "fresh"
 
 
@@ -2737,7 +2848,7 @@ def test_the_tilt_entry_sits_in_tier_one_before_arm(tmp_path):
     trial = [s for s in tm.schema["sections"] if s["title"] == "Start"][0]
     keys = [e.get("model_attr") or e.get("command") for e in trial["elements"]]
     assert keys.index("typed_tilt") < keys.index("arm_trial")
-    assert keys.index("typed_tilt") > keys.index("tip_id")
+    assert keys.index("typed_tilt") > keys.index("tip_pick")
     figure = [s for s in tm.schema["sections"] if s["title"] == "Figure"][0]
     assert "typed_tilt" not in [e.get("model_attr") for e in figure["elements"]]
 
