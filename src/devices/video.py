@@ -22,6 +22,10 @@ with is resized to it.
 Not a `Device`: it opens a file, not the outside world, and belongs to the
 Transfer Map's picture thread, which is the only caller of `write` and
 `close`. Nothing here is thread-safe on its own.
+
+The full-display recorder, with its pristine pixels and `frames.csv`
+sidecar, is `devices.screen_recorder.ScreenRecorder`; it finds its encoder
+through `ffmpeg_exe()` here. This recorder is unchanged by it.
 """
 from pathlib import Path
 
@@ -46,6 +50,20 @@ def _encoder():
     except Exception:
         return None
     return imageio_ffmpeg
+
+
+def ffmpeg_exe():
+    """The path of the ffmpeg binary the `imageio-ffmpeg` wheel ships, for
+    the full-display recorder (`devices.screen_recorder`), which runs it as
+    its own process: this module stays the one importer of the wheel.
+    Raises RuntimeError, worded for the operator, when there is none."""
+    encoder = _encoder()
+    if encoder is None:
+        raise RuntimeError("imageio-ffmpeg is not installed")
+    try:
+        return encoder.get_ffmpeg_exe()
+    except Exception as exc:
+        raise RuntimeError(f"imageio-ffmpeg has no ffmpeg binary ({exc})") from exc
 
 
 def to_rgb(frame):
@@ -181,7 +199,11 @@ class TrialRecorder:
                     pix_fmt_in="rgb24", pix_fmt_out="yuv420p", quality=None,
                     macro_block_size=1, ffmpeg_log_level="error",
                     ffmpeg_timeout=self.CLOSE_TIMEOUT,
-                    output_params=["-crf", str(self.CRF), "-preset", self.PRESET])
+                    output_params=["-crf", str(self.CRF), "-preset", self.PRESET,
+                                   # CAP-6 (2026-10-07): a fragmented MP4 stays
+                                   # decodable when the process is killed
+                                   # mid-trial; a plain one loses its moov atom.
+                                   "-movflags", "+frag_keyframe+empty_moov"])
                 writer.send(None)              # starts ffmpeg; raises here
                 self._writer, self.kind, self.path = writer, "mp4", path
                 return self

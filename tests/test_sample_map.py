@@ -21,6 +21,18 @@ from model.sample_map import SampleMap, TYPED
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 
+class FlakeMap(SampleMap):
+    """The Sample Map with its flake-coordinate sheet and modes back on.
+
+    Dormant 2026-10-07: the live schema is the image sheet, and a command the
+    schema does not declare is off the allow-list (`Panel._allows`), so the
+    dormant corner/flake/rotator commands can only be driven through
+    `_dormant_schema`. Every test of that machinery below builds this class;
+    the image sheet's own tests (end of file) build the real `SampleMap`."""
+    FLAKES_ACTIVE = True
+    schema = property(lambda self: self._dormant_schema)
+
+
 class FakeStage:
     """Locating axes, duck-typed as the Sample Map reads them (a probe or
     the Chuck Positioner): position in counts, its age, velocity, epoch."""
@@ -76,7 +88,7 @@ def stage():
 
 @pytest.fixture
 def sample_map(stage):
-    model = SampleMap()
+    model = FlakeMap()
     model.open()
     model.on_model_added(stage.NAME, stage)
     model.sample_id = "S1"
@@ -106,7 +118,7 @@ def test_the_class_is_a_portless_model_registered_after_the_transfer_map():
     assert SampleMap.HOST is None                  # its own page
     names = list(station_setup.MODEL_TYPES)
     assert names.index("Sample Map") == names.index("Transfer Map") + 1
-    model = SampleMap(port="SIM", gamepad=None, sim=True)
+    model = FlakeMap(port="SIM", gamepad=None, sim=True)
     assert model.devices == [] and model._expects_heartbeat() is False
     assert model._halt_hardware() is True and model.is_active is False
 
@@ -115,7 +127,7 @@ def test_construction_creates_nothing_and_open_announces_the_store(tmp_path,
                                                                    monkeypatch):
     path = tmp_path / "data" / "sample_map.sqlite"
     monkeypatch.setenv("STATION_SAMPLE_DB", str(path))
-    model = SampleMap()
+    model = FlakeMap()
     assert not path.exists()
     since = events.latest_id
     model.open()
@@ -131,7 +143,7 @@ def test_construction_creates_nothing_and_open_announces_the_store(tmp_path,
 # -- the locating axes ----------------------------------------------------------------
 
 def test_no_source_until_locating_axes_arrive(stage):
-    model = SampleMap()
+    model = FlakeMap()
     model.open()
     try:
         assert model.mode_name == "no_source"
@@ -148,7 +160,7 @@ def test_no_source_until_locating_axes_arrive(stage):
 
 
 def test_a_mark_needs_a_sample_and_a_stage_at_rest(stage):
-    model = SampleMap()
+    model = FlakeMap()
     model.open()
     model.on_model_added(stage.NAME, stage)
     try:
@@ -207,7 +219,7 @@ def test_check_corner_a_measures_closure_and_names_the_quality(sample_map, stage
 
 def test_an_unknown_um_per_count_is_a_bench_fact_not_a_guess():
     chuck = FakeStage(name="Chuck Positioner")
-    model = SampleMap()
+    model = FlakeMap()
     model.open()
     model.on_model_added(chuck.NAME, chuck)
     model.run("save_sample", {"sample_id": "S1"})
@@ -371,7 +383,7 @@ def test_nothing_on_the_sheet_moves_the_stage(sample_map):
 
 
 def test_the_manual_rig_registers_from_typed_micrometer_readings():
-    model = SampleMap()
+    model = FlakeMap()
     model.open()
     try:
         assert model.run("set_source", None, (TYPED,)).is_ok
@@ -418,7 +430,7 @@ def test_export_and_import_round_trip(sample_map, stage, tmp_path):
     document = json.loads(open(path).read())
     assert document["schema"] == "flake-coords/1"
     assert sample_map.export_csv().endswith("_flakes.csv")
-    other = SampleMap(db_path=tmp_path / "other.sqlite")
+    other = FlakeMap(db_path=tmp_path / "other.sqlite")
     other.open()
     try:
         counts = other.run("import_json", None, (path,)).value
@@ -436,7 +448,7 @@ def test_a_stop_does_nothing_to_the_store(sample_map, stage):
 
 
 def test_next_step_walks_the_sheet(stage):
-    model = SampleMap()
+    model = FlakeMap()
     model.open()
     try:
         assert model.next_step == "Open a probe or the Chuck Positioner, or pick Typed readings"
@@ -707,3 +719,194 @@ def test_the_rotator_fields_are_exported(sample_map, stage, rotator):
                 "rotator_closure_um", "rotator_quality"):
         assert key in reg
     assert "rotator_calibrations" not in doc        # station-only (Q4)
+
+
+# -- the image sheet (owner 2026-10-07): the Sample Map stores pictures -----------------
+
+import hashlib
+import sqlite3
+
+
+class FakeTransferMap:
+    """The Transfer Map as the Sample Map sees it: a name and a public
+    `db_path`. The file has the bench's extra columns, as the real ones do."""
+    NAME = "Transfer Map"
+
+    def __init__(self, path):
+        self.db_path = path
+
+
+def _trial_file(path, rows, columns=("id", "started_at", "status", "force_class",
+                                     "sample_id", "chip_id")):
+    db = sqlite3.connect(str(path))
+    db.execute("CREATE TABLE trials (" + ", ".join(
+        c + (" INTEGER PRIMARY KEY" if c == "id" else "") for c in columns) + ")")
+    for row in rows:
+        db.execute("INSERT INTO trials (" + ", ".join(row) + ") VALUES ("
+                   + ", ".join("?" for _ in row) + ")", list(row.values()))
+    db.commit()
+    db.close()
+    return path
+
+
+def _digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture
+def images(tmp_path):
+    model = SampleMap(db_path=tmp_path / "data" / "sample_map.sqlite")
+    model.open()
+    yield model
+    model.close()
+
+
+def _shot(tmp_path, name="a.png", payload=PNG):
+    path = tmp_path / name
+    path.write_bytes(payload)
+    return path
+
+
+def test_the_live_sheet_declares_the_image_commands_and_ends_with_safety(images):
+    import schema as sch
+    elements = list(sch.elements(images.schema))
+    commands = {e.get("command") for e in elements}
+    # Reason: the flake-coordinate commands left the schema (dormant 2026-10-07).
+    assert "add_image" in commands and "save_sample" in commands
+    assert not commands & {"mark_corner", "flag_flake", "fit_rotation_centre",
+                           "set_um_per_count", "select_flake", "set_source"}
+    (opener,) = [e for e in elements if e.get("command") == "add_image"]
+    assert opener["type"] == "file_open"
+    assert {e["data_command"] if e.get("data_command") else e.get("source_command")
+            for e in elements if e["type"] == "log_stream"} >= {"image_log",
+                                                                 "sample_trials_log"}
+    assert images.schema["sections"][-1] == images._safety_section()
+    assert images.mode_name == "images"
+
+
+@pytest.mark.parametrize("command,args", [
+    ("mark_corner", ("A",)), ("flag_flake", ()), ("fit_rotation_centre", ()),
+    ("set_um_per_count", ()), ("clear_corners", ())])
+def test_the_dormant_commands_are_off_the_allow_list(images, command, args):
+    # Reason: a command the schema does not show is refused for every view.
+    result = images.run(command, None, args)
+    assert not result.is_ok and "is not a command of Sample Map" in str(result)
+
+
+def test_add_image_stores_the_original_under_the_typed_sample(images, tmp_path):
+    images.sample_id = "4oct26"
+    images.run("set_image_instrument", None, ("transfer_stage",))
+    images.run("set_image_magnification", None, ("50x",))
+    images.image_note = "left edge"
+    source = _shot(tmp_path)
+    result = images.run("add_image", None, (str(source),))
+    assert result.is_ok, result
+    (row,) = images._store.images("4oct26")
+    assert (row["instrument"], row["magnification"], row["note"]) == \
+        ("transfer_stage", 50, "left edge")
+    assert images._store.image_file(row).read_bytes() == source.read_bytes()
+    assert images.image_note == ""                           # the note was used up
+    (line,) = images.image_log
+    assert line.startswith("4oct26  transfer_stage  50x  ") and line.endswith("left edge")
+    assert images.image_text == "1 picture(s) of 4oct26"
+
+
+def test_the_image_log_is_newest_first_across_samples(images, tmp_path):
+    for sample in ("A1", "B2", "A1"):
+        images.sample_id = sample
+        images.add_image(str(_shot(tmp_path, payload=PNG + sample.encode())))
+    assert [l.split()[0] for l in images.image_log] == ["A1", "B2", "A1"]
+    ids = [r["id"] for r in images._store.images()]
+    assert ids == sorted(ids)
+    assert "A1" in images.image_log[0] and images._store.images()[-1]["sample_id"] == "A1"
+
+
+def test_add_image_needs_a_sample_and_refuses_bad_vocabulary_in_words(images, tmp_path):
+    source = _shot(tmp_path)
+    blank = images.run("add_image", None, (str(source),))
+    assert not blank.is_ok and "sample ID" in str(blank)
+    images.sample_id = "S1"
+    assert not images.run("set_image_magnification", None, ("40x",)).is_ok
+    assert "40x" in str(images.run("set_image_magnification", None, ("40x",)))
+    assert "sem" in str(images.run("set_image_instrument", None, ("sem",)))
+    assert images.image_magnification == "10x"               # unchanged by a refusal
+    assert not images.run("add_image", None, (str(tmp_path / "nope.png"),)).is_ok
+    assert images._store.images() == []
+
+
+def _with_trials(images, tmp_path, rows, **kw):
+    path = _trial_file(tmp_path / "tm.sqlite", rows, **kw)
+    images.on_model_added("Transfer Map", FakeTransferMap(path))
+    return path
+
+
+def test_trials_for_a_sample_are_listed_newest_first_with_the_force_class(images, tmp_path):
+    _with_trials(images, tmp_path, [
+        {"id": 1, "started_at": "2026-09-27T17:25:08", "status": "recorded",
+         "force_class": None, "sample_id": "4oct26", "chip_id": "2"},
+        {"id": 2, "started_at": "2026-10-04T09:00:00", "status": "recorded",
+         "force_class": "Low", "sample_id": " 4OCT26 ", "chip_id": "2"},
+        {"id": 3, "started_at": "2026-10-05T09:00:00", "status": "aborted",
+         "force_class": "High", "sample_id": "7/27/26", "chip_id": "1"},
+    ])
+    images.sample_id = "4oct26"
+    assert [t["id"] for t in images.trials_for("4oct26")] == [2, 1]
+    assert images.sample_trials_log == [
+        "#2  2026-10-04T09:00:00  recorded  Low", "#1  2026-09-27T17:25:08  recorded"]
+    assert images.trials_text == "2 trial(s) recorded for 4oct26"
+    images.sample_id = "never"
+    assert images.sample_trials_log == [] and "No trial" in images.trials_text
+
+
+def test_a_trial_store_without_a_force_class_column_still_lists(images, tmp_path):
+    # Reason: until the Transfer Map ports force_class the column may be absent.
+    _with_trials(images, tmp_path, [{"id": 1, "started_at": "t", "status": "recorded",
+                                     "sample_id": "S1"}],
+                 columns=("id", "started_at", "status", "sample_id"))
+    images.sample_id = "S1"
+    assert images.sample_trials_log == ["#1  t  recorded"]
+
+
+def test_a_store_without_the_sample_column_or_file_lists_nothing(images, tmp_path):
+    images.sample_id = "S1"
+    assert images.sample_trials_log == [] and "not open" in images.trials_text
+    _with_trials(images, tmp_path, [{"id": 1, "status": "recorded"}],
+                 columns=("id", "status"))
+    assert images.sample_trials_log == []
+    images.on_model_removed("Transfer Map")
+    assert images._trial_store is None
+
+
+def test_the_trial_listing_is_read_only_and_leaves_the_file_untouched(images, tmp_path):
+    path = _with_trials(images, tmp_path, [{"id": 1, "started_at": "t", "status": "x",
+                                            "force_class": "Low", "sample_id": "S1"}])
+    before = _digest(path)
+    images.sample_id = "S1"
+    assert images.sample_trials_log and images.sample_options
+    db = images._trial_connection()
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            db.execute("DELETE FROM trials")
+    finally:
+        db.close()
+    assert _digest(path) == before and sorted(p.name for p in tmp_path.glob("tm*")) == ["tm.sqlite"]
+
+
+def test_pick_a_sample_offers_the_saved_ones_and_the_trial_labels(images, tmp_path):
+    _with_trials(images, tmp_path, [{"id": 1, "started_at": "t", "status": "x",
+                                     "sample_id": "Riki's Gift 8March26"}],
+                 columns=("id", "started_at", "status", "sample_id"))
+    images.run("save_sample", {"sample_id": "S1", "material": "WSe2"})
+    assert images.sample_options == ["Riki's Gift 8March26", "S1"]
+    images.run("select_sample", None, ("S1",))
+    assert (images.sample_id, images.material) == ("S1", "WSe2")
+
+
+def test_the_image_sheet_exports_its_pictures(images, tmp_path):
+    import json as _json
+    images.sample_id = "S1"
+    images.add_image(str(_shot(tmp_path)))
+    document = _json.loads(open(images.export_json()).read())
+    assert document["schema"] == "flake-coords/1"
+    (entry,) = document["images"]
+    assert entry["sample_id"] == "S1" and not entry["path"].startswith("/")

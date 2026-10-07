@@ -166,6 +166,27 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: At 3200 steps/s, a second is the travel this costs before it trips.
     BOARD_SILENT_AFTER = 1.0
 
+    #: L3: the firmware prints POS every 100 ms (50 ms on the DC board), so a
+    #: usable link with no POS line for this long is a stalled stream.
+    STREAM_STALL_SECONDS = 1.0
+    #: L7: seconds between the sampler's `Health` debug lines.
+    HEALTH_INTERVAL = 5.0
+    #: L3: at most one "Packets Dropped" warning per this many seconds.
+    DROPPED_WARN_INTERVAL = 10.0
+
+    #: L6: a jump to exactly (0,0,0) from farther than this, within
+    #: RESET_WINDOW, is a board that reset (its setup() zeroes the counts),
+    #: not motion. The stepper/chuck firmware caps each axis at
+    #: setMaxSpeed(1600 * microstepMode / 2) = 6400 steps/s (microstepMode
+    #: 8) and prints every PRINT_INTERVAL = 100 ms, so one sample can move at
+    #: most 640 counts; twice that allows for a late or merged sample. The
+    #: DC board's encoder rate is not stated in its sketch: this is a
+    #: stepper-derived number there, for the owner to judge at the bench.
+    RESET_JUMP_COUNTS = 1280
+    #: Two print intervals: 6400 steps/s x 0.2 s = 1280, so no real move
+    #: inside the window can cover RESET_JUMP_COUNTS.
+    RESET_WINDOW = 0.2
+
     # The idle interlock's INTERLOCK_TIMEOUT (300 s), INTERLOCK_POLL_INTERVAL
     # and IDLE_WARN_SECONDS (60 s) come from `model.idle.IdleInterlock`.
 
@@ -176,6 +197,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         # which no entry's `disabled_when` names, so nothing is refused here.
         self._mode = ProbeMode.DISABLED
         self._mode_lock = threading.RLock()
+        #: L10 (SF-4): events raised while this thread holds `_mode_lock`
+        #: wait here and are published once `_set_mode` has released it.
+        self._outbox = threading.local()
         self._param_store = {}
         self._gates = {}
         super().__init__()
@@ -194,6 +218,15 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._position_epoch = 0
         self._link_up = False
 
+        # L3: the stream's health. `dropped` lines that were not a whole POS
+        # line; `stalls` episodes of a usable link with no POS line.
+        self._dropped = 0
+        self._dropped_warned = 0          # the count at the last warning
+        self._dropped_warned_at = None    # monotonic time of that warning
+        self._stalls = 0
+        self._stalled = False
+        self._stream_since = None         # monotonic: the link became usable
+
         # Autonomous "stepping" is a *timed sub-state*, not a fifth boolean
         # (RC-3 item 2). `is_stepping` used to be set by the step command and
         # cleared only by a stop, so a move that finished normally left it True
@@ -204,6 +237,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         #: (mode, seconds silent) when the watchdog is the one stopping the
         #: probe, so the halt's report says why. None otherwise.
         self._silent_trip = None
+        #: L9 (SF-5): bumped by every `_halt_hardware`, so a mode entry can
+        #: tell that a stop landed between its enable and its mode write.
+        self._halt_generation = 0
 
     # -- devices ----------------------------------------------------------
     def _build_port(self, port, sim):
@@ -305,6 +341,32 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._refuse(f"{target} is not a mode of the {self.NAME}.")
 
     def _set_mode(self, target, reason, quiesce=True):
+        """`_set_mode_locked`, then publish what it raised with no lock held
+        (L10, SF-4)."""
+        depth = getattr(self._outbox, "depth", 0)
+        if depth == 0:
+            self._outbox.pending = []
+        self._outbox.depth = depth + 1
+        try:
+            return self._set_mode_locked(target, reason, quiesce)
+        finally:
+            self._outbox.depth = depth
+            if depth == 0:
+                pending, self._outbox.pending = self._outbox.pending, []
+                for publish in pending:
+                    try:
+                        publish()
+                    except Exception as exc:
+                        events.debug("Publish Failed", repr(exc),
+                                     source=self.NAME, exception=exc)
+
+    def _publish_later(self, publish):
+        if getattr(self._outbox, "depth", 0):
+            self._outbox.pending.append(publish)
+        else:
+            publish()
+
+    def _set_mode_locked(self, target, reason, quiesce=True):
         """Change mode and own the hardware side effects. The only writer.
 
         The ordering is the safety property, and it is why this is one
@@ -323,10 +385,18 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """
         with self._mode_lock:
             previous = self._mode
+            halts = self._halt_generation
             if target is ProbeMode.DISABLED:
                 return self._deenergize(reason)
             if target is ProbeMode.FAULT:
                 self._refuse("Fault is not a mode you can select.")
+            if previous is ProbeMode.FAULT or self.is_faulted:
+                # L8 (SF-1): FAULT is an unconfirmed disable. Arming out of it
+                # sent 'e' and cleared the fault on the strength of nothing;
+                # only a confirmed 'd' (a Stop, or leaving the mode) ends it.
+                self._refuse(f"{self.NAME} is in fault: its last disable was "
+                             "not confirmed. Stop it; a confirmed stop clears "
+                             "the fault.")
             if target is ProbeMode.MANUAL and not self._is_gamepad_bound:
                 # Before the enable, never after: checking afterwards can
                 # revert the Python flag, but the firmware has already been
@@ -349,12 +419,26 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # Entering manual starts with no step pending (D3): a press
                 # parked before this point was not made in manual mode.
                 self._drain_edges()
+            if self._halt_generation != halts or self._estop.is_set():
+                # L9 (SF-5): a stop from another thread (the Web, the
+                # watchdog) landed after the enable. Writing the target now
+                # would overwrite its DISABLED and leave the probe latched in
+                # MANUAL, and Clear would resume the jog stream. Back out
+                # through the one de-energize, which ends on the wire with
+                # the zero frame and 'd'.
+                events.debug("Mode Entry Backed Out", f"a stop landed while "
+                             f"entering {target.value}", source=self.NAME)
+                self._deenergize(f"stop during entry to {target.value}")
+                self._guard(f"Mode change to {target.value}")
+                self._refuse(f"A stop arrived while the {self.NAME} was "
+                             f"entering {target.value} mode, so it stayed "
+                             "disabled. Enter the mode again.")
             self._mode = target
             self._moving_deadline = None
-            self._clear_fault()
             self._start_interlock()
             self._touch()
-            events.debug("Mode", f"{previous.value} -> {target.value} ({reason})",
+            events.debug("Mode", f"{previous.value} -> {target.value} ({reason}) "
+                         f"at {self._position}",
                          source=self.NAME)
             # Entering a mode starts from rest. `quiesce=False` is for the one
             # caller entering a mode *in order to move* -- `step` -- where a
@@ -383,9 +467,10 @@ class Probe(GamepadInput, IdleInterlock, Model):
         except Exception as exc:
             events.debug("Enable Failed", f"b'e' not written: {exc!r}",
                          source=self.NAME, exception=exc)
-            events.warn("Enable Failed", "The enable did not reach the board. "
-                        "Check the connection and try again.",
-                        source=self.NAME, exception=exc)
+            self._publish_later(lambda exc=exc: events.warn(
+                "Enable Failed", "The enable did not reach the board. Check "
+                "the connection and try again.", source=self.NAME,
+                exception=exc))
             self._refuse("The enable did not reach the board. Check the "
                          "connection and try again.")
         events.debug("Frame", f"enable {b'e'.hex()} written={bool(written)} "
@@ -432,7 +517,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._mode = ProbeMode.DISABLED
         self._clear_fault()
         self._touch()
-        events.debug("Mode", f"{previous.value} -> disabled ({reason})",
+        events.debug("Mode", f"{previous.value} -> disabled ({reason}) "
+                     f"at {self._position}",
                      source=self.NAME)
         return ProbeMode.DISABLED.value
 
@@ -445,7 +531,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
         previous = self._mode
         self._mode = ProbeMode.FAULT
         self._moving_deadline = None
-        events.debug("Mode", f"{previous.value} -> fault ({reason})",
+        events.debug("Mode", f"{previous.value} -> fault ({reason}) "
+                     f"at {self._position}",
                      source=self.NAME)
         self._fault(reason)
 
@@ -477,6 +564,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         # is reported, never what is attempted.
         silent_for = self._silent_for()
         trip, self._silent_trip = self._silent_trip, None
+        self._halt_generation += 1
         self._moving_deadline = None
         self._stop_interlock()
         landed = {}
@@ -491,9 +579,18 @@ class Probe(GamepadInput, IdleInterlock, Model):
         if landed["d"]:
             previous = self._mode
             self._mode = ProbeMode.DISABLED
+            # L5: a confirmed 'd' is exactly what a FAULT was waiting for
+            # (the schema's "Fault" comment says the stop is the way out).
+            self._clear_fault()
             if previous is not ProbeMode.DISABLED:
-                events.debug("Mode", f"{previous.value} -> disabled (halt)",
+                events.debug("Mode", f"{previous.value} -> disabled (halt) "
+                             f"at {self._position}",
                              source=self.NAME)
+        elif self._link_loss_in_progress:
+            # L1: the link itself is gone. The loss is reported by the port,
+            # with this outcome in it; FAULT would block the recovery.
+            events.debug("Halt Not Confirmed", "the link is lost; leaving the "
+                         "mode as DISABLED, not FAULT", source=self.NAME)
         elif self.port is not None:
             self._enter_fault("The stop did not reach the board, so the "
                               "motors may still be powered. Treat it as live "
@@ -525,6 +622,21 @@ class Probe(GamepadInput, IdleInterlock, Model):
                      f"{why} The board is not answering, so nothing confirms "
                      "the stop and it may still be moving. Cut its power or "
                      "reset the board, then clear the stop.",
+                     source=self.NAME)
+
+    def _leave_mode_for_link_loss(self, landed):
+        """L1: a lost link leaves the mode as DISABLED, never FAULT (FAULT
+        is the needs-a-person latch and would block the recovery). The stop
+        has already been attempted on the still-open handle."""
+        with self._mode_lock:
+            previous = self._mode
+            self._moving_deadline = None
+            self._stop_interlock()
+            if previous is not ProbeMode.FAULT:
+                self._mode = ProbeMode.DISABLED
+        events.debug("Mode", f"{previous.value} -> {self._mode.value} (link "
+                     f"lost; stop {'landed' if landed else 'NOT confirmed'}) "
+                     f"at {self._position}",
                      source=self.NAME)
 
     def _write_stop(self, label, payload):
@@ -662,7 +774,17 @@ class Probe(GamepadInput, IdleInterlock, Model):
         if self._is_off_neutral(levels):
             self._touch_activity()
         payload = self._jog_bytes(levels)
-        written = bool(self.port.write(payload, abort_if=self._estop.is_set))
+        try:
+            written = bool(self.port.write(payload, abort_if=self._estop.is_set))
+        except serial_device.TransportError as exc:
+            if not self._is_link_down():
+                raise
+            # L1: the link is lost and its owner stop is on its way. Raising
+            # here would reach the pump's fault hook and turn a recoverable
+            # loss into FAULT (and end the pump).
+            events.debug("Jog Not Sent", f"link lost: {exc}", source=self.NAME,
+                         every=1.0)
+            return False
         events.debug("Jog", f"50 Hz stream; last frame written={written}",
                      source=self.NAME, every=1.0)
         return written
@@ -713,10 +835,17 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """
         counted_from = time.monotonic()
         seen = 0
+        health_at = time.monotonic()
         while not self._threads_stop.wait(self.SAMPLE_INTERVAL):
-            self._touch()   # the loop is alive; data freshness is position_age
+            if time.monotonic() - health_at >= self.HEALTH_INTERVAL:
+                health_at = time.monotonic()
+                self._log_health()
             try:
                 position = self._read_position()
+                # The loop is alive AND its read worked: only now is the
+                # heartbeat honest (L3). Data freshness is position_age.
+                self._touch()
+                self._check_stream(time.monotonic())
                 if position is not None:
                     seen += 1
                     self._note_position(position)
@@ -806,16 +935,108 @@ class Probe(GamepadInput, IdleInterlock, Model):
             if isinstance(line, bytes):
                 line = line.decode("utf-8", errors="ignore")
             line = line.strip()
+            if not line or line.startswith("DEV:"):
+                continue   # the handshake's answer is not a dropped packet
             if not line.startswith("POS:"):
+                self._note_dropped(line)
                 continue
             parts = line[4:].split(",")
             if len(parts) != 3:
+                self._note_dropped(line)
                 continue
             try:
                 latest = tuple(int(part) for part in parts)
             except ValueError:
-                continue   # malformed line, skip
+                self._note_dropped(line)   # malformed line, skip
+                continue
+        self._warn_dropped()
         return latest
+
+    def _note_dropped(self, line):
+        self._dropped += 1
+        events.debug("Packet Dropped", f"#{self._dropped}: {line[:80]!r}",
+                     source=self.NAME)
+
+    def _warn_dropped(self):
+        """One warning when the count has risen, at most one per
+        DROPPED_WARN_INTERVAL."""
+        if self._dropped <= self._dropped_warned:
+            return
+        now = time.monotonic()
+        if (self._dropped_warned_at is not None
+                and now - self._dropped_warned_at < self.DROPPED_WARN_INTERVAL):
+            return
+        new = self._dropped - self._dropped_warned
+        self._dropped_warned, self._dropped_warned_at = self._dropped, now
+        events.warn("Packets Dropped", f"{self.NAME} received {new} garbled "
+                    f"line(s) from its board ({self._dropped} this session). "
+                    "Check the cable if this keeps rising.", source=self.NAME)
+
+    def _check_stream(self, now):
+        """L3: a usable link with no POS line for STREAM_STALL_SECONDS is a
+        stalled stream. One warning per episode; SIM never streams."""
+        status = getattr(self.port, "status", None)
+        if status not in ("verified", "unverified"):
+            self._stream_since = None
+            self._stalled = False
+            return
+        if self._stream_since is None:
+            self._stream_since = now
+        last = max(self._position_time or 0.0, self._stream_since)
+        silent = now - last
+        if self._stalled or silent < self.STREAM_STALL_SECONDS:
+            return
+        self._stalled = True
+        events.debug("Position Stream Stalled", f"no POS line for {silent:.2f} s "
+                     f"with the link {status}", source=self.NAME)
+        events.warn("Position Stream Stalled", f"{self.NAME} has sent no "
+                    f"position for {self.STREAM_STALL_SECONDS:g} s; the link "
+                    "is up. Check the board.", source=self.NAME)
+
+    def _log_health(self):
+        """L7: one line with everything the next bench occurrence needs.
+        Never raises (it runs inside the sampler)."""
+        try:
+            pump = self._thread("gamepad")
+            sampler = self._thread("sample")
+            text = (f"mode={self.mode_name} "
+                    f"link={getattr(self.port, 'status', None)} "
+                    f"position={self._position} "
+                    f"position_age={self.position_age} "
+                    f"idle_remaining={self.idle_remaining} "
+                    f"gate_open={self._is_gate_open} "
+                    f"pad_bound={self._is_gamepad_bound} "
+                    f"sampler_alive={bool(sampler and sampler.is_alive())} "
+                    f"pump_alive={bool(pump and pump.is_alive())} "
+                    f"latched={self.is_estopped} fault={self.fault!r}")
+        except Exception as exc:
+            text = f"unavailable: {exc!r}"
+        events.debug("Health", text, source=self.NAME)
+
+    def _check_reset(self, position, previous, previous_time, now):
+        """L6: warn when the position snaps to zero while enabled. Warning
+        only: the mode is not touched (a false positive mid-move would be a
+        stop the operator did not ask for)."""
+        if (tuple(position) != (0, 0, 0) or previous_time is None
+                or self._mode is ProbeMode.DISABLED
+                or now - previous_time > self.RESET_WINDOW
+                or max(abs(v) for v in previous) <= self.RESET_JUMP_COUNTS):
+            return
+        events.debug("Board Reset Suspected", f"{previous} -> (0, 0, 0) in "
+                     f"{(now - previous_time) * 1000:.0f} ms in mode "
+                     f"{self._mode.value}", source=self.NAME)
+        events.warn(events.BOARD_RESET_SUSPECTED, f"{self.NAME}'s position "
+                    "snapped to zero while enabled; the board may have reset "
+                    "and its drivers are off. Leave the mode and enter it "
+                    "again.", source=self.NAME, ack=True)
+
+    def _link_stream_state(self):
+        return {"dropped": int(self._dropped), "stalls": int(self._stalls),
+                "stalled": bool(self._stalled)}
+
+    @property
+    def dropped(self):
+        return self._dropped
 
     def _note_position(self, position):
         """Record one sample, and the velocity between it and the last one.
@@ -827,6 +1048,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         now = time.monotonic()
         previous, previous_time = self._position, self._position_time
         moved = position != previous
+        self._check_reset(position, previous, previous_time, now)
         if previous_time is not None and now > previous_time:
             span = now - previous_time
             self._velocity = tuple(
@@ -835,6 +1057,13 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._position_time = now
         self._samples_seen += 1
         self._touch()
+        if self._stalled:
+            self._stalled = False
+            self._stalls += 1
+            events.debug("Position Stream Resumed", f"stall #{self._stalls} "
+                         f"ended at {position}", source=self.NAME)
+            events.info("Position Stream Resumed", f"{self.NAME} is sending "
+                        "its position again.", source=self.NAME)
         if moved:
             # Motion *is* activity, so a long move does not age into the idle
             # interlock; arrival starts the idle clock.
@@ -1055,9 +1284,11 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # are validated as a set. **Not** gated on "autonomous": a
                 # second step while already AUTO is the normal way to work
                 # (DC-6, review finding 5). `is_moving` is what refuses.
+                # L8 (SF-1): greyed in fault as well; `_set_mode` refuses it.
                 sch.button("Step", "step",
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed"),
-                           role="go", disabled_when=("manual", "latched")),
+                           role="go", disabled_when=("manual", "latched",
+                                                     "fault")),
                 # Declared so `run("extend_idle")` passes the allow-list; it
                 # renders nothing. The views draw the countdown and its
                 # Extend from `idle_remaining` in state (Tier N).

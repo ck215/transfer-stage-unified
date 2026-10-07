@@ -379,6 +379,9 @@ def test_a_probe_jogs_again_after_a_failed_jog_write_and_manual_reentry():
         probe.set_mode("manual")
         assert _wait_for(lambda: probe.mode is ProbeMode.FAULT), probe.mode
         port.fail_on = None
+        # L8 (SF-1, 2026-10-07): no mode entry out of an unconfirmed disable;
+        # after a failed jog write the operator stops first, then re-enters Manual.
+        probe.disable()
         probe.set_mode("manual")
         before = len(port.writes)
         assert _wait_for(lambda: sum(1 for w in port.writes[before:]

@@ -6,7 +6,7 @@ The look is "Signature" (owner ruling 2026-09-27, on the "Bench sheet,
 tiered" layout of 2026-09-25): a light mineral faceplate on which every
 raised part is one family - a face, a `KEY_RIM` outline and a `KEY_LIP`
 below it - and the stop is a red key in an ink collar. Spec:
-`handoff/tactile3-Signature.md`; the ratified rules:
+`docs/archive/handoff/tactile3-Signature.md`; the ratified rules:
 `docs/rebuild/DESIGN_BRIEF.md`, "Signature".
 """
 

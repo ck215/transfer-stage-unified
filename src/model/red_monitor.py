@@ -41,14 +41,22 @@ The load-bearing repairs carried over from `legacy/src/model/redpercent_system.p
   `on_model_added`/`on_model_removed`, so a torn-down probe cannot go on
   supplying its last position forever.
 
-And the owner's ruling of 2026-09-21, which replaces the old fixed ~60 FPS
-change-triggered loop: sample as fast as the grab allows. `sample_mode`
-defaults to `every_frame` — a row per captured frame, no sleep, only a
-zero-wait check of the stop event.
+And the owner's ruling of 2026-09-21 ("sample as fast as the grab allows",
+which replaced the old fixed ~60 FPS loop), as amended 2026-10-07 (CAP-1):
+sample SETTLED frames at the source's own rate. The bench showed why: AmLite
+repaints its camera image at ~7 fps, and a loop grabbing at kHz caught the
+repaints part-way (a black fill, an older cached picture, a frame painted only
+at the top) in about half of every profile, and the video flashed. A sample is
+now two reads at least `SETTLE_S` apart that agree; a black fill or the
+remembered stale picture is refused even when it holds still; the loop paces
+itself at about `SOURCE_OVERSAMPLE` samples per measured source frame, between
+`MIN_SAMPLE_INTERVAL_S` and `MAX_SAMPLE_INTERVAL_S`. A rejected read reaches
+nothing but a counter: not the red %, not a row, not a frame subscriber.
 """
 import csv
 import json
 import os
+import statistics
 import threading
 import time
 from pathlib import Path
@@ -194,6 +202,25 @@ class MonitorRun:
         self._interval_count = 0
         self.max_frame_interval = 0.0
 
+        #: CAP-1: what the settle gate did with every read. Counters only: a
+        #: rejected read reaches nothing else. `frames` is the accepted count.
+        self.grabs = 0
+        self.rejected_black = 0
+        self.rejected_stale = 0
+        self.rejected_unsettled = 0
+        #: The gate's memory, the run thread's alone: the last accepted
+        #: picture and its red percent, the one remembered stale picture, the
+        #: reads since then that no second read confirmed, and the intervals
+        #: between successive distinct accepted pictures (the source's frame
+        #: period, as measured; a tuple, replaced whole, so a poller reading
+        #: `source_rate_hz` never sees it change under it).
+        self.accepted_pixels = None
+        self.accepted_red = None
+        self.stale_pixels = None
+        self.unconfirmed = []
+        self.source_intervals = ()
+        self.last_change_at = None
+
     @property
     def is_active(self):
         """True from creation until ended or failed. The one thing
@@ -210,6 +237,23 @@ class MonitorRun:
     def frame_rate(self):
         mean = self.mean_frame_interval
         return 1.0 / mean if mean > 0 else 0.0
+
+    @property
+    def accepted(self):
+        """Samples the settle gate let through: `frames`, by the name the
+        Diagnostics counters use."""
+        return self.frames
+
+    @property
+    def source_rate_hz(self):
+        """The source's frame rate as measured: one over the median interval
+        between successive distinct accepted pictures; 0.0 until there is
+        one."""
+        intervals = self.source_intervals
+        if not intervals:
+            return 0.0
+        median = statistics.median(intervals)
+        return 1.0 / median if median > 0 else 0.0
 
     def note_frame(self, interval):
         self.frames += 1
@@ -254,8 +298,55 @@ class RedMonitor(Model):
     GREEN_MAX = 100
     BLUE_MAX = 100
     #: One sampling mode: a row when the red percentage changes (owner ruling
-    #: 2026-09-22). The loop still grabs as fast as it can.
+    #: 2026-09-22). Since 2026-10-07 the loop samples settled frames at about
+    #: the source's rate (CAP-1, below), not as fast as it can grab.
     SAMPLE_MODE = "change"
+
+    # -- CAP-1: the settle gate and the rate cap (owner ruling 2026-10-07) --
+    #: A sample is two reads of the region at least this far apart (from the
+    #: end of one to the start of the next) that show the same picture. The
+    #: bench's repaint (black fill -> an older cached picture -> live) runs
+    #: its course in 2-6 ms, so two reads 5 ms apart do not both land in one
+    #: state of it; a read the next one disagrees with is discarded, and the
+    #: next is checked against its own successor.
+    SETTLE_S = 0.005
+    #: "The same picture": at most this fraction of the pixels differ. It is
+    #: half of CHANGE_STEP as a fraction, so two reads that pass measure
+    #: within 0.05 points of red % of each other and can never fall either
+    #: side of a logged row, while every transient the bench showed (a black
+    #: fill, the stale picture, a part-painted frame) differs in most of its
+    #: pixels. A still picture reads back byte-equal; the slack is for a
+    #: cursor-sized overlay animating inside the region, which would
+    #: otherwise keep the gate shut for good.
+    SETTLE_TOLERANCE = 0.0005
+    #: Reads one sample may take before it is given up until the next tick:
+    #: five settle gaps, several times the bench's whole repaint. A viewer
+    #: still not holding still by then is not re-read at once.
+    SETTLE_READS = 6
+    #: A settled picture with every channel at or below this (of 255) is a
+    #: dark fill, not a lit microscope field (the bench scene sits near 140):
+    #: refused when it has no red and the last accepted picture had some. An
+    #: all-zero picture is refused always.
+    DARK_LEVEL = 32
+    #: The rate cap. One sample starts SOURCE_OVERSAMPLE times per frame of
+    #: the source, its period measured as the median interval between the
+    #: last SOURCE_WINDOW distinct accepted pictures: two a frame lands a
+    #: sample inside every frame the viewer shows, and any more only reads
+    #: the same picture again, or catches its repaint.
+    SOURCE_OVERSAMPLE = 2.0
+    SOURCE_WINDOW = 9
+    #: The floor under the interval: never more than 60 samples a second,
+    #: whatever is measured. A display refreshes at 60 Hz, so a faster read
+    #: sees what the last one saw or a repaint in progress; this is what
+    #: keeps a flickering or mis-measured viewer from being spun on.
+    MIN_SAMPLE_INTERVAL_S = 1.0 / 60.0
+    #: The ceiling over it: never fewer than 15 samples a second. Used until
+    #: a source rate is measured and while the picture is not changing (a
+    #: stalled viewer, a long static hover), so that one is read at this
+    #: steady rate rather than spun on, and a picture that moves again is
+    #: seen within 67 ms. It is also the Transfer Map's video rate
+    #: (VIDEO_FPS). The bench's AmLite, at 7.1 fps, is sampled here.
+    MAX_SAMPLE_INTERVAL_S = 1.0 / 15.0
 
     #: The change `sample_mode="change"` triggers on, in percentage points.
     CHANGE_STEP = 0.1
@@ -294,6 +385,12 @@ class RedMonitor(Model):
                   label="Position Age"),
             Param("rows_written", "int", default=0, label="Rows"),
             Param("frames_captured", "int", default=0, label="Frames"),
+            # CAP-1: the settle gate's counters (Diagnostics).
+            Param("frames_accepted", "int", default=0, label="Accepted"),
+            Param("rejected_black", "int", default=0, label="Rejected black"),
+            Param("rejected_stale", "int", default=0, label="Rejected stale"),
+            Param("rejected_unsettled", "int", default=0,
+                  label="Rejected unsettled"),
         )
     }
 
@@ -317,8 +414,9 @@ class RedMonitor(Model):
         #: without a lock and never sees a list change under it.
         self._subscribers = ()
         #: V3 (2026-09-28): callables fed `(t_s, frame, red)` for every frame
-        #: the loop grabs and measures (the Transfer Map's video). Same
-        #: discipline: a tuple, replaced whole, read without a lock.
+        #: the loop accepts and measures (the Transfer Map's video; never a
+        #: rejected read, CAP-1). Same discipline: a tuple, replaced whole,
+        #: read without a lock.
         self._frame_subscribers = ()
         self._sources = {}
         self._source = None
@@ -435,6 +533,33 @@ class RedMonitor(Model):
     def frames_captured(self):
         run = self._run
         return run.frames if run is not None else 0
+
+    # -- CAP-1: the settle gate's counters, for Diagnostics ----------------
+    def _run_count(self, name):
+        run = self._run
+        return getattr(run, name) if run is not None else 0
+
+    @property
+    def frames_accepted(self):
+        return self._run_count("frames")
+
+    @property
+    def rejected_black(self):
+        return self._run_count("rejected_black")
+
+    @property
+    def rejected_stale(self):
+        return self._run_count("rejected_stale")
+
+    @property
+    def rejected_unsettled(self):
+        return self._run_count("rejected_unsettled")
+
+    @property
+    def source_rate_hz(self):
+        """The source's frame rate as the run measured it, or 0.0."""
+        run = self._run
+        return round(run.source_rate_hz, 1) if run is not None else 0.0
 
     @property
     def position_age(self):
@@ -753,6 +878,13 @@ class RedMonitor(Model):
         attributes, so a second run cannot alias state with this one
         (REDPERCENT-1, REDPERCENT-3).
 
+        One sample per tick (CAP-1): `_settled_read` reads until two reads
+        agree, `_judge` refuses a black fill or the stale picture, and only
+        then is the frame measured, published, logged and forwarded. The
+        next tick is `_sample_interval` after this one started. Every wait is
+        the run's stop event, so a stop never waits on the pacing or on a
+        re-read.
+
         The whole body is wrapped: any failure is recorded on `run.failure`
         (which is what makes `is_running` read False afterwards) and reported
         once. The old loop had no handler at all, so a failure left the UI
@@ -760,7 +892,7 @@ class RedMonitor(Model):
         """
         screen, region, axes = self.screen, run.region, run.axes
         stop, threshold = run.stop_event, run.red_threshold
-        mode, interval = run.sample_mode, run.sample_interval_s
+        mode = run.sample_mode
         # Reused every frame: `RunLog.add` reads them and keeps nothing, so
         # the hot path allocates no dictionary per sample.
         positions = {axis: None for axis in axes}
@@ -768,60 +900,92 @@ class RedMonitor(Model):
         previous_frame = None
 
         events.debug("Run Loop", f"started: mode={mode} axes={axes or 'none'} "
-                     f"threshold={threshold}", source=self.NAME)
-        # The one thread that grabs flat out keeps its capture handle; every
-        # other grab opens and closes its own (`Screen`, 2026-09-28).
+                     f"threshold={threshold} settle={self.SETTLE_S * 1000:.0f} ms "
+                     f"x{self.SETTLE_READS}, interval "
+                     f"{self.MIN_SAMPLE_INTERVAL_S * 1000:.1f}-"
+                     f"{self.MAX_SAMPLE_INTERVAL_S * 1000:.1f} ms",
+                     source=self.NAME)
+        # The one thread that grabs continuously keeps its capture handle;
+        # every other grab opens and closes its own (`Screen`, 2026-09-28).
         keep = getattr(screen, "keep_handle", None)
         if callable(keep):
             keep()
         try:
+            due = time.monotonic()
             while not stop.is_set():
-                frame = screen.grab(region)
-                if frame is None:
+                wait = due - time.monotonic()
+                if wait > 0 and stop.wait(wait):
+                    break
+                started = time.monotonic()
+                outcome, frame, pixels = self._settled_read(run, screen, region,
+                                                            stop)
+                if outcome == "stopped":
+                    break
+                if outcome == "failed":
                     run.grab_failures += 1
                     events.debug("Grab Returned Nothing",
                                  f"{run.grab_failures} so far this run",
                                  source=self.NAME, every=1.0)
                     if stop.wait(0.05):
                         break
-                    previous_frame = None   # the gap across a failure is not
-                    continue                # a frame interval worth averaging
+                    # The gap across a failure is not a frame interval worth
+                    # averaging, nor a source interval worth measuring.
+                    previous_frame = None
+                    run.last_change_at = None
+                    due = time.monotonic()
+                    continue
+                due = started + self._sample_interval(run)
 
-                now = time.monotonic()
-                run.note_frame(None if previous_frame is None
-                               else now - previous_frame)
-                previous_frame = now
+                verdict, red = ("unsettled", None)
+                if outcome == "settled":
+                    verdict, red = self._judge(run, frame, pixels, threshold)
+                if verdict == "black":
+                    run.rejected_black += 1
+                elif verdict == "stale":
+                    run.rejected_stale += 1
+                elif verdict == "live":
+                    now = time.monotonic()
+                    self._remember(run, pixels, now)
+                    run.note_frame(None if previous_frame is None
+                                   else now - previous_frame)
+                    previous_frame = now
 
-                red = self._measure_red(frame, threshold)
-                if run.baseline_red is None:
-                    run.baseline_red = red
-                    self.baseline_red = red
-                    events.info("Baseline Set", f"{red:.2f}% at run start",
-                                source=self.NAME)
-                self._publish_red(red)
-                frame_subscribers = self._frame_subscribers
-                if frame_subscribers:
-                    self._notify_frames(frame_subscribers,
-                                        now - run.started_monotonic, frame, red)
+                    if red is None:
+                        red = self._measure_red(frame, threshold)
+                    run.accepted_red = red
+                    if run.baseline_red is None:
+                        run.baseline_red = red
+                        self.baseline_red = red
+                        events.info("Baseline Set", f"{red:.2f}% at run start",
+                                    source=self.NAME)
+                    self._publish_red(red)
+                    frame_subscribers = self._frame_subscribers
+                    if frame_subscribers:
+                        self._notify_frames(frame_subscribers,
+                                            now - run.started_monotonic, frame,
+                                            red)
 
-                if self._wants_row(run, red):
-                    run.last_logged_red = round(red, 1)
-                    age = self._read_position(run, axes, positions, velocities)
-                    run.log.add(now - run.started_monotonic, red, positions,
-                                velocities, age)
-                    run.rows += 1
-                    subscribers = self._subscribers
-                    if subscribers:
-                        self._notify(subscribers, now - run.started_monotonic,
-                                     red, positions)
+                    if self._wants_row(run, red):
+                        run.last_logged_red = round(red, 1)
+                        age = self._read_position(run, axes, positions,
+                                                  velocities)
+                        run.log.add(now - run.started_monotonic, red, positions,
+                                    velocities, age)
+                        run.rows += 1
+                        subscribers = self._subscribers
+                        if subscribers:
+                            self._notify(subscribers,
+                                         now - run.started_monotonic, red,
+                                         positions)
 
                 events.debug("Rate", f"{run.frames} frames, {run.rows} rows, "
-                             f"{run.frame_rate:.1f} Hz, "
-                             f"max gap {run.max_frame_interval * 1000:.1f} ms",
+                             f"{run.frame_rate:.1f} Hz (source "
+                             f"{run.source_rate_hz:.1f} Hz), "
+                             f"max gap {run.max_frame_interval * 1000:.1f} ms; "
+                             f"{run.grabs} reads, rejected "
+                             f"{run.rejected_black} black, {run.rejected_stale} "
+                             f"stale, {run.rejected_unsettled} unsettled",
                              source=self.NAME, every=1.0)
-
-                if mode == "fixed" and stop.wait(interval):
-                    break
         except Exception as exc:
             run.failure = exc
             events.debug("Red Percent Run Failed", f"{run.run_id}: {exc!r}",
@@ -837,7 +1001,131 @@ class RedMonitor(Model):
             run.end()
             events.debug("Run Loop", f"exited after {run.frames} frame(s), "
                          f"{run.rows} row(s), {run.grab_failures} grab "
-                         f"failure(s)", source=self.NAME)
+                         f"failure(s); {run.grabs} reads, rejected "
+                         f"{run.rejected_black} black, {run.rejected_stale} "
+                         f"stale, {run.rejected_unsettled} unsettled",
+                         source=self.NAME)
+
+    # -- CAP-1: the settle gate --------------------------------------------
+    def _settled_read(self, run, screen, region, stop):
+        """Read the region until two reads at least SETTLE_S apart show the
+        same picture, at most SETTLE_READS reads. Returns `(outcome, frame,
+        pixels)`: "settled" with the newer of the two reads; "unsettled" when
+        the reads ran out first; "failed" for a grab that returned nothing;
+        "stopped" when the stop landed in a settle wait.
+
+        A read no second read confirmed is counted and kept for the stale
+        bookkeeping (`_remember`), and goes nowhere else. Each wait is the
+        run's stop event: a stop never waits on a re-read, and no read
+        starts after one."""
+        pending, have = None, False
+        for _ in range(self.SETTLE_READS):
+            if have and stop.wait(self.SETTLE_S):
+                return "stopped", None, None
+            frame = screen.grab(region)
+            if frame is None:
+                if have:
+                    self._unconfirmed(run, pending)
+                return "failed", None, None
+            run.grabs += 1
+            pixels = self._pixels(frame)
+            if have and self._same_picture(pending, pixels):
+                return "settled", frame, pixels
+            if have:
+                self._unconfirmed(run, pending)
+            pending, have = pixels, True
+        self._unconfirmed(run, pending)
+        return "unsettled", None, None
+
+    def _unconfirmed(self, run, pixels):
+        run.rejected_unsettled += 1
+        if pixels is not None:
+            run.unconfirmed.append(pixels)
+            del run.unconfirmed[:-self.SETTLE_READS]
+
+    def _judge(self, run, frame, pixels, threshold):
+        """A settled picture's verdict and, when the verdict needed it, its
+        red percent (else None): "black" for an all-zero fill, or for a dark
+        fill with no red after a picture that had some; "stale" for the
+        remembered stale picture; "live" for anything else."""
+        if not pixels.any():
+            return "black", 0.0
+        red = None
+        if run.accepted_red and int(pixels.max()) <= self.DARK_LEVEL:
+            red = self._measure_red(frame, threshold)
+            if red == 0.0:
+                return "black", red
+        if self._same_picture(run.stale_pixels, pixels):
+            return "stale", red
+        return "live", red
+
+    def _remember(self, run, pixels, now):
+        """Book an accepted picture. The stale picture becomes the most recent
+        one this settled picture contradicts: the latest unconfirmed read
+        since the last accepted sample that differs from it (all-zero fills
+        aside: they are refused on sight anyway), else the last accepted
+        picture when this one replaces it. One is kept. A change of picture
+        is also one interval of the source's measured frame period."""
+        previous = run.accepted_pixels
+        changed = not self._same_picture(previous, pixels)
+        stale = previous if changed else None
+        for read in reversed(run.unconfirmed):
+            if read.any() and not self._same_picture(read, pixels):
+                stale = read
+                break
+        if stale is not None:
+            run.stale_pixels = stale
+        run.unconfirmed = []
+        run.accepted_pixels = pixels
+        if changed:
+            if run.last_change_at is not None:
+                run.source_intervals = (*run.source_intervals,
+                                        now - run.last_change_at
+                                        )[-self.SOURCE_WINDOW:]
+            run.last_change_at = now
+
+    def _sample_interval(self, run):
+        """Seconds from one sample's start to the next: SOURCE_OVERSAMPLE
+        samples per measured source frame, held between the floor and the
+        ceiling; the ceiling until a source rate is measured. "fixed" mode
+        (no longer offered) keeps its own interval, floored."""
+        if run.sample_mode == "fixed":
+            return max(run.sample_interval_s, self.MIN_SAMPLE_INTERVAL_S)
+        intervals = run.source_intervals
+        if not intervals:
+            return self.MAX_SAMPLE_INTERVAL_S
+        period = statistics.median(intervals) / self.SOURCE_OVERSAMPLE
+        return min(self.MAX_SAMPLE_INTERVAL_S,
+                   max(self.MIN_SAMPLE_INTERVAL_S, period))
+
+    def _same_picture(self, a, b):
+        """Two reads show the same picture: equal shape, and at most
+        SETTLE_TOLERANCE of the pixels differ in any colour channel."""
+        if a is None or b is None or a.shape != b.shape:
+            return False
+        if numpy.array_equal(a, b):
+            return True
+        allowed = self.SETTLE_TOLERANCE * a.shape[0] * a.shape[1]
+        return (allowed >= 1
+                and numpy.count_nonzero((a != b).any(axis=2)) <= allowed)
+
+    @staticmethod
+    def _pixels(frame):
+        """A frame's colour planes as one `(height, width, 3)` uint8 array, a
+        view with no copy, in the frame's own channel order; for comparing
+        reads. The fourth byte of a BGRA grab is left out: mss does not
+        promise what it holds. None for anything that is not a frame."""
+        buffer = getattr(frame, "bgra", None)
+        if buffer is not None:
+            height = getattr(frame, "height", None)
+            width = getattr(frame, "width", None)
+            if height is None or width is None:
+                width, height = frame.size
+            pixels = numpy.frombuffer(buffer, dtype=numpy.uint8)
+            return pixels.reshape(int(height), int(width), 4)[:, :, :3]
+        if isinstance(frame, numpy.ndarray) and frame.ndim == 3:
+            return frame[:, :, :3]
+        return None
 
     # -- MAP-2: what another model may read (additive; nothing above changes)
     def subscribe(self, fn):
@@ -852,9 +1140,11 @@ class RedMonitor(Model):
         self._subscribers = tuple(s for s in self._subscribers if s != fn)
 
     def subscribe_frames(self, fn):
-        """Call `fn(t_s, frame, red)` for every frame the run loop grabs from
-        now on, on the run thread: the frame it measured (as the screen
-        returned it: an mss screenshot, or an array), and its red percent.
+        """Call `fn(t_s, frame, red)` for every frame the run loop accepts
+        from now on, on the run thread: the settled frame it measured (as the
+        screen returned it: an mss screenshot, or an array), and its red
+        percent. A rejected read (unsettled, black, stale; CAP-1) is never
+        offered.
         `fn` must return at once (hand the frame to a queue; never convert
         or encode here): the loop's rate is the measurement's. One that
         raises is logged and skipped, never allowed to end the run."""
@@ -1082,6 +1372,12 @@ class RedMonitor(Model):
                 "mean_frame_interval_s": round(run.mean_frame_interval, 6),
                 "max_frame_interval_s": round(run.max_frame_interval, 6),
                 "achieved_rate_hz": round(run.frame_rate, 3),
+                "grabs": run.grabs,
+                "rejected_black": run.rejected_black,
+                "rejected_stale": run.rejected_stale,
+                "rejected_unsettled": run.rejected_unsettled,
+                "source_rate_hz": round(run.source_rate_hz, 3),
+                "settle_gate": self._settle_gate(),
                 "duration_s": round(run.duration_s or
                                     (time.monotonic() - run.started_monotonic), 3),
                 "started_at": run.started_at,
@@ -1105,11 +1401,28 @@ class RedMonitor(Model):
             "mean_frame_interval_s": 0.0,
             "max_frame_interval_s": 0.0,
             "achieved_rate_hz": 0.0,
+            "grabs": 0,
+            "rejected_black": 0,
+            "rejected_stale": 0,
+            "rejected_unsettled": 0,
+            "source_rate_hz": 0.0,
+            "settle_gate": self._settle_gate(),
             "duration_s": 0.0,
             "started_at": None,
             "stopped_at": None,
             "annotations": self.annotations,
         }
+
+    def _settle_gate(self):
+        """The CAP-1 constants a run was sampled under: two runs taken under
+        different ones are not comparable sample for sample."""
+        return {"settle_s": self.SETTLE_S,
+                "settle_tolerance": self.SETTLE_TOLERANCE,
+                "settle_reads": self.SETTLE_READS,
+                "dark_level": self.DARK_LEVEL,
+                "source_oversample": self.SOURCE_OVERSAMPLE,
+                "min_sample_interval_s": round(self.MIN_SAMPLE_INTERVAL_S, 6),
+                "max_sample_interval_s": round(self.MAX_SAMPLE_INTERVAL_S, 6)}
 
     def save(self):
         """Write this run's artifacts under `output_root` and report where.
@@ -1309,6 +1622,13 @@ class RedMonitor(Model):
             "rows": self.rows_written,
             "frames": self.frames_captured,
             "rate_hz": self.frame_rate,
+            # CAP-1: what the settle gate threw away, and the source's rate.
+            "accepted": self.frames_accepted,
+            "grabs": self._run_count("grabs"),
+            "rejected_black": self.rejected_black,
+            "rejected_stale": self.rejected_stale,
+            "rejected_unsettled": self.rejected_unsettled,
+            "source_rate_hz": self.source_rate_hz,
             "has_unsaved_data": self.has_unsaved_data,
             "output_root": str(self.output_root),
             "run_dir": str(self.run_dir),
@@ -1432,6 +1752,16 @@ class RedMonitor(Model):
                 "Diagnostics",
                 sch.readonly("Position Age:", "position_age",
                              param=P["position_age"]),
+                # CAP-1: what the settle gate let through and threw away, so
+                # the bench can see the viewer's repaint transients.
+                sch.readonly("Accepted:", "frames_accepted",
+                             param=P["frames_accepted"]),
+                sch.readonly("Rejected black:", "rejected_black",
+                             param=P["rejected_black"]),
+                sch.readonly("Rejected stale:", "rejected_stale",
+                             param=P["rejected_stale"]),
+                sch.readonly("Rejected unsettled:", "rejected_unsettled",
+                             param=P["rejected_unsettled"]),
                 tier=3, disclosure="Diagnostics",
             ),
             self._safety_section(),

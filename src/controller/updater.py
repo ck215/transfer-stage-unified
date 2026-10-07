@@ -33,13 +33,20 @@ repository's GitHub Releases instead:
               `<install>.previous`, `<install>.next` -> `<install>`. A failed
               swap puts `.previous` back.
 
-The repository is private and only machines already signed in to GitHub
-update (owner ruling 2026-09-28: no token file). The login is the machine's
-own: `gh auth token`, else `git credential fill` (the helper a browser or
-keychain sign-in filled). It is held in memory for one call, sent only as
-the Authorization header to api.github.com, and never written or logged.
-A bundle without `release.json` (an unstamped local build) keeps the old
-answer, `bundle`.
+The repository is public (owner decision 5, 2026-09-30), so a machine with
+no GitHub sign-in checks and downloads anonymously. A machine that is signed
+in sends its login (owner ruling 2026-09-28: no token file; GitHub gives a
+login a higher rate limit): `gh auth token`, else `git credential fill` (the
+helper a browser or keychain sign-in filled). It is held in memory for one
+call, sent only as the Authorization header to api.github.com, and never
+written or logged. `/releases/latest` answering 404 means no release has
+been published yet. A bundle without `release.json` (an unstamped local
+build) keeps the old answer, `bundle`.
+
+An update never touches anything outside the install folder: the swap moves
+`<install>`, `<install>.next` and `<install>.previous`, nothing else. The
+Transfer Map's store is chosen outside it (and refused inside it) for that
+reason.
 """
 import hashlib
 import json
@@ -70,9 +77,9 @@ LOCAL_SECONDS = 15
 
 UP_TO_DATE, BEHIND, DIVERGED, DIRTY = "up_to_date", "behind", "diverged", "dirty"
 OFFLINE, NOT_GIT, BUNDLE, ERROR = "offline", "not_git", "bundle", "error"
-UNAUTHORISED = "unauthorised"
+UNAUTHORISED, NO_RELEASE = "unauthorised", "no_release"
 STATUSES = (UP_TO_DATE, BEHIND, DIVERGED, DIRTY, OFFLINE, NOT_GIT, BUNDLE, ERROR,
-            UNAUTHORISED)
+            UNAUTHORISED, NO_RELEASE)
 
 #: What a stamped bundle carries beside its launchers (`packaging/release.py`).
 VERSION_FILE, RELEASE_FILE = "VERSION", "release.json"
@@ -103,9 +110,9 @@ REASONS = {
             "a new bundle.",
     UNAUTHORISED: "Sign in to GitHub on this machine first: `gh auth login`, "
                   "or open the repository once with git.",
+    NO_RELEASE: "No release has been published yet.",
 }
-#: GitHub answered, but not to this login (401, or 404: a private repository
-#: is invisible to an account that cannot read it).
+#: GitHub answered 401: it did not take the login this machine sent.
 REFUSED_LOGIN = ("GitHub did not accept this machine's sign-in for the "
                  "station's repository (HTTP {code}). Sign in with an account "
                  "that can read it: `gh auth login`.")
@@ -320,15 +327,15 @@ class Updater:
         """-> (result, release or None, login or None)."""
         result.update(tag=stamp["tag"], head=stamp["tag"], latest=None, title="",
                       asset=asset_name(info))
-        login = self._login()
-        if login is None:
-            return _as(result, UNAUTHORISED), None, None
+        login = self._login()           # None: ask anonymously (a public repo)
         url = f"{API}/repos/{info['owner']}/{info['repo']}/releases/latest"
         try:
             code, body = self._fetch(url, headers=_headers(login), timeout=timeout)
         except (OSError, ValueError):       # URLError, timeouts, resets: all OSError
             return _as(result, OFFLINE), None, None
-        if code in (401, 404):
+        if code == 404:
+            return _as(result, NO_RELEASE), None, None
+        if code == 401 and login is not None:
             result["status"] = UNAUTHORISED
             result["reason"] = REFUSED_LOGIN.format(code=code)
             return result, None, None
@@ -504,10 +511,13 @@ def asset_name(info, system=None, machine=None):
 
 
 def _headers(login):
-    return {"Authorization": f"Bearer {login}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "transfer-stage-station"}
+    """GitHub's headers; Authorization only when this machine has a login."""
+    headers = {"Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28",
+               "User-Agent": "transfer-stage-station"}
+    if login:
+        headers["Authorization"] = f"Bearer {login}"
+    return headers
 
 
 def _request(url, headers):
@@ -736,6 +746,10 @@ def swap_script(install, pid, argv, tries=120):
         f"ren {_cmd_quote(staged)} {_cmd_quote(name)} || "
         f"(ren {_cmd_quote(previous)} {_cmd_quote(name)} & goto start)",
         ":start",
+        # A swap that failed leaves the marker in the old install: it goes
+        # before the start, or the next start would try the swap again.
+        f'if exist {_cmd_quote(folder + chr(92) + PENDING_FILE)} '
+        f'del /q {_cmd_quote(folder + chr(92) + PENDING_FILE)}',
         f'start "" {command}',
         '(goto) 2>NUL & del "%~f0"',
         ""])

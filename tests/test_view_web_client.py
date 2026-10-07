@@ -148,7 +148,11 @@ def test_entries_are_not_overwritten_while_they_are_being_typed_in():
 def test_gating_covers_every_element_including_entries():
     refresh = _body(r"\n  refresh\(state\) \{(.*?)\n  \}")
     # G3: the panel's values go with the mode, for `enabled_by`.
-    assert "widget.setEnabled(isEnabled(element, mode, this.values))" in refresh, (
+    # Updated (rb-link-views V4): a link lost or reconnecting also holds the
+    # modes and go commands, so the call is the gate AND not held - still
+    # one call, on every widget in the loop.
+    assert ("widget.setEnabled(isEnabled(element, mode, this.values) && !held)"
+            in refresh), (
         "gating must be applied to every widget in the loop, not to the "
         "buttons the renderer happens to remember")
     # the rule itself, not a second opinion about it

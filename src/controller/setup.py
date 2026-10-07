@@ -35,10 +35,13 @@ Setup is the one place besides the models allowed to import
 """
 import os
 import re
+import subprocess
 import threading
 import time
+from pathlib import Path
 
 import schema as sch
+from controller import flashing, user_config
 from controller.firmware import FirmwareCheck
 from controller.updater import Updater
 from devices import gamepad as gamepad_module
@@ -221,302 +224,29 @@ for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
     register(_built_in)
 del _built_in
 
+# A3: the Transfer Map remembers the operator's store choice in the one
+# choices file. Wired here, at the composition root: `model/` never imports
+# the controller.
+TransferMap.choices = user_config
 
-class Setup(Panel):
-    """The setup panel. Scans ports and gamepads, validates an assignment,
-    constructs Models into the Controller.
 
-    Absorbs: <app_bootstrap>, <model.devices>, WebModelAdapter
+#: `Setup(stable_root=...)`'s "find it yourself" (None means "there is none").
+_UNSET = object()
 
-    MUST SATISFY:
-    [CARRY] ONE setup for three views, with autodetection preserved: port
-    scan, handshake identity byte, gamepad list. Scan runs off the UI thread
-    with progress and can be cancelled. Build is all-or-nothing with
-    rollback. The identity byte is checked against the model class. SIM
-    works for every model. A disabled row builds nothing. Probing errors are
-    reported, not swallowed. CLI args are strict.  (MANAGER-5, MANAGER-6,
-    MANAGER-12, MANAGER-14, MANAGER-18, MANAGER-20, SERIAL-6, SERIAL-7,
-    SERIAL-9, SERIAL-17, WEB-4, WEB-15, WEB-16, DC-12, DC-14, REDPERCENT-15,
-    VIEW-TKINTER-7)
-    """
+
+class PortProbe:
+    """Setup's port listing and identity handshake, without the panel: the
+    one way a port is identified in this codebase. `Setup` is one; so is
+    what `controller.flashing` uses to find the boards it flashes (the old
+    flash script imported `legacy/src`'s copy and skipped every COM port,
+    OP-12). Holds no port open between calls."""
 
     NAME = "Setup"
-    #: `Setup.register(cls)`: the module's `register`, see there.
-    register = staticmethod(register)
-    #: `mode_name`, which is what `enabled_when` / `disabled_when` match.
-    READY, SCANNING, LAUNCHED = "ready", "scanning", "launched"
-    #: `state["scan"]["phase"]`: what the worker is doing right now, for a
-    #: view that wants to show more than the status line.
-    IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
-        "idle", "listing", "identifying", "done", "cancelled")
 
-    def __init__(self, controller, updater=None, firmware=None, restart=None):
-        """`firmware` (rb-launch L2) checks and flashes the boards; `restart`
-        (rb-restart R3) replaces this process with a fresh one
-        (`app.restart_process`); None means this station cannot restart
-        itself, and `restart_station` says so."""
+    def __init__(self):
         super().__init__()
-        self.controller = controller
-        self._restart = restart
-        # User-system Phase 1: local profiles. Setup is the composition root,
-        # the one place the service is built (section 5.4).
-        self.profiles = profiles_module.ProfileService(
-            profiles_module.LocalFilesSource(profiles_module.profiles_root()),
-            lambda name: getattr(MODEL_TYPES.get(name), "PARAMS", {}))
-        self._profile_pick = profiles_module.STATION_DISPLAY
-        self._rows = self._build_rows()
-        self._schema = self._build_schema()
-        self._lock = threading.RLock()
-        self._scan_thread = None
-        self._abort = threading.Event()
-        self._ports = []
-        self._gamepads = ["None"]
-        self._found = {}            # port -> model name the handshake gave
-        self._chosen = set()        # rows the operator set by hand
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
-        self._is_launched = False
-        self._restart_thread = None     # Refresh's "then scan again" helper
-        self._scan_started = None       # monotonic, for the elapsed seconds
-        self._scan_port = None          # the port being probed right now
-        self._port_started = None
-        self.scan_phase = self.IDLE
-        self.scan_status = "not scanned yet"
-        self.scan_progress = 0
-        self._selected = "nothing selected"
-        for key, row in self._rows.items():
-            setattr(self, f"{key}_name", row["name"])
-            # Unticked until a board answers or the operator ticks it. The
-            # dropdown always holds a launchable choice, so ticking a row
-            # needs no second step: SIM for a port row, On for the screen.
-            setattr(self, f"{key}_enabled", False)
-            setattr(self, f"{key}_port", SIM if row["needs_port"] else ON)
-            setattr(self, f"{key}_gamepad", "None")
-            for field, kind, _, _ in row["columns"]:
-                if field != "gamepad":
-                    setattr(self, f"{key}_{field}",
-                            SIM if kind == "port" else "None")
-            setattr(self, f"{key}_status", "off")
-        # The selection commands are per row, because a view sends a dropdown
-        # choice as the command's only argument and nothing else identifies
-        # the row. Binding them here keeps one implementation.
-        for key, row in self._rows.items():
-            fields = ["port", "gamepad"] + [
-                field for field, _, _, _ in row["columns"] if field != "gamepad"]
-            for field in fields:
-                setattr(self, f"set_{key}_{field}",
-                        _Selector(self, key, field))
-            setattr(self, f"set_{key}_enabled", _Enabler(self, key))
-        # Reopen goes through the registry from the start, not only after a
-        # build: a model added with `controller.add(NAME, model, config)`
-        # comes back from its remembered config like one Setup built.
-        if controller is not None:
-            controller.factory = self.model_from_config
-        self._refresh_rows()
-        # Last: the startup update check's thread reads nothing above.
-        self._init_updates(updater)
-        self._init_firmware(firmware)
-
-    # -- what a view reads -------------------------------------------------
-    @property
-    def schema(self):
-        return self._schema
-
-    @property
-    def mode_name(self):
-        """`scanning` gates Launch and Relaunch; `launched` swaps Launch for
-        Relaunch. The dropdowns are gated by neither: the operator may point a
-        row at a port while the scan is still walking the rest of them, and
-        that choice then wins over auto-assign."""
-        if self.is_scanning:
-            return self.SCANNING
-        return self.LAUNCHED if self._is_launched else self.READY
-
-    @property
-    def is_scanning(self):
-        thread = self._scan_thread
-        return bool(thread is not None and thread.is_alive())
-
-    @property
-    def scan_status(self):
-        """The one status line. While a port is being probed it names the port
-        and how long it has been answering nothing, so a hung scan reads as
-        hung rather than as a frozen line (F18)."""
-        port, since = self._scan_port, self._port_started
-        if port is None or since is None or not self.is_scanning:
-            return self._scan_note
-        waited = int(time.monotonic() - since)
-        # The Launch row no longer carries a sentence (I4): while the scan
-        # runs, the reason Launch is greyed out lives here, on the one line
-        # the operator is already reading.
-        return (f"{self._scan_note} {waited} s on this port. Launch waits "
-                "for the scan; press Cancel scan to launch now.")
-
-    @scan_status.setter
-    def scan_status(self, text):
-        self._scan_note = text
-
-    @property
-    def scan_elapsed(self):
-        """Seconds since the running scan began, or None when none runs."""
-        started = self._scan_started
-        if started is None or not self.is_scanning:
-            return None
-        return round(time.monotonic() - started, 1)
-
-    @property
-    def summary(self):
-        """What will launch, and - when Launch is greyed out or would refuse -
-        why, as a sentence the operator can act on (F18)."""
-        selected = self._selected
-        if self.is_scanning:
-            return ("Scanning. Launch waits for the scan to finish; "
-                    "press Cancel scan to launch now.")
-        if selected == "nothing selected":
-            return "Nothing selected. Tick a device to launch."
-        return selected
-
-    @summary.setter
-    def summary(self, text):
-        self._selected = text
-
-    @property
-    def is_launched(self):
-        """True once `build()` has put models into the Controller. The views
-        collapse the Setup panel on it; `stop_system()` clears it."""
-        return self._is_launched
-
-    @property
-    def state(self):
-        snapshot = super().state
-        with self._lock:
-            found = dict(self._found)
-            ports, gamepads = list(self._ports), list(self._gamepads)
-            chosen = set(self._chosen)
-        is_scanning = self.is_scanning
-        rows = []
-        for key, row in self._rows.items():
-            choice = getattr(self, f"{key}_port")
-            rows.append({
-                "key": key,
-                "name": row["name"],
-                "enabled": getattr(self, f"{key}_enabled"),
-                "port": choice,
-                "gamepad": getattr(self, f"{key}_gamepad"),
-                "status": getattr(self, f"{key}_status"),
-                "detected": found.get(choice) if choice not in (SIM, ON) else None,
-                "needs_port": row["needs_port"],
-                "needs_gamepad": row["needs_gamepad"],
-                "is_chosen": key in chosen,
-                "options_command": row["options_command"],
-            })
-        snapshot.update({
-            "is_scanning": is_scanning,
-            "is_launched": self._is_launched,
-            "scan": {"phase": self.scan_phase, "status": self.scan_status,
-                     "progress": self.scan_progress, "is_scanning": is_scanning,
-                     "ports": ports, "found": found,
-                     "elapsed": self.scan_elapsed, "port": (
-                         self._scan_port if is_scanning else None),
-                     "restart_pending": self._is_restart_pending},
-            "ports": ports,
-            "gamepads": gamepads,
-            "rows": rows,
-            "configs": self.configs,
-            "has_update": self.has_update,
-            "update": {"status": self._update_code, "has_update": self.has_update,
-                       "log": list(self._update_lines),
-                       "is_checking": _alive(self._update_thread),
-                       "is_applying": _alive(self._apply_thread),
-                       "updated_to": self._updated_to},
-        })
-        return snapshot
-
-    @property
-    def model_types(self):
-        """Every model name, in display order. was <model.devices>.names"""
-        return list(MODEL_TYPES)
-
-    @property
-    def configs(self):
-        """The operator's current choices as build configs. Unticked rows
-        are dropped here and nowhere else: Web used to carry them through with
-        a stripped `enabled` flag and build every one of them (WEB-4)."""
-        configs = []
-        for key, row in self._rows.items():
-            if not getattr(self, f"{key}_enabled"):
-                continue
-            choice = getattr(self, f"{key}_port")
-            is_sim = choice == SIM
-            # The models drawn on this row's page (Model.HOST) launch with
-            # it, before it, with no resources and its SIM choice: one row,
-            # "Transfer Map", brings Red Percent (owner ruling 2026-09-28).
-            for hosted_name, hosted_class in MODEL_TYPES.items():
-                if getattr(hosted_class, "HOST", None) == row["name"]:
-                    configs.append({"model": hosted_name, "port": None,
-                                    "gamepad": None, "sim": bool(is_sim)})
-            if not row["needs_port"]:
-                port = None         # the screen monitor: on, or simulated
-            elif is_sim:
-                port = SIM
-            else:
-                port = choice
-            gamepad = getattr(self, f"{key}_gamepad") if row["needs_gamepad"] else "None"
-            config = {
-                "model": row["name"],
-                "port": port,
-                "gamepad": None if gamepad in ("None", "", None) else gamepad,
-                # Derived from the one dropdown, never carried through as its
-                # own input: `mode` was an input the web wizard sent and the
-                # desktop ones did not, so two launchers produced different
-                # configs for one system.
-                "sim": bool(is_sim),
-            }
-            # Every resource under its own name as well, so the config is
-            # `{"model", ...resources, "sim"}` whatever the class calls them.
-            # For the six built-ins these are `port` / `gamepad` themselves.
-            if row["port_resource"] not in (None, "port"):
-                config[row["port_resource"]] = port
-            for field, kind, _, resource in row["columns"]:
-                if field == "gamepad":
-                    if resource != "gamepad":
-                        config[resource] = config["gamepad"]
-                    continue
-                value = getattr(self, f"{key}_{field}")
-                if kind == "port":
-                    config[resource] = SIM if is_sim else value
-                else:
-                    config[resource] = None if value in ("None", "", None) else value
-            configs.append(config)
-        return configs
-
-    # -- options (one list per row shape) ----------------------------------
-    def port_options(self):
-        """What a row that needs a port offers: the simulator, or a port."""
-        with self._lock:
-            return [SIM, *self._ports]
-
-    def device_options(self):
-        """What a row that needs no port offers. The screen-capture monitor
-        has nothing to plug in, so its dropdown is the same control with the
-        port names left out rather than a second kind of widget."""
-        return [ON, SIM]
-
-    def gamepad_options(self):
-        with self._lock:
-            return list(self._gamepads)
-
-    # -- scanning ----------------------------------------------------------
-    def start(self):
-        """Begin the automatic scan. `app.launch()` calls this immediately
-        before the view opens, so the operator finds the scan already running
-        instead of having to ask for one (Addendum 2). Never raises: a scan
-        that is somehow already running is simply left alone."""
-        if self.is_scanning:
-            events.debug("Scan", "start: already scanning", source=self.NAME)
-            return False
-        self.scan()
-        return True
 
     def scan_ports(self):
         """Attached serial ports as the wizard shows them.
@@ -572,173 +302,6 @@ class Setup(Panel):
         is_usb = ("USB" in name or name.startswith(
             ("/dev/ttyACM", "/dev/ttyUSB", "/dev/cu.usb", "/dev/tty.usb")))
         return (0 if is_usb else 1, name)
-
-    def scan_gamepads(self):
-        """Attached gamepads as `["None", ...]`.
-        was <app_bootstrap>.discover_controllers ('controller' now means only
-        the Controller)
-
-        Through the one SDL owner. The three enumerations this replaces
-        disagreed: Web shelled out to a literal `python3`, found nothing, and
-        then **invented** two placeholder entries that got a device no input
-        at all (WEB-15, MANAGER-18, GAMEPAD-18). An empty list means no
-        gamepad is attached, and every frontend now says so the same way.
-        """
-        hub = getattr(gamepad_module, "hub", None)
-        if hub is None:
-            self._warn_missing("hub", "gamepad.hub is not available; no "
-                               "gamepad can be assigned")
-            return ["None"]
-        try:
-            return ["None"] + [str(n) for n in hub.names]
-        except Exception as exc:
-            events.debug("Gamepad Listing Failed", repr(exc), source=self.NAME,
-                         exception=exc)
-            events.warn("Gamepad Listing Failed", "The gamepad list could not "
-                        "be read. Press Refresh to try again.",
-                        source=self.NAME, exception=exc)
-            return ["None"]
-
-    def refresh(self):
-        """The one button: re-scan ports and gamepads.
-        was WebModelAdapter.start_hardware_scan (as a Scan button)
-
-        A scan already running is cancelled first, so Refresh always means
-        "start again from what is attached now" and never has to be pressed
-        twice. Single-flight: there is never a second scan over the same
-        ports, which is what made the web wizard's progress jump backwards.
-
-        **Never blocks the caller** (F18): with a scan still running, a helper
-        thread waits for it to notice the cancel and then starts the next
-        one. Refresh returns at once either way.
-        """
-        with self._lock:
-            if self._is_restart_pending:
-                return True             # already restarting; pressing again is fine
-            if self.is_scanning:
-                try:
-                    self.cancel_scan()
-                except Refused:
-                    pass                # it finished between the two checks
-                old = self._scan_thread
-                self._restart_thread = threading.Thread(
-                    target=self._scan_after, args=(old,), daemon=True,
-                    name="setup-rescan")
-                self._restart_thread.start()
-                events.debug("Scan", "refresh: cancel requested; the next scan "
-                             "starts when this one stops", source=self.NAME)
-                return True
-        return self.scan()
-
-    @property
-    def _is_restart_pending(self):
-        thread = self._restart_thread
-        return bool(thread is not None and thread.is_alive())
-
-    def _scan_after(self, old):
-        """Refresh's helper: wait for the cancelled scan, then scan again."""
-        if old is not None:
-            old.join()
-        try:
-            self.scan()
-        except Refused as refusal:
-            events.debug("Scan", f"refresh restart: {refusal.reason}",
-                         source=self.NAME)
-        except Exception as exc:        # never let a worker die silently
-            events.warn("Scan Failed", "The scan could not restart. Press "
-                        "Refresh to try again.", source=self.NAME, exception=exc)
-
-    def scan(self):
-        """Start a scan on a worker thread. Never blocks a view.
-        was WebModelAdapter.scan_hardware / start_hardware_scan /
-        get_scan_status (progress is part of Setup.state)
-
-        Single-flight: a scan already running is refused rather than started
-        a second time over the same ports.
-        """
-        with self._lock:
-            if self.is_scanning:
-                self._refuse("A hardware scan is already running.")
-            if self.is_flashing:
-                # The flash tool probes and uploads over these same ports.
-                self._refuse("The firmware is being flashed. Refresh when "
-                             "the Flashing cell is empty.")
-            self._abort.clear()
-            self._warned_ports.clear()
-            self._found.clear()
-            self.scan_phase = self.LISTING
-            self.scan_status = "scanning for ports..."
-            self.scan_progress = 0
-            self._scan_started = time.monotonic()
-            self._scan_port = self._port_started = None
-            thread = threading.Thread(target=self._scan_loop, daemon=True,
-                                      name="setup-scan")
-            self._scan_thread = thread
-        self._refresh_rows()
-        events.debug("Scan", "started", source=self.NAME)
-        thread.start()
-        return True
-
-    def cancel_scan(self):
-        """Ask the scan to give up. It stops inside the current port's wait."""
-        if not self.is_scanning:
-            self._refuse("No scan is running.")
-        self._abort.set()
-        events.debug("Scan", "cancel requested", source=self.NAME)
-        return True
-
-    def _scan_loop(self):
-        started = time.monotonic()
-        ports, gamepads = self.scan_ports(), self.scan_gamepads()
-        with self._lock:
-            self._ports, self._gamepads = ports, gamepads
-        self._drop_stale_selections()
-        targets = [p for p in ports if p not in (SIM, ON)]
-        self.scan_phase = self.IDENTIFYING
-        self.scan_status = (f"scanning {len(targets)} port(s)..." if targets
-                            else "no ports found")
-        self._refresh_rows()
-        for index, port in enumerate(targets):
-            if self._abort.is_set():
-                break
-            self.scan_status = (f"scanning {port} "
-                                f"({index + 1} of {len(targets)}),")
-            self._port_started = time.monotonic()
-            self._scan_port = port
-            try:
-                found = self.identify(port, should_abort=self._abort.is_set)
-            finally:
-                self._scan_port = self._port_started = None
-            with self._lock:
-                self._found[port] = found
-            if found:
-                events.info("Device Found", f"{found} on {port}", source=self.NAME)
-            self.scan_progress = int(((index + 1) / len(targets)) * 100)
-            self._refresh_rows()
-        if self._abort.is_set():
-            self.scan_phase = self.CANCELLED
-            self.scan_status = "scan cancelled"
-            self._refresh_rows()
-        else:
-            self.scan_progress = 100
-            self.scan_phase = self.DONE
-            # Auto-assign is not a button any more: identifying a device and
-            # then making the operator press "Auto-assign" to act on it was
-            # the step the owner struck out (Addendum 2).
-            try:
-                self.auto_assign()
-            except Exception as exc:       # never let a worker die silently
-                events.debug("Auto-assign Failed", repr(exc), source=self.NAME,
-                             exception=exc)
-                events.warn("Auto-assign Failed", "Ports could not be assigned "
-                            "automatically. Choose them by hand.",
-                            source=self.NAME, exception=exc)
-            with self._lock:
-                detected = sum(1 for name in self._found.values() if name)
-            self.scan_status = ("ready" if not detected else
-                                f"ready - {detected} device(s) detected")
-        events.debug("Scan", f"{self.scan_status}; {len(targets)} port(s) in "
-                     f"{time.monotonic() - started:.1f} s", source=self.NAME)
 
     def identify(self, port, should_abort=None):
         """Identify whatever is on `port`, or None.
@@ -911,12 +474,6 @@ class Setup(Panel):
                     f"{f' ({cause})' if cause else ''}. If a device is on it, "
                     "choose the port by hand.", source=self.NAME, exception=exc)
 
-    def _refuse(self, reason):
-        """Every refusal reaches the log file, even when `build()` was called
-        outside `Panel.run` (Addendum 1)."""
-        events.debug("Refused", reason, source=self.NAME)
-        raise Refused(reason)
-
     def _warn_missing(self, what, message):
         """One warning per missing collaborator, then silence."""
         if what in self._warned_missing:
@@ -935,6 +492,507 @@ class Setup(Panel):
         "hub": "Gamepads cannot be listed on this computer, so none can be "
                "assigned.",
     }
+
+
+class Setup(PortProbe, Panel):
+    """The setup panel. Scans ports and gamepads, validates an assignment,
+    constructs Models into the Controller.
+
+    Absorbs: <app_bootstrap>, <model.devices>, WebModelAdapter
+
+    MUST SATISFY:
+    [CARRY] ONE setup for three views, with autodetection preserved: port
+    scan, handshake identity byte, gamepad list. Scan runs off the UI thread
+    with progress and can be cancelled. Build is all-or-nothing with
+    rollback. The identity byte is checked against the model class. SIM
+    works for every model. A disabled row builds nothing. Probing errors are
+    reported, not swallowed. CLI args are strict.  (MANAGER-5, MANAGER-6,
+    MANAGER-12, MANAGER-14, MANAGER-18, MANAGER-20, SERIAL-6, SERIAL-7,
+    SERIAL-9, SERIAL-17, WEB-4, WEB-15, WEB-16, DC-12, DC-14, REDPERCENT-15,
+    VIEW-TKINTER-7)
+    """
+
+    NAME = "Setup"
+    #: `Setup.register(cls)`: the module's `register`, see there.
+    register = staticmethod(register)
+    #: `mode_name`, which is what `enabled_when` / `disabled_when` match.
+    READY, SCANNING, LAUNCHED = "ready", "scanning", "launched"
+    #: `state["scan"]["phase"]`: what the worker is doing right now, for a
+    #: view that wants to show more than the status line.
+    IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
+        "idle", "listing", "identifying", "done", "cancelled")
+
+    #: A3: the Trial store row's fields (the same Open/New the Transfer
+    #: Map's own Store section offers).
+    PARAMS = {p.name: p for p in (
+        Param("map_store_path", "text", default="", label="Store file"),
+        Param("map_store_dir", "text", default="", label="Folder for a new store"),
+        Param("map_store_name", "text", default="transfer_map",
+              label="New store name"),
+    )}
+
+    def __init__(self, controller, updater=None, firmware=None, restart=None,
+                 stable_root=_UNSET, stable_firmware=None, launch_stable=None,
+                 exit_app=None):
+        """`firmware` (rb-launch L2) checks and flashes the boards; `restart`
+        (rb-restart R3) replaces this process with a fresh one
+        (`app.restart_process`); None means this station cannot restart
+        itself, and `restart_station` says so.
+
+        A4, Switch to stable: `stable_root` is the bundle's `stable/` folder
+        (default: found beside the launcher; None in a checkout, which hides
+        the row), `stable_firmware` the FirmwareCheck over its sketches,
+        `launch_stable(argv, cwd)` starts the stable app detached and
+        `exit_app()` ends this process (`app.exit_process`)."""
+        super().__init__()
+        self._stable_root = (flashing.stable_root() if stable_root is _UNSET
+                             else (None if stable_root is None else Path(stable_root)))
+        self._stable_firmware = stable_firmware
+        self._launch_stable = launch_stable or _launch_detached
+        self._exit_app = exit_app
+        legacy = TransferMap.legacy_store_path()
+        if legacy is not None:
+            self.map_store_path = str(legacy)   # offered, never opened for them
+        self.controller = controller
+        self._restart = restart
+        # User-system Phase 1: local profiles. Setup is the composition root,
+        # the one place the service is built (section 5.4).
+        self.profiles = profiles_module.ProfileService(
+            profiles_module.LocalFilesSource(profiles_module.profiles_root()),
+            lambda name: getattr(MODEL_TYPES.get(name), "PARAMS", {}))
+        self._profile_pick = profiles_module.STATION_DISPLAY
+        self._rows = self._build_rows()
+        self._schema = self._build_schema()
+        self._lock = threading.RLock()
+        self._scan_thread = None
+        self._abort = threading.Event()
+        self._ports = []
+        self._gamepads = ["None"]
+        self._found = {}            # port -> model name the handshake gave
+        self._chosen = set()        # rows the operator set by hand
+        self._warned_ports = set()  # one warning per port per scan
+        self._warned_missing = set()
+        self._is_launched = False
+        self._restart_thread = None     # Refresh's "then scan again" helper
+        self._scan_started = None       # monotonic, for the elapsed seconds
+        self._scan_port = None          # the port being probed right now
+        self._port_started = None
+        self.scan_phase = self.IDLE
+        self.scan_status = "not scanned yet"
+        self.scan_progress = 0
+        self._selected = "nothing selected"
+        for key, row in self._rows.items():
+            setattr(self, f"{key}_name", row["name"])
+            # Unticked until a board answers or the operator ticks it. The
+            # dropdown always holds a launchable choice, so ticking a row
+            # needs no second step: SIM for a port row, On for the screen.
+            setattr(self, f"{key}_enabled", False)
+            setattr(self, f"{key}_port", SIM if row["needs_port"] else ON)
+            setattr(self, f"{key}_gamepad", "None")
+            for field, kind, _, _ in row["columns"]:
+                if field != "gamepad":
+                    setattr(self, f"{key}_{field}",
+                            SIM if kind == "port" else "None")
+            setattr(self, f"{key}_status", "off")
+        # The selection commands are per row, because a view sends a dropdown
+        # choice as the command's only argument and nothing else identifies
+        # the row. Binding them here keeps one implementation.
+        for key, row in self._rows.items():
+            fields = ["port", "gamepad"] + [
+                field for field, _, _, _ in row["columns"] if field != "gamepad"]
+            for field in fields:
+                setattr(self, f"set_{key}_{field}",
+                        _Selector(self, key, field))
+            setattr(self, f"set_{key}_enabled", _Enabler(self, key))
+        # Reopen goes through the registry from the start, not only after a
+        # build: a model added with `controller.add(NAME, model, config)`
+        # comes back from its remembered config like one Setup built.
+        if controller is not None:
+            controller.factory = self.model_from_config
+        self._refresh_rows()
+        # Last: the startup update check's thread reads nothing above.
+        self._init_updates(updater)
+        self._init_firmware(firmware)
+
+    # -- what a view reads -------------------------------------------------
+    @property
+    def schema(self):
+        return self._schema
+
+    @property
+    def mode_name(self):
+        """`scanning` gates Launch and Relaunch; `launched` swaps Launch for
+        Relaunch. The dropdowns are gated by neither: the operator may point a
+        row at a port while the scan is still walking the rest of them, and
+        that choice then wins over auto-assign."""
+        if self.is_scanning:
+            return self.SCANNING
+        return self.LAUNCHED if self._is_launched else self.READY
+
+    @property
+    def is_scanning(self):
+        thread = self._scan_thread
+        return bool(thread is not None and thread.is_alive())
+
+    @property
+    def scan_status(self):
+        """The one status line. While a port is being probed it names the port
+        and how long it has been answering nothing, so a hung scan reads as
+        hung rather than as a frozen line (F18)."""
+        port, since = self._scan_port, self._port_started
+        if port is None or since is None or not self.is_scanning:
+            return self._scan_note
+        waited = int(time.monotonic() - since)
+        # The Launch row no longer carries a sentence (I4): while the scan
+        # runs, the reason Launch is greyed out lives here, on the one line
+        # the operator is already reading.
+        return (f"{self._scan_note} {waited} s on this port. Launch waits "
+                "for the scan; press Cancel scan to launch now.")
+
+    @scan_status.setter
+    def scan_status(self, text):
+        self._scan_note = text
+
+    @property
+    def scan_elapsed(self):
+        """Seconds since the running scan began, or None when none runs."""
+        started = self._scan_started
+        if started is None or not self.is_scanning:
+            return None
+        return round(time.monotonic() - started, 1)
+
+    @property
+    def summary(self):
+        """What will launch, and - when Launch is greyed out or would refuse -
+        why, as a sentence the operator can act on (F18)."""
+        selected = self._selected
+        if self.is_scanning:
+            return ("Scanning. Launch waits for the scan to finish; "
+                    "press Cancel scan to launch now.")
+        if selected == "nothing selected":
+            return "Nothing selected. Tick a device to launch."
+        return selected
+
+    @summary.setter
+    def summary(self, text):
+        self._selected = text
+
+    @property
+    def is_launched(self):
+        """True once `build()` has put models into the Controller. The views
+        collapse the Setup panel on it; `stop_system()` clears it."""
+        return self._is_launched
+
+    @property
+    def state(self):
+        if self._offer_on_read:
+            # A2: the Web page's first read of Setup; see `startup_checks`.
+            with self._lock:
+                self._offer_on_read, self._startup_listening = False, True
+            self._deliver_startup_offer()
+        snapshot = super().state
+        with self._lock:
+            found = dict(self._found)
+            ports, gamepads = list(self._ports), list(self._gamepads)
+            chosen = set(self._chosen)
+        is_scanning = self.is_scanning
+        rows = []
+        for key, row in self._rows.items():
+            choice = getattr(self, f"{key}_port")
+            rows.append({
+                "key": key,
+                "name": row["name"],
+                "enabled": getattr(self, f"{key}_enabled"),
+                "port": choice,
+                "gamepad": getattr(self, f"{key}_gamepad"),
+                "status": getattr(self, f"{key}_status"),
+                "detected": found.get(choice) if choice not in (SIM, ON) else None,
+                "needs_port": row["needs_port"],
+                "needs_gamepad": row["needs_gamepad"],
+                "is_chosen": key in chosen,
+                "options_command": row["options_command"],
+            })
+        snapshot.update({
+            "is_scanning": is_scanning,
+            "is_launched": self._is_launched,
+            "scan": {"phase": self.scan_phase, "status": self.scan_status,
+                     "progress": self.scan_progress, "is_scanning": is_scanning,
+                     "ports": ports, "found": found,
+                     "elapsed": self.scan_elapsed, "port": (
+                         self._scan_port if is_scanning else None),
+                     "restart_pending": self._is_restart_pending},
+            "ports": ports,
+            "gamepads": gamepads,
+            "rows": rows,
+            "configs": self.configs,
+            "has_update": self.has_update,
+            "update": {"status": self._update_code, "has_update": self.has_update,
+                       "log": list(self._update_lines),
+                       "is_checking": _alive(self._update_thread),
+                       "is_applying": _alive(self._apply_thread),
+                       "updated_to": self._updated_to},
+        })
+        return snapshot
+
+    @property
+    def model_types(self):
+        """Every model name, in display order. was <model.devices>.names"""
+        return list(MODEL_TYPES)
+
+    @property
+    def configs(self):
+        """The operator's current choices as build configs. Unticked rows
+        are dropped here and nowhere else: Web used to carry them through with
+        a stripped `enabled` flag and build every one of them (WEB-4)."""
+        configs = []
+        for key, row in self._rows.items():
+            if not getattr(self, f"{key}_enabled"):
+                continue
+            choice = getattr(self, f"{key}_port")
+            is_sim = choice == SIM
+            # The models drawn on this row's page (Model.HOST) launch with
+            # it, before it, with no resources and its SIM choice: one row,
+            # "Transfer Map", brings Red Percent (owner ruling 2026-09-28).
+            for hosted_name, hosted_class in MODEL_TYPES.items():
+                if getattr(hosted_class, "HOST", None) == row["name"]:
+                    configs.append({"model": hosted_name, "port": None,
+                                    "gamepad": None, "sim": bool(is_sim)})
+            if not row["needs_port"]:
+                port = None         # the screen monitor: on, or simulated
+            elif is_sim:
+                port = SIM
+            else:
+                port = choice
+            gamepad = getattr(self, f"{key}_gamepad") if row["needs_gamepad"] else "None"
+            config = {
+                "model": row["name"],
+                "port": port,
+                "gamepad": None if gamepad in ("None", "", None) else gamepad,
+                # Derived from the one dropdown, never carried through as its
+                # own input: `mode` was an input the web wizard sent and the
+                # desktop ones did not, so two launchers produced different
+                # configs for one system.
+                "sim": bool(is_sim),
+            }
+            # Every resource under its own name as well, so the config is
+            # `{"model", ...resources, "sim"}` whatever the class calls them.
+            # For the six built-ins these are `port` / `gamepad` themselves.
+            if row["port_resource"] not in (None, "port"):
+                config[row["port_resource"]] = port
+            for field, kind, _, resource in row["columns"]:
+                if field == "gamepad":
+                    if resource != "gamepad":
+                        config[resource] = config["gamepad"]
+                    continue
+                value = getattr(self, f"{key}_{field}")
+                if kind == "port":
+                    config[resource] = SIM if is_sim else value
+                else:
+                    config[resource] = None if value in ("None", "", None) else value
+            configs.append(config)
+        return configs
+
+    # -- options (one list per row shape) ----------------------------------
+    def port_options(self):
+        """What a row that needs a port offers: the simulator, or a port."""
+        with self._lock:
+            return [SIM, *self._ports]
+
+    def device_options(self):
+        """What a row that needs no port offers. The screen-capture monitor
+        has nothing to plug in, so its dropdown is the same control with the
+        port names left out rather than a second kind of widget."""
+        return [ON, SIM]
+
+    def gamepad_options(self):
+        with self._lock:
+            return list(self._gamepads)
+
+    # -- scanning ----------------------------------------------------------
+    def start(self):
+        """Begin the automatic scan. `app.launch()` calls this immediately
+        before the view opens, so the operator finds the scan already running
+        instead of having to ask for one (Addendum 2). Never raises: a scan
+        that is somehow already running is simply left alone."""
+        if self.is_scanning:
+            events.debug("Scan", "start: already scanning", source=self.NAME)
+            return False
+        self.scan()
+        return True
+
+    def scan_gamepads(self):
+        """Attached gamepads as `["None", ...]`.
+        was <app_bootstrap>.discover_controllers ('controller' now means only
+        the Controller)
+
+        Through the one SDL owner. The three enumerations this replaces
+        disagreed: Web shelled out to a literal `python3`, found nothing, and
+        then **invented** two placeholder entries that got a device no input
+        at all (WEB-15, MANAGER-18, GAMEPAD-18). An empty list means no
+        gamepad is attached, and every frontend now says so the same way.
+        """
+        hub = getattr(gamepad_module, "hub", None)
+        if hub is None:
+            self._warn_missing("hub", "gamepad.hub is not available; no "
+                               "gamepad can be assigned")
+            return ["None"]
+        try:
+            return ["None"] + [str(n) for n in hub.names]
+        except Exception as exc:
+            events.debug("Gamepad Listing Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            events.warn("Gamepad Listing Failed", "The gamepad list could not "
+                        "be read. Press Refresh to try again.",
+                        source=self.NAME, exception=exc)
+            return ["None"]
+
+    def refresh(self):
+        """The one button: re-scan ports and gamepads.
+        was WebModelAdapter.start_hardware_scan (as a Scan button)
+
+        A scan already running is cancelled first, so Refresh always means
+        "start again from what is attached now" and never has to be pressed
+        twice. Single-flight: there is never a second scan over the same
+        ports, which is what made the web wizard's progress jump backwards.
+
+        **Never blocks the caller** (F18): with a scan still running, a helper
+        thread waits for it to notice the cancel and then starts the next
+        one. Refresh returns at once either way.
+        """
+        with self._lock:
+            if self._is_restart_pending:
+                return True             # already restarting; pressing again is fine
+            if self.is_scanning:
+                try:
+                    self.cancel_scan()
+                except Refused:
+                    pass                # it finished between the two checks
+                old = self._scan_thread
+                self._restart_thread = threading.Thread(
+                    target=self._scan_after, args=(old,), daemon=True,
+                    name="setup-rescan")
+                self._restart_thread.start()
+                events.debug("Scan", "refresh: cancel requested; the next scan "
+                             "starts when this one stops", source=self.NAME)
+                return True
+        return self.scan()
+
+    @property
+    def _is_restart_pending(self):
+        thread = self._restart_thread
+        return bool(thread is not None and thread.is_alive())
+
+    def _scan_after(self, old):
+        """Refresh's helper: wait for the cancelled scan, then scan again."""
+        if old is not None:
+            old.join()
+        try:
+            self.scan()
+        except Refused as refusal:
+            events.debug("Scan", f"refresh restart: {refusal.reason}",
+                         source=self.NAME)
+        except Exception as exc:        # never let a worker die silently
+            events.warn("Scan Failed", "The scan could not restart. Press "
+                        "Refresh to try again.", source=self.NAME, exception=exc)
+
+    def scan(self):
+        """Start a scan on a worker thread. Never blocks a view.
+        was WebModelAdapter.scan_hardware / start_hardware_scan /
+        get_scan_status (progress is part of Setup.state)
+
+        Single-flight: a scan already running is refused rather than started
+        a second time over the same ports.
+        """
+        with self._lock:
+            if self.is_scanning:
+                self._refuse("A hardware scan is already running.")
+            if self.is_flashing:
+                # The flash tool probes and uploads over these same ports.
+                self._refuse("The firmware is being flashed. Refresh when "
+                             "the Flashing cell is empty.")
+            self._abort.clear()
+            self._warned_ports.clear()
+            self._found.clear()
+            self.scan_phase = self.LISTING
+            self.scan_status = "scanning for ports..."
+            self.scan_progress = 0
+            self._scan_started = time.monotonic()
+            self._scan_port = self._port_started = None
+            thread = threading.Thread(target=self._scan_loop, daemon=True,
+                                      name="setup-scan")
+            self._scan_thread = thread
+        self._refresh_rows()
+        events.debug("Scan", "started", source=self.NAME)
+        thread.start()
+        return True
+
+    def cancel_scan(self):
+        """Ask the scan to give up. It stops inside the current port's wait."""
+        if not self.is_scanning:
+            self._refuse("No scan is running.")
+        self._abort.set()
+        events.debug("Scan", "cancel requested", source=self.NAME)
+        return True
+
+    def _scan_loop(self):
+        started = time.monotonic()
+        ports, gamepads = self.scan_ports(), self.scan_gamepads()
+        with self._lock:
+            self._ports, self._gamepads = ports, gamepads
+        self._drop_stale_selections()
+        targets = [p for p in ports if p not in (SIM, ON)]
+        self.scan_phase = self.IDENTIFYING
+        self.scan_status = (f"scanning {len(targets)} port(s)..." if targets
+                            else "no ports found")
+        self._refresh_rows()
+        for index, port in enumerate(targets):
+            if self._abort.is_set():
+                break
+            self.scan_status = (f"scanning {port} "
+                                f"({index + 1} of {len(targets)}),")
+            self._port_started = time.monotonic()
+            self._scan_port = port
+            try:
+                found = self.identify(port, should_abort=self._abort.is_set)
+            finally:
+                self._scan_port = self._port_started = None
+            with self._lock:
+                self._found[port] = found
+            if found:
+                events.info("Device Found", f"{found} on {port}", source=self.NAME)
+            self.scan_progress = int(((index + 1) / len(targets)) * 100)
+            self._refresh_rows()
+        if self._abort.is_set():
+            self.scan_phase = self.CANCELLED
+            self.scan_status = "scan cancelled"
+            self._refresh_rows()
+        else:
+            self.scan_progress = 100
+            self.scan_phase = self.DONE
+            # Auto-assign is not a button any more: identifying a device and
+            # then making the operator press "Auto-assign" to act on it was
+            # the step the owner struck out (Addendum 2).
+            try:
+                self.auto_assign()
+            except Exception as exc:       # never let a worker die silently
+                events.debug("Auto-assign Failed", repr(exc), source=self.NAME,
+                             exception=exc)
+                events.warn("Auto-assign Failed", "Ports could not be assigned "
+                            "automatically. Choose them by hand.",
+                            source=self.NAME, exception=exc)
+            with self._lock:
+                detected = sum(1 for name in self._found.values() if name)
+            self.scan_status = ("ready" if not detected else
+                                f"ready - {detected} device(s) detected")
+        events.debug("Scan", f"{self.scan_status}; {len(targets)} port(s) in "
+                     f"{time.monotonic() - started:.1f} s", source=self.NAME)
+
+    def _refuse(self, reason):
+        """Every refusal reaches the log file, even when `build()` was called
+        outside `Panel.run` (Addendum 1)."""
+        events.debug("Refused", reason, source=self.NAME)
+        raise Refused(reason)
+
 
     # -- assignment --------------------------------------------------------
     def auto_assign(self, force=False):
@@ -1186,8 +1244,10 @@ class Setup(Panel):
         return built
 
     # -- profiles (user-system Phase 1) -------------------------------------------
-    PARAMS = {"profile_new_name": Param("profile_new_name", "text", default="",
-                                        label="New profile")}
+    #: Merged with the Trial store row's fields above (A3): a second plain
+    #: `PARAMS =` here would replace them.
+    PARAMS = {**PARAMS, "profile_new_name": Param(
+        "profile_new_name", "text", default="", label="New profile")}
 
     @property
     def profile_user(self):
@@ -1384,6 +1444,7 @@ class Setup(Panel):
         "diverged": "This checkout has commits GitHub does not; update by hand.",
         "not_git": "Not a git checkout.",
         "bundle": "A packaged bundle updates by installing a new one.",
+        "no_release": "No release has been published yet.",
     }
     CHECKING = "Checking for updates…"
     CHECK_OFF = ("The update check is off for this run "
@@ -1675,6 +1736,11 @@ class Setup(Panel):
         self._firmware_result = None    # the last check()'s answer
         self._firmware_asked = set()    # stale-board sets Launch already asked about
         self._flash_offered = set()     # board sets the startup dialog already offered
+        # A2 (OP-4): the startup check's offer waits for a view to listen.
+        self._startup_offer = None      # the startup check's answer, not yet offered
+        self._startup_offered = False
+        self._startup_listening = False
+        self._offer_on_read = False
         self.firmware_progress = ""
         #: The Web view's address, which it fills in once it serves; the
         #: desktop views leave it empty. It used to be a terminal line.
@@ -1765,7 +1831,37 @@ class Setup(Panel):
         result = self._check_firmware_now()
         self._publish_firmware(result)
         if offer:
-            self._offer_flash(result)
+            with self._lock:
+                self._startup_offer = result or {}
+            self._deliver_startup_offer()
+
+    def startup_checks(self, on_next_read=False):
+        """The view is listening (A2, OP-4): the startup firmware check's
+        Flash now dialog may go out. It used to be published from the
+        check's thread at construction, before any view had subscribed to
+        the event log, so it reached nobody and Flash now was unreachable.
+
+        `app.launch` calls this the moment a desktop view subscribes; for
+        the Web (`on_next_read`), the offer goes out with the next read of
+        this panel's state - the page's first Setup read, after it has
+        taken its place in the event stream (older events it replays as
+        history, never as a dialog). A check still running offers when it
+        finishes. Offered once per run; a second call offers nothing new."""
+        with self._lock:
+            if on_next_read:
+                self._offer_on_read = True
+                return True
+            self._startup_listening = True
+        self._deliver_startup_offer()
+        return True
+
+    def _deliver_startup_offer(self):
+        with self._lock:
+            if not self._startup_listening or self._startup_offer is None \
+                    or self._startup_offered:
+                return
+            result, self._startup_offered = self._startup_offer, True
+        self._offer_flash(result)
 
     def _offer_flash(self, result):
         """The startup check found boards to flash and the tool to do it: one
@@ -1847,7 +1943,8 @@ class Setup(Panel):
             self._publish_firmware(result, prefix="the last flash failed; ")
             events.warn("Firmware Flash Failed",
                         f"Flashing {_and(boards)} failed: {outcome.get('last') or 'no output'}. "
-                        "A board may be half-flashed; fix the cause and flash "
+                        + "".join(f"{h} " for h in outcome.get("hints") or ())
+                        + "A board may be half-flashed; fix the cause and flash "
                         "again. The whole output is in the log file.",
                         source=self.NAME)
             return
@@ -1899,6 +1996,171 @@ class Setup(Panel):
             sch.button("Flash out-of-date boards", "flash_firmware", role="go",
                        confirm=self.FLASH_CONFIRM),
             sch.button("Check firmware", "check_firmware", role="neutral"),
+            layout="row",
+        )
+
+    # -- A4: Switch to stable (owner decision 3, 2026-09-30; temporary) -------
+    #: The one question before the boards are flashed with the stable
+    #: firmware; the way back is the station's own startup Flash now.
+    STABLE_CONFIRM = ("Switch to the stable station? The boards will be flashed "
+                      "with the stable firmware, every model is closed, and the "
+                      "stable app opens. To come back, start the station again "
+                      "and accept Flash now.")
+
+    @property
+    def has_stable(self):
+        return self._stable_root is not None
+
+    @property
+    def stable_status(self):
+        return ("The lab's original app, beside this one. Switching flashes the "
+                "boards with its firmware.")
+
+    def _stable_check(self):
+        if self._stable_firmware is None:
+            self._stable_firmware = FirmwareCheck(
+                sketch_root=self._stable_root / "firmware", channel=flashing.STABLE)
+        return self._stable_firmware
+
+    def switch_to_stable(self, confirmed=False):
+        """Switch to stable: close every model (the Controller's own close
+        path), flash the stable sketches to the boards that are plugged in,
+        stamp them `stable`, start the stable app detached and end this one.
+        A board that fails to flash stops the switch before anything is
+        started; this station keeps running and says which board."""
+        if not self.has_stable:
+            self._refuse("This station has no stable app beside it: switch "
+                         "branches by hand (dev/swap_branch.sh).")
+        with self._lock:
+            if self.is_flashing:
+                self._refuse("A flash is already running. Wait for it to finish.")
+            if _alive(self._apply_thread):
+                self._refuse("An update is being applied. Wait for it to finish.")
+            if self.is_scanning or self._is_restart_pending:
+                self._refuse("The scan is using the ports. Switch when it has "
+                             "finished, or press Cancel scan.")
+        if getattr(self.controller, "is_energized", False):
+            self._refuse("A model is energized. Stop it and put it out of its "
+                         "mode first, then switch.")
+        if not confirmed:
+            raise NeedsConfirm(self.STABLE_CONFIRM, "switch_to_stable")
+        running = list(getattr(self.controller, "model_names", ()) or ())
+        events.info("Switch to Stable", "Closing "
+                    f"{', '.join(running) or 'nothing'}, then flashing the stable "
+                    "firmware.", source=self.NAME)
+        self.controller.reset()
+        self._is_launched = False
+        self._refresh_rows()
+        with self._lock:
+            self.firmware_status = "switching to stable: flashing"
+            self.firmware_progress = "starting…"
+            self._flash_thread = threading.Thread(
+                target=self._stable_worker, daemon=True, name="setup-stable-switch")
+            self._flash_thread.start()
+        return True
+
+    def _stable_worker(self):
+        def on_line(line):
+            events.debug("Stable Flash", line, source=self.NAME)
+            if line.strip():
+                self.firmware_progress = line.strip()
+
+        boards = list(flashing.BOARDS)
+        try:
+            outcome = self._stable_check().flash(boards, on_line=on_line)
+        except Exception as exc:        # never let a worker die silently
+            events.debug("Stable Flash Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            outcome = {"ok": False, "last": repr(exc), "lines": [], "results": {}}
+        with self._lock:
+            self.firmware_progress = ""
+        if not outcome.get("ok"):
+            failed = [b for b, status in (outcome.get("results") or {}).items()
+                      if status == "FAILED"]
+            which = _and(failed) if failed else "A board"
+            events.warn("Switch to Stable Failed",
+                        f"{which} could not be flashed with the stable firmware "
+                        f"({outcome.get('last') or 'no output'}). "
+                        + "".join(f"{h} " for h in outcome.get("hints") or ())
+                        + "The stable app was not started; this station keeps "
+                        "running. A board may be half-flashed: flash again from "
+                        "the Firmware row.",
+                        source=self.NAME)
+            self._publish_firmware(self._check_firmware_now(),
+                                   prefix="the switch to stable failed; ")
+            return
+        argv = [str(self._stable_root / _exe("station-stable"))]
+        try:
+            self._launch_stable(argv, str(self._stable_root))
+        except Exception as exc:
+            events.warn("Switch to Stable Failed", f"The stable app could not be "
+                        f"started ({exc}). The boards now run the stable "
+                        "firmware: start the stable app by hand, or accept "
+                        "Flash now here to come back.", source=self.NAME,
+                        exception=exc)
+            self._publish_firmware(self._check_firmware_now())
+            return
+        events.info("Switch to Stable", "The stable app is starting; this "
+                    "station closes.", source=self.NAME)
+        events.flush_file()
+        if self._exit_app is not None:
+            self._exit_app()
+        else:
+            os._exit(0)
+
+    def _stable_section(self):
+        return sch.section(
+            "Stable",
+            sch.readonly("Stable app", "stable_status"),
+            sch.button("Switch to stable", "switch_to_stable", role="neutral",
+                       confirm=self.STABLE_CONFIRM),
+            layout="row",
+        )
+
+    # -- the trial store (A3) -----------------------------------------------
+    def _transfer_map(self):
+        """The open Transfer Map, if one is: it adopts a store chosen here."""
+        lookup = getattr(self.controller, "_model_or_none", None)
+        model = lookup(TransferMap.NAME) if callable(lookup) else None
+        return model if isinstance(model, TransferMap) else None
+
+    @property
+    def map_store_status(self):
+        model = self._transfer_map()
+        if model is not None:
+            return model.store_status
+        return TransferMap.describe_store(TransferMap.default_db_path())
+
+    def open_map_store(self):
+        """Open store, from Setup: the Transfer Map's own command, on the
+        open map (which then records there) or on a stand-in that only
+        validates and remembers the choice."""
+        target = self._transfer_map() or TransferMap()
+        target.store_path = self.map_store_path
+        return target.open_store()
+
+    def new_map_store(self):
+        target = self._transfer_map() or TransferMap()
+        target.store_dir, target.store_name = self.map_store_dir, self.map_store_name
+        return target.new_store()
+
+    def _store_section(self):
+        """The Trial store row: where the Transfer Map's trials go, and the
+        same Open/New its own Store section offers (owner decision 4,
+        2026-09-30: the operator chooses; nothing is chosen for them).
+        Built, not yet in `_build_schema`: its place is just before Launch,
+        and the section list is pinned by `tests/test_setup_registry.py`,
+        outside this change's write set (handoff fix-dist-app A3)."""
+        P = self.PARAMS
+        return sch.section(
+            "Trial store",
+            sch.readonly("Store", "map_store_status", role="info"),
+            sch.entry("Store file", "map_store_path", P["map_store_path"]),
+            sch.button("Open store", "open_map_store", inputs=("map_store_path",)),
+            sch.entry("Folder for a new store", "map_store_dir", P["map_store_dir"]),
+            sch.entry("New store name", "map_store_name", P["map_store_name"]),
+            sch.button("New store", "new_map_store",
+                       inputs=("map_store_dir", "map_store_name")),
             layout="row",
         )
 
@@ -1959,7 +2221,11 @@ class Setup(Panel):
             # empty when nothing is coming.
             sch.readonly("Coming", "update_log"),
             layout="row",
-        ), self._firmware_section(), sch.section(
+        ), self._firmware_section()]
+        if self.has_stable:
+            # A4: a frozen bundle with the stable app beside it only.
+            sections.append(self._stable_section())
+        sections += [sch.section(
             "Devices",
             sch.button("Refresh", "refresh", role="info"),
             sch.readonly("Scan:", "scan_status"),
@@ -2075,6 +2341,25 @@ class Setup(Panel):
         else:
             self._selected = (f"{count} device{'s' if count != 1 else ''} "
                               "ticked to launch.")
+
+
+def _exe(name):
+    return name + ".exe" if os.name == "nt" else name
+
+
+def _launch_detached(argv, cwd):
+    """Start `argv` so it outlives this process: its own session (POSIX), or
+    detached from this console in a new process group (Windows) - the
+    pattern `app.restart_process` uses for the update's swap script."""
+    kwargs = {"cwd": cwd, "stdin": subprocess.DEVNULL,
+              "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+              "close_fds": True}
+    if os.name == "nt":
+        kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(argv, **kwargs)
 
 
 def _and(names):

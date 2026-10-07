@@ -26,6 +26,42 @@ MEDIAN_WINDOW = 5
 #: The baseline is the median of the samples in this many seconds after Arm.
 BASELINE_SECONDS = 1.0
 
+# -- the validity mask (bench trial 32, 2026-10-06: 62 % of its rows were
+# glitches from the screen grab, and they set the stored extrema) -----------
+#: Rule (a). A red of exactly 0.0 is a black grab (an all-black frame), never
+#: a measurement: the live trace of a lit sample does not reach it.
+BLACK_RED = 0.0
+#: Rule (b). A value that occurs EXACTLY this many times in one trial, and
+#: whose immediate neighbours differ from it, is a stale grab: the screen
+#: returned an older picture, so the same number comes back between live ones.
+#: A still scene repeats too, but its repeats sit side by side (equal
+#: neighbours), which is how the two are told apart.
+STALE_MIN_REPEATS = 10
+#: Rule (b), second condition. The repeats must also be at least this share
+#: of the trial's non-black samples. A quantised live trace repeats its own
+#: levels 10+ times too, with stale rows between them as neighbours (bench
+#: trial 32: 0.4241, 0.4302 ...); those are ~2 % of the rows each, while the
+#: stale picture (1.3576) is half of them. Without this, rule (b) removes the
+#: live trace and keeps the transients.
+STALE_MIN_SHARE = 0.05
+#: Rule (c). A sample further than this many median absolute deviations from
+#: the rolling median around it is a transient (a partly painted frame).
+OUTLIER_MAD = 5
+#: Rule (c). The width, in seconds, of that rolling median.
+ROLLING_WINDOW_S = 0.05
+#: Rule (c). The window always holds at least this many surviving samples
+#: (it widens past `ROLLING_WINDOW_S` when the trace is sparse: the store
+#: keeps change rows only, and after rules (a) and (b) a glitch-ridden trial
+#: has only a few live rows per second). Fewer than this many survivors in
+#: the whole trial and the rule abstains: a median of three points is no judge.
+ROLLING_MIN_SAMPLES = 7
+#: Rule (c). The MAD of a still scene is zero; the spread is never taken below
+#: this fraction of the trace's robust range (5th to 95th percentile), so a
+#: perfectly steady window does not flag its own rounding noise.
+MAD_FLOOR_FRACTION = 0.01
+#: MAD to standard deviation, for a normal distribution.
+MAD_SCALE = 1.4826
+
 
 # -- smoothing ---------------------------------------------------------------
 
@@ -65,13 +101,78 @@ def _index_at(times, t):
     return i if abs(times[i] - t) < abs(times[i - 1] - t) else i - 1
 
 
-def baseline_of(profile):
-    """Median raw red over the first `BASELINE_SECONDS` of the profile."""
-    t, red = list(profile.get("t") or ()), list(profile.get("red") or ())
-    if not red:
+def settled_mask(t, red):
+    """Which samples of a trial are real readings: `ndarray[bool]`, True =
+    settled. Three rules, each a named constant above: (a) red == 0.0 is a
+    black grab; (b) a value repeating exactly `STALE_MIN_REPEATS` times while
+    its neighbours differ is a stale grab; (c) a sample more than
+    `OUTLIER_MAD` MADs from the rolling median over `ROLLING_WINDOW_S` is a
+    transient. Every extremum and force definition is taken on the True
+    samples only. Pure; a clean profile comes back all True."""
+    t = numpy.asarray(list(t), dtype=float)
+    red = numpy.asarray(list(red), dtype=float)
+    n = min(t.size, red.size)
+    t, red = t[:n], red[:n]
+    ok = numpy.isfinite(red)
+    ok &= red != BLACK_RED                                       # (a)
+    if n >= STALE_MIN_REPEATS:                                   # (b)
+        values, inverse, counts = numpy.unique(red, return_inverse=True,
+                                               return_counts=True)
+        lit = max(1, int(numpy.count_nonzero(ok)))
+        frequent = counts[inverse.ravel()] >= max(STALE_MIN_REPEATS,
+                                                  STALE_MIN_SHARE * lit)
+        same_prev = numpy.zeros(n, dtype=bool)
+        same_prev[1:] = red[1:] == red[:-1]
+        same_next = numpy.zeros(n, dtype=bool)
+        same_next[:-1] = same_prev[1:]
+        ok &= ~(frequent & ~same_prev & ~same_next)
+    candidates = numpy.flatnonzero(ok)                           # (c)
+    if candidates.size >= ROLLING_MIN_SAMPLES:
+        tv, rv = t[candidates], red[candidates]
+        spread = float(numpy.percentile(rv, 95) - numpy.percentile(rv, 5))
+        floor = MAD_FLOOR_FRACTION * spread
+        half = ROLLING_WINDOW_S / 2.0
+        reach = ROLLING_MIN_SAMPLES // 2
+        lo = numpy.searchsorted(tv, tv - half, side="left")
+        hi = numpy.searchsorted(tv, tv + half, side="right")
+        for k in range(tv.size):
+            first = max(0, min(lo[k], k - reach))
+            last = min(tv.size, max(hi[k], k + reach + 1))
+            window = rv[first:last]
+            centre = numpy.median(window)
+            mad = max(MAD_SCALE * numpy.median(numpy.abs(window - centre)),
+                      floor)
+            if abs(rv[k] - centre) > OUTLIER_MAD * mad:
+                ok[candidates[k]] = False
+    return ok
+
+
+def _settled(profile):
+    """`(mask, t, red, z)`: the mask over the whole profile and the settled
+    samples of each column (`z` None without a Z column)."""
+    t = numpy.asarray(list(profile.get("t") or ()), dtype=float)
+    red = numpy.asarray(list(profile.get("red") or ()), dtype=float)
+    n = min(t.size, red.size)
+    t, red = t[:n], red[:n]
+    mask = settled_mask(t, red)
+    z = profile.get("z")
+    z = (numpy.asarray([numpy.nan if v is None else v for v in z],
+                       dtype=float)[:n] if z and len(z) >= n else None)
+    return mask, t[mask], red[mask], (None if z is None else z[mask])
+
+
+def _baseline(t, red):
+    if not len(red):
         return None
     first = [r for s, r in zip(t, red) if s - t[0] <= BASELINE_SECONDS]
-    return float(statistics.median(first or red[:1]))
+    return float(statistics.median(first or list(red[:1])))
+
+
+def baseline_of(profile):
+    """Median raw red over the first `BASELINE_SECONDS` of the settled
+    samples of the profile."""
+    _mask, t, red, _z = _settled(profile)
+    return _baseline(t, red)
 
 
 # -- the detector ------------------------------------------------------------
@@ -79,23 +180,32 @@ def baseline_of(profile):
 def detect(profile, operator_t=None):
     """The approach peak and the shadow's dip, found automatically.
 
-    On the 5-sample median of the red trace: the maximum is the global
-    maximum BEFORE the operator's Mark (before the end, without one); the
-    minimum is the deepest point AFTER that maximum. Returns `None` for an
-    empty profile, else::
+    On the 5-sample median of the SETTLED red trace (`settled_mask`): the
+    maximum is the global maximum BEFORE the operator's Mark (before the end,
+    without one); the minimum is the deepest point AFTER that maximum. Returns
+    `None` for an empty profile, else::
 
-        {"max_t", "min_t", "max_i", "min_i",   # None when the trace is flat
-         "red_max", "red_min",                 # smoothed red at the two
-         "baseline"}                           # median of the first second
+        {"max_t", "min_t", "max_i", "min_i",   # None when the trace is flat;
+                                               # the indices are into the
+                                               # profile as given
+         "red_max", "red_min",                 # smoothed red at the two (None
+                                               # when nothing is settled)
+         "baseline",                           # median of the first second
+         "settled_mask", "masked_share"}       # ndarray[bool] over the rows,
+                                               # and the share that is False
     """
-    t = numpy.asarray(list(profile.get("t") or ()), dtype=float)
-    red = list(profile.get("red") or ())
-    if t.size == 0 or not red:
+    mask, t, red, _z = _settled(profile)
+    if mask.size == 0:
         return None
-    smooth = median5(red)
     found = {"max_t": None, "min_t": None, "max_i": None, "min_i": None,
-             "red_max": float(smooth.max()), "red_min": float(smooth.min()),
-             "baseline": baseline_of(profile)}
+             "red_max": None, "red_min": None, "baseline": None,
+             "settled_mask": mask,
+             "masked_share": float(1.0 - mask.mean())}
+    if t.size == 0:
+        return found
+    smooth = median5(red)
+    found.update(red_max=float(smooth.max()), red_min=float(smooth.min()),
+                 baseline=_baseline(t, red))
     if not smooth.max() > smooth.min():
         return found
     end = smooth.size
@@ -103,9 +213,10 @@ def detect(profile, operator_t=None):
         end = max(1, int(numpy.searchsorted(t, operator_t, side="right")))
     i_max = int(numpy.argmax(smooth[:end]))
     i_min = i_max + int(numpy.argmin(smooth[i_max:]))
-    found.update(max_i=i_max, min_i=i_min, max_t=float(t[i_max]),
-                 min_t=float(t[i_min]), red_max=float(smooth[i_max]),
-                 red_min=float(smooth[i_min]))
+    original = numpy.flatnonzero(mask)
+    found.update(max_i=int(original[i_max]), min_i=int(original[i_min]),
+                 max_t=float(t[i_max]), min_t=float(t[i_min]),
+                 red_max=float(smooth[i_max]), red_min=float(smooth[i_min]))
     return found
 
 
@@ -116,11 +227,8 @@ class _Context:
     detector's, or the marks given), the baseline and the operator's Mark."""
 
     def __init__(self, profile, marks):
-        self.t = numpy.asarray(list(profile.get("t") or ()), dtype=float)
-        self.red = median5(profile.get("red") or ())
-        z = profile.get("z")
-        self.z = (numpy.asarray([numpy.nan if v is None else v for v in z],
-                                dtype=float) if z else None)
+        _mask, self.t, red, self.z = _settled(profile)    # settled samples only
+        self.red = median5(red)
         marks = dict(marks or {})
         self.operator_t = marks.get("operator_t")
         found = detect(profile, self.operator_t) or {}
