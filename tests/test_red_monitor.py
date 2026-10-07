@@ -1663,3 +1663,216 @@ def test_the_sidecar_records_the_channel_masks(logged):
     assert meta["channel_thresholds"] == {
         "green": {"g_min": 150, "r_max": 100, "b_max": 100},
         "blue": {"b_min": 150, "r_max": 100, "g_max": 100}}
+
+
+# ---------------------------------------------------------------------
+# RG-2 (2026-10-07): the factor is an analysis setting. The numbers this
+# model publishes are profile columns; `transfer_map_analysis` reads any of
+# them (or a ratio of two) as the column that drives the extrema.
+# ---------------------------------------------------------------------
+
+def _lowering(t, base, peak, dip):
+    """A hover at `base`, a rise to `peak` at 2 s, a fall to `dip` at 3 s,
+    flat after: the owner's picture of a lowering, one column of it."""
+    out = []
+    for s in t:
+        if s < 1.5:
+            out.append(base)
+        elif s < 2.0:
+            out.append(base + (peak - base) * (s - 1.5) / 0.5)
+        elif s < 3.0:
+            out.append(peak + (dip - peak) * (s - 2.0))
+        else:
+            out.append(dip)
+    return out
+
+
+def factor_profile():
+    """Red and green with different shapes: red peaks at 2.0 s and dips at
+    3.0 s; green is red shifted 0.5 s later and scaled, so its extrema are
+    elsewhere and its values are not red's."""
+    t = [i / 100.0 for i in range(500)]
+    red = _lowering(t, 20.0, 35.0, 8.0)
+    green = _lowering([s - 0.5 for s in t], 5.0, 9.0, 2.0)
+    return {"t": t, "red": red, "green": green,
+            "blue": [1.0] * len(t), "r_mean": [s + 100.0 for s in red],
+            "g_mean": [0.0] * len(t), "b_mean": [50.0] * len(t)}
+
+
+def test_the_factor_parser_names_a_column_or_a_ratio():
+    from model import transfer_map_analysis as tma
+    assert tma.DEFAULT_FACTOR == "red"
+    assert tma.FACTOR_COLUMNS == ("red", "green", "blue", "r_mean", "g_mean",
+                                  "b_mean")
+    assert tma.parse_factor("red") == ("red", None)
+    assert tma.parse_factor("b_mean") == ("b_mean", None)
+    assert tma.parse_factor("red/green") == ("red", "green")
+    assert tma.parse_factor(" Red / G_Mean ") == ("red", "g_mean")
+    for bad in ("purple", "red/", "/green", "red/green/blue", "", "red//green",
+                None, 3):
+        with pytest.raises(ValueError):
+            tma.parse_factor(bad)
+    with pytest.raises(ValueError, match="purple"):
+        tma.parse_factor("red/purple")
+
+
+def test_a_ratio_factor_divides_and_a_zero_denominator_is_not_a_number():
+    from model import transfer_map_analysis as tma
+    profile = {"t": [0.0, 0.1, 0.2], "red": [4.0, 6.0, 8.0],
+               "green": [2.0, 0.0, None]}
+    values = tma.factor_values(profile, "red/green")
+    assert values[0] == pytest.approx(2.0)
+    assert numpy.isnan(values[1]) and numpy.isnan(values[2])
+    assert list(tma.factor_values(profile, "red")) == [4.0, 6.0, 8.0]
+
+
+def test_a_profile_lacking_the_factors_column_is_refused_by_name():
+    from model import transfer_map_analysis as tma
+    old = {"t": [0.0, 0.1], "red": [1.0, 2.0]}            # a red-only profile
+    with pytest.raises(ValueError, match="green"):
+        tma.detect(old, factor="green")
+    with pytest.raises(ValueError, match="b_mean"):
+        tma.force_indices(old, {}, factor="red/b_mean")
+    with pytest.raises(ValueError, match="blue"):
+        tma.detect({**old, "blue": [None, None]}, factor="blue")
+
+
+def test_red_is_the_default_factor_and_nothing_moves():
+    from model import transfer_map_analysis as tma
+    profile = factor_profile()
+    red_only = {"t": profile["t"], "red": profile["red"]}
+    default, named = tma.detect(profile, 3.5), tma.detect(profile, 3.5, factor="red")
+    alone = tma.detect(red_only, 3.5)
+    for key in ("max_t", "min_t", "max_i", "min_i", "red_max", "red_min",
+                "baseline", "masked_share"):
+        assert default[key] == named[key] == alone[key], key
+    assert tma.force_indices(profile, {"operator_t": 3.5}) == \
+        tma.force_indices(red_only, {"operator_t": 3.5}) == \
+        tma.force_indices(profile, {"operator_t": 3.5}, factor="red")
+
+
+def test_two_factors_find_their_own_extrema_on_one_profile():
+    from model import transfer_map_analysis as tma
+    profile = factor_profile()
+    red = tma.detect(profile, 4.0)
+    green = tma.detect(profile, 4.0, factor="green")
+    assert red["max_t"] == pytest.approx(2.0, abs=0.03)
+    assert red["min_t"] == pytest.approx(3.0, abs=0.03)
+    assert green["max_t"] == pytest.approx(2.5, abs=0.03)
+    assert green["min_t"] == pytest.approx(3.5, abs=0.03)
+    # (the 5-sample median takes a little off a sharp peak)
+    assert (green["red_max"], green["red_min"], green["baseline"]) == \
+        pytest.approx((9.0, 2.0, 5.0), abs=0.1)
+    # the green factor reads exactly as a profile whose red WAS the green
+    as_red = tma.detect({"t": profile["t"], "red": profile["green"]}, 4.0)
+    for key in ("max_t", "min_t", "red_max", "red_min", "baseline"):
+        assert green[key] == as_red[key], key
+    forces = tma.force_indices(profile, {"operator_t": 4.0}, factor="green")
+    assert forces == tma.force_indices(
+        {"t": profile["t"], "red": profile["green"]}, {"operator_t": 4.0})
+    assert forces["shadow_vs_peak"] == pytest.approx((9.0 - 2.0) / 9.0, abs=0.01)
+    assert forces != tma.force_indices(profile, {"operator_t": 4.0})
+    # a ratio is one more column: r_mean / b_mean = (red + 100) / 50
+    ratio = tma.detect(profile, 4.0, factor="r_mean/b_mean")
+    assert ratio["red_max"] == pytest.approx(135.0 / 50.0, abs=0.02)
+    assert ratio["max_t"] == red["max_t"]
+    assert tma.baseline_of(profile, factor="green") == pytest.approx(5.0)
+
+
+def test_the_rows_a_factor_is_read_over_are_the_red_masks():
+    """A glitch is a property of the grab, not of a column: a black grab
+    (red 0.0) is masked for every factor, while a green share of 0.0 (the
+    bench scene has none) is a reading, not a black grab."""
+    from model import transfer_map_analysis as tma
+    profile = factor_profile()
+    profile["red"][120] = 0.0                       # a black grab
+    green = tma.detect(profile, 4.0, factor="g_mean")   # g_mean is all 0.0
+    assert not green["settled_mask"][120]
+    assert green["settled_mask"].sum() == len(profile["t"]) - 1
+    assert green["red_max"] == 0.0 and green["max_t"] is None   # flat, not masked
+
+
+# -- dev/reanalyse_trials.py --factor -------------------------------------------
+
+def _reanalyse_tool():
+    import importlib.util
+    import pathlib
+    path = pathlib.Path(__file__).resolve().parent.parent / "dev" / "reanalyse_trials.py"
+    spec = importlib.util.spec_from_file_location("reanalyse_trials_rgb", path)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    return tool
+
+
+def _trial_db(path, columns=()):
+    """A store with two trials over `factor_profile()`: the profile table
+    carries `red` plus `columns`; trial 2's channel cells are NULL (recorded
+    before the columns existed, as an old row of a migrated table is)."""
+    import sqlite3
+    profile = factor_profile()
+    conn = sqlite3.connect(path)
+    extra = "".join(f", {c} REAL" for c in columns)
+    conn.execute("CREATE TABLE trials (id INTEGER PRIMARY KEY, "
+                 "mark_operator_t REAL, red_min REAL, red_max REAL, "
+                 "red_baseline REAL)")
+    conn.execute(f"CREATE TABLE profile (trial_id INTEGER, t_s REAL, red REAL, "
+                 f"z REAL{extra})")
+    for trial in (1, 2):
+        conn.execute("INSERT INTO trials VALUES (?, 4.0, 1.0, 2.0, 3.0)", (trial,))
+        for i, t in enumerate(profile["t"]):
+            cells = [profile[c][i] if trial == 1 else None for c in columns]
+            conn.execute(f"INSERT INTO profile VALUES (?, ?, ?, ?"
+                         f"{', ?' * len(columns)})",
+                         (trial, t, profile["red"][i], None, *cells))
+    conn.commit()
+    conn.close()
+
+
+def test_reanalyse_takes_a_factor_and_refuses_an_unknown_one(capsys):
+    tool = _reanalyse_tool()
+    assert tool.parse_args(["x.sqlite"]).factor == "red"
+    assert tool.parse_args(["x.sqlite", "--factor", "red/green"]).factor == "red/green"
+    with pytest.raises(SystemExit):
+        tool.parse_args(["x.sqlite", "--factor", "purple"])
+    assert "purple" in capsys.readouterr().err
+
+
+def test_reanalyse_with_a_factor_reports_its_extrema_and_the_red_only_trials(tmp_path):
+    tool = _reanalyse_tool()
+    db = str(tmp_path / "map.sqlite")
+    _trial_db(db, columns=("green", "blue", "r_mean", "g_mean", "b_mean"))
+    assert tool.main([db, "--out", str(tmp_path / "out"), "--factor", "green"]) == 0
+    md = (tmp_path / "out").glob("reanalysis_*_green.md")
+    text = next(md).read_text()
+    assert "factor: green" in text
+    assert "red only" in text
+    rows = list(csv.DictReader(open(next((tmp_path / "out").glob("reanalysis_*_green.csv")))))
+    first, second = rows
+    assert first["factor"] == "green" and first["note"] == ""
+    assert float(first["new_red_max"]) == pytest.approx(9.0, abs=0.1)
+    assert float(first["new_red_min"]) == pytest.approx(2.0, abs=0.1)
+    assert second["new_red_max"] == "" and "red only" in second["note"]
+
+
+def test_reanalyse_says_so_when_no_profile_carries_the_column(tmp_path):
+    tool = _reanalyse_tool()
+    db = str(tmp_path / "old.sqlite")
+    _trial_db(db)                                       # red only, as the bench's
+    tool.main([db, "--out", str(tmp_path / "out"), "--factor", "red/green"])
+    text = next((tmp_path / "out").glob("reanalysis_*_red-green.md")).read_text()
+    assert "factor: red/green" in text and "no green column" in text
+    rows = list(csv.DictReader(open(next((tmp_path / "out").glob("reanalysis_*_red-green.csv")))))
+    assert len(rows) == 2 and all(r["new_red_max"] == "" for r in rows)
+
+
+def test_reanalyse_red_is_unchanged_and_write_needs_the_red_factor(tmp_path):
+    tool = _reanalyse_tool()
+    db = str(tmp_path / "map.sqlite")
+    _trial_db(db, columns=("green",))
+    tool.main([db, "--out", str(tmp_path / "out")])
+    rows = list(csv.DictReader(open(next((tmp_path / "out").glob("reanalysis_????-??-??.csv")))))
+    assert float(rows[0]["new_red_max"]) == pytest.approx(35.0, abs=0.5)
+    with pytest.raises(SystemExit, match="red"):
+        tool.main([db, "--out", str(tmp_path / "out"), "--factor", "green",
+                   "--write"])
+    assert not (tmp_path / "map.sqlite.pre-reanalysis.bak").exists()
