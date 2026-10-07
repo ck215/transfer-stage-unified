@@ -351,3 +351,100 @@ def test_reanalyse_tool_parses_its_arguments():
     assert not args.write and not args.repair_video
     args = tool.parse_args(["x.sqlite", "--out", "o", "--write", "--repair-video"])
     assert args.out == "o" and args.write and args.repair_video
+
+
+# -- the live estimate (approved proposal 2026-10-07, TR-3) --------------------
+
+def _feed(live, t, red, frozen=False):
+    return [live.add(s, r, frozen) for s, r in zip(t, red)]
+
+
+def test_force_classes_follow_the_named_thresholds():
+    low, medium, high = tma.FORCE_CLASSES
+    assert (low, medium, high) == ("Low", "Medium", "High")
+    assert tma.force_class(None) is None
+    assert tma.force_class(0.0) == low
+    assert tma.force_class(tma.FORCE_CLASS_MEDIUM_FROM - 1e-9) == low
+    assert tma.force_class(tma.FORCE_CLASS_MEDIUM_FROM) == medium
+    assert tma.force_class(tma.FORCE_CLASS_HIGH_FROM - 1e-9) == medium
+    assert tma.force_class(tma.FORCE_CLASS_HIGH_FROM) == high
+    assert tma.FORCE_CLASS_MEDIUM_FROM < tma.FORCE_CLASS_HIGH_FROM
+
+
+def test_live_force_is_shadow_vs_peak_from_the_baseline():
+    assert tma.live_force(None, 20.0, 15.0) == (None, None)     # no baseline
+    assert tma.live_force(10.0, 0.0, 0.0) == (None, None)       # no peak
+    value, klass = tma.live_force(10.0, 20.0, 15.0)
+    assert value == pytest.approx(0.25) and klass == "High"
+    assert tma.live_force(10.0, 20.0, 21.0) == (0.0, "Low")     # never below 0
+
+
+def test_the_live_estimate_waits_for_the_baseline_then_follows_the_shadow():
+    live = tma.LiveForce()
+    # Hover at 10 % for the baseline's first second: nothing to say yet.
+    t = [0.1 * i for i in range(11)]                 # 0.0 .. 1.0 s
+    assert set(_feed(live, t, [10.0] * len(t))) == {(None, None)}
+    assert live.baseline is None
+    live.add(1.1, 10.0)
+    assert live.baseline == 10.0 and live.estimate == (0.0, "Low")
+    # The approach: up to the peak; the shadow: down through the classes.
+    steps = [(20.0, None), (18.0, "Low"), (16.5, "Medium"), (14.0, "High")]
+    s = 1.2
+    for red, klass in steps:
+        for _ in range(5):                          # the running median moves
+            live.add(s, red)
+            s += 0.1
+        if klass is not None:
+            assert live.estimate[1] == klass, (red, live.estimate)
+    assert live.peak == 20.0
+    assert live.estimate[0] == pytest.approx((20.0 - 14.0) / 20.0)
+
+
+def test_the_live_estimate_matches_shadow_vs_peak_at_the_end():
+    """On a clean lowering whose dip is a plateau, the live value at the end
+    is the stored definition's (the trailing median and the centred one
+    agree where the trace is flat)."""
+    profile = lowering()
+    live = tma.LiveForce()
+    _feed(live, profile["t"], profile["red"])
+    stored = tma.force_indices(profile)["shadow_vs_peak"]
+    assert live.estimate[0] == pytest.approx(stored, rel=1e-9)
+    assert live.estimate[1] == tma.force_class(stored)
+
+
+def test_the_peak_is_frozen_from_the_mark():
+    live = tma.LiveForce()
+    _feed(live, [0.1 * i for i in range(12)], [10.0] * 12)
+    _feed(live, [1.2 + 0.1 * i for i in range(5)], [20.0] * 5)
+    _feed(live, [1.7 + 0.1 * i for i in range(5)], [30.0] * 5, frozen=True)
+    assert live.peak == 20.0                         # M is taken before the Mark
+    assert live.estimate == (0.0, "Low")
+
+
+def test_a_black_or_a_stale_row_is_not_settled_and_moves_nothing():
+    live = tma.LiveForce()
+    _feed(live, [0.1 * i for i in range(12)], [10.0] * 12)
+    before = live.estimate
+    live.add(1.3, 0.0)                               # rule (a): a black grab
+    assert live.settled is False and live.estimate == before
+    live.add(1.4, float("nan"))
+    assert live.settled is False
+    live.add(1.5, 10.5)
+    assert live.settled is True
+    # Rule (b): a value that keeps coming back between different ones.
+    live = tma.LiveForce()
+    s, kept = 0.0, []
+    for i in range(40):
+        live.add(s, 50.0 if i % 2 else 10.0 + 0.01 * i)
+        kept.append(live.settled)
+        s += 0.05
+    assert kept[1::2][:9] == [True] * 9              # until it is frequent
+    assert not any(kept[1::2][10:])                  # then stale
+    assert all(kept[0::2])                           # the live rows are kept
+
+
+def test_one_transient_row_never_moves_the_running_median():
+    live = tma.LiveForce()
+    _feed(live, [0.1 * i for i in range(12)], [10.0] * 12)
+    live.add(1.25, 90.0)                             # a half-painted frame
+    assert live.settled and live.current == 10.0 and live.peak == 10.0

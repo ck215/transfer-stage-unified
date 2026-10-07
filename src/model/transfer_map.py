@@ -46,7 +46,9 @@ the trials already on it). The picks stay for the next trial.
 **Force** has no sensor. It is approximated from the red-percent trace of
 the lowering (`model.transfer_map_analysis`): several definitions, computed
 from the stored raw profile whenever a figure or an export asks, never
-stored in its place.
+stored in its place. While recording, the sheet's **Force estimate** is
+`shadow_vs_peak` taken incrementally (`analysis.LiveForce`), updated on Red
+Percent's row thread at the row rate; a state read only reads it.
 
 **It moves nothing.** No port, no gamepad, no device. `_halt_hardware`
 disarms the trial in memory and returns at once; the video and the
@@ -246,6 +248,45 @@ STAGE_MONITOR = 1
 #: Where a stage still waits, under the pictures folder, until its trial
 #: has a number (or is disarmed, which deletes it).
 STAGING = ".stage"
+#: `analysis_health` compares Red Percent's counters over windows of at
+#: least this many seconds (a window closes at the first read after it).
+HEALTH_WINDOW_S = 1.0
+#: ... and calls the analysis "unsettled" when more than this share of a
+#: window's reads were rejected (black, stale or unsettled; CAP-1).
+UNSETTLED_SHARE = 0.5
+
+
+class _HealthWatch:
+    """Red Percent's settle-gate counters, window by window, for
+    `analysis_health`: "stalled" when a window saw no read at all,
+    "unsettled" when more than `UNSETTLED_SHARE` of its reads were
+    rejected, else "settled". O(1) per observation; a new run (or counters
+    that went back) starts a new window."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._run = None
+        self._start = 0.0
+        self._counts = (0, 0)
+        self._word = "settled"
+
+    def observe(self, run, now, accepted, rejected):
+        with self._lock:
+            if (run is not self._run or accepted < self._counts[0]
+                    or rejected < self._counts[1]):
+                self._run, self._start = run, now
+                self._counts, self._word = (accepted, rejected), "settled"
+            elif now - self._start >= HEALTH_WINDOW_S:
+                fresh = accepted - self._counts[0]
+                refused = rejected - self._counts[1]
+                if fresh + refused == 0:
+                    self._word = "stalled"
+                elif refused > UNSETTLED_SHARE * (fresh + refused):
+                    self._word = "unsettled"
+                else:
+                    self._word = "settled"
+                self._start, self._counts = now, (accepted, rejected)
+            return self._word
 
 
 def _make_recorder(out_dir, fps, monitor):
@@ -656,6 +697,9 @@ class _Trial:
         self.review = None
         #: (sample_id, chip_id, flake_id) the cut is on (`_Pending.where`).
         self.where = (None, None, None)
+        #: The Force estimate, fed one row at a time on Red Percent's run
+        #: thread (`_on_sample`), read by the state.
+        self.live = analysis.LiveForce()
 
 
 class TransferMap(Model):
@@ -726,8 +770,6 @@ class TransferMap(Model):
         Param("tilt_now", "float", default=0.0, decimals=2, unit="deg",
               label="Tilt"),
         Param("speed_now", "int", default=0, unit="steps/s", label="Speed"),
-        Param("red_now", "float", default=0.0, decimals=2, unit="%",
-              label="Red"),
         Param("trial_count", "int", default=0, label="Trials"),
         # A3: the trial store the operator chooses.
         Param("store_path", "text", default="", label="Store file"),
@@ -805,6 +847,7 @@ class TransferMap(Model):
         self._figure_cache = None
         self._indices = {}             # trial id -> force indices
         self._encoder = None              # `video_encoder`, once read
+        self._health = _HealthWatch()     # `analysis_health`'s windows
 
     @classmethod
     def default_db_path(cls):
@@ -1172,10 +1215,6 @@ class TransferMap(Model):
         speed = self._read_speed()[0]
         return None if speed is None else int(round(speed))
 
-    @property
-    def red_now(self):
-        return getattr(self._red, "current_red", None)
-
     # -- Red Percent's controls, forwarded (T1): the trial sheet is the one
     # page of a trial; Red Percent keeps them, this only reaches them.
     @property
@@ -1286,7 +1325,15 @@ class TransferMap(Model):
             x = px if x is None else x
             y = py if y is None else y
             z = pz if z is None else z
-        trial.samples.append((time.monotonic() - trial.armed, red, z, x, y))
+        t = time.monotonic() - trial.armed
+        trial.samples.append((t, red, z, x, y))
+        # The Force estimate moves here, at the row rate, on this thread;
+        # never on a poll (TR-3).
+        try:
+            trial.live.add(t, red, frozen=trial.operator_t is not None)
+        except Exception as exc:
+            events.debug("Estimate Failed", repr(exc), source=self.NAME,
+                         every=5.0)
 
     # -- the guided trial --------------------------------------------------
     def arm_trial(self, confirmed=False):
@@ -1894,10 +1941,78 @@ class TransferMap(Model):
         last trial's; b"" before one is taken."""
         return self._picture("mark_full")
 
+    # -- the trial row's readouts (approved proposal 2026-10-07) ---------------
+    @property
+    def force_estimate(self):
+        """The trial row's Force estimate: "" (blank) outside a recording
+        and until the baseline exists; "Unsettled" while the analysis is
+        rejecting frames (Red Percent's settle-gate counters,
+        `analysis_health`); else "<Class> · <value>" of `shadow_vs_peak` on
+        the live profile (a row the mask refuses moves nothing). Reads what
+        `_on_sample` computed: no analysis on a poll."""
+        trial = self._trial
+        if trial is None or trial.ended:
+            return ""
+        live = trial.live
+        if self.analysis_health == "unsettled":
+            return "Unsettled"
+        value, klass = live.estimate
+        if live.baseline is None or value is None:
+            return ""
+        return f"{klass} · {value:.2f}"
+
+    @property
+    def analysis_health(self):
+        """One word for the procedure strip, from Red Percent's published
+        state: "no region" (no Red Percent, or no capture region), "stalled"
+        (a run that reads nothing, or no run while recording), "unsettled"
+        (most reads rejected), "settled"; "" while no run is expected
+        (setup, the tip prompt, review)."""
+        red = self._red
+        if red is None or not getattr(red, "region", None):
+            return "no region"
+        run = getattr(red, "run_token", None)
+        if run is None:
+            return "stalled" if self.phase in ("live", "marked") else ""
+
+        def count(name):
+            try:
+                return int(getattr(red, name, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+        rejected = (count("rejected_black") + count("rejected_stale")
+                    + count("rejected_unsettled"))
+        return self._health.observe(run, time.monotonic(),
+                                    count("frames_accepted"), rejected)
+
+    @property
+    def video_word(self):
+        """The trial row's Video, one word: "Recording" while the display's
+        recorder runs, else "Stopped". Its frames and drops are the trial
+        row's columns, `frames.csv` and Diagnostics' (`video_status`)."""
+        trial = self._trial
+        recorder = trial.recorder if trial is not None else None
+        if recorder is None or trial.ended or trial.video is not None:
+            return "Stopped"
+        if not getattr(recorder, "is_recording", True):
+            return "Stopped"
+        stats = getattr(recorder, "stats", None) or {}
+        return "Stopped" if stats.get("encoder_error") else "Recording"
+
+    @property
+    def trial_samples(self):
+        """Diagnostics: the armed trial's red-percent rows (and those past
+        MAX_SAMPLES, not kept); blank between trials."""
+        trial = self._trial
+        if trial is None:
+            return None
+        n = len(trial.samples)
+        return f"{n} (+{trial.dropped} not kept)" if trial.dropped else str(n)
+
     @property
     def video_status(self):
         """ "recording, 312 frames" / "screen.mp4, 1240 frames, 3 dropped" /
-        "no video: <why>"; the last trial's between trials."""
+        "no video: <why>"; the last trial's between trials (Diagnostics)."""
         trial = self._trial
         if trial is not None:
             video = trial.video
@@ -2968,14 +3083,18 @@ class TransferMap(Model):
             # live and marked: the recording.
             sch.section(
                 "Recording",
-                sch.readonly("Red", "red_now", param=P["red_now"], format=".2f"),
+                # Where the live Red was (approved proposal 2026-10-07):
+                # the force class and its shadow_vs_peak value, at the row
+                # rate; Red Percent's own readings are not on this page.
+                sch.readonly("Force estimate", "force_estimate", rail=True),
                 sch.button("Mark force", "mark_force", enabled_when=("armed",)),
                 sch.phased(sch.button("End recording", "end_recording",
                                       role="go", enabled_when=("armed",)),
                            "marked"),
                 # TM-4: the whole display, at its own resolution, from the
                 # region landing to End recording; no picture is drawn live.
-                sch.readonly("Video", "video_status"),
+                # One word; the counts are Diagnostics'.
+                sch.readonly("Video", "video_word"),
                 # TM-2 (2026-10-07): no live plot. Redrawing the whole trace
                 # every refresh slowed the bench's view (CAP-5); the trace
                 # is drawn once, for the review, in the finish step.
@@ -2988,7 +3107,7 @@ class TransferMap(Model):
                           empty="The picture of the stage taken at Arm."),
                 sch.image("At Mark force", "mark_full_image",
                           empty="The whole display at Mark force."),
-                sch.readonly("Video", "video_status"),
+                sch.readonly("Video", "video_word"),
                 sch.image("This trial", "trial_figure",
                           empty="The trial's red percent, once its recording "
                                 "has ended."),
@@ -3113,6 +3232,9 @@ class TransferMap(Model):
                 sch.readonly("Last trial", "last_trial_numbers"),
                 sch.readonly("Width gradient", "width_gradient"),
                 sch.readonly("Video encoder", "video_encoder"),
+                # The trial row's counts (2026-10-07: off the sheet).
+                sch.readonly("Video", "video_status"),
+                sch.readonly("Samples", "trial_samples"),
                 sch.log_stream("Trials", "trials_log"),
                 sch.log_stream("Tips", "tips_log"),
                 sch.button("Delete trial", "delete_trial", inputs=("trial_pick",),

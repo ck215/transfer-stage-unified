@@ -1076,9 +1076,9 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
             tiers[key] = section.get("tier", 1)
     # 2026-10-07: + the region step's still and the End recording step.
     for key in ("arm_trial", "mark_force", "finish_trial", "abort_trial",
-                "figure", "pick_tip", "tilt_now", "speed_now", "red_now",
+                "figure", "pick_tip", "tilt_now", "speed_now", "force_estimate",
                 "trial_count", "trial_status", "db_path", "new_database",
-                "mark_full_image", "video_status",
+                "mark_full_image", "video_word",
                 "tip_status", "stage_still", "end_recording", "trial_figure"):
         assert tiers[key] == 1, key
     for key in ("set_figure_type", "set_force_definition", "attach_afm",
@@ -1087,8 +1087,9 @@ def test_tier_one_holds_the_trial_keys_and_tier_two_the_configuration():
                 "set_tip_note", "tip_note", "tip_id"):
         assert tiers[key] == 2, key
     for key in ("trials_log", "tips_log", "delete_trial", "last_trial_numbers",
-                "video_encoder"):
+                "video_encoder", "video_status", "trial_samples"):
         assert tiers[key] == 3, key
+    assert "red_now" not in tiers          # 2026-10-07: the Force estimate's place
     # TM-2: + the live plot ("Red % since Arm"). TM-4: + the region video's
     # labelled frames; the display at the Mark is back (its v3 column).
     for gone in ("before_image", "mark_image", "after_image",
@@ -1945,9 +1946,9 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     # TM-4: no labelled region frames; the review shows the stage still and
     # the whole display at the Mark.
     assert _keys(by_title["Recording"]) == [
-        "red_now", "mark_force", "end_recording", "video_status"]
+        "force_estimate", "mark_force", "end_recording", "video_word"]
     assert _keys(by_title["Review"]) == [
-        "stage_still", "mark_full_image", "video_status", "trial_figure",
+        "stage_still", "mark_full_image", "video_word", "trial_figure",
         "note", "finish_trial"]
     assert _keys(by_title["This trial"]) == ["trial_status", "is_broke",
                                              "abort_trial"]
@@ -1967,8 +1968,9 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     diagnostics = next(s for s in sections if s["title"] == "Diagnostics")
     assert [e.get("model_attr") or e.get("source_command") or e.get("command")
             for e in diagnostics["elements"]] == [
-        "last_trial_numbers", "width_gradient", "video_encoder", "trials_log",
-        "tips_log", "delete_trial"]
+        "last_trial_numbers", "width_gradient", "video_encoder",
+        "video_status", "trial_samples", "trials_log", "tips_log",
+        "delete_trial"]
 
 
 # -- full pictures: the whole screen at Arm and at Finish (2026-09-28) ----------
@@ -2762,8 +2764,8 @@ def test_the_trials_run_starts_from_a_fresh_baseline_when_the_region_lands(
     assert red._run.baseline_red is not None and red._run.baseline_red != 99.0
     assert red.baseline_red == red._run.baseline_red
     reds = set()
-    assert _wait_for(lambda: reds.add(model.state["values"]["red_now"])
-                     or len(reds) >= 2)            # the sheet's Red moves
+    assert _wait_for(lambda: reds.add(red.current_red)
+                     or len(reds) >= 2)            # the trial's red moves
     model.abort_trial()
 
 
@@ -3850,3 +3852,234 @@ def test_a_bench_v8_file_gains_nothing_it_has_and_keeps_version_eight(
         assert _version(private_db) == 8
     finally:
         model.close()
+
+
+# -- TR-3 (approved proposal 2026-10-07): the Force estimate, Video one word ---
+# The trial row's live "Red" is gone; "Force estimate" stands where it was:
+# blank until a baseline, "Unsettled" while the analysis rejects frames,
+# else "<Class> · <value>" of shadow_vs_peak, moved at the row rate on the
+# row's thread, never by a poll.
+
+class ScriptedRed:
+    """Red Percent's published state, scripted (no thread, no screen): a
+    capture region, a run, the settle gate's counters, and rows pushed to
+    the subscribers by the test."""
+
+    def __init__(self):
+        self.region = None
+        self.is_running = False
+        self.run_token = None
+        self.frames_accepted = self.rejected_black = 0
+        self.rejected_stale = self.rejected_unsettled = 0
+        self.subscribers = []
+
+    def subscribe(self, fn):
+        if fn not in self.subscribers:
+            self.subscribers.append(fn)
+
+    def unsubscribe(self, fn):
+        self.subscribers = [f for f in self.subscribers if f != fn]
+
+    def grab_frame(self):
+        return PNG
+
+    def set_region(self, x, y, width, height):
+        self.region = {"left": x, "top": y, "width": width, "height": height}
+
+    def start_run(self, confirmed=False):
+        self.is_running, self.run_token = True, object()
+
+    def end_run(self):
+        self.is_running, self.run_token = False, None
+
+    def row(self, t_s, red, row=None):
+        for fn in list(self.subscribers):
+            fn(t_s, red, dict(row or {}))
+
+
+class Clock:
+    """`time` as the map's module sees it, with a monotonic clock the test
+    moves (the rows' t_s and the health windows follow it)."""
+
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def monotonic(self):
+        return self.now
+
+    @staticmethod
+    def strftime(*args):
+        return time.strftime(*args)
+
+
+@pytest.fixture
+def scripted(monkeypatch, private_db):
+    """A Transfer Map beside a scripted Red Percent, on a clock the test
+    moves, a tip and a flake picked. -> (model, red, clock)."""
+    clock = Clock()
+    monkeypatch.setattr(tm_module, "time", clock)
+    red = ScriptedRed()
+    model = TransferMap()
+    model.open()
+    model.on_model_added("Red Percent", red)
+    model.on_model_added("Stepper Probe", FakeProbe())
+    model.tip_id = "tip-A"
+    _give_flake(model)
+    yield model, red, clock
+    model.close()
+
+
+def _rows_at(model, red, clock, reds, start, step=0.1):
+    """Push `reds` as rows `step` s apart from `start` s after Arm."""
+    armed = model._trial.armed
+    for i, value in enumerate(reds):
+        clock.now = armed + start + i * step
+        red.row(clock.now, value)
+    return start + len(reds) * step
+
+
+def test_the_force_estimate_is_blank_then_a_class_on_a_scripted_profile(scripted):
+    model, red, clock = scripted
+    estimate = lambda: model.state["values"]["force_estimate"]   # noqa: E731
+    assert estimate() == ""                          # setup: no trial
+    _arm(model)
+    assert estimate() == ""                          # live, no rows yet
+    s = _rows_at(model, red, clock, [10.0] * 11, 0.0)      # the first second
+    assert estimate() == ""                          # no baseline yet
+    s = _rows_at(model, red, clock, [10.0], s)
+    assert estimate() == "Low · 0.00"
+    s = _rows_at(model, red, clock, [20.0] * 5, s)          # the approach
+    assert estimate() == "Low · 0.00"
+    s = _rows_at(model, red, clock, [18.0] * 5, s)
+    assert estimate() == "Low · 0.10"
+    s = _rows_at(model, red, clock, [16.0] * 5, s)
+    assert estimate() == "Medium · 0.20"
+    s = _rows_at(model, red, clock, [14.0] * 5, s)
+    assert estimate() == "High · 0.30"
+    element = _element(model, "force_estimate")
+    assert (element["type"], element["text"], element.get("rail")) == (
+        "readonly", "Force estimate", True)
+    model.end_recording()
+    assert estimate() == ""                          # the review step
+
+
+def test_the_force_estimate_says_unsettled_while_frames_are_rejected(scripted):
+    model, red, clock = scripted
+    estimate = lambda: model.state["values"]["force_estimate"]   # noqa: E731
+    _arm(model)
+    s = _rows_at(model, red, clock, [10.0] * 12, 0.0)
+    assert estimate() == "Low · 0.00"                # a window opens
+    clock.now += tm_module.HEALTH_WINDOW_S
+    red.frames_accepted += 2
+    red.rejected_unsettled += 9
+    red.rejected_black += 1
+    assert estimate() == "Unsettled"                 # most reads rejected
+    clock.now += tm_module.HEALTH_WINDOW_S
+    red.frames_accepted += 12
+    red.rejected_stale += 1
+    assert estimate() == "Low · 0.00"                # settled again
+    # A row the analysis cannot use (a black grab) moves nothing.
+    s = _rows_at(model, red, clock, [20.0] * 5, s)
+    s = _rows_at(model, red, clock, [18.0] * 5, s)
+    assert estimate() == "Low · 0.10"
+    s = _rows_at(model, red, clock, [0.0], s)
+    assert estimate() == "Low · 0.10" and model._trial.live.settled is False
+    _rows_at(model, red, clock, [18.0], s)
+    assert estimate() == "Low · 0.10" and model._trial.live.settled is True
+    model.abort_trial()
+
+
+def test_the_estimate_moves_on_rows_never_on_a_poll(scripted, monkeypatch):
+    model, red, clock = scripted
+    calls = []
+    original = tm_module.analysis.LiveForce.add
+
+    def counted(self, *args, **kwargs):
+        calls.append(threading.current_thread().name)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(tm_module.analysis.LiveForce, "add", counted)
+    monkeypatch.setattr(tm_module.analysis, "live_force",
+                        lambda *a: pytest.fail("a poll computed the estimate"))
+    _arm(model)
+    for _ in range(50):                              # a view polling
+        model.state
+        model.force_estimate
+    assert calls == []
+    monkeypatch.undo()
+    calls.clear()
+    monkeypatch.setattr(tm_module, "time", clock)
+    monkeypatch.setattr(tm_module.analysis.LiveForce, "add", counted)
+    _rows_at(model, red, clock, [10.0] * 3, 0.0)
+    assert len(calls) == 3                           # one per row
+    for _ in range(20):
+        model.state
+    assert len(calls) == 3
+    model.abort_trial()
+
+
+def test_the_estimate_is_fed_on_red_percents_run_thread(station, monkeypatch):
+    """With the real Red Percent: every update runs on its run thread, none
+    on the thread that reads the state (a view's)."""
+    model, red, *_ = station
+    threads = []
+    original = tm_module.analysis.LiveForce.add
+
+    def spy(self, *args, **kwargs):
+        threads.append(threading.current_thread())
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(tm_module.analysis.LiveForce, "add", spy)
+    _arm(model)
+    assert _wait_for(lambda: len(model._trial.samples) >= 5)
+    for _ in range(20):
+        model.state
+    model.abort_trial()
+    assert threads and threading.main_thread() not in threads
+    assert len(threads) >= 5
+
+
+def test_the_video_reads_recording_or_stopped_and_the_counts_are_diagnostics(
+        wired):
+    model, red, log, made = wired
+    word = lambda: model.state["values"]["video_word"]   # noqa: E731
+    assert word() == "Stopped"
+    _arm(model)
+    assert word() == "Recording"
+    assert model.state["values"]["video_status"] == "recording, 12 frames, 1 dropped"
+    assert _marked(model).is_ok
+    assert word() == "Recording"
+    assert model.run("end_recording").is_ok
+    assert word() == "Stopped"
+    for title in ("Recording", "Review"):
+        section = next(s for s in model.schema["sections"] if s["title"] == title)
+        videos = [e for e in section["elements"] if e.get("text") == "Video"]
+        assert [e["model_attr"] for e in videos] == ["video_word"], title
+    diagnostics = next(s for s in model.schema["sections"]
+                       if s["title"] == "Diagnostics")
+    assert {"video_status", "trial_samples"} <= set(_keys(diagnostics))
+    _confirmed(model, "finish_trial", {"note": ""})
+    assert word() == "Stopped"
+
+
+def test_a_recorder_that_failed_reads_stopped(station):
+    model, red, *_ = station
+    _wire(model, recorder={"fail": RuntimeError("no ffmpeg here")})
+    _arm(model)
+    assert model.video_word == "Stopped"
+    model.abort_trial()
+
+
+def test_the_status_names_the_trial_and_the_sample_count_is_diagnostics(scripted):
+    model, red, clock = scripted
+    trial = _arm(model)
+    _rows_at(model, red, clock, [10.0, 11.0, 12.0], 0.0)
+    values = model.state["values"]
+    assert values["trial_status"] == f"Trial {trial} on 4oct26 · 2 · F3"
+    assert "sample" not in values["trial_status"]
+    assert values["trial_samples"] == "3"
+    assert model.run("mark_force").is_ok
+    assert model.state["values"]["trial_status"].startswith(
+        f"Trial {trial} on 4oct26 · 2 · F3, force marked at")
+    model.abort_trial()
+    assert model.state["values"]["trial_samples"] == ""

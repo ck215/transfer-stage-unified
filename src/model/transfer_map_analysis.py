@@ -18,6 +18,7 @@ definition here is oriented the same way: **larger means more force**
 """
 import math
 import statistics
+from collections import deque
 
 import numpy
 
@@ -338,6 +339,110 @@ def force_indices(profile, marks=None, definitions=None):
         except Exception:
             out[name] = None
     return out
+
+
+# -- the live estimate (approved proposal 2026-10-07) ----------------------
+# The trial sheet's "Force estimate": `shadow_vs_peak` taken incrementally,
+# one Red Percent row at a time, on the live profile from the moment its
+# baseline exists. The mask and the definitions above are unchanged; this
+# only applies them to a profile still being recorded.
+
+#: The live classes, low to high.
+FORCE_CLASSES = ("Low", "Medium", "High")
+#: PLACEHOLDER thresholds on `shadow_vs_peak`, (M - r) / M: "Medium" from
+#: the first, "High" from the second. The bench's branch classes its trials
+#: Low / Medium / High by thresholds of its own (its store's `force_class`);
+#: when that branch lands, its thresholds replace these two numbers.
+FORCE_CLASS_MEDIUM_FROM = 0.15
+FORCE_CLASS_HIGH_FROM = 0.25
+
+
+def force_class(value):
+    """The class of a `shadow_vs_peak` value (None for None)."""
+    if value is None:
+        return None
+    if value >= FORCE_CLASS_HIGH_FROM:
+        return FORCE_CLASSES[2]
+    if value >= FORCE_CLASS_MEDIUM_FROM:
+        return FORCE_CLASSES[1]
+    return FORCE_CLASSES[0]
+
+
+def live_force(baseline, peak, current):
+    """`(value, class)`: `shadow_vs_peak` live, (M - r) / M with M the
+    running peak of the settled, smoothed trace and r its current value,
+    never below 0. `(None, None)` until the baseline exists, or without a
+    positive peak."""
+    if baseline is None or peak is None or current is None or not peak > 0:
+        return None, None
+    value = max(0.0, (peak - current) / peak)
+    return value, force_class(value)
+
+
+class LiveForce:
+    """The incremental entry point: `add(t, red)` per row, O(MEDIAN_WINDOW)
+    each, keeping what `live_force` needs.
+
+    The settled samples so far, as far as one row can tell (`settled_mask`
+    judges a whole trial; live, a row is judged against the rows before
+    it): rule (a), a black or non-finite red, is refused; rule (b), a value
+    already seen at least `STALE_MIN_REPEATS` times and `STALE_MIN_SHARE`
+    of the lit rows, arriving after a different value, is refused (live,
+    only the previous lit row is known, not the next). Rule (c)'s
+    transients are absorbed by the running median: one row never moves it.
+    A refused row changes nothing; `settled` says whether the last row was
+    kept.
+
+    The baseline is the median of the settled rows in the first
+    `BASELINE_SECONDS` (as `baseline_of`), and exists once a settled row
+    arrives after them. The running peak M is the maximum of the trailing
+    `MEDIAN_WINDOW` median, frozen from the operator's Mark (`frozen=True`,
+    as `detect` takes M before the Mark); r is that median now."""
+
+    def __init__(self):
+        self.t0 = None
+        self.baseline = None
+        self.peak = None
+        self.current = None
+        self.settled = True
+        self.estimate = (None, None)
+        self._first = []
+        self._recent = deque(maxlen=MEDIAN_WINDOW)
+        self._previous = None
+        self._seen = {}
+        self._lit = 0
+
+    def _keep(self, red):
+        """Rules (a) and (b) on one row, against the lit rows before it."""
+        if red is None or not math.isfinite(red) or red == BLACK_RED:
+            return False
+        previous, self._previous = self._previous, red
+        self._lit += 1
+        self._seen[red] = count = self._seen.get(red, 0) + 1
+        frequent = count >= max(STALE_MIN_REPEATS, STALE_MIN_SHARE * self._lit)
+        return not (frequent and red != previous)
+
+    def add(self, t, red, frozen=False):
+        """One row of the live profile (`t` seconds, `red` %). -> the
+        estimate, `(value, class)` or `(None, None)`."""
+        red = None if red is None else float(red)
+        self.settled = self._keep(red)
+        if not self.settled:
+            return self.estimate
+        t = float(t)
+        if self.t0 is None:
+            self.t0 = t
+        if self.baseline is None:
+            if t - self.t0 <= BASELINE_SECONDS:
+                self._first.append(red)
+            else:
+                self.baseline = float(statistics.median(self._first or [red]))
+        self._recent.append(red)
+        self.current = float(statistics.median(self._recent))
+        if self.peak is None or (not frozen and self.current > self.peak):
+            self.peak = self.current
+        self.estimate = live_force(self.baseline, self.peak, self.current)
+        return self.estimate
 
 
 # -- a Gaussian process (phase 2): mean and variance surfaces ---------------
