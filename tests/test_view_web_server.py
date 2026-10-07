@@ -2432,7 +2432,7 @@ def test_the_stop_is_reachable_with_red_percents_details_open_at_900(sim_station
       await page.evaluate(() => {
         Array.from(document.querySelectorAll('.model-link')).find((b) => b.textContent === 'Transfer Map').click();
         Array.from(document.querySelectorAll('#cards .disclosure[data-tier="2"]'))
-          .find((d) => d.textContent.trim() === 'Red Percent details').click();
+          .find((d) => d.textContent.trim() === 'RGB analysis details').click();
       });
       await sleep(800);
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
@@ -3009,7 +3009,7 @@ def test_an_empty_plot_pane_is_one_caption_tall(sim_station, tmp_path):
       // Map's page, in the tiers drawn after the Map's own.
       await press('Transfer Map');
       await page.evaluate(() => Array.from(document.querySelectorAll('#cards .card-tiers .disclosure[data-tier="2"]'))
-        .find((d) => d.textContent.trim() === 'Red Percent details').click());
+        .find((d) => d.textContent.trim() === 'RGB analysis details').click());
       await sleep(1500);
       return page.evaluate(() => Array.from(document.querySelectorAll('#cards .card-tiers .plot-frame'))
         .filter((f) => f.getClientRects().length)

@@ -18,7 +18,7 @@ from events import events
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
-from model.red_monitor import RedMonitor
+from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
@@ -93,19 +93,19 @@ def warnings():
 # -- 1. register ------------------------------------------------------------
 
 BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
-             "Temperature Controller", "Rotator", "Red Percent",
+             "Temperature Controller", "Rotator", "RGB Analysis",
              "Transfer Map",   # Tier S (2026-09-27)
              "Sample Map"]     # flake-coords (2026-10-04)
-#: The built-in Setup rows: Red Percent is registered but has no row of its
+#: The built-in Setup rows: RGB Analysis is registered but has no row of its
 #: own, being drawn on the Transfer Map's page and launched by its row
 #: (Model.HOST, owner ruling 2026-09-28).
-BUILT_IN_ROWS = [name for name in BUILT_INS if name != "Red Percent"]
+BUILT_IN_ROWS = [name for name in BUILT_INS if name != "RGB Analysis"]
 
 
 def test_the_six_built_ins_are_registered_in_todays_display_order():
     assert list(station_setup.MODEL_TYPES) == BUILT_INS
     assert list(station_setup.MODEL_TYPES.values()) == [
-        StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, RedMonitor,
+        StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, RgbAnalysis,
         TransferMap, SampleMap]   # Tier S; flake-coords
 
 
@@ -190,7 +190,7 @@ def test_resources_derive_from_the_needs_flags_so_the_six_need_no_edit():
     assert station_setup.resources_of(ChuckPositioner) == ("port", "gamepad")
     assert station_setup.resources_of(Heater) == ("port",)
     assert station_setup.resources_of(Rotator) == ("port",)
-    assert station_setup.resources_of(RedMonitor) == ()
+    assert station_setup.resources_of(RgbAnalysis) == ()
 
 
 def test_declared_resources_win_over_the_needs_flags():

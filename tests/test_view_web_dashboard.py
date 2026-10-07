@@ -657,7 +657,7 @@ def map_station(tmp_path, monkeypatch):
 @needs_browser
 def test_d_the_real_pair_in_sim_is_one_dashboard(map_station, tmp_path):
     view, controller, launched = map_station
-    assert set(controller.state()["models"]) >= {"Transfer Map", "Red Percent"}
+    assert set(controller.state()["models"]) >= {"Transfer Map", "RGB Analysis"}
     out = _browse(view, r"""
       if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
         await page.click('#drawer-close');
@@ -668,7 +668,7 @@ def test_d_the_real_pair_in_sim_is_one_dashboard(map_station, tmp_path):
       return page.evaluate(() => {
         const titleOf = (c) => (c.querySelector('.card-title') || {}).textContent;
         const map = Array.from(document.querySelectorAll('#cards > .card')).find((c) => titleOf(c) === 'Transfer Map');
-        const red = Array.from(document.querySelectorAll('#cards .card')).find((c) => titleOf(c) === 'Red Percent');
+        const red = Array.from(document.querySelectorAll('#cards .card')).find((c) => titleOf(c) === 'RGB Analysis');
         const discs = Array.from(map.querySelectorAll('.disclosure[data-tier="2"]')).map((d) => d.textContent.trim());
         return {
           links: Array.from(document.querySelectorAll('#model-nav [data-model]')).map((l) => l.dataset.model),
@@ -678,9 +678,9 @@ def test_d_the_real_pair_in_sim_is_one_dashboard(map_station, tmp_path):
         };
       });
     """, tmp_path)
-    assert "Red Percent" not in out["links"] and "Transfer Map" in out["links"], out
+    assert "RGB Analysis" not in out["links"] and "Transfer Map" in out["links"], out
     assert out["nested"] and out["shown"], out
-    assert out["discs"][-1] == "Red Percent details", out
+    assert out["discs"][-1] == "RGB analysis details", out
     assert len(out["discs"]) == 2, out
 
 

@@ -2,7 +2,7 @@
 
 Every test uses a temporary database (owner ruling 2026-09-27: tests never
 touch the project database). Red Percent is the real model over an injected
-capture factory (`tests/test_red_monitor.py`'s fake screen), so the samples
+capture factory (`tests/test_rgb_analysis.py`'s fake screen), so the samples
 arrive through the real subscribe hook on the real run thread; the tilt and
 speed sources are duck-typed stand-ins, plus the real SIM Rotator. The
 stage still is taken by the real `ScreenRecorder` over an injected frame
@@ -26,12 +26,12 @@ import schema as sch
 from controller.controller import Controller
 from model import plot_data
 from model import transfer_map as tm_module
-from model.red_monitor import RedMonitor
+from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.transfer_map import TransferMap
 from events import events
 from result import NeedsConfirm, Refused
-from test_red_monitor import desktop_screen, fake_screen
+from test_rgb_analysis import desktop_screen, fake_screen
 
 
 @pytest.fixture(autouse=True)
@@ -204,7 +204,7 @@ def _wait_for(predicate, timeout=3.0):
 
 @pytest.fixture
 def red(tmp_path):
-    model = RedMonitor(screen=desktop_screen())
+    model = RgbAnalysis(screen=desktop_screen())
     model.output_root = tmp_path / "runs"
     model.run_name = "C001"
     model.open()
@@ -656,7 +656,7 @@ def test_arm_needs_no_capture_region_and_starts_nothing(tmp_path, private_db):
     """2026-10-07 (owner ruling: the region is picked after Arm, on the
     stage still): Arm without a region is the `region` step, not a
     refusal; nothing runs and nothing is written until the region lands."""
-    bare = RedMonitor(screen=fake_screen())
+    bare = RgbAnalysis(screen=fake_screen())
     bare.output_root = tmp_path / "runs"
     bare.open()
     try:
@@ -1677,7 +1677,7 @@ def test_arm_that_cannot_start_the_run_writes_nothing(idle_station, private_db):
     red.estop()
     _arm_only(model)
     result = model.run("set_region", None, REGION)
-    assert result.is_refused and "Red Percent" in result.reason
+    assert result.is_refused and "RGB Analysis" in result.reason
     assert not model.is_armed and model.trial_count == 0
     assert model.phase == "region"
 

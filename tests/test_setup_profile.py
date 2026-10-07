@@ -94,7 +94,7 @@ def test_built_models_carry_the_operator_and_how_it_was_established(setup, tmp_p
 def test_station_and_user_params_reach_the_models_q4(setup):
     setup.run("add_profile", {"profile_new_name": "ialbinog"})
     setup.profiles.save_station({"Stepper Probe": {"man_full_speed": 250},
-                                 "Red Percent": {"red_min": 140}})
+                                 "RGB Analysis": {"red_min": 140}})
     setup.build(CONFIGS)
     probe = setup.controller._models["Stepper Probe"]
     assert int(probe.man_full_speed) == 250                  # station default at build
@@ -119,8 +119,8 @@ def test_remember_my_settings_saves_only_user_params(setup, tmp_path):
     stepper = saved["model_params"]["Stepper Probe"]
     assert stepper["x_step"] == 7
     assert "slow_speed" not in stepper and "brake_distance" not in stepper
-    assert "Red Percent" not in saved["model_params"] or \
-        "red_min" not in saved["model_params"]["Red Percent"]
+    assert "RGB Analysis" not in saved["model_params"] or \
+        "red_min" not in saved["model_params"]["RGB Analysis"]
 
 
 def test_save_station_settings_asks_and_keeps_the_brakes_out(setup, tmp_path):

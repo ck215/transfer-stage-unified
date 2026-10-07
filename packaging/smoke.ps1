@@ -27,7 +27,7 @@ $LogDir = Join-Path $DataRoot "logs"
 $Out = Join-Path ([IO.Path]::GetTempPath()) ("station-smoke-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $Out, $LogDir | Out-Null
 $PortRows = @("stepper_probe", "dc_probe", "chuck_positioner", "temperature_controller", "rotator")
-# red_percent has no row since 2026-09-28: it launches with the Transfer Map.
+# rgb_analysis (was red_percent) has no row since 2026-09-28: it launches with the Transfer Map.
 $AllRows = $PortRows + @("transfer_map", "sample_map")
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
