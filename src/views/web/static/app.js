@@ -1838,6 +1838,27 @@ function tableHead(sections, columns) {
   return head;
 }
 
+/** A region as the model publishes it - the dict, or `format_region`'s
+ *  words ("460x143 at (1208, 404)") - as [left, top, width, height] whole
+ *  numbers, or null when it is not set. */
+function regionOf(value) {
+  if (!value) return null;
+  let box = null;
+  if (typeof value === 'object') {
+    box = [value.left, value.top, value.width, value.height];
+  } else {
+    const found = /^\s*(\d+)x(\d+) at \((-?\d+), (-?\d+)\)\s*$/.exec(String(value));
+    if (found) box = [Number(found[3]), Number(found[4]), Number(found[1]), Number(found[2])];
+  }
+  if (!box || !box.every((n) => Number.isInteger(n)) || box[2] < 1 || box[3] < 1) return null;
+  return box;
+}
+
+/** schema.format_region's wording for a [left, top, width, height] box. */
+function formatRegion(box) {
+  return box[2] + 'x' + box[3] + ' at (' + box[0] + ', ' + box[1] + ')';
+}
+
 /** The one rule for "is this drawn in this procedure step" (schema.is_shown):
  *  an item without `phases` is always drawn; a model with no procedure
  *  publishes phase "" and declares no `phases`, so it hides nothing. */
@@ -4502,35 +4523,88 @@ class Dashboard {
     this.dom.pickerClose.focus({ preventScroll: true });
     const context = canvas.getContext('2d');
     context.clearRect(0, 0, canvas.width, canvas.height);
+    // WEB-2: an element that declares `data_command` is drawn on THAT image
+    // (the model's own still, at full resolution), and the drag comes back
+    // in its pixels. Without one, the station's screen grab as before.
+    const still = Boolean(element.data_command);
     let frame;
     try {
-      frame = await apiGet('/api/screen?name=' + encodeURIComponent(card.name));
+      frame = still ? await this.loadStill(card, element.data_command)
+        : await apiGet('/api/screen?name=' + encodeURIComponent(card.name));
     } catch (err) {
       this.closeRegionPicker();
-      card.showRefused('No screen image came back (' + failureReason(err)
-        + '). Check that the station is running, then pick again.', element);
+      card.showRefused('No ' + (still ? 'picture' : 'screen image') + ' came back ('
+        + failureReason(err) + '). Check that the station is running, then pick again.', element);
       return;
     }
     if (!frame || !frame.image) {
       this.closeRegionPicker();
-      card.showRefused((frame && frame.reason) || 'The station offers no screen image.', element);
+      card.showRefused((frame && frame.reason)
+        || (still ? 'The model has no picture to pick on yet.' : 'The station offers no screen image.'), element);
+      return;
+    }
+    // The picker may have been closed (or reopened for another element)
+    // while the picture was on its way.
+    if (this.dom.picker.hidden || this.pickerFor.element !== element) {
+      if (frame.revoke) frame.revoke();
       return;
     }
     const picture = new Image();
     picture.onload = () => {
-      canvas.width = picture.width;
-      canvas.height = picture.height;
+      if (frame.revoke) frame.revoke();
+      canvas.width = picture.naturalWidth || picture.width;
+      canvas.height = picture.naturalHeight || picture.height;
+      // A still is the picture itself: its pixels are the region's pixels,
+      // unless the model says it scaled it from a larger area (the headers
+      // loadStill read: a bounded grab of a monitor that does not start at
+      // 0,0).
+      if (still) {
+        frame.width = frame.width || canvas.width;
+        frame.height = frame.height || canvas.height;
+        frame.left = frame.left || 0;
+        frame.top = frame.top || 0;
+      }
       context.drawImage(picture, 0, 0);
-      this.bindRegionDrag(card, element, frame, picture);
-      this.setPickerLoading(false);
+      const current = regionOf(card.values && card.values[element.model_attr]);
+      this.bindRegionDrag(card, element, frame, picture, current);
+      this.setPickerLoading(false, still, current);
     };
-    picture.onerror = () => this.setPickerLoading(false);
+    picture.onerror = () => {
+      if (frame.revoke) frame.revoke();
+      this.setPickerLoading(false, still);
+    };
     picture.src = frame.image;
   }
 
-  setPickerLoading(isLoading) {
-    putText(this.dom.pickerHelp, isLoading ? 'Loading the station\'s screen…'
-      : 'Drag a rectangle over the part of the screen to watch, or type it below in screen pixels.');
+  /** WEB-2: the model's still, as the bytes `/api/data` serves for its
+   *  `data_command`, at the resolution it was taken: `{image: object URL,
+   *  revoke}`, or `{reason}` when the model answered with a refusal. */
+  async loadStill(card, command) {
+    const response = await api('/api/data?name=' + encodeURIComponent(card.name)
+      + '&command=' + encodeURIComponent(command), { method: 'GET' });
+    const type = response.headers.get('Content-Type') || '';
+    if (type.indexOf('image/') === 0) {
+      const url = URL.createObjectURL(await response.blob());
+      // A model that scaled the picture from a larger area says so in
+      // headers (server._send_data); a plain PNG is its own geometry.
+      const header = (key) => {
+        const raw = response.headers.get('X-Image-' + key);
+        return raw !== null && /^-?\d+$/.test(raw) ? Number(raw) : 0;
+      };
+      return { image: url, revoke: () => URL.revokeObjectURL(url),
+               left: header('Left'), top: header('Top'),
+               width: header('Width'), height: header('Height') };
+    }
+    const body = await response.json();
+    return { reason: (body && body.reason) || '' };
+  }
+
+  setPickerLoading(isLoading, still, current) {
+    const what = still ? 'the picture' : 'the screen';
+    const now = current ? ' Now: ' + formatRegion(current) + ', outlined.' : '';
+    putText(this.dom.pickerHelp, isLoading ? (still ? 'Loading the picture…' : 'Loading the station\'s screen…')
+      : 'Drag a rectangle over the part of ' + what + ' to watch, or type it below in '
+        + (still ? 'the picture\'s own pixels.' : 'screen pixels.') + now);
     if (isLoading) putAttr(this.dom.pickerDialog, 'aria-busy', 'true');
     else this.dom.pickerDialog.removeAttribute('aria-busy');
   }
@@ -4555,7 +4629,7 @@ class Dashboard {
 
   /** Drag on the image, scaled back to screen coordinates: the picture may
    *  be a bounded (downscaled) grab of a monitor that does not start at 0,0. */
-  bindRegionDrag(card, element, frame, picture) {
+  bindRegionDrag(card, element, frame, picture, current) {
     const canvas = this.dom.pickerCanvas;
     const context = canvas.getContext('2d');
     const scaleX = (frame.width || picture.width) / picture.width;
@@ -4571,15 +4645,32 @@ class Dashboard {
         Math.max(0, Math.min(canvas.height, (event.clientY - box.top) * (canvas.height / box.height))),
       ];
     };
-    const paint = (box) => {
-      context.drawImage(picture, 0, 0);
+    // A picture of 3584 px shown 900 px wide would draw a 2 px line as a
+    // hair: the line is two SCREEN pixels, whatever the scale.
+    const lineWidth = () => 2 * canvas.width / (canvas.getBoundingClientRect().width || canvas.width);
+    const trace = () => getComputedStyle(document.documentElement).getPropertyValue('--trace');
+    const outline = (box, dashed) => {
       // Trace, not signal: the box marks what will be measured, and red is
       // the stop's alone (F24, UXPM-12).
-      context.strokeStyle = getComputedStyle(document.documentElement)
-        .getPropertyValue('--trace');
-      context.lineWidth = 2;
+      context.strokeStyle = trace();
+      context.lineWidth = lineWidth();
+      context.setLineDash(dashed ? [4 * lineWidth(), 3 * lineWidth()] : []);
       context.strokeRect(box[0], box[1], box[2], box[3]);
+      context.setLineDash([]);
     };
+    //: The region the model holds now, in this picture's pixels.
+    const held = current ? [(current[0] - left) / scaleX, (current[1] - top) / scaleY,
+                            current[2] / scaleX, current[3] / scaleY] : null;
+    const backdrop = () => {
+      context.drawImage(picture, 0, 0);
+      if (held) outline(held, true);
+    };
+    const paint = (box) => {
+      backdrop();
+      outline(box, false);
+    };
+    backdrop();
+    if (current) this.dom.pickerFields.forEach((field, i) => { field.value = String(current[i]); });
     const boxFrom = (a, b) => [
       Math.min(a[0], b[0]), Math.min(a[1], b[1]),
       Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]),
@@ -4595,7 +4686,7 @@ class Dashboard {
     canvas.onpointercancel = canvas.onlostpointercapture = () => {
       if (!start) return;
       start = null;
-      context.drawImage(picture, 0, 0);
+      backdrop();
     };
     canvas.onpointerup = (event) => {
       if (!start) return;
@@ -4609,6 +4700,7 @@ class Dashboard {
         Math.round(box[3] * scaleY),
       ];
       this.dom.pickerFields.forEach((field, i) => { field.value = String(region[i]); });
+      // The next opening outlines the value this run sets, on the picture.
       this.closeRegionPicker();
       card.run(element, region);
     };

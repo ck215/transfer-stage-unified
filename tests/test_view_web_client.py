@@ -658,7 +658,9 @@ def test_the_stylesheet_sizes_nothing_in_absolute_points_or_pixels():
 
 
 def test_the_region_picker_scales_the_drag_to_screen_coordinates():
-    drag = _body(r"bindRegionDrag\(card, element, frame, picture\) \{(.*?)\n  \}")
+    # Updated (WEB-2): the drag also takes the region the model holds, to
+    # outline it; the signature gained `current`.
+    drag = _body(r"bindRegionDrag\(card, element, frame, picture, current\) \{(.*?)\n  \}")
     assert "scaleX" in drag and "scaleY" in drag
     assert "frame.left" in drag and "frame.top" in drag, (
         "a monitor that does not start at 0,0 would give the model a region "
@@ -1485,7 +1487,7 @@ def test_r7_the_page_logs_every_answer():
 def _method(name):
     """The source of one PanelCard method, from its signature to the next
     method's doc comment."""
-    start = re.search(r"\n  %s\(" % re.escape(name), CODE)
+    start = re.search(r"\n  (?:async )?%s\(" % re.escape(name), CODE)
     assert start, f"app.js has no {name}()"
     end = re.search(r"\n  (?:async )?\w+\([^)]*\) \{\n", CODE[start.end():])
     return CODE[start.start(): start.end() + (end.start() if end else len(CODE))]
@@ -1537,3 +1539,4 @@ def test_web1_no_model_name_or_phase_word_is_known_to_the_client():
     """The client reads `phases` from the schema; it knows no step by name."""
     for word in ("'setup'", "'region'", "'marked'", "'finish'"):
         assert word not in _method("applyPhase"), word
+

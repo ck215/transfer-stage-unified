@@ -390,6 +390,16 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         value = result.value
         if isinstance(value, (bytes, bytearray)):
             return self._send_bytes(200, "image/png", bytes(value))
+        if isinstance(value, dict) and isinstance(value.get("image"), (bytes, bytearray)):
+            # A picture with its geometry (a region picker's `screen_image`:
+            # the PNG, and the area it was scaled from). The bytes stay
+            # bytes; the geometry travels in headers.
+            geometry = {f"X-Image-{key.capitalize()}": str(int(value[key]))
+                        for key in ("left", "top", "width", "height")
+                        if isinstance(value.get(key), (int, float))
+                        and not isinstance(value.get(key), bool)}
+            return self._send_bytes(200, "image/png", bytes(value["image"]),
+                                    geometry)
         if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
             return self._send_json(200, {"status": "ok", "lines": list(value)})
         return self._send_json(200, {"status": "ok", "data": value})

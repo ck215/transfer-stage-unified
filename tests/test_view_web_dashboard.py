@@ -546,7 +546,7 @@ def test_d_the_region_picker_in_the_group_asks_the_hosted_model(hosted_station, 
     view, controller, host, guest = hosted_station
     out = _browse(view, _HOSTED + r"""
       const asked = [];
-      page.on('request', (r) => { if (r.url().includes('/api/screen')) asked.push(r.url()); });
+      page.on('request', (r) => { if (r.url().includes('/api/data')) asked.push(r.url()); });
       await openMap();
       await page.evaluate(() => {
         const titleOf = (c) => (c.querySelector('.card-title') || {}).textContent;
@@ -556,7 +556,10 @@ def test_d_the_region_picker_in_the_group_asks_the_hosted_model(hosted_station, 
       await sleep(600);
       return asked;
     """, tmp_path)
-    assert out and all("name=Fake%20Red" in u for u in out), out
+    # WEB-2: the element declares data_command, so the picker asks /api/data
+    # for THAT command, of the hosted model.
+    assert out and all("name=Fake%20Red" in u and "command=screen_image" in u
+                       for u in out), out
 
 
 #: The colour a value is drawn in, against the theme's muted ink.
@@ -994,3 +997,152 @@ def test_web1_a_hidden_go_command_says_nothing(phased_station, tmp_path):
         .map((n) => n.textContent.trim()));
     """, tmp_path)
     assert out == [], out
+
+
+# ==========================================================================
+# WEB-2: the region picker draws on the model's own still
+# ==========================================================================
+STILL_SIZE = (3584, 2746)
+
+
+class FakeStill(_Plain):
+    """The Transfer Map's picker as the contract declares it:
+    `region_select(..., data_command="stage_still")` returning a
+    full-resolution PNG, plus a plain `screen_image` model-free fallback is
+    covered by the hosted tests above."""
+    NAME = "Fake Still"
+
+    def __init__(self):
+        super().__init__()
+        self.region = None
+        self.asked = []
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Trial", sch.readonly("Step", "mode_word"),
+            sch.region_select("Set capture region", "set_region",
+                              model_attr="region", data_command="stage_still")))
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["values"]["mode_word"] = "armed"
+        snapshot["values"]["region"] = (
+            sch.format_region(self.region) if self.region else "")
+        return snapshot
+
+    def stage_still(self):
+        import io
+        from PIL import Image
+        picture = Image.new("RGB", STILL_SIZE, (30, 40, 50))
+        out = io.BytesIO()
+        picture.save(out, "PNG")
+        return out.getvalue()
+
+    def set_region(self, x, y, width, height):
+        left, top = x, y
+        self.asked.append([x, y, width, height])
+        self.region = {"left": left, "top": top, "width": width, "height": height}
+        return self.region
+
+
+@pytest.fixture
+def still_station():
+    controller = Controller()
+    model = FakeStill()
+    controller.add("Fake Still", model, {"kind": "Fake Still"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, model
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_web2_the_picker_draws_on_the_models_still_and_maps_to_source_pixels(still_station, tmp_path):
+    view, controller, model = still_station
+    out = _browse(view, _PHASE_READ.split("const drawn")[0] + r"""
+      const asked = [];
+      page.on('request', (r) => { if (/\/api\/(screen|data)/.test(r.url())) asked.push(r.url()); });
+      const open = async () => {
+        await page.evaluate(() => Array.from(document.querySelectorAll('#cards button'))
+          .find((b) => /capture region/i.test(b.textContent)).click());
+        await until(() => document.getElementById('region-canvas').width > 800);
+        await sleep(300);
+      };
+      await open();
+      const geom = await page.evaluate(() => {
+        const c = document.getElementById('region-canvas');
+        const b = c.getBoundingClientRect();
+        return { w: c.width, h: c.height, left: b.left, top: b.top, bw: b.width, bh: b.height };
+      });
+      // Drag between two on-screen points; the region is what those points
+      // are in the picture's own pixels.
+      const a = [geom.left + geom.bw * 0.25, geom.top + geom.bh * 0.40];
+      const z = [geom.left + geom.bw * 0.55, geom.top + geom.bh * 0.62];
+      await page.mouse.move(a[0], a[1]);
+      await page.mouse.down();
+      await page.mouse.move((a[0] + z[0]) / 2, (a[1] + z[1]) / 2);
+      await page.mouse.move(z[0], z[1]);
+      await page.mouse.up();
+      await sleep(700);
+      const state = await api('/api/state');
+      // Reopen: the model's value is outlined on the still and in the fields.
+      await open();
+      const again = await page.evaluate(() => ({
+        fields: Array.from(document.querySelectorAll('#region-picker .region-fields input')).map((f) => f.value),
+        help: document.getElementById('region-help').textContent,
+      }));
+      return { geom, a, z, asked, again, state, canvasBefore: 0 };
+    """, tmp_path)
+    geom = out["geom"]
+    assert (geom["w"], geom["h"]) == STILL_SIZE, f"the still was downscaled: {geom}"
+    assert geom["bw"] < geom["w"], "the picture should be displayed scaled to fit"
+    assert any("/api/data" in u and "command=stage_still" in u for u in out["asked"]), out["asked"]
+    assert not any("/api/screen" in u for u in out["asked"]), out["asked"]
+    (region,) = model.asked
+    assert all(isinstance(v, int) for v in region), region
+    k = geom["w"] / geom["bw"]
+    expect_left = round((out["a"][0] - geom["left"]) * k)
+    expect_top = round((out["a"][1] - geom["top"]) * k)
+    assert abs(region[0] - expect_left) <= 1 and abs(region[1] - expect_top) <= 1, (region, expect_left, expect_top)
+    assert abs(region[2] - round((out["z"][0] - out["a"][0]) * k)) <= 1, region
+    assert abs(region[3] - round((out["z"][1] - out["a"][1]) * k)) <= 1, region
+    assert out["again"]["fields"] == [str(v) for v in region], out["again"]
+    assert sch.format_region(model.region) in out["again"]["help"], out["again"]
+
+
+def test_web2_the_picker_reads_the_elements_data_command_and_keeps_the_screen_fallback():
+    opener = _method_of("openRegionPicker")
+    assert "element.data_command" in opener
+    assert "/api/screen" in opener, "without a data_command the screen grab is kept"
+    assert "/api/data" in _method_of("loadStill")
+    # Pure helpers the picker uses to read a value back and say it.
+    drag = _method_of("bindRegionDrag")
+    assert "current" in drag and "setLineDash" in drag
+
+
+def _method_of(name):
+    from test_view_web_client import _method
+    return _method(name)
+
+
+def test_web2_a_picture_with_geometry_is_served_as_a_png_with_headers(hosted_station):
+    """`/api/data` for a command that returns `{"image": bytes, left, top,
+    width, height}` (Red Percent's `screen_image`) serves the PNG itself;
+    the area it was scaled from travels in headers, so the picker maps a
+    drag on a bounded grab of a second monitor into that monitor's pixels."""
+    from test_view_web_server import _request
+    view, controller, host, guest = hosted_station
+    status, headers, body = _request(
+        view, "/api/data?name=Fake%20Red&command=screen_image")
+    assert status == 200 and headers["Content-Type"] == "image/png"
+    assert body.startswith(b"\x89PNG")
+    assert [headers[f"X-Image-{k}"] for k in ("Left", "Top", "Width", "Height")] == [
+        "0", "0", "100", "100"]
+    # A bare PNG (the Transfer Map's stage still) carries no such headers.
+    status, headers, body = _request(
+        view, "/api/data?name=Fake%20Map&command=nothing")
+    assert status == 403
