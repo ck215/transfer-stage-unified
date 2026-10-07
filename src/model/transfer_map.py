@@ -553,7 +553,8 @@ class _Pending:
     """Armed and waiting for the capture region (the `region` step): the
     stage still is taken, nothing else exists yet (no row, no run, no
     video). `size` is the still's pixels, `bounds` the display's place on
-    the desktop (None when the screen could not say)."""
+    the desktop in the capture library's coordinates (None when the screen
+    could not say)."""
 
     def __init__(self, tip, still, size, bounds):
         self.tip = tip
@@ -607,6 +608,8 @@ class _Trial:
         self.mark_worker = None
         #: End recording ran (the `finish` step): no more rows, no video.
         self.ended = False
+        #: The stage still's display on the desktop (`_Pending.bounds`).
+        self.bounds = None
         #: The review figure's PNG (`trial_figure`), drawn once.
         self.review = None
 
@@ -1104,9 +1107,11 @@ class TransferMap(Model):
 
     def set_region(self, x, y, width, height):
         """The `region` step: the capture region, picked ON the stage still,
-        in the still's own pixels (0, 0 its top-left corner), mapped here
-        onto the display it was taken of. Landing it starts the trial
-        (`_start_trial`); a refusal leaves the step where it was."""
+        in desktop coordinates like every Red Percent region (the picker
+        maps its drag through the still's bounds, which `stage_still`
+        publishes; without them the still's pixels are the desktop's).
+        Landing it starts the trial (`_start_trial`); a refusal leaves the
+        step where it was."""
         pending = self._pending
         if pending is None:
             if self._red is None:
@@ -1117,44 +1122,32 @@ class TransferMap(Model):
                               "armed. Finish or abort the trial to change it.")
             raise Refused("Press Arm trial first: the capture region is picked "
                           "on the picture of the stage it takes.")
-        return self._start_trial(pending, self._on_display(pending, x, y,
-                                                           width, height))
-
-    @staticmethod
-    def _on_display(pending, x, y, width, height):
-        """A rectangle on the still -> the same rectangle on the desktop
-        (`left, top, width, height`): scaled by the display's size over the
-        still's (a Retina grab is twice its points) and moved to the
-        display's corner. Without the display's bounds the still's pixels
-        are the desktop's."""
-        try:
-            x, y, width, height = (float(v) for v in (x, y, width, height))
-        except (TypeError, ValueError):
-            raise Refused(f"Not a region: {(x, y, width, height)!r}")
-        bounds, (wide, high) = pending.bounds, pending.size
-        if not bounds or not wide or not high:
-            return round(x), round(y), round(width), round(height)
-        sx, sy = bounds["width"] / wide, bounds["height"] / high
-        return (bounds["left"] + round(x * sx), bounds["top"] + round(y * sy),
-                round(width * sx), round(height * sy))
+        return self._start_trial(pending, (x, y, width, height))
 
     @property
     def stage_still(self):
-        """PNG bytes of the stage still (owner ruling 2026-10-07): the full
-        display at Arm, the trial's first picture and the one its capture
-        region is picked on. The armed trial's, in every step from `region`
-        to `finish`; b"" before Arm and between trials."""
+        """The stage still (owner ruling 2026-10-07): the full display at
+        Arm, the trial's first picture and the one its capture region is
+        picked on. The armed trial's, in every step from `region` to
+        `finish`; b"" before Arm and between trials. PNG bytes, or, when the
+        display's place on the desktop is known, `{"image": bytes, "left",
+        "top", "width", "height"}` (the shape of Red Percent's
+        `screen_image`): the picker then maps its drag to the desktop (a
+        Retina still is twice its points; a second display does not start
+        at 0, 0), and outlines the region Red Percent holds where it is."""
         pending, trial = self._pending, self._trial
         if pending is not None:
-            path = pending.still
+            path, bounds = pending.still, pending.bounds
         elif trial is not None:
             path = self.pictures_root / str(trial.id) / "before_full.png"
+            bounds = trial.bounds
         else:
             return b""
         try:
-            return path.read_bytes() if path.is_file() else b""
+            png = path.read_bytes() if path.is_file() else b""
         except OSError:
-            return b""
+            png = b""
+        return {"image": png, **bounds} if png and bounds else png
 
     #: What `next_step` says in each step after `setup`.
     STEP_WORDS = {
@@ -1373,7 +1366,7 @@ class TransferMap(Model):
                     raise Refused("The trial was aborted before its recording "
                                   "started; nothing was kept.")
                 arming.id, arming.tilt, arming.speed = trial_id, tilt, speed
-                arming.run = run
+                arming.run, arming.bounds = run, pending.bounds
                 self._trial, self._pending, self._arming = arming, None, None
         except BaseException:
             self._arming = None

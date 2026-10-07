@@ -1491,23 +1491,28 @@ def test_the_region_step_writes_no_trial_row(station, private_db):
 
 def test_the_still_is_taken_through_the_recorder_on_its_display(
         station, fake_display):
-    """The still comes through the recorder factory, for the map's display;
-    the region is picked in the still's pixels and lands on the desktop."""
+    """The still comes through the recorder factory, for the map's display,
+    and carries that display's place on the desktop, so the picker maps
+    its drag to desktop coordinates: the region lands as it is sent."""
     model, red, *_ = station
     model.monitor = 0                       # the fake desktop: 1700 x 40
     _arm_only(model)
     folder, fps, monitor = fake_display[-1]
     assert folder == model.pictures_root / tm_module.STAGING
     assert (fps, monitor) == (tm_module.VIDEO_FPS, 0)
-    assert model._pending.bounds == {"left": 0, "top": 0, "width": 1700,
-                                     "height": 40}
-    assert model._pending.size == STAGE_SIZE
-    assert model.run("set_region", None, (48, 32, 48, 32)).is_ok
+    still = model.run("stage_still").value
+    assert set(still) == {"image", "left", "top", "width", "height"}
+    assert still["image"][:8] == PNG and _size(still["image"]) == STAGE_SIZE
+    assert (still["left"], still["top"], still["width"], still["height"]) == (
+        0, 0, 1700, 40)
+    assert model.run("set_region", None, (850, 20, 850, 20)).is_ok
     assert red.region == {"left": 850, "top": 20, "width": 850, "height": 20}
+    assert model.stage_still["width"] == 1700         # the trial keeps them
     model.abort_trial()
     model.monitor = {"left": 100, "top": 50, "width": 48, "height": 32}
     _arm_only(model)                        # a display given as its bounds
-    assert model.run("set_region", None, (10, 20, 40, 30)).is_ok
+    assert model.stage_still["left"] == 100
+    assert model.run("set_region", None, (105, 60, 20, 15)).is_ok
     assert red.region == {"left": 105, "top": 60, "width": 20, "height": 15}
     model.abort_trial()
 
@@ -1518,6 +1523,7 @@ def test_without_the_displays_bounds_the_stills_pixels_are_the_desktops(
     model.monitor = 7                       # no such display on this screen
     _arm_only(model)
     assert model._pending.bounds is None
+    assert isinstance(model.stage_still, bytes)       # a plain PNG
     assert model.run("set_region", None, (3, 4, 20, 10)).is_ok
     assert red.region == {"left": 3, "top": 4, "width": 20, "height": 10}
     model.abort_trial()
