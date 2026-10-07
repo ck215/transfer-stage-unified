@@ -325,31 +325,59 @@ def test_the_3d_panes_are_dark():
 # -- MAP-3 (2026-09-27): the Transfer Map's figures --------------------------
 
 def _trials():
-    """Four trials: three measured by AFM, one pending."""
+    """Four trials: three measured by AFM, one pending. Two Low, one High,
+    one Medium (the pending one); tilt is kept in the row, never drawn."""
     rows = []
-    for i, (tilt, speed, force, width) in enumerate((
-            (10.0, 100.0, 0.2, 5.0), (20.0, 200.0, 0.5, 7.0),
-            (30.0, 300.0, 0.8, 9.0), (25.0, 150.0, 0.6, None))):
+    for i, (tilt, speed, force, width, klass) in enumerate((
+            (10.0, 100.0, 0.2, 5.0, "Low"), (20.0, 200.0, 0.5, 7.0, "Low"),
+            (30.0, 300.0, 0.8, 9.0, "High"), (25.0, 150.0, 0.6, None, "Medium"))):
         rows.append({"id": i + 1, "tilt": tilt, "speed": speed,
+                     "force_class": klass,
                      "force": {"shadow_vs_peak": force, "dip_area": force * 2,
                                "at_operator_mark": None},
                      "width": width, "width_sigma": 0.5 if width else None})
     return rows
 
 
-def test_the_map3d_request_splits_measured_from_pending():
+def test_the_map_request_is_speed_by_force_class_with_no_tilt():
+    # Reason: the map lost its tilt axis (owner 2026-10-07): x is speed, y the
+    # force-class band, width the colour.
     request = plot_data.transfer_request("map3d", _trials(), "shadow_vs_peak")
     assert request["kind"] == "map3d"
-    assert request["x"] == [10.0, 20.0, 30.0, 25.0]
-    assert request["z"] == [0.2, 0.5, 0.8, 0.6]
+    assert request["x"] == [100.0, 200.0, 300.0, 150.0]
+    assert request["bands"] == ["Low", "Medium", "High"]
+    assert request["y"] == [0, 0, 2, 1]
     assert request["measured"] == [True, True, True, False]
     assert request["c"][:3] == [5.0, 7.0, 9.0]
+    assert "tilt" not in str(request).lower()          # no key, no label, no title
+    assert request["x_label"] == plot_data.SPEED_LABEL
 
 
-def test_a_trial_without_the_chosen_index_is_left_off_the_map():
-    request = plot_data.transfer_request("map3d", _trials(), "at_operator_mark")
-    assert request["kind"] == "message"
-    assert "at_operator_mark" in request["reason"] or "force" in request["reason"]
+def test_a_trial_without_a_tilt_or_a_force_index_still_plots():
+    # Reason: the plottable filter no longer asks for tilt (owner 2026-10-07),
+    # and the y axis is the force CLASS, so the force index no longer gates it.
+    rows = _trials()
+    for row in rows:
+        row["tilt"] = None
+    request = plot_data.transfer_request("map3d", rows, "at_operator_mark")
+    assert request["kind"] == "map3d" and len(request["x"]) == 4
+    assert plot_data.transfer_request("map3d", [{"id": 1, "tilt": None, "speed": None,
+                                                 "force": {}}], "x")["kind"] == "message"
+
+
+def test_the_bands_are_ordered_and_unclassed_appears_only_when_needed():
+    rows = _trials()
+    assert plot_data.transfer_request("map3d", rows, "x")["bands"] == ["Low", "Medium", "High"]
+    for row, klass in zip(rows, (None, "", "weird", "high")):
+        row["force_class"] = klass
+    request = plot_data.transfer_request("map3d", rows, "x")
+    assert request["bands"] == ["Unclassed", "Low", "Medium", "High"]    # Unclassed at the bottom
+    assert request["y"] == [0, 0, 0, 3]                                  # "high": any case
+    for row in rows:
+        row.pop("force_class")                       # rows from before the column was ported
+    request = plot_data.transfer_request("map3d", rows, "x")
+    assert request["bands"] == ["Unclassed", "Low", "Medium", "High"] and request["y"] == [0] * 4
+    assert plot_data.force_class({"force_class": " MEDIUM "}) == "Medium"
 
 
 def test_no_trials_explains_itself_for_every_figure():
@@ -358,23 +386,37 @@ def test_no_trials_explains_itself_for_every_figure():
         assert request["kind"] == "message", kind
 
 
-def test_the_slice_uses_measured_trials_in_the_force_band():
-    everything = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak")
-    assert everything["kind"] == "slice"
-    assert sorted(everything["points_c"]) == [5.0, 7.0, 9.0]
-    low = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak",
-                                     band="Low third")
-    assert low["kind"] in ("slice", "message")
-    if low["kind"] == "slice":
-        assert 9.0 not in low["points_c"] and 5.0 in low["points_c"]
+def _all_points(request):
+    return sorted(c for line in request["lines"] for c in line["points_c"])
 
 
-def test_the_slice_carries_a_gp_mean_and_sigma_surface_with_enough_trials():
+def test_the_slice_is_one_curve_over_speed_per_force_band():
+    # Reason: "Slice" became a curve over speed per force band (2026-10-07).
     request = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak")
-    mean, sigma = request["mean"], request["sigma"]
-    assert len(mean) == len(sigma) == len(request["grid_y"])
-    assert len(mean[0]) == len(request["grid_x"])
-    assert all(s >= 0 for row in sigma for s in row)
+    assert request["kind"] == "slice"
+    assert [line["band"] for line in request["lines"]] == ["Low", "High"]
+    low, high = request["lines"]
+    assert low["points_x"] == [100.0, 200.0] and low["points_c"] == [5.0, 7.0]
+    assert len(low["mean"]) == len(low["sigma"]) == len(request["x"]) == plot_data.SLICE_GRID
+    assert high["mean"] is None and high["points_c"] == [9.0]    # one trial: a point
+    assert "tilt" not in str(request).lower()
+    only = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak", band="High")
+    assert only["kind"] == "message" and "High" in only["reason"]
+    low_only = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak", band="Low")
+    assert [line["band"] for line in low_only["lines"]] == ["Low"]
+    with pytest.raises(ValueError):
+        plot_data.transfer_request("slice", _trials(), "x", band="Low third")
+
+
+def test_a_curve_carries_a_gp_mean_and_a_nonnegative_sigma():
+    (low, _high) = plot_data.transfer_request("slice", _trials(), "shadow_vs_peak")["lines"]
+    assert all(s >= 0 for s in low["sigma"])
+    assert min(low["mean"]) > 3.0 and max(low["mean"]) < 9.0     # between the two widths
+    unclassed = _trials()
+    for row in unclassed:
+        row.pop("force_class")
+    request = plot_data.transfer_request("slice", unclassed, "x")
+    assert [line["band"] for line in request["lines"]] == ["Unclassed"]
 
 
 def test_the_compare_request_has_one_panel_per_definition():
@@ -420,18 +462,18 @@ def test_the_transfer_figures_never_draw_in_the_stop_red():
     assert palette.SIGNAL.lower() not in source.lower()
 
 
-def test_the_map3d_axes_are_padded_so_one_tilt_does_not_read_as_a_wrong_one():
-    """Bench 2026-09-28: with every trial at one tilt, autoscaling drew a
-    hair-wide tilt axis whose ticks looked like a misread angle."""
-    one = [{"id": 1, "tilt": 5.0, "speed": 200.0,
-            "force": {"shadow_vs_peak": 0.4}, "width": None, "width_sigma": None}]
+def test_the_map_axes_are_padded_so_one_speed_does_not_read_as_a_wrong_one():
+    """Bench 2026-09-28 (then on the tilt axis): with every trial at one value,
+    autoscaling drew a hair-wide axis whose ticks looked like a misread
+    number. The speed axis is padded; the class axis is one unit per band."""
+    one = [{"id": 1, "tilt": None, "speed": 200.0, "force_class": "Medium",
+            "force": {}, "width": None, "width_sigma": None}]
     request = plot_data.transfer_request("map3d", one, "shadow_vs_peak")
-    limits = plot_data.map3d_limits(request)
-    assert limits["x"] == (4.5, 5.5)
-    assert limits["y"] == (199.5, 200.5)
-    assert limits["z"] is not None
+    limits = plot_data.map_limits(request)
+    assert limits["x"] == (199.5, 200.5)
+    assert limits["y"] == (-0.5, 2.5)
     assert plot_data.render_transfer_figure("map3d", one, "shadow_vs_peak")[:8] == b"\x89PNG\r\n\x1a\n"
-    assert plot_data.map3d_limits({"x": [], "y": [], "z": []}) == {"x": None, "y": None, "z": None}
+    assert plot_data.map_limits({"x": [], "bands": []}) == {"x": None, "y": None}
 
 
 # -- store v6: the width's source is always visible (owner, 2026-10-04) ------
@@ -441,7 +483,7 @@ def _mixed():
     rows = _trials()[:3]
     for row in rows:
         row["width_source"] = "afm"
-    rows.append({"id": 4, "tilt": 25.0, "speed": 150.0,
+    rows.append({"id": 4, "tilt": 25.0, "speed": 150.0, "force_class": "Low",
                  "force": {"shadow_vs_peak": 0.6, "dip_area": 1.2},
                  "width": 8.0, "width_sigma": None, "width_source": "optical"})
     rows.append({"id": 5, "tilt": 15.0, "speed": 250.0,
@@ -455,22 +497,22 @@ def test_map3d_fills_afm_rings_optical_and_says_so():
     assert request["measured"] == [True, True, True, False, False]
     assert request["optical"] == [False, False, False, True, False]
     assert request["c"][3] == 8.0
-    assert request["title"] == ("Transfer map\n(filled: AFM width; ringed: "
-                                "optical width; hollow: no width yet)")
+    assert request["title"] == ("Transfer map: speed by force class\n(filled: AFM "
+                                "width; ringed: optical width; hollow: no width yet)")
 
 
 def test_the_slice_uses_afm_only_by_default():
     request = plot_data.transfer_request("slice", _mixed(), "shadow_vs_peak")
-    assert sorted(request["points_c"]) == [5.0, 7.0, 9.0]
-    assert request["points_optical"] == [False, False, False]
+    assert _all_points(request) == [5.0, 7.0, 9.0]
+    assert [f for line in request["lines"] for f in line["points_optical"]] == [False] * 3
     assert "3 AFM" in request["title"] and "optical" not in request["title"]
 
 
 def test_the_slice_takes_optical_on_request_with_a_wider_noise():
     request = plot_data.transfer_request("slice", _mixed(), "shadow_vs_peak",
                                          width_source="AFM, else optical")
-    assert sorted(request["points_c"]) == [5.0, 7.0, 8.0, 9.0]
-    assert request["points_optical"].count(True) == 1
+    assert _all_points(request) == [5.0, 7.0, 8.0, 9.0]
+    assert [f for line in request["lines"] for f in line["points_optical"]].count(True) == 1
     assert "3 AFM, 1 optical" in request["title"]
     assert plot_data.OPTICAL_SIGMA_FACTOR == 3
     import numpy
@@ -539,3 +581,25 @@ def test_the_sample_figure_renders_and_never_in_the_stop_red():
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     source = inspect.getsource(plot_data.render_sample_figure)
     assert "SIGNAL" not in source and palette.SIGNAL.lower() not in source.lower()
+
+
+def test_the_figure_requests_carry_no_tilt_key_even_when_tilt_is_collected():
+    # Reason: tilt_deg stays in the row (collected, not drawn); no request key may carry it.
+    for kind in ("map3d", "slice"):
+        request = plot_data.transfer_request(kind, _mixed(), "shadow_vs_peak",
+                                             width_source="AFM, else optical")
+        assert request["kind"] == kind
+        flat = repr(request).lower()
+        assert "tilt" not in flat and not any("tilt" in key for key in request)
+    assert not hasattr(plot_data, "TILT_LABEL") and not hasattr(plot_data, "map3d_limits")
+    assert all(row["tilt"] is not None for row in _mixed()[:4])    # rows still carry it
+
+
+def test_the_map_and_curves_render_with_and_without_classes():
+    bare = [{k: v for k, v in row.items() if k != "force_class"} for row in _mixed()]
+    for rows in (_mixed(), bare):
+        for kind in ("map3d", "slice"):
+            png = plot_data.render_transfer_figure(
+                kind, rows, "shadow_vs_peak", width_source="AFM, else optical",
+                size=(4.0, 3.0), dpi=50)
+            assert png[:8] == b"\x89PNG\r\n\x1a\n", kind

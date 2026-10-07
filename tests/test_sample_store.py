@@ -51,12 +51,12 @@ def test_construction_creates_nothing_and_reads_answer_empty(store):
     assert not store.exists
 
 
-def test_a_fresh_store_is_version_two_with_an_identity(store):
+def test_a_fresh_store_is_version_three_with_an_identity(store):
     assert store.ensure() is True
     with sqlite3.connect(store.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 3   # v3: the sample_images table
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"samples", "registrations", "corners", "flakes", "meta"} <= tables
+    assert {"samples", "registrations", "corners", "flakes", "meta", "sample_images"} <= tables
     meta = store.meta()
     assert uuid.UUID(meta["store_uuid"]).version == 4
     assert store.ensure() is False and store.meta() == meta
@@ -352,7 +352,8 @@ def test_a_version_one_file_gains_the_rotator_columns_and_table(tmp_path):
     store.ensure()
     db = sqlite3.connect(str(path))
     try:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 2
+        # a v1 file is walked all the way to the current version (now 3)
+        assert db.execute("PRAGMA user_version").fetchone()[0] == ss.SCHEMA_VERSION == 3
         have = {r[1] for r in db.execute("PRAGMA table_info(registrations)")}
         assert {"rotator_name", "rotator_phi0_deg", "rotator_calibration_uid",
                 "rotator_closure_um", "rotator_quality"} <= have
@@ -381,3 +382,170 @@ def test_a_rotator_calibration_round_trips_and_can_be_ended(store):
     with pytest.raises(ss.StoreRefused):
         store.add_rotator_calibration({"frame_source": "stage:X", "sense": 2,
                                        "centre_x": 0, "centre_y": 0})
+
+
+# -- version 3: the sample images (owner 2026-10-07) --------------------------------
+
+def _picture(tmp_path, name="shot.png", payload=b"\x89PNG original bytes"):
+    path = tmp_path / "incoming" / name
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
+def test_add_image_copies_the_original_unmodified_and_records_it(store, tmp_path):
+    import hashlib
+    source = _picture(tmp_path)
+    row = store.add_image("4oct26", source, "microscope", 20, note="edge")
+    assert row["sample_id"] == "4oct26" and row["instrument"] == "microscope"
+    assert row["magnification"] == 20 and row["note"] == "edge"
+    assert not row["path"].startswith("/") and row["path"].startswith("images/")
+    assert row["path"].endswith("_microscope_20x.png")
+    copy = store.image_file(row)
+    assert copy.read_bytes() == source.read_bytes()
+    assert copy.is_relative_to(store.path.parent) and copy != source
+    assert row["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert _aware(row["captured_at"])
+    assert source.exists()                                   # the original stays
+    assert store.images("4oct26") == [row] and store.images("other") == []
+
+
+def test_a_name_collision_gets_a_suffix_and_nothing_is_overwritten(store, tmp_path):
+    first = store.add_image("S1", _picture(tmp_path, payload=b"one"), "microscope", 10)
+    second = store.add_image("S1", _picture(tmp_path, payload=b"two"), "microscope", 10)
+    third = store.add_image("S1", _picture(tmp_path, payload=b"three"), "microscope", 10)
+    paths = {first["path"], second["path"], third["path"]}
+    assert len(paths) == 3
+    assert [store.image_file(r).read_bytes() for r in (first, second, third)] == \
+        [b"one", b"two", b"three"]
+
+
+def test_a_free_text_label_gets_a_safe_folder(store, tmp_path):
+    row = store.add_image("Riki's Gift 8March26", _picture(tmp_path), "transfer_stage", 50)
+    folder = row["path"].split("/")[1]
+    assert "/" not in folder and " " not in folder and "'" not in folder
+    assert store.images("Riki's Gift 8March26") == [row]
+    assert store.add_image("7/27/26", _picture(tmp_path), "microscope", 100)["path"].count("/") == 2
+
+
+@pytest.mark.parametrize("instrument,mag,word", [
+    ("sem", 20, "sem"), ("microscope", "40x", "40x"), ("microscope", 5, "5"),
+    ("microscope", "big", "big"), (None, 20, "instrument")])
+def test_image_vocabulary_is_refused_in_words(store, tmp_path, instrument, mag, word):
+    with pytest.raises(ss.StoreRefused) as refusal:
+        store.add_image("S1", _picture(tmp_path), instrument, mag)
+    assert word in str(refusal.value)
+    assert store.images() == []
+    assert not (store.path.parent / "images").exists() or \
+        not list((store.path.parent / "images").rglob("*.png"))
+
+
+def test_a_magnification_may_be_typed_with_its_x(store, tmp_path):
+    assert store.add_image("S1", _picture(tmp_path), "microscope", "50x")["magnification"] == 50
+
+
+def test_a_missing_source_or_blank_sample_is_refused(store, tmp_path):
+    with pytest.raises(ss.StoreRefused):
+        store.add_image("S1", tmp_path / "nope.png", "microscope", 10)
+    with pytest.raises(ss.StoreRefused):
+        store.add_image("  ", _picture(tmp_path), "microscope", 10)
+
+
+def test_the_table_itself_enforces_the_vocabulary(store):
+    store.ensure()
+    with sqlite3.connect(store.path) as db:
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO sample_images (sample_id, instrument, magnification,"
+                       " path, sha256, captured_at) VALUES ('s','sem',20,'p','h','t')")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO sample_images (sample_id, instrument, magnification,"
+                       " path, sha256, captured_at) VALUES ('s','microscope',40,'p','h','t')")
+
+
+def test_delete_image_removes_the_row_and_the_file(store, tmp_path):
+    keep = store.add_image("S1", _picture(tmp_path), "microscope", 10)
+    gone = store.add_image("S1", _picture(tmp_path, payload=b"x"), "microscope", 20)
+    path = store.image_file(gone)
+    assert path.exists()
+    store.delete_image(gone["id"])
+    assert not path.exists() and store.images("S1") == [keep]
+    with pytest.raises(ss.StoreRefused):
+        store.delete_image(gone["id"])
+
+
+def test_delete_image_never_unlinks_outside_the_images_folder(store, tmp_path):
+    store.ensure()
+    outside = tmp_path / "precious.png"
+    outside.write_bytes(b"keep me")
+    with sqlite3.connect(store.path) as db:
+        db.execute("INSERT INTO sample_images (sample_id, instrument, magnification, path,"
+                   " sha256, captured_at) VALUES ('S1','microscope',10,?,'h','t')",
+                   (str(outside),))
+    (row,) = store.images("S1")
+    store.delete_image(row["id"])
+    assert outside.exists() and store.images("S1") == []
+
+
+def _v2_file(path):
+    """A version-2 store as the repo wrote it before the image table."""
+    db = sqlite3.connect(str(path))
+    for table in ("samples", "registrations", "corners", "flakes", "rotator_calibrations"):
+        cols = dict(ss._TABLES)[table]
+        extra = ", PRIMARY KEY (registration_id, label)" if table == "corners" else ""
+        db.execute("CREATE TABLE " + table + " (" + ", ".join(n + " " + k for n, k in cols)
+                   + extra + ")")
+    db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    db.execute("INSERT INTO meta VALUES ('store_uuid', 'u-1')")
+    db.execute("INSERT INTO samples (sample_id, uid, status) VALUES ('S1', 'uid-1', 'active')")
+    db.execute("INSERT INTO registrations (registration_uid, sample_id, frame_source)"
+               " VALUES ('r-1', 'S1', 'legacy')")
+    db.execute("INSERT INTO corners (registration_id, label, image_path)"
+               " VALUES (1, 'A', '/abs/corner.png')")
+    db.execute("INSERT INTO flakes (flake_uid, label, sample_id, image_path)"
+               " VALUES ('f-1', 'F01', 'S1', '/abs/flake.png')")
+    db.execute("PRAGMA user_version = 2")
+    db.commit()
+    db.close()
+
+
+def test_a_version_two_file_keeps_every_row_and_gains_the_image_table(tmp_path):
+    path = tmp_path / "v2.sqlite"
+    _v2_file(path)
+    store = ss.SampleStore(path)
+    assert store.images() == []                              # a read changes nothing
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+    store.ensure()
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("SELECT name FROM sqlite_master WHERE name = 'sample_images_sample'"
+                          ).fetchone()
+    assert [s["sample_id"] for s in store.samples()] == ["S1"]
+    assert len(store.registrations()) == 1 and len(store.flakes()) == 1
+    assert store.corners(1)[0]["image_path"] == "/abs/corner.png"
+    assert store.meta()["store_uuid"] == "u-1"               # identity untouched
+    store.add_image("S1", _picture(tmp_path), "microscope", 10)
+    assert len(store.images("S1")) == 1
+
+
+def test_old_absolute_paths_are_left_alone_and_counted(tmp_path):
+    path = tmp_path / "v2.sqlite"
+    _v2_file(path)
+    store = ss.SampleStore(path)
+    store.ensure()
+    assert store.absolute_image_paths() == 2
+    assert store.flakes()[0]["image_path"] == "/abs/flake.png"
+    store.add_image("S1", _picture(tmp_path), "microscope", 10)
+    assert store.absolute_image_paths() == 2                 # new rows are relative
+
+
+def test_the_export_lists_the_sample_images_by_relative_path(store, tmp_path):
+    row = store.add_image("S1", _picture(tmp_path), "microscope", 100, note="n")
+    doc = store.export_document("bench-pc", "1")
+    assert doc["schema"] == "flake-coords/1"
+    (entry,) = doc["images"]
+    assert entry == {"sample_id": "S1", "path": row["path"], "sha256": row["sha256"],
+                     "instrument": "microscope", "magnification": 100,
+                     "captured_at": row["captured_at"], "note": "n"}
+    assert not entry["path"].startswith("/")
+    json.dumps(doc)
