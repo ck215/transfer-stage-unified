@@ -498,9 +498,17 @@ class LiveForce:
     `BASELINE_SECONDS` (as `baseline_of`), and exists once a settled row
     arrives after them. The running peak M is the maximum of the trailing
     `MEDIAN_WINDOW` median, frozen from the operator's Mark (`frozen=True`,
-    as `detect` takes M before the Mark); r is that median now."""
+    as `detect` takes M before the Mark); r is that median now.
 
-    def __init__(self):
+    `factor` (RG-2) names the column that drives all three, as `detect`'s
+    does: red by default; any other column, or a ratio, is read from the
+    row dict `add` is given (RGB analysis's `green`, `blue`, `r_mean`,
+    `g_mean`, `b_mean`), over the rows the mask keeps on RED, less any row
+    where the factor has no finite value (`_settled_factor`'s rule)."""
+
+    def __init__(self, factor=DEFAULT_FACTOR):
+        self.factor = factor
+        self._columns = parse_factor(factor)       # ValueError: not a factor
         self.t0 = None
         self.baseline = None
         self.peak = None
@@ -523,13 +531,42 @@ class LiveForce:
         frequent = count >= max(STALE_MIN_REPEATS, STALE_MIN_SHARE * self._lit)
         return not (frequent and red != previous)
 
-    def add(self, t, red, frozen=False):
-        """One row of the live profile (`t` seconds, `red` %). -> the
+    def _factor_value(self, red, row):
+        """The factor's value on this row (red, one column of `row`, or a
+        ratio of two), or None when the row has no finite value for it."""
+        numerator, denominator = self._columns
+        if (numerator, denominator) == (DEFAULT_FACTOR, None):
+            return red
+
+        def cell(name):
+            raw = red if name == DEFAULT_FACTOR else (row or {}).get(name)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return None
+            return value if math.isfinite(value) else None
+        top = cell(numerator)
+        if top is None or denominator is None:
+            return top
+        bottom = cell(denominator)
+        if not bottom:
+            return None
+        ratio = top / bottom
+        return ratio if math.isfinite(ratio) else None
+
+    def add(self, t, red, frozen=False, row=None):
+        """One row of the live profile (`t` seconds, `red` %, and the row's
+        other columns in `row` for a factor other than red). -> the
         estimate, `(value, class)` or `(None, None)`."""
         red = None if red is None else float(red)
         self.settled = self._keep(red)
         if not self.settled:
             return self.estimate
+        value = self._factor_value(red, row)
+        if value is None:
+            self.settled = False
+            return self.estimate
+        red = value
         t = float(t)
         if self.t0 is None:
             self.t0 = t

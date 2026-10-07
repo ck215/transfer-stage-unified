@@ -1426,7 +1426,8 @@ class TransferMap(Model):
         # The Force estimate moves here, at the row rate, on this thread;
         # never on a poll (TR-3).
         try:
-            trial.live.add(t, red, frozen=trial.operator_t is not None)
+            trial.live.add(t, red, frozen=trial.operator_t is not None,
+                           row=carrier)
         except Exception as exc:
             events.debug("Estimate Failed", repr(exc), source=self.NAME,
                          every=5.0)

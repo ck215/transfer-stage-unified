@@ -448,3 +448,31 @@ def test_one_transient_row_never_moves_the_running_median():
     _feed(live, [0.1 * i for i in range(12)], [10.0] * 12)
     live.add(1.25, 90.0)                             # a half-painted frame
     assert live.settled and live.current == 10.0 and live.peak == 10.0
+
+
+def test_the_live_estimate_takes_the_factor_as_detect_does():
+    """RG-2: a factor other than red drives the baseline, the peak and the
+    value, read from each row's dict, over the rows the mask keeps on red;
+    at the end it agrees with the stored definition on that factor."""
+    profile = lowering()
+    profile["green"] = [2.0 * r + 1.0 for r in profile["red"]]
+    profile["blue"] = [4.0] * len(profile["red"])
+    for factor in ("green", "green/blue"):
+        live = tma.LiveForce(factor=factor)
+        for t, red, green in zip(profile["t"], profile["red"], profile["green"]):
+            live.add(t, red, row={"green": green, "blue": 4.0})
+        stored = tma.force_indices(profile, factor=factor)["shadow_vs_peak"]
+        assert live.estimate[0] == pytest.approx(stored, rel=1e-9), factor
+    # A row with no value for the factor is not settled and moves nothing.
+    live = tma.LiveForce(factor="green")
+    live.add(0.0, 10.0, row={"green": 5.0})
+    live.add(0.1, 10.5, row={})
+    assert live.settled is False and live.current == 5.0
+    live.add(0.2, 10.5, row={"green": 6.0, "blue": 0.0})
+    assert live.settled is True
+    ratio = tma.LiveForce(factor="green/blue")
+    ratio.add(0.0, 10.0, row={"green": 6.0, "blue": 0.0})   # a zero denominator
+    assert ratio.settled is False and ratio.current is None
+    assert tma.LiveForce().factor == tma.DEFAULT_FACTOR == "red"
+    with pytest.raises(ValueError):
+        tma.LiveForce(factor="purple")
