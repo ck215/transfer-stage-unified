@@ -1010,7 +1010,7 @@ kbd {
   border-left: var(--line) solid var(--edge);
 }
 
-/* A model drawn on another model's page (Model.HOST: Red Percent on the
+/* A model drawn on another model's page (Model.HOST: a monitor on the
    Transfer Map). On the host's page it is a group after the host's tier 1:
    the entry's own head at one step down - a line rule instead of the ink
    rule, the name one size smaller - and its tier-2 disclosure and well
@@ -1320,6 +1320,142 @@ kbd {
 
 .card-close:hover:not(:disabled) { color: var(--text); }
 
+/* -- the procedure strip (W2-1) --------------------------------------------- */
+/* The steps in order as segments: the current one is dark (ink fill, light
+   text), the rest quiet. A prompt step (new_*) is a dotted outline and is
+   not numbered. Beside it, the next-step sentence and the analysis-health
+   word. Never colour alone: the lit step is also filled and carries
+   aria-current; an unsettled health word is also bold, ruled and marked. */
+.procedure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+}
+
+.procedure[hidden] { display: none; }
+
+.proc-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: proc-step;
+}
+
+.proc-step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: var(--line) solid var(--edge);
+  border-radius: var(--radius-small);
+  font-size: var(--t-cap);
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--muted);
+  background: transparent;
+  white-space: nowrap;
+}
+
+.proc-step:not(.is-prompt) { counter-increment: proc-step; }
+.proc-step:not(.is-prompt)::before {
+  content: counter(proc-step);
+  font-family: var(--numeral-family);
+  font-variant-numeric: tabular-nums;
+}
+
+.proc-step.is-prompt { border-style: dotted; }
+
+.proc-step.is-current {
+  color: var(--bg);
+  background: var(--text);
+  border-color: var(--text);
+  font-weight: 600;
+}
+
+.proc-text {
+  flex: 1 1 14rem;
+  min-width: 0;
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+
+.proc-health {
+  padding: 0 var(--space-3);
+  border: var(--line) solid var(--edge);
+  border-radius: var(--radius-control);
+  font-size: var(--t-cap);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.proc-health.is-warn {
+  color: var(--warning-ink);
+  border-color: var(--warning-ink);
+  font-weight: 600;
+}
+
+.proc-health.is-warn::before { content: "! "; }
+
+/* Compact on the Overview: smaller segments, no numbers, the sentence on one
+   line (its full words in the title). */
+.sheet.is-overview .procedure { gap: var(--space-1) var(--space-3); }
+.sheet.is-overview .proc-step { padding: 0 var(--space-2); font-size: var(--t-xs); }
+.sheet.is-overview .proc-step:not(.is-prompt)::before { content: none; }
+.sheet.is-overview .proc-text {
+  flex-basis: 100%;
+  font-size: var(--t-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet.is-overview .proc-health { font-size: var(--t-xs); }
+
+/* -- the prompt dialog (W2-2) ------------------------------------------------ */
+/* A `new_` step: a scrim over this card only (the stop and the rail are
+   outside the card), its sections centred in it. */
+.card.has-dialog { position: relative; min-height: 22rem; }
+
+.card-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+}
+
+.dialog-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: min(36rem, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: var(--space-5);
+  border: var(--line) solid var(--edge);
+  border-top: var(--rule-strong-px) solid var(--rule-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+}
+
+.dialog-box > .section { flex-direction: column; align-items: stretch; }
+.dialog-box > .section > .section-title {
+  position: static;
+  width: auto;
+  height: auto;
+  clip-path: none;
+  font-size: var(--t-lg);
+}
+
 /* -- sections ------------------------------------------------------------ */
 /* Tier 1: the sections of the body flow across and wrap (a probe's
    position, then its speeds, then its mode toggles). Alignment and
@@ -1506,7 +1642,7 @@ span.value.is-word,
 /* Axis letters: 14/700 muted, engraved. */
 .row.reading-axis > .label { order: 0; font-size: var(--axis-letter-size); font-weight: 700; }
 
-/* A tier-2 statistic (frame rate, frames, rows): 24 px in the numeral face. */
+/* A tier-2 statistic (a rate, a count, rows): 24 px in the numeral face. */
 .tier-well > .section .row.stat > .value:not(.is-word):not(.is-empty) { font-size: var(--statistic-size); }
 
 /* Frozen: latched, stale, lost, or the station not answering. A frozen
