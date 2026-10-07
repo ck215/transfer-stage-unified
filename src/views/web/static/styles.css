@@ -150,6 +150,13 @@ button, select, input[type="range"] {
   outline-offset: var(--space-2);
 }
 
+/* A section or a row the current procedure step does not draw
+   (PanelCard.applyPhase). There is no global [hidden] rule and sections
+   are flex or grid, so a bare `hidden` would not hide them; this one does,
+   whatever display a class gives. Hidden is not disabled: a disabled
+   control is greyed where it stands. */
+.is-phase-off { display: none !important; }
+
 /* Read by a screen reader, not drawn. */
 .sr-only {
   position: absolute;
@@ -985,6 +992,23 @@ kbd {
 .sheet.is-device > .card:not(.is-opened) { display: none; }
 .sheet.is-overview .card > .disclosure,
 .sheet.is-overview .card > .tier-well { display: none; }
+
+/* WEB-3: on the Overview a device is a bounded entry, not a stretch of
+   whitespace. Its ink head rule is the top edge; a hairline closes the
+   other three, so the boundary between two devices is drawn the same way
+   in the six-, three- and one-column reflows (and between rows) without
+   any JS. `border-top` is deliberately not written here: the entry's
+   3 px signal head rule (lost, unconfirmed, faulted) is the fault weight
+   and stays the only thing that sets the top edge apart. The hosted guest
+   lives inside its host's box (it is not drawn here at all). */
+.sheet.is-overview > .card {
+  padding-right: var(--space-6);
+  padding-bottom: var(--space-6);
+  padding-left: var(--space-6);
+  border-right: var(--line) solid var(--edge);
+  border-bottom: var(--line) solid var(--edge);
+  border-left: var(--line) solid var(--edge);
+}
 
 /* A model drawn on another model's page (Model.HOST: Red Percent on the
    Transfer Map). On the host's page it is a group after the host's tier 1:
@@ -2639,6 +2663,7 @@ label.row-title[for] { cursor: pointer; }
 
 /* Under 760 px the entries stack in one column. */
 @media (max-width: 47.5rem) {
+  .sheet.is-overview > .card { padding-right: var(--space-5); padding-left: var(--space-5); }
   .card.span-2, .card.span-3 { grid-column: span 6; }
 }
 

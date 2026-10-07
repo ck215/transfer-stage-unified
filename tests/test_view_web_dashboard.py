@@ -15,6 +15,8 @@ Driven in headless Chrome through the harness in test_view_web_server.py
 (skipped where node or puppeteer is absent), plus static reads of app.js.
 """
 import re
+import json
+import urllib.parse
 import threading
 import time
 
@@ -546,7 +548,7 @@ def test_d_the_region_picker_in_the_group_asks_the_hosted_model(hosted_station, 
     view, controller, host, guest = hosted_station
     out = _browse(view, _HOSTED + r"""
       const asked = [];
-      page.on('request', (r) => { if (r.url().includes('/api/screen')) asked.push(r.url()); });
+      page.on('request', (r) => { if (r.url().includes('/api/data')) asked.push(r.url()); });
       await openMap();
       await page.evaluate(() => {
         const titleOf = (c) => (c.querySelector('.card-title') || {}).textContent;
@@ -556,7 +558,10 @@ def test_d_the_region_picker_in_the_group_asks_the_hosted_model(hosted_station, 
       await sleep(600);
       return asked;
     """, tmp_path)
-    assert out and all("name=Fake%20Red" in u for u in out), out
+    # WEB-2: the element declares data_command, so the picker asks /api/data
+    # for THAT command, of the hosted model.
+    assert out and all("name=Fake%20Red" in u and "command=screen_image" in u
+                       for u in out), out
 
 
 #: The colour a value is drawn in, against the theme's muted ink.
@@ -993,3 +998,467 @@ def test_v4_a_well_link_says_nothing(linked, tmp_path):
     assert out["alert"] == "" and "is-lost" not in out["cls"]
     assert out["auto"] is False and out["step"] is False
     assert "is-attention" not in out["mark"] and "is-link-lost" not in out["mark"]
+
+
+# ==========================================================================
+# WEB-1: the page draws the procedure step (owner ruling 2026-10-07)
+# ==========================================================================
+class FakePhased(_Plain):
+    """A two-step model, the shape of tests/test_model_contract.PhasedModel
+    plus what the page needs: a row the step hides, a section whose every
+    row is phased (its header must go with them), a `go`-style button whose
+    note must stay silent while hidden."""
+    NAME = "Fake Phased"
+    PHASES = ("setup", "live")
+
+    def __init__(self):
+        super().__init__()
+        self._phase = "setup"
+        self.tip = "T-1"
+
+    @property
+    def phase(self):
+        return self._phase
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Start", sch.readonly("Tip", "tip", rail=True),
+                        sch.button("Begin", "begin"), phases=("setup",)),
+            sch.section("Trial",
+                        sch.readonly("Step", "phase_word"),
+                        sch.phased(sch.button("Mark", "press"), "live"),
+                        sch.phased(sch.readonly("Marked at", "tip"), "live")),
+            sch.section("Review", sch.phased(sch.button("Keep", "press"), "live"),
+                        sch.phased(sch.button("Drop", "press"), "setup")),
+            sch.section("Details", sch.readonly("Tip", "tip"), tier=2,
+                        disclosure="Configure Fake Phased", phases=("setup",)),
+        )
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["values"]["phase_word"] = self._phase
+        return snapshot
+
+    def begin(self):
+        self._phase = "live"
+        return "begun"
+
+
+@pytest.fixture
+def phased_station():
+    controller = Controller()
+    model = FakePhased()
+    controller.add("Fake Phased", model, {"kind": "Fake Phased"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, model
+    finally:
+        view.close()
+
+
+#: What the page draws right now, by visible text, and where focus is.
+_PHASE_READ = r"""
+  if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+    await page.click('#drawer-close');
+    await sleep(300);
+  }
+  await until(() => document.querySelectorAll('#cards .card-title').length >= 1);
+  await sleep(400);
+  const drawn = () => page.evaluate(() => {
+    const shown = (n) => Boolean(n && n.getClientRects().length);
+    const card = document.querySelector('#cards .card');
+    const a = document.activeElement;
+    return {
+      buttons: Array.from(card.querySelectorAll('.card-body button')).filter(shown)
+        .map((b) => b.textContent.trim()),
+      headers: Array.from(card.querySelectorAll('.section-title')).filter(shown)
+        .map((h) => h.textContent.trim()),
+      discs: Array.from(card.querySelectorAll('.disclosure')).filter(shown).length,
+      phase: window.station.cards.get('Fake Phased').phase,
+      focusIsDrawn: !a || a === document.body || shown(a),
+      focusOnCard: Boolean(a) && a === card,
+      focusTag: a ? a.tagName + ':' + (a.textContent || '').trim().slice(0, 20) : '',
+    };
+  });
+"""
+
+
+@needs_browser
+def test_web1_a_step_draws_its_controls_and_hides_the_rest(phased_station, tmp_path):
+    view, controller, model = phased_station
+    out = _browse(view, _PHASE_READ + r"""
+      const fetched = [];
+      page.on('request', (r) => { if (r.url().includes('/api/schema')) fetched.push(r.url()); });
+      await page.evaluate(() => window.station.showPage('Fake Phased'));
+      await sleep(400);
+      const setup = await drawn();
+      await page.evaluate(() => Array.from(document.querySelectorAll('#cards button'))
+        .find((b) => b.textContent.trim() === 'Begin').click());
+      await sleep(1800);
+      const live = await drawn();
+      return { setup, live, schemaFetches: fetched.length };
+    """, tmp_path)
+    setup, live = out["setup"], out["live"]
+    assert setup["phase"] == "setup", out
+    # Section "Trial" keeps its unphased row; "Review" keeps its header
+    # because one of its rows is drawn; "Mark" and "Keep" are not.
+    assert "Begin" in setup["buttons"] and "Drop" in setup["buttons"], setup
+    assert "Mark" not in setup["buttons"] and "Keep" not in setup["buttons"], setup
+    assert setup["discs"] == 1, "the setup-only tier-2 disclosure is drawn in setup"
+    assert live["phase"] == "live", out
+    assert "Mark" in live["buttons"] and "Keep" in live["buttons"], live
+    assert "Begin" not in live["buttons"] and "Drop" not in live["buttons"], live
+    # A section with every row hidden has no header: "Start" is phased
+    # whole; "Review" in setup showed Drop only.
+    assert "Start" not in live["headers"], live
+    assert live["discs"] == 0, "a tier-2 disclosure the step hides is still drawn"
+    # The schema is read once, never again for a step.
+    assert out["schemaFetches"] == 0, out
+
+
+@needs_browser
+def test_web1_focus_leaves_a_control_that_disappears(phased_station, tmp_path):
+    view, controller, model = phased_station
+    out = _browse(view, _PHASE_READ + r"""
+      await page.evaluate(() => Array.from(document.querySelectorAll('#cards button'))
+        .find((b) => b.textContent.trim() === 'Begin').focus());
+      const before = await page.evaluate(() => document.activeElement.textContent.trim());
+      await page.keyboard.press('Enter');
+      await sleep(1800);
+      return { before, after: await drawn() };
+    """, tmp_path)
+    assert out["before"] == "Begin", out
+    after = out["after"]
+    assert after["phase"] == "live", out
+    assert after["focusIsDrawn"], f"focus stayed on a hidden control: {after}"
+    assert after["focusOnCard"], f"focus did not go to the entry: {after}"
+
+
+@needs_browser
+def test_web1_the_overview_strip_shows_only_the_current_steps_rows(phased_station, tmp_path):
+    view, controller, model = phased_station
+    out = _browse(view, _PHASE_READ + r"""
+      const onOverview = await page.evaluate(() => window.station.opened === null
+        && document.getElementById('cards').classList.contains('is-overview'));
+      const setup = await drawn();
+      await api('/api/run', { name: 'Fake Phased', command: 'begin', inputs: {}, args: [] });
+      await sleep(1800);
+      return { onOverview, setup, live: await drawn() };
+    """, tmp_path)
+    assert out["onOverview"], out
+    assert out["setup"]["buttons"] == ["Begin", "Drop"], out
+    assert out["live"]["buttons"] == ["Mark", "Keep"], out
+
+
+@needs_browser
+def test_web1_a_hidden_go_command_says_nothing(phased_station, tmp_path):
+    """sayWhyNotGo skips a phase-hidden row: no 'why not' caption is drawn
+    for a command the step does not show."""
+    view, controller, model = phased_station
+    out = _browse(view, _PHASE_READ + r"""
+      await sleep(600);
+      return await page.evaluate(() => Array.from(document.querySelectorAll('#cards .note'))
+        .filter((n) => n.getClientRects().length && n.textContent.trim())
+        .map((n) => n.textContent.trim()));
+    """, tmp_path)
+    assert out == [], out
+
+
+# ==========================================================================
+# WEB-2: the region picker draws on the model's own still
+# ==========================================================================
+STILL_SIZE = (3584, 2746)
+
+
+class FakeStill(_Plain):
+    """The Transfer Map's picker as the contract declares it:
+    `region_select(..., data_command="stage_still")` returning a
+    full-resolution PNG, plus a plain `screen_image` model-free fallback is
+    covered by the hosted tests above."""
+    NAME = "Fake Still"
+
+    def __init__(self):
+        super().__init__()
+        self.region = None
+        self.asked = []
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Trial", sch.readonly("Step", "mode_word"),
+            sch.region_select("Set capture region", "set_region",
+                              model_attr="region", data_command="stage_still")))
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["values"]["mode_word"] = "armed"
+        snapshot["values"]["region"] = (
+            sch.format_region(self.region) if self.region else "")
+        return snapshot
+
+    def stage_still(self):
+        import io
+        from PIL import Image
+        picture = Image.new("RGB", STILL_SIZE, (30, 40, 50))
+        out = io.BytesIO()
+        picture.save(out, "PNG")
+        return out.getvalue()
+
+    def set_region(self, x, y, width, height):
+        left, top = x, y
+        self.asked.append([x, y, width, height])
+        self.region = {"left": left, "top": top, "width": width, "height": height}
+        return self.region
+
+
+@pytest.fixture
+def still_station():
+    controller = Controller()
+    model = FakeStill()
+    controller.add("Fake Still", model, {"kind": "Fake Still"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, model
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_web2_the_picker_draws_on_the_models_still_and_maps_to_source_pixels(still_station, tmp_path):
+    view, controller, model = still_station
+    out = _browse(view, _PHASE_READ.split("const drawn")[0] + r"""
+      const asked = [];
+      page.on('request', (r) => { if (/\/api\/(screen|data)/.test(r.url())) asked.push(r.url()); });
+      const open = async () => {
+        await page.evaluate(() => Array.from(document.querySelectorAll('#cards button'))
+          .find((b) => /capture region/i.test(b.textContent)).click());
+        await until(() => document.getElementById('region-canvas').width > 800);
+        await sleep(300);
+      };
+      await open();
+      const geom = await page.evaluate(() => {
+        const c = document.getElementById('region-canvas');
+        const b = c.getBoundingClientRect();
+        return { w: c.width, h: c.height, left: b.left, top: b.top, bw: b.width, bh: b.height };
+      });
+      // Drag between two on-screen points; the region is what those points
+      // are in the picture's own pixels.
+      const a = [geom.left + geom.bw * 0.25, geom.top + geom.bh * 0.40];
+      const z = [geom.left + geom.bw * 0.55, geom.top + geom.bh * 0.62];
+      await page.mouse.move(a[0], a[1]);
+      await page.mouse.down();
+      await page.mouse.move((a[0] + z[0]) / 2, (a[1] + z[1]) / 2);
+      await page.mouse.move(z[0], z[1]);
+      await page.mouse.up();
+      await sleep(700);
+      const state = await api('/api/state');
+      // Reopen: the model's value is outlined on the still and in the fields.
+      await open();
+      const again = await page.evaluate(() => ({
+        fields: Array.from(document.querySelectorAll('#region-picker .region-fields input')).map((f) => f.value),
+        help: document.getElementById('region-help').textContent,
+      }));
+      return { geom, a, z, asked, again, state, canvasBefore: 0 };
+    """, tmp_path)
+    geom = out["geom"]
+    assert (geom["w"], geom["h"]) == STILL_SIZE, f"the still was downscaled: {geom}"
+    assert geom["bw"] < geom["w"], "the picture should be displayed scaled to fit"
+    assert any("/api/data" in u and "command=stage_still" in u for u in out["asked"]), out["asked"]
+    assert not any("/api/screen" in u for u in out["asked"]), out["asked"]
+    (region,) = model.asked
+    assert all(isinstance(v, int) for v in region), region
+    k = geom["w"] / geom["bw"]
+    expect_left = round((out["a"][0] - geom["left"]) * k)
+    expect_top = round((out["a"][1] - geom["top"]) * k)
+    assert abs(region[0] - expect_left) <= 1 and abs(region[1] - expect_top) <= 1, (region, expect_left, expect_top)
+    assert abs(region[2] - round((out["z"][0] - out["a"][0]) * k)) <= 1, region
+    assert abs(region[3] - round((out["z"][1] - out["a"][1]) * k)) <= 1, region
+    assert out["again"]["fields"] == [str(v) for v in region], out["again"]
+    assert sch.format_region(model.region) in out["again"]["help"], out["again"]
+
+
+def test_web2_the_picker_reads_the_elements_data_command_and_keeps_the_screen_fallback():
+    opener = _method_of("openRegionPicker")
+    assert "element.data_command" in opener
+    assert "/api/screen" in opener, "without a data_command the screen grab is kept"
+    assert "/api/data" in _method_of("loadStill")
+    # Pure helpers the picker uses to read a value back and say it.
+    drag = _method_of("bindRegionDrag")
+    assert "current" in drag and "setLineDash" in drag
+
+
+def _method_of(name):
+    from test_view_web_client import _method
+    return _method(name)
+
+
+def test_web2_a_picture_with_geometry_is_served_as_a_png_with_headers(hosted_station):
+    """`/api/data` for a command that returns `{"image": bytes, left, top,
+    width, height}` (Red Percent's `screen_image`) serves the PNG itself;
+    the area it was scaled from travels in headers, so the picker maps a
+    drag on a bounded grab of a second monitor into that monitor's pixels."""
+    from test_view_web_server import _request
+    view, controller, host, guest = hosted_station
+    status, headers, body = _request(
+        view, "/api/data?name=Fake%20Red&command=screen_image")
+    assert status == 200 and headers["Content-Type"] == "image/png"
+    assert body.startswith(b"\x89PNG")
+    assert [headers[f"X-Image-{k}"] for k in ("Left", "Top", "Width", "Height")] == [
+        "0", "0", "100", "100"]
+    # A bare PNG (the Transfer Map's stage still) carries no such headers.
+    status, headers, body = _request(
+        view, "/api/data?name=Fake%20Map&command=nothing")
+    assert status == 403
+
+
+# ==========================================================================
+# WEB-3: the device boundary, as the browser computes it
+# ==========================================================================
+@needs_browser
+def test_web3_each_overview_device_is_bounded_and_the_guest_stays_inside_its_host(hosted_station, tmp_path):
+    view, controller, host, guest = hosted_station
+    out = _browse(view, _HOSTED + r"""
+      const probe = (width) => page.evaluate(() => {
+        const edge = (() => {
+          const p = document.createElement('span');
+          p.style.color = getComputedStyle(document.documentElement).getPropertyValue('--edge').trim();
+          document.body.appendChild(p);
+          return getComputedStyle(p).color;
+        })();
+        const cards = Array.from(document.querySelectorAll('#cards > .card'));
+        const css = (c) => getComputedStyle(c);
+        return {
+          count: cards.length,
+          sides: cards.map((c) => [css(c).borderLeftWidth, css(c).borderRightWidth,
+            css(c).borderBottomWidth, css(c).borderLeftColor === edge, css(c).borderTopWidth]),
+          guestInside: Array.from(document.querySelectorAll('#cards .card.is-hosted'))
+            .every((g) => g.parentElement.closest('.card') !== null && css(g).borderLeftWidth === '0px'),
+        };
+      });
+      const wide = await probe();
+      await page.setViewport({ width: 390, height: 844 });
+      await sleep(400);
+      return { wide, phone: await probe() };
+    """, tmp_path)
+    for shot in (out["wide"], out["phone"]):
+        assert shot["count"] == 1
+        left, right, bottom, is_edge, top = shot["sides"][0]
+        # --line is 1.5 px; Chrome snaps a border to whole device pixels.
+        assert left == right == bottom and left in ("1px", "1.5px") and is_edge, shot
+        assert top == "2px", f"the head rule changed weight: {shot}"
+        assert shot["guestInside"], shot
+
+
+# ==========================================================================
+# WEB-5: an image upload carries its inputs; thumbnails by relative path
+# ==========================================================================
+from param import Param  # noqa: E402
+
+
+class FakeImages(_Plain):
+    """The Sample Map's "Add image" as the contract allows it: a `file_open`
+    whose `inputs` (instrument, magnification) travel with the command."""
+    NAME = "Fake Images"
+    PARAMS = {"instrument": Param("instrument", "text", default="", label="Instrument"),
+              "magnification": Param("magnification", "float", default=1.0, label="Magnification")}
+
+    def __init__(self, root):
+        super().__init__()
+        self.root = root
+        self.instrument = ""
+        self.magnification = 1.0
+        self.added = []
+
+    @property
+    def schema(self):
+        opener = sch.file_open("Add image", "add_image", extensions=("png",))
+        opener["inputs"] = ["instrument", "magnification"]
+        return sch.schema(sch.section(
+            "Images",
+            sch.entry("Instrument", "instrument", self.PARAMS["instrument"]),
+            sch.entry("Magnification", "magnification", self.PARAMS["magnification"]),
+            opener))
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["output_root"] = self.root
+        snapshot["values"].update({"instrument": self.instrument,
+                                   "magnification": self.magnification})
+        return snapshot
+
+    def add_image(self, path):
+        self.added.append((path, self.instrument, self.magnification))
+        return {"path": path}
+
+
+@pytest.fixture
+def images_station(tmp_path):
+    controller = Controller()
+    model = FakeImages(str(tmp_path))
+    controller.add("Fake Images", model, {"kind": "Fake Images"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, controller, model
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_web5_a_file_open_forwards_its_declared_inputs(images_station, tmp_path):
+    view, controller, model = images_station
+    chosen = tmp_path / "tip.png"
+    chosen.write_bytes(b"\x89PNG\r\n\x1a\nnot really")
+    out = _browse(view, _PHASE_READ.split("const drawn")[0] + r"""
+      const inputs = await page.$$('#cards .card-body input.input:not(.path-input)');
+      for (const [box, text] of [[inputs[0], 'SEM'], [inputs[1], '250']]) {
+        await box.evaluate((el) => { el.focus(); el.select(); });
+        await page.keyboard.press('Backspace');
+        await box.type(text);
+      }
+      // Typed path, then an uploaded file: both run the command with the
+      // entries, uncommitted as they are.
+      await page.type('.path-input', '/data/typed.png');
+      await page.evaluate(() => Array.from(document.querySelectorAll('.file-open button'))
+        .find((b) => b.textContent === 'Add image').click());
+      await sleep(700);
+      const picker = await page.$('.file-picker');
+      await picker.uploadFile(%s);
+      await sleep(1500);
+      return true;
+    """ % json.dumps(str(chosen)), tmp_path)
+    assert out is True
+    assert [(a[1], a[2]) for a in model.added] == [("SEM", 250.0), ("SEM", 250.0)], model.added
+    assert model.added[0][0] == "/data/typed.png"
+    assert model.added[1][0].endswith("uploads/tip.png"), model.added
+
+
+def test_web5_a_thumbnail_is_served_by_relative_path_under_the_output_root(images_station, tmp_path):
+    from test_view_web_server import _request
+    view, controller, model = images_station
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "a.png").write_bytes(b"\x89PNGa")
+    outside = tmp_path.parent / "secret.png"
+    outside.write_bytes(b"\x89PNGsecret")
+    (tmp_path / "images" / "link.png").symlink_to(outside)
+    (tmp_path / "notes.txt").write_text("x")
+
+    def get(path):
+        return _request(view, "/api/image?name=Fake%20Images&path=" + urllib.parse.quote(path))[::2]
+
+    status, body = get("images/a.png")
+    assert status == 200 and body == b"\x89PNGa"
+    assert _request(view, "/api/image?name=Fake%20Images&path=images/a.png")[1]["Content-Type"] == "image/png"
+    assert get("../secret.png")[0] == 403
+    assert get(str(outside))[0] == 403, "an absolute path is never taken"
+    assert get("images/link.png")[0] == 403, "a symlink out of the root is outside it"
+    assert get("notes.txt")[0] == 403, "only image types"
+    assert get("images/missing.png")[0] == 404
+    status, _, _ = _request(view, "/api/image?name=Nobody&path=images/a.png")
+    assert status == 404
