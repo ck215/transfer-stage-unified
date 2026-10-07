@@ -333,3 +333,19 @@ def test_shown_elements_follows_the_section_then_the_element():
     # Without a phase on anything, shown_elements is elements.
     plain = sch.schema(sch.section("A", sch.button("Go", "go")))
     assert list(sch.shown_elements(plain, "")) == list(sch.elements(plain))
+
+
+# -- hosted_tier and secondary readouts (2026-10-07) ----------------------------
+
+def test_a_section_may_take_another_tier_on_its_hosts_page():
+    s = sch.section("Live", sch.button("Go", "go"), hosted_tier=2)
+    assert s["tier"] == 1 and s["hosted_tier"] == 2
+    assert "hosted_tier" not in sch.section("Plain", sch.button("Go", "go"))
+    with pytest.raises(ValueError):
+        sch.section("Bad", hosted_tier=7)
+
+
+def test_a_secondary_readout_is_marked_and_otherwise_a_readonly():
+    e = sch.readonly("steps/s", "full_speed", secondary=True)
+    assert e["type"] == "readonly" and e["secondary"] is True
+    assert "secondary" not in sch.readonly("Value:", "value")
