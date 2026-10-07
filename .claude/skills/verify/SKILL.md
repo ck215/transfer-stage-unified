@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Run the right test gates for the station at the right time — the fast suite while working, all four gates plus a launch before anything merges. Use after any change under src/ or tests/, before merging an agent's worktree, and when deciding whether the Qt pass is warranted.
+description: Run the right test gates for the station at the right time — the fast suite while working, the golden and legacy gates plus a launch before anything merges. Use after any change under src/ or tests/, before merging an agent's worktree, and when deciding whether the optional Qt pass is warranted.
 ---
 
 # Verifying
@@ -14,23 +14,26 @@ on this Mac); `$S` is the session scratch directory.
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"
 ```
 
-~380 s. Run after every edit. Baseline (2026-10-04, after Phase 1 of the
-flake-coordinates and user-system proposals) **3433 passed, 12 skipped
-(window), 1 xfailed, 255 deselected** (the 255 are the Qt tests). A count
+Minutes, not seconds; run after every edit. Baseline: the lead's last full
+run was **3796 passed, 10 skipped, 227 deselected, 1 xfailed at `79ae0bd`**
+(2026-10-07); 474 web-view tests were added after it. A collect-only count at
+`7f509cb` (`--collect-only -q -m "not qt"`) reads **3831/4058 collected,
+227 deselected** (the 227 are the Qt tests of the frozen view). Re-measure
+with that command and use the number you get; the two figures above were not
+reconciled by the docs pass. A count
 that moved is a finding, not noise. Known flake, not a regression:
 `test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
 fails about one run in three on an unchanged tree (a 1 ms timing bound);
 rerun it alone before calling a red fast gate.
 
-## Before a merge: four gates and a launch
+## Before a merge: the gates and a launch
 
 ```
-$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # 3433 passed (STATION_NO_WINDOWS=1 while anyone is at the Mac)
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # the fast gate, see above (STATION_NO_WINDOWS=1 while anyone is at the Mac)
 $PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                  # 78 passed; recaptures from legacy/src in a subprocess
-QT_QPA_PLATFORM=offscreen $PY -m pytest tests -q -p no:cacheprovider -m qt      # 255 passed; lead only, see below
 cd legacy && $PY -m pytest tests -q -p no:cacheprovider -m "not slow and not order_dependent and not qt"
                                                                                 # 1038 passed, 1 skipped, 89 deselected, 1 xfailed
-$PY src/app.py --web --no-browser --port 8081 &  sleep 8;  curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/setup;  kill %1
+$PY src/app.py --no-browser --port 8081 &  sleep 8;  curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/setup;  kill %1
 ```
 
 The launch is not optional: a suite that passes on an app that cannot start
@@ -52,18 +55,21 @@ $PY -m pytest tests -q -p no:cacheprovider -m "not qt" > "$S/fast.txt" 2>&1
 echo "EXIT=$?"; tail -1 "$S/fast.txt"
 ```
 
-## The Qt pass is the lead's
+## The Qt pass is optional, and the lead's
 
-A native Qt `SIGABRT` kills the pytest session and discards every
-already-passed result, which is why Qt tests are a separate pass and why
+The Qt tests exercise only the frozen Qt view (retired 2026-10-07, frozen at
+`413f504`). Running them needs `pip install -e .[qt]` and
+`QT_QPA_PLATFORM=offscreen`; on macOS first `chflags -R nohidden` on the
+PySide6 directory. A native Qt `SIGABRT` kills the pytest session and discards
+every already-passed result, which is why Qt tests are a separate pass and why
 agents never run it. A Qt-marked test an agent wrote but did not run is
-`## UNVERIFIED` in its handoff, never evidence.
+`## UNVERIFIED` in its handoff, never evidence. A merge no longer waits on it.
 
 ## What is real and what is a stand-in
 
 The suite under `tests/` runs against the real `serial`, `pygame`, `mss`,
 `PIL` and `matplotlib`; the only stand-in is `tkinter` (a `MagicMock` in
-`tests/conftest.py`, so the Tk view's tests exercise logic, not widgets).
+`tests/conftest.py`, so the frozen Tk view's tests exercise logic, not widgets).
 The legacy suite mocks all of them. **Iterating a MagicMock yields
 nothing**, so a loop-based assertion over one passes vacuously; check what
 you are really asserting on before believing a green test.

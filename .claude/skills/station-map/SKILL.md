@@ -1,6 +1,6 @@
 ---
 name: station-map
-description: Orientation for any agent working on transfer-stage-unified — where the three code trees are, what each one is, how to run and test the app, the owner rulings that decide what is intentional, and the traps this codebase sets. Read before auditing, fixing, pruning, or relocating anything.
+description: Orientation for any agent working on transfer-stage-unified — where the code trees are, what each one is, how to run and test the app, the owner rulings that decide what is intentional, and the traps this codebase sets. Read before auditing, fixing, pruning, or relocating anything.
 ---
 
 # Station map
@@ -9,19 +9,24 @@ description: Orientation for any agent working on transfer-stage-unified — whe
 
 ```
 /Users/ianalbinogonzalez/Documents/GitHub/transfer-stage-unified/
-  main/             worktree, branch `main`         — the LAB's original app
+  main/             a PLAIN checkout of origin/main (NOT a worktree) — the LAB's original app;
+                    it also holds the venv, main/.venv, the $PY below
   mvc-refactor/     worktree, branch `mvc-refactor` — the working branch (work here)
-  handoff/  NOT in any repo — agent reports (audit-*.md, relayout.md, docs-prune.md), screenshots
-  rebuild/          stray directory, no .git; the `rebuild` branch was retired 2026-09-23. Do not use.
+  rb-<name>/        one worktree per agent while a fix round runs (rb-tmap, rb-docs in the
+                    2026-10-07 round); removed after the merge
 ```
+
+Agent reports live in `handoff/` INSIDE each worktree (git-ignored; each
+worktree has its own). The 32 handoff files that code and docs cite are tracked
+under `docs/archive/handoff/`. `handoff/shots/` is never tracked.
 
 Three generations of the app exist:
 
 | Generation | Where | Layout | Status |
 |---|---|---|---|
 | Original | `main/src/` | flat Tk files: `mainGUI.py`, `stepper_frame.py`, `DC_frame.py`, `chuck_frame.py`, `controllerDrive.py`, `serialDrive.py`, `temp_control.py`, `rotator.py`, `lib/{smc100,redpercent,toupcam}.py` | The behaviour the lab knows. Reference for "what the app is supposed to do". |
-| MVC repair | `mvc-refactor/legacy/src/` (+ `legacy/tests/`) | `controller/ model/ views/{tkinter,pyside,web} lib/` | Ran in the lab 2026-08-26 → 09-22. Frozen. Reference for the golden wire captures only; deleted once `tests/TEST_PORTING.md` is worked off. |
-| Rebuild | `mvc-refactor/src/` (+ `tests/`) | `app.py`, `events panel param schema result palette`, `controller/{controller,setup}.py`, `model/{base,probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/{tk,qt,web/}` | **The app.** 13.7k lines; 3433 fast tests (+12 window, 1 xfail; 2026-10-04), 255 Qt, 78 golden wire scenarios byte-identical to `legacy/src`. First bench contact 2026-09-26: D1 (probe baud) hit and fixed there; the rest of Tier D is being reconciled against the code. |
+| MVC repair | `mvc-refactor/legacy/src/` (+ `legacy/tests/`) | `controller/ model/ views/{tkinter,pyside,web} lib/` | Ran in the lab 2026-08-26 → 09-22. Frozen. Reference for the golden wire captures only; deleted once `tests/TEST_PORTING.md` is worked off. (Its `views/{tkinter,pyside,web}` are not the rebuild's.) |
+| Rebuild | `mvc-refactor/src/` (+ `tests/`) | `app.py`, `events panel param schema result palette`, `controller/{controller,setup,flashing,updater,user_config,firmware}.py`, `model/{base,probe,heater,rotator,red_monitor,plot_data,transfer_map,transfer_map_analysis,trial_telemetry,sample_map,sample_store,...}.py`, `devices/{screen_recorder,camera,video,...}.py`, `views/{base,theme,web/}` (+ `tk.py`, `qt.py`: frozen, see below) | **The app.** Fast gate: see the `verify` skill for counts; 78 golden wire scenarios byte-identical to `legacy/src`. First bench contact 2026-09-26: D1 (probe baud) hit and fixed there; the rest of Tier D is being reconciled against the code. |
 
 Firmware (`firmware/`) is untouched by the rebuild, but it is **not** the
 same as `main`'s: the stepper, chuck and temperature sketches changed on
@@ -50,18 +55,19 @@ hygiene, D `main`-vs-rebuild regressions). `docs/rebuild/design.rules` maps
 every old `legacy/src` method to kept/renamed/merged/purged.
 `tests/TEST_PORTING.md` lists the VOID families (features removed on purpose).
 
-## Run and test (from `mvc-refactor/`; the venv is `main/.venv`)
+## Run and test (from `mvc-refactor/` or your `rb-*` worktree; the venv is `main/.venv`)
 
 ```
 PY=/Users/ianalbinogonzalez/Documents/GitHub/transfer-stage-unified/main/.venv/bin/python
-$PY src/app.py --web --no-browser --port 8080          # then set ports to "SIM" via /api/setup
-$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                  # 3433 passed, ~380 s (STATION_NO_WINDOWS=1 while anyone is at the display)
+$PY src/app.py --no-browser --port 8080          # the Web view, the only one; then set ports to "SIM" via /api/setup
+$PY -m pytest tests -q -p no:cacheprovider -m "not qt"                  # the fast gate; counts in the verify skill (STATION_NO_WINDOWS=1 while anyone is at the display)
 $PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider          # 78 passed; recaptures legacy/src in a subprocess
 cd legacy && $PY -m pytest tests -q -p no:cacheprovider -m "not slow and not order_dependent and not qt"   # old suite: 1038 passed
 ```
 
 Never run the Qt pass (`-m qt`) as an agent: a native SIGABRT kills the
-session and discards results. The lead runs it. Write test output to a file
+session and discards results. It tests only the frozen Qt view, is optional,
+and needs `pip install -e .[qt]`; the lead runs it if at all. Write test output to a file
 and read the exit code unpiped; a pipeline's exit code is `tail`'s.
 
 ## Owner rulings — these decide what is INTENTIONAL, not a defect
@@ -74,8 +80,9 @@ and read the exit code unpiped; a pipeline's exit code is `tail`'s.
   autonomous (and only then).
 - Per-model estop toggles wire into the global stop. Per-model clear needs
   confirmation.
-- Red Percent: fastest sampling → one mode, a row when red % changes; red
-  threshold only; Stage X/Y annotations dropped; velocity only between
+- Red Percent: one mode, a row when red % changes, sampling SETTLED frames at
+  the source rate (2026-10-07 amends "fastest sampling": black, stale and
+  unsettled grabs are rejected and counted); red threshold only; Stage X/Y annotations dropped; velocity only between
   distinct 10 Hz position samples.
 - Probe distances/speeds/brake fields are ints to the operator (floats on
   the wire, unchanged).
@@ -83,7 +90,17 @@ and read the exit code unpiped; a pipeline's exit code is `tail`'s.
   (SIM / port; an unticked row is off), no Mode column; one table, one row per model;
   minimises on launch, reopenable.
 - Names: "Red Percent", "Rotator", "Temperature Controller".
-- Web is the candidate primary frontend; Tk/Qt persist as backups.
+- **Web is the ONLY frontend** (owner, 2026-10-07). `views/tk.py` and `qt.py` are
+  frozen at `413f504`, unregistered, banner on line 1, kept for reference; `picking.py`
+  is deleted; `--tk`/`--qt` print "retired" and exit 2. Supersedes "Web candidate
+  primary, Tk/Qt backups", DEFAULT_VIEW qt (2026-09-28) and D-9 "Tk default" (2026-09-25).
+  A missing Tk/Qt feature is a ruling, not a finding.
+- **Record everything during a trial, trim in analysis** (2026-10-07): full-display
+  video + `frames.csv`, `telemetry.csv` on one clock, a full-resolution stage still
+  at Arm. The trial is a procedure: setup -> region -> live -> marked -> finish.
+- **The Sample Map is a microscope-image store** (flake-coordinate homing is
+  dormant); the map figures are speed x force class, tilt collected never drawn.
+- Transfer Map store: repo is v6; the lab's are v7/v8; v9 is not built.
 - Firmware untouched; every byte on the wire identical to `legacy/src`.
 - D-7 (DC board has no coil kill) is open, bench-only, owner-only.
 

@@ -4,9 +4,9 @@ This document outlines the standard procedures for system initialization, contro
 
 ## Install
 
-The station ships as one folder per operating system, with three launchers
-in it: `station-tk` (the default view), `station-web` and `station-qt`
-(`.exe` on Windows).
+The station ships as one folder per operating system, with one launcher in
+it: `station-web` (`.exe` on Windows). The Web view is the station's only
+frontend; the Tk and Qt windows were retired on 2026-10-07.
 
 1. Download the zip for your computer from the repository's latest GitHub
    Release: `station-windows-x86_64.zip`, `station-macos-arm64.zip` (Apple
@@ -14,7 +14,7 @@ in it: `station-tk` (the default view), `station-web` and `station-qt`
    `station-linux-x86_64.zip`.
 2. Unzip it where it will stay (for example your home folder). Keep the
    whole `station` folder together; do not move a launcher out of it.
-3. Run the launcher for the view you want.
+3. Run the launcher.
    - macOS: the bundle is not signed yet, so the first run is blocked;
      right-click the launcher and choose **Open**.
    - Windows: SmartScreen may warn; choose **More info**, then **Run anyway**.
@@ -28,7 +28,7 @@ new version is ready, press **Update now**, then **Restart**. The previous
 version is kept beside the new one as `station.previous`.
 
 Developers run from a source checkout instead (`run.sh` / `run.bat`, or
-`pip install -e ".[qt]"`); a checkout updates itself by fast-forwarding git.
+`pip install -e .`, which installs the one entry point `station-web`); a checkout updates itself by fast-forwarding git.
 
 ## System Initialization and Operating System Selection
 
@@ -64,11 +64,11 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
 
 ### Software Initialization
 
-1. Double-click the **Transfer Stage Launcher** icon on the desktop. To start it from a terminal instead, run `./run.sh` in the repository folder on macOS or Linux, or `run.bat` on Windows; add `--qt` (the default), `--web` or `--tk` to choose the window style, and `--help` to list the rest. The launcher finds the project's virtual environment (a `.venv` in the folder, or the one already active) and prints nothing unless it cannot. On a Mac it also repairs PySide6 before the Qt window opens. A desktop shortcut that still names `run_macos.sh`, `run_swap_macos.sh` or `run_swap.sh` must be pointed at `run.sh`; those files are gone.
+1. Double-click the **Transfer Stage Launcher** icon on the desktop. To start it from a terminal instead, run `./run.sh` in the repository folder on macOS or Linux, or `run.bat` on Windows; the Web dashboard opens (`--web` is the default and only view; `--tk` and `--qt` print a retired message and exit with status 2), and `--help` lists the other flags. The launcher finds the project's virtual environment (a `.venv` in the folder, or the one already active) and prints nothing unless it cannot. A desktop shortcut that still names `run_macos.sh`, `run_swap_macos.sh` or `run_swap.sh` must be pointed at `run.sh`; those files are gone.
 2. The Setup page opens, scans the *COM ports* by itself and ticks every board that answers. Its first rows say what this station runs:
    - **Update**: whether GitHub has something newer, and **Update now** to take it. From a terminal, `./update.sh` (`update.bat` on Windows) does the same with the station closed: it shows what is coming, fast-forwards, and reinstalls dependencies only when they changed; `./update.sh --check` only reports. Both refuse while the station runs or when the checkout has local edits, so nothing is ever overwritten.
    - **Firmware**: **Boards** says whether each board still runs the sketch this checkout carries (`all current`, `Stepper Probe out of date`, `never flashed here`, or that arduino-cli is missing and the board must be flashed by hand). When the check at startup finds a board to flash, a dialog asks once ("Stepper Probe out of date. Flash it now?"): **Flash now** flashes it unattended, as the old launcher did, and **Later** leaves it to the row's **Flash out-of-date boards**, which flashes exactly those, after asking, with every model closed. **Flashing** shows the flash tool's progress while it runs, and Launch waits for it. Nothing is ever flashed without one of those two keys. Launching a board whose firmware is out of date asks once first ("Stepper Probe's firmware is out of date. Launch anyway?"), since that can be deliberate.
-   - With `--web`, **Address** on the Devices row is where the dashboard is served.
+   - **Address** on the Devices row is where the dashboard is served.
 3. Use the drop-down menus on the right to assign the Xbox controller to each device.
 
 > ![Configuration GUI](./images/GUI_chose_ports_controllers.png)

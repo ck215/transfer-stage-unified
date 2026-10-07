@@ -16,6 +16,34 @@ pre-fix code, then fix.** No baseline is ever bumped to go green.
 
 ---
 
+## Round 2026-10-07 — closed (merge commits on `mvc-refactor`; plan `calm-growing-lark`)
+
+Ids are the round's own (each merge message names them); the Tier A rows below
+keep their own A1-A9. Nothing here is a new defect; every row is a landed fix.
+
+| Id | What closed | Merge |
+|---|---|---|
+| CAP-1 | Red Percent samples settled frames at the source rate; black, stale and unsettled grabs never reach a row, a subscriber or the reading (counters in Diagnostics). | `295d15f` rb-capture |
+| CAP-6 | A killed recorder leaves a playable fragmented MP4 (`Screen.monitors` is public and the recorder reads it). | `0015553` rb-recorder (`1e8e5e1`) |
+| REC-1 / REC-2 / REC-3 | `ScreenRecorder` (full display, native resolution, `frames.csv`, `capture_still`); `TrialTelemetry` (every stream on one clock); `devices.video.ffmpeg_exe`. | `0015553` rb-recorder |
+| AN-1 / AN-2 | `settled_mask` and robust extrema in the force analysis; `dev/reanalyse_trials.py`. | `f666864` rb-analysis |
+| CAM-1 | `devices/camera.py`, ToupCam pull-mode with an injected library and a SIM (wiring is bench-gated). | `5579d21` rb-camera |
+| STO-1 / STO-2 / STO-3 | Sample store v3 `sample_images`; the Sample Map as a microscope-image store with a per-sample trial listing (flake machinery dormant); the map as speed x force class, tilt collected not drawn. | `7ff07fb` rb-stores |
+| WEB-1 .. WEB-5 | The page draws the procedure step; the region picker draws on the model's full-resolution still; explicit Overview device boxes; no client plot/data command named; `file_open` forwards its inputs and `GET /api/image` serves thumbnails. | `7f509cb` rb-web |
+| RET-1 .. RET-4 | Tk and Qt frozen at `413f504` and unregistered; Web the only and default view; one packaging launcher; the Qt probe is lazy. | `79ae0bd` rb-retire |
+| L1 .. L13 | Serial-link safety: a lost link is stopped on its open handle and reconnects by itself (reverses D-11 for automatic recovery, owner 2026-09-30), counters, a confirmed halt, no mode entry out of an unconfirmed disable (SF-1, SF-2, SF-4, SF-5, SF-6). | `3bfb8bc` rb-finalize (rb-link) |
+| rb-dist-app A1 .. A5 | In-process flashing (`controller/flashing.py`), the bundle firmware check, the operator-chosen trial store, Switch to stable, the updater on the public repository. Bench-confirm flashing: owner. | `3bfb8bc` rb-finalize |
+| V1 .. V4 | The link, its counters, a held input gate and "Browser silent" are visible (Web + base only). | `3bfb8bc` rb-finalize (rb-link-views) |
+| TM-1 .. TM-3 | In flight in `../rb-tmap` at the time of writing, not yet merged: the Transfer Map follows the procedure, the live plots leave the live view, the tilt is collected, never drawn. | not merged |
+
+Retired by the Web-only ruling (rows that name Tk or Qt work are history, not
+open): Tier B7 (`views/tk.py`), Tier C2 (`views/tk.py` swallows) and every
+Tk-only or Qt-only row in Tiers E to O. They are left in place as the record.
+Still open and the owner's: the bench list in `STATUS.md` ("Round 2026-10-07",
+Bench-only), D-7, the store v9 migration (not done) and the bench branch gate.
+
+---
+
 ## Tier A — code defects, fixable now (no bench needed)
 
 | # | Where | Defect | Fix | Route |
@@ -531,7 +559,9 @@ clean one does not.
 
 ## Tier S — the Transfer Map (owner's end goal, ruled 2026-09-27)
 
-The heatmap the project exists for: a 3D map over tilt angle, speed and
+(2026-10-07: the map is now speed x force class with width as colour; the
+tilt is collected, never drawn; see `RECORDING_A_TRIAL.md`. The text below is
+the 2026-09-27 ruling.) The heatmap the project exists for: a 3D map over tilt angle, speed and
 force whose value is the transferred channel width, built as trials are
 recorded, with footage, a store, later AFM attachment, and confidence on the
 gradients. Force is approximated from the red-percent lowering profile
@@ -548,7 +578,7 @@ compared; both a detector and an operator Mark key. Brief:
 | MAP-4 | feature | model (analysis) | Force definitions as pure functions over the stored profile, an open registry; the extrema detector. | brief §5 | agent (rb-map) | **done `dfe437f` (registry `FORCE_DEFINITIONS`: shadow_vs_baseline, shadow_vs_peak, at_operator_mark, dip_area, fall_slope, z_past_peak)** |
 | MAP-5 | feature | plot_data | Figures: `map3d`, `slice`, `compare` (one panel per definition), `profile`. | brief §6 | agent (rb-map) | **done `2fc7f82` + lead registration (`setup.py`; seven rows in tests and smokes)** |
 | MAP-6 | feature, phase 2 | plot_data | numpy Gaussian process for the slice: mean, variance, confidence contour, gradient variance. | brief §6 phase 2 | agent (rb-map), after MAP-1..5 are green | **done with MAP-1/3 (`slice` draws the GP mean with sigma contours)** |
-| MAP-7 | docs | docs | STATUS, MODEL_CONTRACT (a worked non-hardware model), an operator page "Recording a trial". | from the handoff | lead | **done: `RECORDING_A_TRIAL.md`, STATUS, contract note; UNVERIFIED: the profile path on real footage (SIM never changes the screen), Tk/Qt rendering of the new schema** |
+| MAP-7 | docs | docs | STATUS, MODEL_CONTRACT (a worked non-hardware model), an operator page "Recording a trial". | from the handoff | lead | **done: `RECORDING_A_TRIAL.md`, STATUS, contract note; UNVERIFIED then: the profile path on real footage (SIM never changes the screen; the bench's 40 trials later showed the glitch rows, CAP-1), Tk/Qt rendering of the new schema (moot: retired)** |
 
 ## Out of scope here
 
