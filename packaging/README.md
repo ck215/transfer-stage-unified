@@ -1,15 +1,15 @@
 # packaging/
 
 One portable bundle per platform (`docs/rebuild/PACKAGING_PLAN.md`): the new
-station's three launchers, its firmware, the tools to compile and flash that
+station's one launcher (`station-web`; the Tk and Qt launchers were retired on 2026-10-07), its firmware, the tools to compile and flash that
 firmware with no Python and no network, and a frozen copy of the lab's
 original Tk app (the `stable` branch) with its own firmware, so the operator
 can switch between the two while the refactor is validated.
 
 | File | What |
 |---|---|
-| `station.spec` | PyInstaller spec: one Analysis per view, three EXEs, one COLLECT -> `dist/station/`; then assembles the layout below and stamps it |
-| `entry_tk.py` `entry_qt.py` `entry_web.py` | the three launchers' scripts; each calls `app.main_<view>` |
+| `station.spec` | PyInstaller spec: one Analysis, one EXE (`station-web`), one COLLECT -> `dist/station/`; then assembles the layout below and stamps it |
+| `entry_web.py` | the one launcher's script; it calls `app.main_web` |
 | `layout.py` | **the bundle layout contract** and the copies that build it (`assemble`); reads the board table from `firmware/flash_firmware.py` with `ast` |
 | `tools.py` | fetches arduino-cli, the cores, the libraries and teensy_loader_cli at build time into `build/tools` (`fetch`, `check`, `size`) |
 | `stable.spec` `entry_stable.py` | freezes the `stable` branch's `src/mainGUI.py`, unmodified, into `dist/station-stable/` |
@@ -26,7 +26,7 @@ can switch between the two while the refactor is validated.
 Relative to the bundle root `dist/station/`:
 
 ```
-station-web  station-qt  station-tk   (.exe on Windows)   the new app's launchers
+station-web   (.exe on Windows)                          the new app's launcher
 _internal/                                               PyInstaller's
 VERSION  release.json                                    release.py's stamps
 firmware/<sketch dirs>/  firmware/libraries/             the repo's firmware/, byte-identical
@@ -89,7 +89,10 @@ Output: `dist/station/` as above. Ship the whole folder, zipped
 (`release.py zip`). One-folder only: one-file mode unpacks the whole bundle to
 a temp dir on every launch and trips antivirus.
 
-## Sizes (macOS arm64, measured 2026-09-30)
+## Sizes (macOS arm64, measured 2026-09-30, with the three-launcher bundle)
+
+The station row below predates the single-launcher bundle (RET-3, which drops
+PySide6 and tkinter); it has not been re-measured.
 
 | Part | Unpacked |
 |---|---|
@@ -150,19 +153,17 @@ the lead's to add).
 
 ## Things the spec handles that are easy to break
 
-- **Views are imported by name** (`app.VIEWS`, `importlib`), so each entry's
-  view module is a hidden import. A new view needs a line in `VIEW_HIDDEN`.
+- **Views are imported by name** (`app.VIEWS`, `importlib`), so the view
+  module is a hidden import (`WEB_HIDDEN` in `station.spec`). A new view would
+  need a line there.
 - **Web assets** go to `views/web/static`, where `server._STATIC_DIR`
   (`__file__`-relative) finds them.
-- **matplotlib is Agg only**; every GUI backend is excluded so Qt never lands
-  in `station-web` and Tk never in `station-qt`.
-- **Qt**: QtCore/QtGui/QtWidgets and QtSvg (the Qt view's icons). One missing
-  module and `views/qt.py`'s single PySide6 import block fails whole: the
-  launcher then says "PySide6 is not installed". The virtual-keyboard, PDF and
-  TUIO plugins and Qt's translations are pruned (`QT_PRUNE`, ~28 MB on macOS).
-  `entry_qt.py` sets `QT_QPA_PLATFORM_PLUGIN_PATH` to the bundle's platforms
-  dir and logs what it resolved (stderr, and a `[packaging] Qt Plugin Path:`
-  line in the station log).
+- **matplotlib is Agg only**; every GUI backend is excluded, and PySide6,
+  shiboken6, tkinter and the frozen `views.tk` / `views.qt` are excluded too,
+  so neither toolkit lands in `station-web`.
+- **No Qt, no Tk in the bundle** (RET-3, 2026-10-07): the Qt plugin pruning
+  and plugin-path code of the earlier three-launcher bundle went with the
+  launchers. The frozen views stay in the source tree only.
 - **pygame on macOS / Python 3.14** is built against Homebrew's
   `sdl2-compat`, whose libSDL2 `dlopen`s SDL3 by name. PyInstaller cannot
   see that; without SDL3 the launcher shows a modal "Failed loading SDL3"
@@ -170,7 +171,7 @@ the lead's to add).
   `libSDL3.dylib` beside the shim (`spec_helpers.py`). A pygame wheel with a
   real SDL2 skips it.
 - **macOS `UF_HIDDEN`**: pip-installed dylibs carry the hidden flag and the
-  copy into `dist/` keeps it; Qt's plugin scanner skips hidden files. Both
+  copy into `dist/` keeps it; loaders that skip hidden files then fail. Both
   specs run `chflags -R nohidden` on their bundle after COLLECT.
 - **firmware/, tools/, stable/ are copied, not declared as datas**:
   PyInstaller 6 puts every data file under `_internal/`, and the layout wants
@@ -190,15 +191,11 @@ frozen as `stable/`. Every action is pinned to a commit SHA.
 
 `smoke.sh [BUNDLE]` checks the layout first (stamps, sketches, tools offline
 through a dead proxy, the stable self-check), then drives the Web launcher
-through Setup in SIM, then the Tk and Qt launchers. Under
-`STATION_NO_WINDOWS=1` the Tk step is skipped and says so (Tk has no offscreen
-platform); Qt runs with `QT_QPA_PLATFORM=offscreen` (`SMOKE_QT_PLATFORM`).
-Set `TRANSFER_STAGE_DATA_ROOT` to keep its logs out of `~/transfer-stage-runs`.
+through Setup in SIM; it is the only launcher there is. Set `TRANSFER_STAGE_DATA_ROOT` to keep its logs out of `~/transfer-stage-runs`.
 
-Exit codes: the desktop launchers are stopped with SIGTERM. The Controller's
-handler closes every model and then re-raises the signal, so a clean stop is
-**exit 143** (128 + 15), not 0. An exit of 1 means a toolkit handler ended the
-process past `Controller.close()`: nothing was stopped.
+Exit codes: the Web launcher exits 0 via `POST /api/quit`. A SIGTERM stop
+goes through the Controller's handler, which closes every model and then
+re-raises the signal, so it ends in **exit 143** (128 + 15), not 0.
 
 ## Unsigned
 

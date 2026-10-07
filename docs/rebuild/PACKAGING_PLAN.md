@@ -1,8 +1,14 @@
-# Packaging plan — one portable build per platform, three launchers
+# Packaging plan — one portable build per platform, one launcher
+
+> Updated 2026-10-07. The Web view is the station's only frontend (owner
+> ruling), so the bundle has ONE launcher, `station-web`; the Tk and Qt
+> launchers, their Qt plugin code and the "three versions" below are history
+> (kept where they record a decision, marked as superseded). `packaging/README.md`
+> is the current bundle contract.
 
 Written 2026-09-25 from the owner's ask: "what would it take to package
 this into a portable application for the three platforms, with three
-versions of the app, one per view". Routes per step follow the delegation
+versions of the app, one per view" (the three versions are superseded; see the update note). Routes per step follow the delegation
 rule (direct / `router` / `agy`); bench and account matters are the owner's.
 
 ## What ships
@@ -12,8 +18,8 @@ rule (direct / `router` / `agy`); bench and account matters are the owner's.
 | `src/` + Web assets (`views/web/static/`, three Plex woff2) | 3 MB + 212 KB | all |
 | pyserial, mss, Pillow, numpy, matplotlib (Agg only) | ~60 MB | all |
 | pygame (SDL2, gamepad) | ~15 MB | probes' gamepad |
-| Tcl/Tk (Tk 9 with Python 3.14) | ~15 MB | `--tk` only |
-| PySide6 Essentials + Addons + Qt plugins | 150–250 MB | `--qt` only |
+| ~~Tcl/Tk (Tk 9 with Python 3.14)~~ | ~15 MB | retired 2026-10-07: not bundled |
+| ~~PySide6 Essentials + Addons + Qt plugins~~ | 150–250 MB | retired 2026-10-07: not bundled |
 | `firmware/flash_firmware.py` | shells out to an Arduino CLI we do not ship | not packaged (bench tool) |
 
 `gcodeparser` in `requirements.txt` is `legacy/` only (scripts are purged
@@ -21,11 +27,11 @@ from `src/`); it leaves the runtime requirements.
 
 ## Decisions
 
-- **D-9 amendment (owner, 2026-09-25): Tk is the default on every OS**
+- **D-9 amendment (owner, 2026-09-25): Tk is the default on every OS** (superseded: DEFAULT_VIEW became qt on 2026-09-28, then Web, the only view, on 2026-10-07)
   ("simple and lightweight and local"). It removes the last visible platform
   branch (audit P8); packaging bakes it in. `--web` / `--qt` stay explicit.
-- **One bundle per platform, three entry points** (`station-web`,
-  `station-qt`, `station-tk`), not three packages: the views share every
+- **One bundle per platform** (originally three entry points, `station-web`,
+  `station-qt`, `station-tk`; only `station-web` remains since 2026-10-07), not three packages: the views share every
   library except Qt, so three packages would ship the same ~100 MB three
   times. A `--view` flag on one binary is the same thing with one icon.
 - **Tool: PyInstaller** (6.22.3 added Python 3.14 support, 2026-09). Built
@@ -59,16 +65,15 @@ locally. P6–P8 follow the first artifact on the lab Windows PC.
 - Every device library is native (SDL, Qt, Tcl/Tk, mss's screen backends):
   each bundle needs one real launch on real hardware before it counts. The
   smoke test is necessary, not sufficient.
-- PySide6 plugin discovery inside a bundle is the classic failure; the Qt
-  entry point must set the plugin path itself and log it at startup.
+- (Retired 2026-10-07 with the Qt launcher: PySide6 plugin discovery inside a bundle.)
 - Unsigned macOS bundles are blocked by Gatekeeper on first run; Windows
   SmartScreen warns. Both are P7, and P7 is money and an account.
-- `--tk` on Windows needs the Tcl/Tk DLLs PyInstaller collects from the
-  python.org build; a Microsoft Store Python will not do. Pin the CI
-  interpreter to `actions/setup-python`.
+- (Retired with the Tk view, 2026-10-07: `--tk` on Windows needed the Tcl/Tk
+  DLLs from the python.org build.) The CI interpreter stays pinned to
+  `actions/setup-python`.
 
 ## Acceptance (before any artifact goes to the lab)
 
-Gates as `verify` (fast, golden, Qt) on the source tree; P4 smoke on the
-bundle for each OS; the screenshot ritual run FROM the bundle for each view;
+Gates as `verify` (fast, golden) on the source tree; P4 smoke on the
+bundle for each OS; the screenshot ritual run FROM the bundle for the Web view;
 the stop path exercised from each bundle in SIM.
