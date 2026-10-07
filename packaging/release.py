@@ -9,6 +9,8 @@
     python packaging/release.py assets                every asset a release carries
     python packaging/release.py zip BUNDLE OUT.zip    the release asset
     python packaging/release.py notes TAG             the release's notes (REL-2)
+    python packaging/release.py changelog TAG DATE [CHANGELOG.md]
+                                                      Unreleased -> TAG's section (REL-3)
 
 The version is the git tag `vMAJOR.MINOR.PATCH` and nothing else
 (`pyproject.toml` says 0.0.0 in git). `version` prints what the tree it runs
@@ -22,7 +24,10 @@ VERSION and this command can never disagree.
 `asset` pattern: release.json is the one place that names what a release
 carries, the build checks its own name against it and the publish job
 waits for every one. `notes TAG` is the tag's CHANGELOG.md section, else the
-tag's own message, else the tag.
+tag's own message, else the tag. `changelog` is `dev/release.sh`'s edit:
+it moves everything under `## [Unreleased]` into `## [X.Y.Z] - DATE`,
+leaves Unreleased empty above it, and prints the section (the tag's
+message); it refuses an empty Unreleased and a version already there.
 
 `VERSION` is three lines: the tag, the commit, the build time (ISO, UTC).
 `release.json` is `packaging/release.json` with the repository's owner and
@@ -124,6 +129,47 @@ def notes(tag, changelog=CHANGELOG):
     if body and body.strip():
         return body
     return _git("tag", "-l", "--format=%(contents)", tag) or tag
+
+
+def _has_entries(body):
+    """True when a section says something: a line that is not blank, not a
+    heading and not an HTML comment."""
+    return any(line.strip() and not line.lstrip().startswith(("#", "<!--"))
+               for line in str(body).splitlines())
+
+
+def release_changelog(text, tag, date):
+    """`dev/release.sh`'s edit: -> (the new CHANGELOG text, the released
+    section's body). Raises ValueError, the file untouched, when `tag` is
+    not vMAJOR.MINOR.PATCH, already has a section, or Unreleased is missing
+    or empty."""
+    if not RELEASE_TAG.fullmatch(str(tag)):
+        raise ValueError(f"{tag!r} is not a release tag (vMAJOR.MINOR.PATCH).")
+    lines = str(text).splitlines()
+    sections = _sections(lines)
+    if any(_section_key(name) == _section_key(tag) for name, _, _ in sections):
+        raise ValueError(f"CHANGELOG.md already has a section for {tag}.")
+    unreleased = [s for s in sections if _section_key(s[0]) == "unreleased"]
+    if not unreleased:
+        raise ValueError("CHANGELOG.md has no '## [Unreleased]' section.")
+    _, start, end = unreleased[0]
+    body = "\n".join(lines[start + 1:end]).strip("\n")
+    if not _has_entries(body):
+        raise ValueError("Unreleased in CHANGELOG.md is empty: write what changed "
+                         "under '## [Unreleased]' first; nothing was released.")
+    rest = lines[end:]
+    new = (lines[:start + 1] + ["", f"## [{tag[1:]}] - {date}", ""]
+           + body.splitlines() + ([""] + rest if rest else []))
+    return "\n".join(new) + "\n", body
+
+
+def cut_changelog(path, tag, date):
+    """`release_changelog` on the file at `path`, written in place; -> the body."""
+    with open(path, encoding="utf-8") as f:
+        text, body = release_changelog(f.read(), tag, date)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    return body
 
 
 def repository_from_remote(url):
@@ -228,6 +274,12 @@ def main(argv):
         print("\n".join(assets()))
     elif len(argv) >= 2 and argv[0] == "notes":
         print(notes(argv[1]))
+    elif len(argv) >= 3 and argv[0] == "changelog":
+        try:
+            print(cut_changelog(argv[3] if len(argv) > 3 else CHANGELOG, argv[1], argv[2]))
+        except (OSError, ValueError) as exc:
+            sys.stderr.write(f"release.py: {exc}\n")
+            return 1
     elif len(argv) >= 3 and argv[0] == "zip":
         make_zip(argv[1], argv[2])
     else:
