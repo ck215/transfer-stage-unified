@@ -266,7 +266,7 @@ def test_stamp_writes_version_and_release_json_beside_the_launchers(
     assert (info["owner"], info["repo"]) == ("lab", "station")
     # ... and the frozen Updater reads it
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    assert Updater(root=bundle).version() == "v1.3.0, 2026-09-28"
+    assert Updater(root=bundle).version() == "v1.3.0"
 
 
 @pytest.mark.parametrize("remote, repository", [
@@ -280,7 +280,8 @@ def test_the_repository_is_read_from_the_remote_when_ci_does_not_say(
 
 
 @pytest.mark.parametrize("tag, version", [
-    ("v1.3.0", "1.3.0"), ("1.2", "1.2"), ("v1.2.0-3-gabc1234", "1.2.0+3.gabc1234"),
+    ("v1.3.0", "1.3.0"), ("1.2", "1.2"), ("v1.2.0-3-gabc1234", "1.2.0.post3+gabc1234"),
+    ("1.2.0.post3+gabc1234", "1.2.0.post3+gabc1234"), ("0.0.0+abc1234", "0.0.0+abc1234"),
     ("main", None), ("", None)])
 def test_the_pyproject_version_follows_the_tag(release_tool, tmp_path, tag, version):
     source = open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8").read()
@@ -290,14 +291,14 @@ def test_the_pyproject_version_follows_the_tag(release_tool, tmp_path, tag, vers
     release_tool.patch_pyproject(str(copy), tag)
     with open(copy, "rb") as f:
         patched = tomllib.load(f)["project"]["version"]
-    assert patched == (version or "0.1.0")
+    assert patched == (version or "0.0.0")
     assert copy.read_text().count("\nversion = ") == 1
 
 
 def test_the_pyproject_in_git_is_not_the_version_source(pyproject):
     with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
         text = f.read()
-    assert pyproject["project"]["version"] == "0.1.0"
+    assert pyproject["project"]["version"] == "0.0.0"
     assert "release.py" in text and "tag" in text
 
 

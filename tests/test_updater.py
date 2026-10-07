@@ -17,7 +17,8 @@ from controller import updater as updater_module
 from controller.updater import Updater
 
 GIT_ID = ["-c", "user.name=Station Test", "-c", "user.email=station@test",
-          "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
+          "-c", "commit.gpgsign=false", "-c", "tag.gpgSign=false",
+          "-c", "init.defaultBranch=main"]
 
 
 def git(cwd, *args):
@@ -211,11 +212,97 @@ def test_a_branch_that_tracks_nothing_is_an_error_that_says_what_to_do(repos):
     assert "git branch -u" in result["reason"]
 
 
-def test_version_is_the_short_sha_and_the_commit_date(repos):
+# -- version() (REL-1): the git tag is the version ----------------------------
+
+def tag(cwd, name, message=None):
+    """An annotated tag (what dev/release.sh makes), or a lightweight one."""
+    if message is None:
+        git(cwd, "tag", name)
+    else:
+        git(cwd, "tag", "-a", name, "-m", message)
+
+
+def test_before_any_release_the_version_is_0_0_0_and_the_sha(repos):
     _, station, _ = repos
+    assert Updater(root=station).version() == f"0.0.0+{head(station)[:7]}"
+
+
+@pytest.mark.parametrize("message", ["### Added\n- a thing", None],
+                         ids=["annotated", "lightweight"])
+def test_exactly_on_a_release_tag_the_version_is_the_tag(repos, message):
+    _, station, _ = repos
+    tag(station, "v1.3.0", message)
+    assert Updater(root=station).version() == "v1.3.0"
+
+
+def test_past_a_release_the_version_counts_the_commits(repos):
+    _, station, _ = repos
+    tag(station, "v1.3.0", "first release")
+    for n in range(3):
+        commit(station, f"later{n}.txt", "x\n", f"later {n}")
     sha = head(station)[:7]
-    date = git(station, "log", "-1", "--format=%cs")
-    assert Updater(root=station).version() == f"{sha}, {date}"
+    assert Updater(root=station).version() == f"1.3.0.post3+g{sha}"
+
+
+def test_local_edits_mark_the_version_dirty(repos):
+    _, station, _ = repos
+    (station / "README.md").write_text("a bench edit\n")
+    sha = head(station)[:7]
+    assert Updater(root=station).version() == f"0.0.0+{sha}.dirty"
+    git(station, "commit", "-q", "-am", "edit")
+    tag(station, "v1.3.0", "release")
+    (station / "README.md").write_text("another edit\n")
+    assert Updater(root=station).version() == "1.3.0+dirty"
+    commit(station, "later.txt", "x\n", "later")
+    (station / "later.txt").write_text("edited\n")
+    assert Updater(root=station).version() == f"1.3.0.post1+g{head(station)[:7]}.dirty"
+
+
+def test_only_a_release_tag_is_a_version(repos):
+    """A pre-release, a two-part tag or a round marker is not a release:
+    the version is counted from the last vMAJOR.MINOR.PATCH."""
+    _, station, _ = repos
+    tag(station, "v1.2.0", "release")
+    commit(station, "a.txt", "a\n", "a")
+    for name in ("v1.3.0-rc1", "v1.3", "round-2026-10-07-start", "1.3.0"):
+        tag(station, name, "not a release")
+    assert Updater(root=station).version() == f"1.2.0.post1+g{head(station)[:7]}"
+
+
+def test_the_version_never_takes_the_index_lock(repos):
+    _, station, _ = repos
+    seen = []
+
+    def spy(argv, **kwargs):
+        seen.append(kwargs["env"])
+        return subprocess.run(argv, **kwargs)
+
+    Updater(root=station, run=spy).version()
+    assert seen and all(env["GIT_OPTIONAL_LOCKS"] == "0" for env in seen)
+
+
+@pytest.mark.parametrize("described, version", [
+    ("v1.3.0", "v1.3.0"),
+    ("v1.3.0-dirty", "1.3.0+dirty"),
+    ("v1.3.0-3-gabc1234", "1.3.0.post3+gabc1234"),
+    ("v1.3.0-12-gabc1234ef-dirty", "1.3.0.post12+gabc1234ef.dirty"),
+    ("abc1234", "0.0.0+abc1234"),
+    ("abc1234-dirty", "0.0.0+abc1234.dirty"),
+    ("something-else", "something-else"),
+])
+def test_render_version(described, version):
+    assert updater_module.render_version(described) == version
+
+
+def test_versions_compare_as_versions_not_strings():
+    key = updater_module.version_key
+    assert key("v1.10.0") > key("v1.9.0")                 # "v1.10.0" < "v1.9.0" as text
+    assert key("v1.3.0") == key("1.3.0") == key("1.3.0+dirty") == (1, 3, 0, 0)
+    assert key("1.3.0.post3+gabc1234") > key("v1.3.0")
+    assert key("1.3.0.post3+gabc1234") < key("v1.3.1")
+    assert key("0.0.0+abc1234") < key("v0.0.1")
+    for junk in ("bundle", "unknown", "", None, "v1.3", "v1.3.0-rc1", "main"):
+        assert key(junk) is None, junk
 
 
 def test_the_default_root_is_the_checkout_that_holds_src():
@@ -525,8 +612,10 @@ def _bundle_updater(bundle, fetch=None, login=None):
 
 
 def test_a_bundle_reads_its_version_file(bundle):
+    """REL-1: the same string as `release.py version` printed at build time
+    (the stamp's first line), so a bundle and its checkout speak alike."""
     updater = _bundle_updater(bundle)
-    assert updater.version() == "v1.2.0, 2026-09-20"
+    assert updater.version() == "v1.2.0"
 
 
 def test_a_bundle_level_with_the_latest_release_is_up_to_date(bundle):

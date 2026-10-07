@@ -17,11 +17,13 @@ build-backend = "setuptools.build_meta"
 # distribution name carries both so it cannot be mistaken for anything on
 # PyPI and cannot be installed over by a `pip install station`.
 name = "transfer-stage-station"
-# Not the source of truth: a release's version is its git tag (`v1.3.0`).
-# The build workflow patches this line from the tag in its own working copy
-# (`packaging/release.py pyproject <tag>`) and stamps the bundle's VERSION;
-# the file in git keeps this placeholder.
-version = "0.1.0"
+# NOT the version. The git tag `vMAJOR.MINOR.PATCH` is the truth (REL-1):
+# `packaging/release.py version` / `src/app.py --version` say what a tree is,
+# the build workflow patches this line from the tag in its own working copy
+# (`packaging/release.py pyproject <tag>`) and stamps the bundle's VERSION.
+# The file in git keeps 0.0.0, so a stale number here can never be mistaken
+# for a release.
+version = "0.0.0"
 description = "Transfer stage control: stepper and DC probes, chuck, temperature controller, rotator and Red Percent monitor, served as a Web dashboard (the Tk and Qt views are retired, frozen at 413f504)."
 readme = "README.md"
 requires-python = ">=3.13"

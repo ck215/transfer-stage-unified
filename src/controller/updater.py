@@ -92,6 +92,15 @@ API = "https://api.github.com"
 #: A release asset is ~150 MB over a lab network: the timeout is per read,
 #: not for the whole download.
 DOWNLOAD_SECONDS = 60
+#: A release is a tag `vMAJOR.MINOR.PATCH`, nothing more: a pre-release
+#: (`v1.4.0-rc1`) or any other tag is not one.
+RELEASE_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
+#: `git describe` over release tags only (the glob keeps `v1.3`, the
+#: exclude keeps `v1.4.0-rc1` out); `update.sh` runs the same command.
+DESCRIBE = ("describe", "--tags", "--always", "--dirty", "--abbrev=7",
+            "--match", "v[0-9]*.[0-9]*.[0-9]*", "--exclude", "*-*")
+_DESCRIBED = re.compile(r"v(\d+\.\d+\.\d+)-(\d+)-g([0-9a-f]+)")
+_VERSION = re.compile(r"v?(\d+)\.(\d+)\.(\d+)(?:\.post(\d+))?(?:\+[0-9A-Za-z.]+)?")
 #: A `sha256sum` line in a release body: "<64 hex>  <asset name>".
 _SUM_LINE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(\S+)\s*$")
 
@@ -141,18 +150,21 @@ class Updater:
 
     # -- what the station runs ---------------------------------------------
     def version(self):
-        """"<sha7>, <commit date>" of HEAD; frozen, "<tag>, <build date>"
-        from VERSION, or "bundle" without one; else "unknown"."""
+        """The station's one version string (REL-1): the release tag `v1.3.0`
+        when HEAD is exactly on one; else `git describe` rendered PEP
+        440-ish, `1.3.0.post3+gabc1234` (3 commits past v1.3.0), with
+        `.dirty` (or `+dirty` on the tag itself) over local edits; with no
+        release tag at all `0.0.0+abc1234`; "unknown" when git cannot say.
+        Frozen, the tag the build stamped into VERSION (`release.py`
+        computed it the same way), or "bundle" without one.
+        `packaging/release.py version` and `app.py --version` print this."""
         if _is_frozen():
             stamp = self._stamp()
-            if stamp is None:
-                return "bundle"
-            return f"{stamp['tag']}, {stamp['built'][:10]}".rstrip(", ")
-        ok, out = self._git("log", "-1", "--format=%H %cs")
-        if not ok or " " not in out:
+            return stamp["tag"] if stamp is not None else "bundle"
+        ok, out = self._git(*DESCRIBE)
+        if not ok or not out:
             return "unknown"
-        sha, date = out.split(" ", 1)
-        return f"{sha[:7]}, {date.strip()}"
+        return render_version(out)
 
     def check(self, timeout=10.0):
         """How this checkout stands against the branch it tracks.
@@ -492,6 +504,45 @@ class Updater:
         return True, ""
 
 
+# -- versions (REL-1) ---------------------------------------------------------
+def render_version(described):
+    """`git describe` (`DESCRIBE`) -> the version string `Updater.version`
+    gives. `update.sh` renders the same output with the same rules (its
+    `version_of`); `tests/test_updater.py` holds the two together.
+
+        v1.3.0                  -> v1.3.0          (exactly on the release)
+        v1.3.0-dirty            -> 1.3.0+dirty
+        v1.3.0-3-gabc1234       -> 1.3.0.post3+gabc1234
+        v1.3.0-3-gabc1234-dirty -> 1.3.0.post3+gabc1234.dirty
+        abc1234                 -> 0.0.0+abc1234   (no release tag yet)
+        abc1234-dirty           -> 0.0.0+abc1234.dirty
+
+    Anything else comes back as it is."""
+    text = str(described or "").strip()
+    dirty = text.endswith("-dirty")
+    core = text[:-len("-dirty")] if dirty else text
+    if RELEASE_TAG.fullmatch(core):
+        return f"{core[1:]}+dirty" if dirty else core
+    found = _DESCRIBED.fullmatch(core)
+    if found:
+        base, ahead, sha = found.groups()
+        return f"{base}.post{ahead}+g{sha}" + (".dirty" if dirty else "")
+    if re.fullmatch(r"[0-9a-f]{4,40}", core):
+        return f"0.0.0+{core}" + (".dirty" if dirty else "")
+    return text
+
+
+def version_key(text):
+    """(major, minor, patch, post) of a release tag or of a version string
+    `render_version` made, for comparing as versions (v1.10.0 is newer than
+    v1.9.0, which a string comparison gets wrong); None for anything else."""
+    found = _VERSION.fullmatch(str(text or "").strip())
+    if not found:
+        return None
+    major, minor, patch, post = found.groups()
+    return int(major), int(minor), int(patch), int(post or 0)
+
+
 # -- the bundle's helpers -----------------------------------------------------
 #: The one call that moves a folder; the tests make it fail on purpose.
 _rename = os.rename
@@ -777,6 +828,9 @@ def _git_env():
     batch mode unless the operator configured their own."""
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # `describe --dirty` and `status` refresh the index when they may; a
+    # check running beside someone's own git must not take its lock.
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     env.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
     env.setdefault("LC_ALL", "C")
     return env

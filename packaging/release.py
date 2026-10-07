@@ -2,10 +2,19 @@
 (brief-bundle-update B1/B2). Used by `station.spec` after COLLECT and by
 `.github/workflows/package.yml`; stdlib only.
 
+    python packaging/release.py version               this tree's version (REL-1)
     python packaging/release.py stamp BUNDLE          VERSION + release.json
     python packaging/release.py pyproject TAG         pyproject's version <- tag
     python packaging/release.py asset-name            this machine's asset name
     python packaging/release.py zip BUNDLE OUT.zip    the release asset
+
+The version is the git tag `vMAJOR.MINOR.PATCH` and nothing else
+(`pyproject.toml` says 0.0.0 in git). `version` prints what the tree it runs
+in is: the tag when HEAD is exactly on one, else `git describe` rendered
+PEP 440-ish (`1.3.0.post3+gabc1234`), `0.0.0+<sha7>` before the first
+release, "unknown" without git. It is `controller.updater`'s own
+`Updater.version()`, so the Setup page, `src/app.py --version`, a bundle's
+VERSION and this command can never disagree.
 
 `VERSION` is three lines: the tag, the commit, the build time (ISO, UTC).
 `release.json` is `packaging/release.json` with the repository's owner and
@@ -29,6 +38,7 @@ TEMPLATE = os.path.join(HERE, "release.json")
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from controller.updater import RELEASE_FILE, VERSION_FILE  # noqa: E402
+from controller.updater import Updater, render_version  # noqa: E402
 from controller.updater import asset_name as _asset_name  # noqa: E402
 
 #: The folder a release zip unpacks to (the updater accepts either shape).
@@ -59,9 +69,14 @@ def repository_from_remote(url):
     return f"{found.group(1)}/{found.group(2)}" if found else ""
 
 
+def version(root=ROOT):
+    """The version of the tree at `root` (REL-1): `Updater.version()`."""
+    return Updater(root=root).version()
+
+
 def current_tag():
-    return (os.environ.get("STATION_TAG")
-            or _git("describe", "--tags", "--always", "--dirty") or "unknown")
+    """What a build stamps: CI's tag (`STATION_TAG`), else this tree's version."""
+    return os.environ.get("STATION_TAG") or version()
 
 
 def stamp(bundle, tag=None, sha=None, built=None, repository=None):
@@ -83,13 +98,13 @@ def stamp(bundle, tag=None, sha=None, built=None, repository=None):
 
 
 def pep440(tag):
-    """"v1.3.0" -> "1.3.0"; `git describe`'s "v1.2.0-3-gabc" -> a local
-    version "1.2.0+3.gabc"; anything else -> None (pyproject left alone)."""
-    found = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:-(\d+)-(g[0-9a-f]+))?", (tag or "").strip())
-    if not found:
-        return None
-    version, ahead, sha = found.groups()
-    return f"{version}+{ahead}.{sha}" if ahead else version
+    """A tag or a version string -> what pyproject's version line says:
+    "v1.3.0" -> "1.3.0"; `git describe`'s "v1.2.0-3-gabc1234" and the
+    rendered "1.2.0.post3+gabc1234" -> "1.2.0.post3+gabc1234";
+    "0.0.0+abc1234" stays; anything else -> None (pyproject left alone)."""
+    text = render_version((tag or "").strip())
+    found = re.fullmatch(r"v?(\d+(?:\.\d+)*(?:\.post\d+)?(?:\+[0-9A-Za-z.]+)?)", text)
+    return found.group(1) if found else None
 
 
 def patch_pyproject(path, tag):
@@ -134,7 +149,13 @@ def make_zip(bundle, out):
 
 
 def main(argv):
-    if len(argv) >= 2 and argv[0] == "stamp":
+    if hasattr(sys.stdout, "reconfigure"):
+        # "\n" on every OS: CI's bash reads these lines on Windows too, and a
+        # trailing "\r" would make a name that matches nothing.
+        sys.stdout.reconfigure(newline="\n")
+    if argv[:1] == ["version"]:
+        print(version())
+    elif len(argv) >= 2 and argv[0] == "stamp":
         print(stamp(argv[1]))
     elif len(argv) >= 2 and argv[0] == "pyproject":
         patch_pyproject(os.path.join(ROOT, "pyproject.toml"), argv[1])
