@@ -149,6 +149,30 @@ def test_to_rgb_reads_bgra_screenshots_and_arrays():
     assert video.to_rgb(None) is None
 
 
+# -- the encoder lookup the full-display recorder uses ------------------------------
+
+def test_ffmpeg_exe_is_the_wheels_binary():
+    ffmpeg = _ffmpeg()
+    assert video.ffmpeg_exe() == ffmpeg.get_ffmpeg_exe()
+    assert Path(video.ffmpeg_exe()).exists()
+
+
+def test_ffmpeg_exe_raises_a_worded_error_without_the_wheel(no_encoder):
+    with pytest.raises(RuntimeError, match="imageio-ffmpeg is not installed"):
+        video.ffmpeg_exe()
+
+
+def test_ffmpeg_exe_raises_when_the_wheel_has_no_binary(monkeypatch):
+    class Broken:
+        @staticmethod
+        def get_ffmpeg_exe():
+            raise RuntimeError("no ffmpeg binary")
+
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", Broken)
+    with pytest.raises(RuntimeError, match="no ffmpeg binary"):
+        video.ffmpeg_exe()
+
+
 # -- the fallback ----------------------------------------------------------------
 
 def test_without_the_wheel_the_recorder_writes_labelled_jpeg_frames(tmp_path,
