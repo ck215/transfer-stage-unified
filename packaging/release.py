@@ -6,7 +6,9 @@
     python packaging/release.py stamp BUNDLE          VERSION + release.json
     python packaging/release.py pyproject TAG         pyproject's version <- tag
     python packaging/release.py asset-name            this machine's asset name
+    python packaging/release.py assets                every asset a release carries
     python packaging/release.py zip BUNDLE OUT.zip    the release asset
+    python packaging/release.py notes TAG             the release's notes (REL-2)
 
 The version is the git tag `vMAJOR.MINOR.PATCH` and nothing else
 (`pyproject.toml` says 0.0.0 in git). `version` prints what the tree it runs
@@ -15,6 +17,12 @@ PEP 440-ish (`1.3.0.post3+gabc1234`), `0.0.0+<sha7>` before the first
 release, "unknown" without git. It is `controller.updater`'s own
 `Updater.version()`, so the Setup page, `src/app.py --version`, a bundle's
 VERSION and this command can never disagree.
+
+`assets` lists one asset per `targets` entry of `release.json`, named by its
+`asset` pattern: release.json is the one place that names what a release
+carries, the build checks its own name against it and the publish job
+waits for every one. `notes TAG` is the tag's CHANGELOG.md section, else the
+tag's own message, else the tag.
 
 `VERSION` is three lines: the tag, the commit, the build time (ISO, UTC).
 `release.json` is `packaging/release.json` with the repository's owner and
@@ -37,12 +45,18 @@ ROOT = os.path.dirname(HERE)
 TEMPLATE = os.path.join(HERE, "release.json")
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from controller.updater import RELEASE_FILE, VERSION_FILE  # noqa: E402
+from controller.updater import RELEASE_FILE, RELEASE_TAG, VERSION_FILE  # noqa: E402
 from controller.updater import Updater, render_version  # noqa: E402
 from controller.updater import asset_name as _asset_name  # noqa: E402
 
 #: The folder a release zip unpacks to (the updater accepts either shape).
 TOP = "station"
+#: The release notes' source (REL-2) and the file `dev/release.sh` edits.
+CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
+#: A Keep-a-Changelog section heading: `## [Unreleased]`, `## [1.4.0] - <date>`.
+_SECTION = re.compile(r"^## \[([^\]]+)\]")
+#: Where a section ends besides the next `## ` heading: a link definition.
+_LINK = re.compile(r"^\[[^\]]+\]:\s")
 
 
 def _git(*args):
@@ -61,6 +75,55 @@ def template():
 
 def asset_name(system=None, machine=None):
     return _asset_name(template(), system, machine)
+
+
+def assets(info=None):
+    """Every asset a release carries: release.json's `asset` pattern over its
+    `targets`, in order. The publish job publishes only when all are there."""
+    info = template() if info is None else info
+    return [str(info["asset"]).format(**target) for target in info.get("targets") or ()]
+
+
+def _section_key(name):
+    """"v1.4.0" and "1.4.0" name the same section; "Unreleased" any case."""
+    name = str(name).strip()
+    return name[1:] if RELEASE_TAG.fullmatch(name) else name.lower()
+
+
+def _sections(lines):
+    """[(name, heading line, end line)] of every `## [name]` section."""
+    found = []
+    for index, line in enumerate(lines):
+        if (line.startswith("## ") or _LINK.match(line)) and found and found[-1][2] is None:
+            found[-1][2] = index            # the open section ends here
+        match = _SECTION.match(line)
+        if match:
+            found.append([match.group(1), index, None])
+    return [(name, start, len(lines) if end is None else end)
+            for name, start, end in found]
+
+
+def changelog_section(text, name):
+    """The body of section `name` ("v1.4.0", "1.4.0" or "Unreleased")
+    without its heading and outer blank lines, or None when there is none."""
+    lines = str(text).splitlines()
+    for section, start, end in _sections(lines):
+        if _section_key(section) == _section_key(name):
+            return "\n".join(lines[start + 1:end]).strip("\n")
+    return None
+
+
+def notes(tag, changelog=CHANGELOG):
+    """A release's notes: its CHANGELOG.md section; else the tag's message
+    (an annotated tag made by hand); else the tag itself."""
+    try:
+        with open(changelog, encoding="utf-8") as f:
+            body = changelog_section(f.read(), tag)
+    except OSError:
+        body = None
+    if body and body.strip():
+        return body
+    return _git("tag", "-l", "--format=%(contents)", tag) or tag
 
 
 def repository_from_remote(url):
@@ -161,6 +224,10 @@ def main(argv):
         patch_pyproject(os.path.join(ROOT, "pyproject.toml"), argv[1])
     elif argv[:1] == ["asset-name"]:
         print(asset_name())
+    elif argv[:1] == ["assets"]:
+        print("\n".join(assets()))
+    elif len(argv) >= 2 and argv[0] == "notes":
+        print(notes(argv[1]))
     elif len(argv) >= 3 and argv[0] == "zip":
         make_zip(argv[1], argv[2])
     else:
