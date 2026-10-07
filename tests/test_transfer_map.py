@@ -4119,9 +4119,9 @@ def test_the_status_names_the_trial_and_the_sample_count_is_diagnostics(scripted
 
 # -- TR-4 (approved proposal 2026-10-07): the procedure strip's data -----------
 # `state` carries phase and phases; it also carries the Next-step sentence
-# (`step_text`) and one word for the analysis (`analysis_health`), and says
-# which tiers of a hosted model the page draws (`guest_tiers`: Red Percent's
-# details and Diagnostics, never its tier-1 group).
+# (`step_text`) and one word for the analysis (`analysis_health`). The
+# analysis's own live group, drawn here through `host`, is the lead's
+# (schema `hosted_tier`); the map draws no copy of its readings.
 
 @pytest.mark.parametrize("step", TransferMap.PHASES)
 def test_the_state_carries_the_step_text_in_every_step(station, step):
@@ -4172,34 +4172,6 @@ def test_the_analysis_health_is_one_word_from_red_percents_counters(scripted):
     assert health() == "stalled"
     model.abort_trial()
     assert health() == ""
-
-
-def test_the_page_draws_only_its_guests_details(red):
-    """Red Percent is drawn on the Transfer Map's page (Model.HOST); the page
-    asks for its tiers 2 and 3 only, so its tier-1 group (Current red, Red
-    change, Running, Start run, Stop run) is not on the page, and "RGB
-    analysis details" / Diagnostics stay reachable."""
-    controller = Controller()
-    model = TransferMap()
-    try:
-        controller.add("Transfer Map", model, {})
-        controller.add("Red Percent", red, {})
-        states = controller.state()["models"]
-        assert states["Red Percent"]["host"] == "Transfer Map"
-        assert states["Transfer Map"]["guest_tiers"] == [2, 3]
-        tiers = {}
-        for section in red.schema["sections"]:
-            tiers.setdefault(section.get("tier", 1), []).append(section)
-        dropped = [e for s in tiers[1] for e in s["elements"]]
-        assert {e.get("command") or e.get("model_attr") for e in dropped} >= {
-            "current_red", "red_change", "is_running", "start_run", "end_run"}
-        kept = [s for t in model.GUEST_TIERS for s in tiers.get(t, [])]
-        assert kept and {s.get("disclosure") for s in kept} >= {"Diagnostics"}
-        assert 1 not in model.GUEST_TIERS
-    finally:
-        controller._models.pop("Red Percent", None)    # the fixture closes it
-        controller._models.pop("Transfer Map", None)
-        model.close()
 
 
 # -- TR-5 (2026-10-07): the profile keeps the colour channels, by presence -----

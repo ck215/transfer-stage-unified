@@ -794,17 +794,6 @@ class TransferMap(Model):
         "armed": "a trial is armed. Finish or abort it first.",
     }
 
-    #: The tiers of a model drawn on this page (`Model.HOST`: Red Percent)
-    #: that the page draws (approved proposal 2026-10-07): its details
-    #: (2) and Diagnostics (3), never its tier-1 group. The procedure starts
-    #: and ends Red Percent's run (region -> live, End recording, Abort, the
-    #: stop) and the Force estimate stands for its readings, so its Current
-    #: red, Red change, Running, Start run and Stop run are not on this
-    #: page. Published as `state["guest_tiers"]`; a view draws a hosted
-    #: model's sections of these tiers only. Alone, Red Percent is a page
-    #: like any other and draws everything.
-    GUEST_TIERS = (2, 3)
-
     #: The trial's procedure, in order (owner ruling 2026-10-07): `phase`
     #: says which step the operator is at; the schema draws each step's
     #: controls only in it. `new_tip` is the New tip prompt, entered from
@@ -1402,9 +1391,11 @@ class TransferMap(Model):
         # `phase` and `phases`, the Next-step sentence and one word for the
         # analysis ("settled", "unsettled", "stalled", "no region", or ""
         # while no run is expected).
+        # (The analysis's own live group, drawn here through `host`, takes
+        # the tier its section's `hosted_tier` gives it: the lead's schema
+        # key; this page declares nothing for it.)
         snapshot["step_text"] = self.next_step
         snapshot["analysis_health"] = self.analysis_health
-        snapshot["guest_tiers"] = list(self.GUEST_TIERS)
         return snapshot
 
     # -- the samples, on Red Percent's run thread ------------------------------
