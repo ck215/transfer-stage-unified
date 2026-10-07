@@ -1,17 +1,21 @@
 # Rebuild status — cold-resume document
 
-Last updated 2026-09-26 (evening). Read this first; then `BRIEF.md` (the architecture
-contract and its addenda), `WEB_DESIGN_BRIEF.md`, and `BUGFIX_PLAN.md` (the
-ranked defect list with a delegation route per item).
+Last updated 2026-10-07 (the round recorded in "Round 2026-10-07" below). Read
+this first; then `BRIEF.md` (the architecture contract and its addenda),
+`DESIGN_BRIEF.md` (`WEB_DESIGN_BRIEF.md` is its superseded predecessor), and
+`BUGFIX_PLAN.md` (the ranked defect list with a delegation route per item).
+The sections from "Where things are" down to "Resume here" were written while
+Tk and Qt were live views; where they say so, read it as history (the Web is
+the only frontend since 2026-10-07).
 
 ## Where things are
 
 | What | Where |
 |---|---|
-| The new app | `src/` on branch `mvc-refactor`, worktree `../mvc-refactor` (this checkout). Built as the `station/` package on the `rebuild` branch (the refactor redone from scratch), fast-forwarded here and retired 2026-09-23, then moved to `src/` the same day. Layout: `src/app.py` (run as a script), `events.py panel.py param.py schema.py result.py palette.py`, `controller/{controller,setup}.py`, `model/base.py` + `model/{probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/`. |
+| The new app | `src/` on branch `mvc-refactor`, worktree `../mvc-refactor`. The Web view (`src/views/web/`, over `views/base.py`) is the only frontend; `src/views/tk.py` and `qt.py` are frozen at `413f504`, unregistered, with a banner on line 1, kept intact for reference. Also since the layout below: `devices/{screen_recorder,camera}.py`, `model/{trial_telemetry,transfer_map_analysis,sample_store}.py`, `controller/{flashing,updater,user_config}.py`. Built as the `station/` package on the `rebuild` branch (the refactor redone from scratch), fast-forwarded here and retired 2026-09-23, then moved to `src/` the same day. Layout: `src/app.py` (run as a script), `events.py panel.py param.py schema.py result.py palette.py`, `controller/{controller,setup}.py`, `model/base.py` + `model/{probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/`. |
 | The old app | `legacy/src/` (was `src/`), its suite in `legacy/tests/` (was `tests/` minus `tests/station/`); code untouched, still the reference for the golden wire tests. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
-| Agent worktrees | Removed 2026-09-23: the 12 `rb-*` worktrees and branches were all merged and clean; `../rebuild` retired the same day. Worktrees now: `main`, `mvc-refactor`. |
-| Agent handoffs | `handoff/*.md` (outside every repo). `serial, gamepad, probe, heater, rotator, redmonitor, setup, tk, qt, web, coretests, golden`, then `setup2, tk2, qt2, web2` (polish pass), `web3` (console redesign). Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
+| Worktrees | `../mvc-refactor` (the lead's, branch `mvc-refactor`) and, while a fix round runs, one `../rb-<name>` per agent (this round's: `rb-tmap`, `rb-docs`). `../main` is a plain checkout of `origin/main`, NOT a worktree (it holds the venv, `main/.venv`, the `$PY` of the skills). The eleven stale merged `rb-*` worktrees were removed on 2026-10-07 (rb-clean). |
+| Agent handoffs | `handoff/*.md` inside each worktree, git-ignored (`handoff/` stays ignored). The 32 handoff files that code and docs cite are tracked under `docs/archive/handoff/` (2026-10-07); a worktree's own handoff for a round is `handoff/fix-<name>.md`. Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
 | **Timeouts, audit round 8, the model contract (2026-09-26)** | Owner: warn before closing the tab with devices energized, validate the watchdog and the idle timeout in every view, warn before the timeout with a way to extend. Core (**Tier N/O**): `Probe.idle_remaining` + one "Idle Timeout Soon" warning inside the last 60 s + `extend_idle`; `Controller.is_energized` / `state()["energized"]` (a probe in a mode, a heating heater, a recording run); the Web watchdog keys on it; stop-class commands and `set_mode("disabled")` skip input validation (`Panel.UNGATED_COMMANDS`, schema `stop=True`) so a stop is never refused over bad text in a box; `/api/data` runs only schema-declared sources, JSON POSTs need an Origin, frame-blocking headers; `views.base.GATE_WORDS` / `gate_reason` as the one direction-aware table, served to the Web; Setup's `stop_system` / `launch` ask while anything is energized; the schema's `fault` gate; `Heater.heating_to`. Views (rb-o-{tk,qt,web}, `handoff/fix-o-*.md`): a countdown line per probe under the disc with **Extend**; energized ring and faulted "!" marks; "Disable failed. Treat as live." in tier 1; quit / close questions name what is energized; Web `beforeunload` while energized, `/api/quit` answers after the stop with the unconfirmed named, busy commands, refusal at its field, commit on release, tier 1 pinned; live regions (Web) and announcements (Qt); one Qt Tab order. Audits: round 8 with one skill per auditor (`handoff/audit-ui-round8-*.md`), the architecture audit (intact with debt), and the **model contract** audit (`handoff/audit-model-contract-2026-09-26.md`: a `PiezoStage` written from the new `docs/rebuild/MODEL_CONTRACT.md` drove all three views unedited once CON-1/3/4/5/9 were fixed; `tests/test_model_contract.py`, 160 cases). Headless validation: the watchdog warns at 4.9 s and stops every model at 15.2 s of browser silence; no memory leak. Gates **fast 2290 (+11 window tests deferred, 1 xfail = CON-13), golden 78, Qt 212**. Open: O17 (lead part), O19–O23, CON-6/7/11, CON-13 (owner), the display-dependent captures, owner calls below. |
 | **Owner's Web pass + audit round 7 (2026-09-26)** | Tier K from the owner's look at the merged E views: the gamepad choice is tier 1; every tier-2 disclosure names its device and sits at the foot of the tier-1 body above its well; the sheet has an **Overview** page (rail's first item, every model compact, no wells, pressable heads) and a **device page** (one model alone). Tier L from three real-display auditors (`handoff/audit-ui-round7-{web,tk,qt}.md`): the S1 in every view was that one model's own stop read as "Every model is stopped." and turned the disc to Clear over five live models (`is_estopped` = any). Core: `Controller.stop_state` {latched, unconfirmed, every, since}, `Model.stop_confirmed`, `views.base.stop_words()` / `event_line()`, `events.forget` on clear; views: disc face from the words, per-model rail marks, reasons on disabled commands, 24/36 px targets, slider keys, tier 1 pinned on the device page, Quit asks in Qt, Tab reaches every Qt control. Also: `handoff/proposal-probe-zeroing.md` (K5: TMC2209 on a Mega; host-only set-zero now, optical home switches later); the `window` test marker + `STATION_NO_WINDOWS=1` (owner: strictly background while at the Mac); a memory-leak check (none: 49→23 MB flat under a 10 Hz client). Gates **fast 2056 (+11 window tests deferred), golden 78, Qt 195**. Open: Tier M; owner calls below. |
 | **Bench sheet, tiered (2026-09-26)** | The owner chose canvas row E (C "Control sheet" + A's circular stop + three tiers of prominence) and said "execute on that vision". Lead core (`rb-e-core`): the six light tokens in `palette.py`, `theme.py` (Public Sans text, Archivo numerals, READING_SIZES, STOP, SWITCH, RADIUS, TIER_LABELS, QUIET_VALUES, muted OFF outlines), `schema.section(tier=, disclosure=)`, `entry(slider=)`, `readonly(unit=)`, the four model schemas re-tiered (Red Percent = Red, Change, Start/Stop run in tier 1; everything else behind Details), `docs/rebuild/DESIGN_BRIEF.md`. Three Opus view worktrees rendered it (`rb-e-{web,tk,qt}`, handoffs `handoff/fix-e-{web,tk,qt}.md`): left rail with A's disc, entries not cards, one disclosure per model with Diagnostics inside, a slider beside every speed entry, status by exception, tray = warnings and errors only. Lead-verified: gates **fast 1956, golden 78, Qt 155**; ritual captures `handoff/shots/final_e_{web,tk,qt}_*`. Open follow-ups (Tier J below): fonts not installed on this Mac (Helvetica renders in Tk/Qt), heater shows the word "Simulated" as its reading in SIM, per-model stop switch caption, `theme.SLIDER`, px-vs-pt base unit in Qt. |
@@ -19,7 +23,7 @@ ranked defect list with a delegation route per item).
 | UI fix round (2026-09-24) | Tier F rows landed from four Opus worktrees (core, Tk, Qt, Web), lead-verified: no pop-up can cover or block the stop in any view (queued, non-modal acks); a failed stop request and a dead station are visible; a lost serial port turns its card signal in every view; the Qt rail never clips a number; the stop has a keyboard chord everywhere (Ctrl+. / ⌘.); latch pre-disables what it would refuse; the analysis figure is trace-coloured, sized and cached; hung scans can be cancelled; error text is operator sentences; one word for the stop. Gates: fast 1675, golden 78, qt 127. Handoffs `handoff/fix-{core,tk,qt,web}.md`; captures `handoff/shots/round3_*`. Tk still unseen on screen (owner at the Mac). |
 | UI audit (2026-09-24) | Six read-only auditors, one design skill each, on the round-2 tree: 97 findings merged into **BUGFIX_PLAN Tier F** (26 rows, 9 S1). Stop-path S1s the lead reproduced: a pop-up covers the stop; a failed stop request is silent; a lost serial port looks live in every view; the Qt rail clips numbers. Reports `handoff/audit-ui-*.md`. |
 | UI round 2 (2026-09-24) | All three views refined as siblings of the Web console: one red (the stop object reads `Stop` / `Clear`, pulses once on the edge), sentence-case labels without colons, one-header Setup tables, readable event logs, empty states that say what to do next, boolean readouts as Yes/No, `Start run` / `Stop run` / `Stop heater` / `Stop motion` as quiet commands. Handoffs `handoff/{tk3,qt3,web5}.md`; shots `round2_{tk,qt,web}_*`. Tk `after` shots are pending (the Mac was in use; capture commands are in tk3.md UNVERIFIED). |
-| Screenshots | `handoff/shots/`: `tk_*`, `qt_*` (polish pass), `web4_*` (console: drawer, launched, stopped), `web3_*` (agent's own rounds). Capture scripts: `/tmp/shoot_tk.py`, `/tmp/shoot_qt.py`, `/tmp/shoot_web.cjs` (temp; recreate from the procedure below if gone). |
+| Screenshots | `handoff/shots/` (ignored, never tracked): `tk_*`, `qt_*` (polish pass), `web4_*` (console: drawer, launched, stopped), `web3_*` (agent's own rounds). The capture scripts were temporary and are gone; recreate from the procedure below. |
 | Tests | `tests/` (was `tests/station/`, flattened); wire captures in `tests/golden/`. |
 | Design data | `docs/rebuild/design.json` (every new class/member with origins), `design.rules` (one line per old method: kept/renamed/merged/purged/implied; its paths are pre-move: `station/` = `src/`, old `src/` = `legacy/src/`), `carry.json` (all 229 old ledger findings classified against the design), `narrative.json`. Interactive pages (temp, may be gone): `/private/tmp/claude-501/.../412595fe.../scratchpad/{control_system_uml,ideal_system_uml}.html`. |
 | Logs at runtime | `~/transfer-stage-runs/logs/station-<timestamp>.log`, one per launch; every event with thread and traceback; `events.debug` is file-only. |
@@ -29,21 +33,22 @@ ranked defect list with a delegation route per item).
 
 ```
 cd ../mvc-refactor
-./run.sh --web | --qt | --tk              # uses the already-active venv (main/.venv)
-python3 src/app.py --web --no-browser --port 8080
+./run.sh --no-browser --port 8080         # the Web view (the only one; --tk/--qt print "retired" and exit 2)
+python3 src/app.py --no-browser --port 8080   # the same, with the venv's python ($PY)
 
-STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # 2290 pass + 11 window tests skipped + 1 xfail (CON-13), ~240 s; drop the variable when the display is free
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt   # 212 pass
+STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # the fast gate; counts are in the verify skill
 python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to legacy/src/
 cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
+# optional: the frozen Qt view's tests, only after `pip install -e .[qt]`:
+QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt
 ```
 
-macOS: pip re-hides PySide6's Qt plugin dylibs (UF_HIDDEN) — `run.sh --qt` (was `run_macos.sh`)
-runs `chflags -R nohidden` first; do the same before any offscreen Qt run.
-Screen Recording permission is needed for Tk screenshots (`screencapture`).
+Screenshot capture of the Web view needs headless Chrome (puppeteer, below);
+the Tk screenshot note (Screen Recording permission, `screencapture`) is
+history with the Tk view.
 
 Screenshot ritual (the only check that catches an off-screen FULL STOP):
-launch each view, wait for the startup scan (`/api/setup` → `state.is_scanning`
+launch the Web view, wait for the startup scan (`/api/setup` → `state.is_scanning`
 false; ~20 s on this Mac because of two junk ports), set
 `set_stepper_probe_port`/`set_red_percent_port` to `"SIM"`, run `launch`,
 capture. Web via puppeteer at
@@ -73,7 +78,7 @@ wire is pinned by `tests/golden/`.
   while autonomous (as on main); leave the mode to edit them.
 - Scripts/G-code purged. Web is localhost-only. Per-model estop toggles wired
   into the global stop. Per-model clear needs confirmation.
-- Red Percent: fastest sampling → ONE mode, a row when red % changes; red
+- Red Percent: ONE mode, a row when red % changes (the 2026-09-21/22 "fastest sampling" part is AMENDED 2026-10-07: settled frames at the source rate, see "Round 2026-10-07"); red
   threshold only (green/blue caps fixed at 100 internally); Stage X/Y
   annotations dropped; velocity only between distinct 10 Hz position samples.
 - Probe distances/speeds/brake fields are ints to the operator (floats on
@@ -99,21 +104,117 @@ wire is pinned by `tests/golden/`.
   is neither corner A nor the stage origin); the Sample Map models it
   (`rb-rotator-frame`, 2026-10-05). The Transfer Map still calls the angle
   `tilt_deg`; renaming it is the owner's call.
-- Web = candidate primary frontend ("instrument console"); Tk/Qt persist as
-  backups. Making Web the default is `VIEW_MODE` in the launchers.
+- SUPERSEDED 2026-10-07: "Web = candidate primary frontend; Tk/Qt persist as
+  backups" (and the DEFAULT_VIEW qt ruling of 2026-09-28, and D-9 "Tk is the
+  default on every OS" of 2026-09-25). Web is the ONLY frontend; Tk and Qt are
+  frozen at `413f504`; one entry point, `station-web`.
 
 ## Next programme: packaging (2026-09-25)
 
-`docs/rebuild/PACKAGING_PLAN.md`: one PyInstaller bundle per platform with
-three entry points (`station-web`, `station-qt`, `station-tk`), steps P1–P8
-with routes. P1–P4 landed 2026-09-25: **D-9 amended, Tk is the default view
-on every OS**; `pyproject.toml` with `station-tk/qt/web`; `packaging/station.spec`
-(one folder, three launchers, 134 MB on this Mac); `packaging/smoke.sh` (42
-checks). The smoke found and the lead fixed a safety hole: Tk 9 on macOS
-swallowed SIGTERM past `close()` (A10). Next: P5 (CI matrix), then the lab's
+`docs/rebuild/PACKAGING_PLAN.md`: one PyInstaller bundle per platform, steps
+P1–P8 with routes. Since 2026-10-07 the bundle has ONE launcher,
+`station-web` (RET-3; it began as three, with D-9 "Tk default" amended on
+2026-09-25, both superseded). P1–P4 landed 2026-09-25: `pyproject.toml`
+(`[project.scripts]` is `station-web` alone; PySide6 is the `qt` extra, needed
+only to run the frozen Qt tests); `packaging/station.spec`; `packaging/smoke.sh`. The smoke found and the lead fixed a safety hole: Tk 9 on macOS
+swallowed SIGTERM past `close()` (A10; the Tk view is retired). Next: P5 (CI matrix), then the lab's
 Windows PC. A design-language proposal (four boards rendered in HTML, one
 component strip each) was published for the owner the same day; the choice
 lands as `palette.py` / `theme.py` tokens.
+
+## Round 2026-10-07
+
+Base `87558ad` (tag `round-2026-10-07-start`). Plan `calm-growing-lark`; the
+owner's rulings are applied as listed. Each merge commit's message says what
+landed.
+
+**Owner rulings of the day** (they supersede the dated ones named):
+- **Web is the ONLY frontend.** `src/views/tk.py` and `qt.py` are frozen at
+  `413f504` (after the Signature restyle), unregistered, banner on line 1, kept
+  intact for reference; `views/picking.py` is deleted; `--tk` / `--qt` print a
+  retired message and exit 2; one entry point `station-web`; one PyInstaller
+  launcher. `pip install -e .[qt]` is needed only to run the frozen Qt tests.
+  Supersedes "Web candidate primary, Tk/Qt backups" (STATUS), DESIGN_BRIEF
+  "binds all three views", DEFAULT_VIEW qt (2026-09-28) and D-9 "Tk is the
+  default on every OS" (2026-09-25).
+- **Record everything during a trial, trim in analysis.** Red Percent samples
+  SETTLED frames at the source rate (amends the 2026-09-21/22 "fastest
+  sampling" ruling): two reads at least 5 ms apart must agree; black, stale and
+  unsettled grabs are rejected and counted (Diagnostics counters
+  `frames_accepted`, `rejected_black`, `rejected_stale`, `rejected_unsettled`).
+  The loop runs at about 15 Hz on the bench's 7 fps viewer. Root cause (real
+  bench data, 40 trials): mid-repaint grabs of the vendor viewer put black and
+  stale frames into the video, the profile and the force extrema (median 51 %
+  glitch rows).
+- **The interactive procedure**: setup (preliminary info) -> Arm -> region (a
+  full-resolution still of the whole display is taken as the trial's first
+  asset and the capture region is picked ON that still; nothing records yet)
+  -> live (trial row, Red Percent run, full-display video, telemetry) ->
+  marked (after Mark force) -> finish (review) -> setup. Abort from region on;
+  the stop overrides everything. There is no boot-time capture buffer. The
+  live red-percent plots are gone from the live view; the profile is still
+  stored at Finish and on abort. Unused fields leave the sheet; the Overview
+  has a hairline boundary around each device. The model contract is
+  "Phases: the interactive procedure (2026-10-07)" in `MODEL_CONTRACT.md`.
+- **Maps.** The map figures are speed x force class (Low / Medium / High,
+  Unclassed) with width as colour; the tilt is collected, never drawn. The
+  Sample Map is a microscope-image store keyed by the free-text `sample_id` the
+  Transfer Map's trials carry, with a read-only "Trials for this sample"
+  listing; flake-coordinate homing is DORMANT (code and tables kept, out of the
+  schema, `SampleMap._dormant_schema`). Sample store v3 adds
+  `sample_images(sample_id, instrument in {transfer_stage, microscope},
+  magnification in {10, 20, 50, 100}, path relative, sha256, captured_at, note)`.
+
+**Landed** (merge commits on `mvc-refactor`; `git log --oneline 87558ad..HEAD`):
+- `rb-link` L1-L13 (serial-link safety: reconnect by itself, counters, a stop
+  confirmed by telemetry, no mode entry out of an unconfirmed disable),
+  `rb-dist-app` A1-A5 (in-process flashing in `controller/flashing.py`, the
+  bundle firmware check, an operator-chosen trial store, Switch to stable, the
+  updater on the public repository) and `rb-link-views` (Web + base only; two
+  Tk/Qt-only commits were dropped and tagged `rb-link-views-dropped-tkqt`):
+  merge `3bfb8bc`.
+- `rb-capture` CAP-1 (settled-frame Red Percent) `295d15f`; CAP-6 (`Screen.monitors`
+  public; the region recorder writes fragmented MP4).
+- `rb-recorder` `0015553`: `src/devices/screen_recorder.py` (`ScreenRecorder`:
+  full-display, native resolution, fragmented MP4 that survives a kill, a
+  `frames.csv` sidecar, `capture_still`), `src/model/trial_telemetry.py`
+  (`TrialTelemetry`: every model's public state on one clock, plus Red Percent
+  rows and EventLog lines), `devices.video.ffmpeg_exe` (REC-1..3).
+- `rb-analysis` `f666864`: `settled_mask` and robust extrema in
+  `model/transfer_map_analysis.py` (None when nothing settled) and
+  `dev/reanalyse_trials.py` (offline re-analysis of recorded trials;
+  read-only unless `--write`, backup first) (AN-1, AN-2).
+- `rb-camera` `5579d21`: `src/devices/camera.py`, a ToupCam pull-mode device
+  with an injected library and a SIM (CAM-1). Wiring is bench-gated: only one
+  process can hold the camera, so the vendor viewer must be closed.
+- `rb-stores` `7ff07fb`: sample store v3 (STO-1), the Sample Map as an image
+  store (STO-2), the map as speed x force class (STO-3).
+- `rb-retire` `79ae0bd`: RET-1..4 (freeze, unregister, one launcher, lazy Qt probe).
+- `rb-web` `7f509cb`: WEB-1..5 (the page draws the procedure step; the region
+  picker draws on the model's still at full resolution; explicit device
+  boxes in the Overview; `GET /api/image` serves thumbnails by relative path
+  under the output root).
+- `rb-clean` `3cd94cc`: eleven merged worktrees removed, `.DS_Store`
+  untracked, 32 cited handoff files archived under `docs/archive/handoff/`.
+- In flight at the time of writing, in `../rb-tmap` (not merged): TM-1 the
+  Transfer Map follows the procedure (`PHASES = setup, region, live, marked,
+  finish`), TM-2 the live plots leave the live view, TM-3 the tilt is collected,
+  never demanded or drawn. This page and the others describe that target.
+
+**Transfer Map store.** The repo is at v6. The LAB's databases are v7/v8 (the
+bench PC runs code not yet in this repo; the owner is pushing a branch, and
+recovering it is a gate). The next repo version will be v9, with
+column-presence migration and a `.v8.bak` backup. v9 is NOT done.
+
+**Gates** (the lead's last full run): 3796 passed, 10 skipped, 227 deselected,
+1 xfailed at `79ae0bd`; 474 web-view tests added after (collected
+without the `qt` marker at this docs commit: 3831 of 4058, 227 deselected).
+Golden 78. The Qt pass is optional now and needs `.[qt]`.
+
+**Bench-only, the owner's (Phase 4)**: the transient mechanism on the Mint box,
+`libtoupcam` / `amcam` for the MU1003, the full-screen grab and x264 cost,
+flashing after A1/A2, D-7, and reviewing `reanalysis_<date>.md` before any
+`dev/reanalyse_trials.py --write`.
 
 ## Open items
 
@@ -621,6 +722,9 @@ rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`
 
 ## History
 
+- 2026-10-07: the round above: Web the only frontend (Tk and Qt frozen at
+  `413f504`), settled-frame recording, full-display recorder, the procedure
+  phases, the image-store Sample Map, serial-link safety, in-process flashing.
 - Aug–Sep 2026: `src/` was a staged MVC repair (S0–S16) of 13 root causes
   across 213 audited findings. Plan and test policy are in `docs/archive/`.
 - 2026-09-23: the refactor redone from scratch as `station/` on a `rebuild`
