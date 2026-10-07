@@ -1,4 +1,16 @@
-"""The Sample Map: where on the chip each flake is (proposal-flake-coordinates.md).
+"""The Sample Map: microscope-image storage keyed to the Transfer Map's sample_id.
+
+**Since 2026-10-07 (owner ruling) the sheet stores pictures of samples**
+(`sample_images`, `model.sample_store`), keyed by the same free-text
+`sample_id` the Transfer Map stamps on its trials, and lists the trials
+recorded for the picked sample from a READ-ONLY second connection to the
+Transfer Map's store. The flake-coordinate machinery below (corners, the
+rotation centre, flakes, um per count, locating axes) is dormant: its
+commands, tables and tests stay, its schema is `_dormant_schema`, and
+`FLAKES_ACTIVE` switches the mode word back. What follows is that machinery's
+original description.
+
+Where on the chip each flake is (proposal-flake-coordinates.md).
 
 The operator marks the chip's corners with the optical **crosshair** (owner
 2026-10-04: the tip never touches a corner), the station fits the chip's
@@ -34,6 +46,7 @@ the `rotator_unknown` gate. Nothing here moves the Rotator.
 """
 import datetime
 import math
+import sqlite3
 import sys
 import threading
 import time
@@ -85,6 +98,13 @@ class SampleMap(Model):
     RESOURCES = ()
     HOST = None
 
+    #: Dormant 2026-10-07: False = the image sheet; True gives back the
+    #: flake-coordinate modes (`mode_name`) for the dormant tests and a revival.
+    FLAKES_ACTIVE = False
+    #: Shown newest first in the image log and the trial listing.
+    LOG_LIMIT = 200
+    TRANSFER_MAP = "Transfer Map"
+
     GATE_REASONS = {
         **Model.GATE_REASONS,
         "no_source": "no locating axes are open. Open a probe or the Chuck "
@@ -105,6 +125,7 @@ class SampleMap(Model):
         Param("chip_height_um", "float", default=0.0, minimum=0, decimals=1,
               unit="um", label="Chip height (typed)"),
         Param("orientation_note", "text", default="", label="How to find corner A"),
+        Param("image_note", "text", default="", label="Image note"),
         Param("storage_location", "text", default="", label="Stored at"),
         # Station-only (Q4): blank = the table's value for the locating axes.
         Param("um_per_count", "text", default="", label="um per count"),
@@ -143,6 +164,9 @@ class SampleMap(Model):
         self._selected = None          # flake_uid
         self._shape = ss.SHAPES[0]
         self._thickness_method = ss.THICKNESS_APPROX_METHODS[0]
+        self._image_instrument = ss.IMAGE_INSTRUMENTS[1]      # microscope
+        self._image_magnification = ss.IMAGE_MAGNIFICATIONS[0]
+        self._trial_store = None       # the Transfer Map's `db_path`, read-only
         #: Who flags (`flakes.owner`) and how that was established
         #: (`owner_auth`): Setup sets both from the signed-in profile.
         self.owner = "station"
@@ -181,12 +205,18 @@ class SampleMap(Model):
                          "can be written, or start with --sample-db PATH.",
                          source=self.NAME, exception=exc)
             return
+        absolute = self._store.absolute_image_paths()
         events.info("Database Ready", f"{self.db_path}: "
                     f"{len(self._store.samples())} sample(s), "
-                    f"{len(self._store.flakes())} flake(s)", source=self.NAME)
+                    f"{len(self._store.images())} image(s)"
+                    + (f"; {absolute} older picture path(s) are absolute and "
+                       "were left as they are" if absolute else ""),
+                    source=self.NAME)
 
     @property
     def mode_name(self):
+        if not self.FLAKES_ACTIVE:
+            return "images"            # dormant 2026-10-07: no frame to wait on
         if self._source is None:
             return "no_source"
         if self._needs_phi() and self._phi() is None:
@@ -195,6 +225,13 @@ class SampleMap(Model):
 
     # -- peers -----------------------------------------------------------------------
     def on_model_added(self, name, model):
+        # The Transfer Map's store, for the read-only trial listing: its
+        # public `db_path` (the file), never a private attribute.
+        if name == self.TRANSFER_MAP and model is not self:
+            path = getattr(model, "db_path", None)
+            if path:
+                self._trial_store = Path(path)
+                self._touch()
         if all(hasattr(model, a) for a in ("position", "position_time",
                                             "position_age", "velocity")):
             self._stages[name] = model
@@ -209,6 +246,9 @@ class SampleMap(Model):
             self._touch()
 
     def on_model_removed(self, name, model=None):
+        if name == self.TRANSFER_MAP:
+            self._trial_store = None
+            self._touch()
         if name == self._red_name:
             self._red, self._red_name = None, None
         if name == self._rotator_name:
@@ -232,6 +272,7 @@ class SampleMap(Model):
     def source_options(self):
         return [*self._stages, TYPED]
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def set_source(self, name):
         if name not in self.source_options:
             raise Refused(f"{name!r} is not open as locating axes.")
@@ -577,6 +618,7 @@ class SampleMap(Model):
         self._store.invalidate_registration(reg["registration_id"], stale)
         return None
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def mark_corner(self, label, confirmed=False):
         """The crosshair is on corner `label`: record the locating axes'
         position (raw counts or typed mm) and refit the chip's frame."""
@@ -630,6 +672,7 @@ class SampleMap(Model):
                     f"({x:g}, {y:g}).", source=self.NAME)
         return rid
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def check_corner(self):
         """Return to corner A and mark it again: the closure measures stage
         repeatability plus pointing (section 3.2). After a calibrated turn of
@@ -679,6 +722,7 @@ class SampleMap(Model):
         return closure
 
     # -- the Rotator's calibration (station-only, Q4) ------------------------------------
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def mark_rotation_point(self):
         """The crosshair on one feature at the Rotator's current angle: a mark
         for the rotation-centre fit (two with a known sense, three or more to
@@ -697,12 +741,14 @@ class SampleMap(Model):
         self._touch()
         return f"Calibration mark {count} at {phi:.3f} degrees."
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def clear_rotation_points(self):
         self._cal_points = []
         self._cal_context = None
         self._touch()
         return "Calibration marks cleared."
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def fit_rotation_centre(self):
         """Fit the Rotator's centre and sense from the marks and keep it for
         this locating source until its counter restarts."""
@@ -746,6 +792,7 @@ class SampleMap(Model):
                     f"{fit.n_points} marks{residual}.", source=self.NAME)
         return uid
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def clear_corners(self, confirmed=False):
         reg = self.registration
         if reg is None:
@@ -759,6 +806,7 @@ class SampleMap(Model):
         self._touch()
         return reg["registration_id"]
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def set_um_per_count(self):
         """Station-only (Q4): the um per count typed for these axes, when the
         table does not know it (an owner bench fact, section 11)."""
@@ -791,6 +839,7 @@ class SampleMap(Model):
     def flake_options(self):
         return [f["label"] for f in self.flakes]
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def select_flake(self, label):
         match = [f for f in self.flakes if f["label"] == label]
         if not match:
@@ -832,6 +881,7 @@ class SampleMap(Model):
         path.write_bytes(png)
         return str(path)
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def flag_flake(self):
         """A flake under the crosshair: its stage position, and its place on the
         chip when the frame is set (else stage only, placed later)."""
@@ -877,6 +927,7 @@ class SampleMap(Model):
                     source=self.NAME)
         return label
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def mark_extent(self):
         """Two presses at opposite corners of the selected flake: its box in
         the chip's frame (section 3.5, the MVP extent)."""
@@ -902,6 +953,7 @@ class SampleMap(Model):
         self._touch()
         return f"{flake['label']}: extent marked."
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def rate_flake(self):
         """Quality 1-5 and the defects seen (Q18: rateable before an extent).
         A rating with no defects typed means "inspected, none seen"."""
@@ -923,6 +975,7 @@ class SampleMap(Model):
     def thickness_method_options(self):
         return list(ss.THICKNESS_APPROX_METHODS)
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def set_thickness_method(self, method):
         if method not in ss.THICKNESS_APPROX_METHODS:
             raise Refused(f"{method!r} is not an approximate-thickness method.")
@@ -930,6 +983,7 @@ class SampleMap(Model):
         self._touch()
         return method
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def save_flake_details(self):
         """The approximate thickness (optics) and the AFM thickness, kept
         apart (section 4.1a); no red-percent estimate is made (Q16)."""
@@ -955,6 +1009,7 @@ class SampleMap(Model):
     def flake_status_options(self):
         return list(ss.FLAKE_STATUSES)
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def set_flake_status(self, status):
         flake = self._require_flake()
         if status not in ss.FLAKE_STATUSES:
@@ -963,6 +1018,7 @@ class SampleMap(Model):
         self._touch()
         return status
 
+    # dormant 2026-10-07: flake-coordinate homing retired for now
     def delete_flake(self, confirmed=False):
         flake = self._require_flake()
         if not confirmed:
@@ -1184,6 +1240,175 @@ class SampleMap(Model):
                          f"{'  ' + f['note'] if f['note'] else ''}")
         return lines
 
+    # -- the images (2026-10-07) -------------------------------------------------------
+    IMAGE_EXTENSIONS = ("png", "jpg", "jpeg", "tif", "tiff", "bmp")
+
+    @property
+    def image_instrument(self):
+        return self._image_instrument
+
+    @property
+    def image_instrument_options(self):
+        return list(ss.IMAGE_INSTRUMENTS)
+
+    def set_image_instrument(self, instrument):
+        if instrument not in ss.IMAGE_INSTRUMENTS:
+            raise Refused(f"{instrument!r} is not a picture source: use "
+                          + " or ".join(ss.IMAGE_INSTRUMENTS) + ".")
+        self._image_instrument = instrument
+        self._touch()
+        return instrument
+
+    @property
+    def image_magnification(self):
+        return f"{self._image_magnification}x"
+
+    @property
+    def image_magnification_options(self):
+        return [f"{m}x" for m in ss.IMAGE_MAGNIFICATIONS]
+
+    def set_image_magnification(self, magnification):
+        try:
+            self._image_magnification = ss._magnification(magnification)
+        except ss.StoreRefused as refusal:
+            raise Refused(str(refusal))
+        self._touch()
+        return self.image_magnification
+
+    def add_image(self, path):
+        """Copy the chosen picture, unmodified, into the store under the typed
+        sample ID with the instrument and magnification picked above."""
+        sample_id = str(self.sample_id or "").strip()
+        if not sample_id:
+            raise Refused("Type or pick the sample ID the picture belongs to, "
+                          "then add it.")
+        try:
+            row = self._store.add_image(sample_id, path, self._image_instrument,
+                                        self._image_magnification,
+                                        note=self.image_note)
+        except ss.StoreRefused as refusal:
+            raise Refused(str(refusal))
+        self.image_note = ""
+        self._touch()
+        events.info("Image Added", f"{sample_id}: {row['instrument']} "
+                    f"{row['magnification']}x, {row['path']}", source=self.NAME)
+        return row["path"]
+
+    @property
+    def sample_options(self):
+        """Sample IDs to pick: the saved samples, those with pictures, and the
+        labels the Transfer Map's trials carry."""
+        ids = {s["sample_id"] for s in self._store.samples()}
+        ids |= {i["sample_id"] for i in self._store.images()}
+        ids |= set(self._trial_labels())
+        return sorted(ids, key=str.lower)
+
+    @property
+    def sample_pick(self):
+        return str(self.sample_id or "")
+
+    def select_sample(self, sample_id):
+        """Make a listed sample the current one (its saved details load)."""
+        self.sample_id = str(sample_id or "").strip()
+        saved = self._store.sample(self.sample_id) if self.sample_id else None
+        if saved is not None:
+            self.material = saved["material"] or ""
+            self.substrate = saved["substrate"] or ""
+            self.storage_location = saved["storage_location"] or ""
+        self._touch()
+        return self.sample_id
+
+    @property
+    def image_log(self):
+        """Every picture, newest first: sample, instrument, magnification,
+        when, note."""
+        rows = sorted(self._store.images(), key=lambda r: r["id"], reverse=True)
+        return [f"{r['sample_id']}  {r['instrument']}  {r['magnification']}x  "
+                f"{r['captured_at']}{'  ' + r['note'] if r['note'] else ''}"
+                for r in rows[:self.LOG_LIMIT]]
+
+    @property
+    def image_text(self):
+        sample_id = str(self.sample_id or "").strip()
+        if not sample_id:
+            return "Type or pick a sample ID"
+        n = len(self._store.images(sample_id))
+        return f"{n} picture(s) of {sample_id}" if n else f"No pictures of {sample_id} yet"
+
+    # -- trials for this sample: a READ-ONLY look at the Transfer Map's store --------
+    def _trial_connection(self):
+        """A second connection, `mode=ro`: nothing here can write to it."""
+        path = self._trial_store
+        if path is None or not Path(path).is_file():
+            return None
+        db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True,
+                             timeout=1.0)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def _trial_labels(self):
+        try:
+            db = self._trial_connection()
+            if db is None:
+                return []
+            try:
+                return [r[0] for r in db.execute(
+                    "SELECT DISTINCT TRIM(sample_id) FROM trials WHERE "
+                    "sample_id IS NOT NULL AND TRIM(sample_id) != ''")]
+            finally:
+                db.close()
+        except sqlite3.Error:
+            return []
+
+    def trials_for(self, sample_id):
+        """The Transfer Map's trials stamped with `sample_id` (the free-text
+        label, compared trimmed and case-insensitively), newest first. Rows
+        are whatever columns that file has (`SELECT *`); a missing file, a
+        store without `trials.sample_id`, or a locked one answers []."""
+        label = str(sample_id or "").strip()
+        if not label:
+            return []
+        try:
+            db = self._trial_connection()
+            if db is None:
+                return []
+            try:
+                rows = [dict(r) for r in db.execute(
+                    "SELECT * FROM trials WHERE lower(trim(sample_id)) = lower(?)",
+                    (label,))]
+            finally:
+                db.close()
+        except sqlite3.Error:
+            return []
+        rows.sort(key=lambda r: (str(r.get("started_at") or ""), r.get("id") or 0),
+                  reverse=True)
+        return rows[:self.LOG_LIMIT]
+
+    @property
+    def sample_trials_log(self):
+        sample_id = str(self.sample_id or "").strip()
+        if not sample_id:
+            return []
+        lines = []
+        for t in self.trials_for(sample_id):
+            parts = [f"#{t.get('id')}", str(t.get("started_at") or "-"),
+                     str(t.get("status") or "-")]
+            if t.get("force_class"):
+                parts.append(str(t["force_class"]))
+            lines.append("  ".join(parts))
+        return lines
+
+    @property
+    def trials_text(self):
+        sample_id = str(self.sample_id or "").strip()
+        if not sample_id:
+            return "Type or pick a sample ID"
+        if self._trial_store is None:
+            return "The Transfer Map is not open: no trials to list"
+        n = len(self.trials_for(sample_id))
+        return f"{n} trial(s) recorded for {sample_id}" if n else \
+            f"No trial is recorded for {sample_id}"
+
     @property
     def samples_log(self):
         return [f"{s['sample_id']}  {s['material'] or '-'}  {s['status']}"
@@ -1251,6 +1476,64 @@ class SampleMap(Model):
     # -- schema -------------------------------------------------------------------------
     @property
     def schema(self):
+        """The image sheet (2026-10-07). The flake-coordinate sections are
+        `_dormant_schema`: out of the allow-list, so a view cannot call them."""
+        P = self.PARAMS
+        configure = "Configure Sample Map"
+        return sch.schema(
+            sch.section(
+                "Sample",
+                sch.dropdown("Pick a sample", "sample_pick", "select_sample",
+                             "sample_options"),
+                sch.entry("Sample ID", "sample_id", P["sample_id"]),
+                sch.entry("Material", "material", P["material"]),
+                sch.button("Save sample", "save_sample",
+                           inputs=("sample_id", "material"), role="go"),
+            ),
+            sch.section(
+                "Images",
+                sch.dropdown("Taken with", "image_instrument", "set_image_instrument",
+                             "image_instrument_options"),
+                sch.dropdown("Magnification", "image_magnification",
+                             "set_image_magnification", "image_magnification_options"),
+                sch.entry("Image note", "image_note", P["image_note"]),
+                sch.file_open("Add image", "add_image", extensions=self.IMAGE_EXTENSIONS,
+                              role="go"),
+                sch.readonly("This sample", "image_text"),
+                sch.log_stream("Image log", "image_log"),
+            ),
+            sch.section(
+                "Trials for this sample",
+                sch.readonly("Trials", "trials_text"),
+                sch.log_stream("Trials (newest first)", "sample_trials_log"),
+            ),
+            sch.section(
+                "Sample details",
+                sch.entry("Substrate", "substrate", P["substrate"]),
+                sch.entry("Stored at", "storage_location", P["storage_location"]),
+                sch.button("Save sample details", "save_sample",
+                           inputs=("sample_id", "material", "substrate",
+                                   "storage_location")),
+                tier=2, disclosure=configure,
+            ),
+            sch.section(
+                "Data",
+                sch.file_save("Export sample map", "export_json", extensions=("json",)),
+                sch.file_open("Import sample map", "import_json", extensions=("json",)),
+                tier=2, disclosure=configure,
+            ),
+            sch.section(
+                "Diagnostics",
+                sch.log_stream("Samples", "samples_log"),
+                tier=3, disclosure="Diagnostics",
+            ),
+            self._safety_section(),
+        )
+
+    @property
+    def _dormant_schema(self):
+        """The flake-coordinate sheet as it was (dormant 2026-10-07: flake-
+        coordinate homing retired for now); the dormant tests run on it."""
         P = self.PARAMS
         configure = "Configure Sample Map"
         needs_source = ("no_source", "rotator_unknown")
