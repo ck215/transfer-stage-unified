@@ -76,9 +76,9 @@ was real, but the number in the handoff was not the number you would get.
 ## 5. Run the gates the agents could not
 
 Agents cannot run the Qt pass, so Qt-marked tests come back under
-`## UNVERIFIED`. Run the four gates and the launch from the `verify` skill
-on the merged tree, the Qt pass as a background job, before any item is
-called closed.
+`## UNVERIFIED`. Run the gates and the launch from the `verify` skill
+on the merged tree before any item is called closed; the Qt pass (frozen
+view, needs `.[qt]`) is optional.
 
 ## 6. Merge and clean up
 
