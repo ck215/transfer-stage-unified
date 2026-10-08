@@ -2541,6 +2541,19 @@ _PAGES = r"""
       .find((b) => b.textContent === w).click(), words);
     await sleep(300);
   };
+  // The page has drawn exactly these models: a card each and a rail link
+  // each. A poll adds its cards one by one and draws the rail after the
+  // last, so a count of cards alone can be met with the rail still empty
+  // (flaked under load, 2026-10-08). Waits; the assertions still judge.
+  const settle = (names, ms) => page.waitForFunction((want) => {
+    const cards = Array.from(document.querySelectorAll('#cards .card:not(.setup-card) .card-title'))
+      .map((t) => t.textContent);
+    const nav = Array.from(document.querySelectorAll('#model-nav [data-model]'))
+      .map((b) => b.dataset.model);
+    const same = (a) => a.length === want.length && want.every((n) => a.includes(n));
+    return same(nav) && want.every((n) => cards.includes(n))
+      && document.querySelector('#model-nav [data-page="overview"]') !== null;
+  }, { polling: 100, timeout: ms || 15000 }, names).then(() => true, () => false);
   const pages = () => page.evaluate(() => {
     const nav = Array.from(document.querySelectorAll('#model-nav button'));
     const shown = (n) => Boolean(n && n.getClientRects().length);
@@ -2616,14 +2629,15 @@ def test_the_rail_leads_with_an_overview_of_every_model_with_no_wells(sim_statio
     the overview shows every launched model with its head a press target
     ("Open", named "Open <model>") and no well or disclosure anywhere."""
     view, controller = sim_station
+    names = _page_names(controller)
     out = _browse(view, _PAGES + r"""
-      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      const settled = await settle(%s);
       if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
         await page.click('#drawer-close'); await sleep(400);
       }
-      return pages();
-    """, tmp_path)
-    names = _page_names(controller)
+      return Object.assign(await pages(), { settled });
+    """ % json.dumps(names), tmp_path)
+    assert out["settled"], f"the page never drew every model: {out}"
     assert out["nav"][0] == "Dashboard" and out["nav"][1:] == names, out
     assert out["current"] == ["Dashboard"], out
     assert sorted(out["shown"]) == sorted(names), out
@@ -2687,20 +2701,25 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     """K4: the device page's model is closed; the sheet goes back to the
     overview of the models that remain, and the rail says so."""
     view, controller = sim_station
+    names = _page_names(controller)
+    remain = [n for n in names if n != "Rotator"]
     out = _browse(view, _PAGES + r"""
-      await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
+      const r = { settled: await settle(%(names)s) };
       if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
         await page.click('#drawer-close'); await sleep(400);
       }
       await press('Rotator');
-      const r = { device: await pages() };
+      r.device = await pages();
       await api('/api/close_model', { name: 'Rotator' });
-      await until(() => !Array.from(document.querySelectorAll('#cards .card-title'))
-        .some((t) => t.textContent === 'Rotator'));
-      await sleep(300);
+      // Gone from the sheet AND the rail redrawn without it (one poll draws
+      // both, the rail last): only then is "after" the page's answer.
+      r.closed = await settle(%(remain)s)
+        && await until(() => !Array.from(document.querySelectorAll('#cards .card-title'))
+          .some((t) => t.textContent === 'Rotator'), 15000);
       r.after = await pages();
       return r;
-    """, tmp_path)
+    """ % {"names": json.dumps(names), "remain": json.dumps(remain)}, tmp_path)
+    assert out["settled"] and out["closed"], out
     assert out["device"]["shown"] == ["Rotator"], out
     after = out["after"]
     assert after["current"] == ["Dashboard"] and "Rotator" not in after["nav"], after
@@ -4549,15 +4568,22 @@ def test_restart_an_action_that_asks_asks_on_the_page(restartable, tmp_path):
                     ack=True, action=UPDATE_ACTION)
     threading.Thread(target=publish, daemon=True).start()
     out = _browse(view, r"""
+      // The answered re-run is the second apply_update to come back: read
+      // the station after it, not after a fixed sleep (it flaked under load).
+      let answered = 0;
+      page.on('response', (r) => {
+        if (r.url().includes('/api/run') && (r.request().postData() || '').includes('"apply_update"')) answered += 1;
+      });
       await until(() => !document.getElementById('ack-modal').hidden, 10000);
       await page.click('#ack-ok');
       await until(() => !document.getElementById('confirm-modal').hidden, 5000);
       const question = await page.evaluate(() => document.getElementById('confirm-text').textContent);
       await page.click('#confirm-yes');
-      await sleep(600);
-      return { question };
+      const ran = await when(async () => answered >= 2, 10000);
+      return { question, ran };
     """, tmp_path)
     assert out["question"] == "Update the station now?"
+    assert out["ran"] is True, out
     assert setup.applies == [True]
 
 
