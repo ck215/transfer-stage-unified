@@ -9,20 +9,22 @@ description: Orientation for any agent working on transfer-stage-unified — whe
 
 ```
 /Users/ianalbinogonzalez/GitHub/transfer-stage-unified/
-  mvc-refactor/     worktree, branch `mvc-refactor` - the integration checkout (work here);
-                    it holds the ONE venv, mvc-refactor/.venv, the $PY below
+  mvc-refactor/     the one checkout (the clone itself; on this Mac the folder is still named
+                    after the branch until re-cloned, after which it is transfer-stage-unified/
+                    with no subfolder); it holds the ONE venv, .venv, the $PY below
   main/             a PLAIN checkout of the lab's original app (NOT a worktree), kept for
-                    dev/swap_branch.sh; it has no venv of its own any more
+                    dev/swap_branch.sh; absent after a fresh clone (`dev/swap_branch.sh legacy`
+                    makes ../legacy-app from the `legacy` branch)
   rb-<name>/        one worktree per agent while a fix round runs; removed after the merge
                     (no other worktrees exist between rounds)
 ```
 
-Branches: `main` is the pre-release line (receives merges from `mvc-refactor`
-and feature PRs `feat/*`, `fix/*`, `agent/*`; releases are tags on main cut with
-`dev/release.sh vX.Y.Z`); `mvc-refactor` is the integration branch for agent
-rounds; `legacy` is the lab's original Tk app, frozen; `stable` is the
+Branches: `main` is the station, the pre-release line (receives pull requests from
+short-lived `feat/*`, `fix/*`, `agent/*` branches; releases are tags on main cut with
+`dev/release.sh vX.Y.Z`); `mvc-refactor` is deleted once merged into main, not kept as an
+integration branch; `legacy` is the lab's original Tk app, frozen; `stable` is the
 original app's packaging ref. `.github/workflows/gate.yml` runs the fast gate,
-golden and a Web launch on every PR and push to main and mvc-refactor. The
+golden and a Web launch on every PR and push to main (the mvc-refactor trigger goes away with the branch). The
 version is the git tag (`station --version`, `packaging/release.py version`);
 `pyproject.toml` says 0.0.0. The lab deploys by git today (`git fetch && git
 checkout main` or a fresh `git clone --branch main <url>`, `pip install -e .`, `run.sh`); the first

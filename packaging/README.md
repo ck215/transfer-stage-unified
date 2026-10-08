@@ -81,16 +81,15 @@ build); the workflow sets it, so a release can never ship without them.
 `STATION_TOOLS_DIR` and `STATION_STABLE_DIST` point the assembly elsewhere;
 `STATION_STABLE_SRC` points `stable.spec` at another checkout.
 
-The stable ref is `stable`, the original app's packaging ref. Until the first
-merge from `mvc-refactor` replaces `origin/main`, `origin/main` is still the
-lab's original app (the local branch `legacy` tracks it, and the plain checkout
-`main/` runs it); whether `origin/stable` carries that app's latest changes is
+The stable ref is `stable`, the original app's packaging ref. Until `mvc-refactor` is merged into main and deleted, `origin/main` is still the
+lab's original app (the local branch `legacy` tracks it, and a plain checkout
+`main/` may run it); whether `origin/stable` carries that app's latest changes is
 unverified, so use whichever ref you mean in step 2 for a local build (the
 workflow's `stable_ref` input does the same).
 
 Output: `dist/station/` as above. Ship the whole folder, zipped
 (`release.py zip`). The repository's checkouts live under
-`~/GitHub/transfer-stage-unified/` (`mvc-refactor/` holds the one venv, made from
+`~/GitHub/transfer-stage-unified/` (the one checkout, today the folder `mvc-refactor/`, holds the one venv, made from
 pyproject's `[dev]` extra). One-folder only: one-file mode unpacks the whole bundle to
 a temp dir on every launch and trips antivirus.
 
@@ -197,23 +196,23 @@ its section there.
 
 | Branch | What it is |
 |---|---|
-| `main` | The pre-release line. It receives merges from `mvc-refactor` (a merge commit whenever the integration branch is ready; main keeps its own history, and the first such merge takes the branch's tree) and from feature pull requests. **Releases are tags on main**; `dev/release.sh` runs on main only. |
-| `mvc-refactor` | The integration branch for agent worktree rounds; merged into main when it is ready. |
-| `feat/<topic>`, `fix/<topic>`, `agent/<topic>` | Short-lived branches that open a pull request into main (or into mvc-refactor during a round). |
+| `main` | The station, the pre-release line. It receives pull requests from short-lived branches. **Releases are tags on main**; `dev/release.sh` runs on main only. |
+| `mvc-refactor` | Deleted once it is merged into main; not kept as an integration branch. |
+| `feat/<topic>`, `fix/<topic>`, `agent/<topic>` | Short-lived branches that open a pull request into main. |
 | `legacy` | The lab's original Tk app (the old main), frozen. |
 | `stable` | The original app's packaging ref: what `package.yml` freezes as `stable/` (`stable_ref`) and `dev/swap_branch.sh` runs. Unchanged. |
 
 `.github/workflows/gate.yml` runs on every pull request into, and every
-push to, main and mvc-refactor: the fast suite, the golden wire gate and a
+push to, main (the mvc-refactor trigger is harmless and goes away with the branch): the fast suite, the golden wire gate and a
 launch of the Web view, on Ubuntu, within 30 minutes.
 
 A checkout's Update row, `update.sh` and `update.bat` take releases (tags on
 main) from the remote of the branch the checkout tracks, and their
-developers' line compares the checkout with that branch. A checkout on
-mvc-refactor still updates to any release that descends from it, but the
-lab PC should follow main: once its own work is pushed (step 1 below), run
-`git switch main` and then `update.bat`, which fast-forwards main to the
-latest release. From then on both lines speak of the release line.
+developers' line compares the checkout with that branch. The lab PC clones fresh from main
+(`git clone --branch main <url>`) once its own work is pushed (step 1 below),
+then `update.bat` fast-forwards main to the latest release. No sibling `main/`
+checkout exists after a fresh clone; `dev/swap_branch.sh legacy` creates
+`../legacy-app` from the `legacy` branch when the old app is needed.
 
 ### Cutting a release
 
@@ -286,8 +285,7 @@ this order:
    git push -u origin bench/2026-10
    ```
 
-   Tell the lead the branch's name: it is merged (into mvc-refactor, then
-   main) before the first release the lab installs. Then switch the checkout
+   Tell the lead the branch's name: it is merged (by pull request into main) before the first release the lab installs. Then switch the checkout
    to main once ("Branches" above).
 2. **Wait for a release that holds that work.** The repository's Transfer Map
    store code is v8, the lab's (as of 2026-10-07); the lab's own stores may

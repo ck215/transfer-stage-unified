@@ -30,9 +30,9 @@ version is kept beside the new one as `station.previous`.
 Developers run from a source checkout instead (`run.sh` / `run.bat`, or
 `pip install -e .`, which installs the one entry point `station-web`); a checkout updates itself by fast-forwarding git.
 Until the first installed release (after v1.0.0) the lab runs from a checkout:
-`git fetch && git checkout main`, `pip install -e .`, `./run.sh` (the repository lives at
-`~/GitHub/transfer-stage-unified/`; `mvc-refactor/` is the integration checkout and `main/`
-a plain checkout of the lab's original app). The branches are explained in
+a fresh `git clone --branch main <url>`, `pip install -e .`, `./run.sh` (the repository lives at
+`~/GitHub/transfer-stage-unified/`; on the lead's Mac the checkout is still named `mvc-refactor/`
+until it is re-cloned; `dev/swap_branch.sh legacy` makes `../legacy-app` for the original app). The branches are explained in
 `packaging/README.md`; the original app is the `legacy` branch.
 
 **Which version is this?** `station-web --version` (or `python src/app.py --version`)

@@ -10,20 +10,22 @@ every byte on the wire is identical to the old app's (the repair tree
 the lab ran Aug 26–Sep 22, 2026; history: tag pre-root-cleanup-2026-10-07), pinned by `tests/golden/`.
 
 The repository lives at `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/`:
-`mvc-refactor/` is the integration checkout (work here; it holds the one venv,
-`mvc-refactor/.venv`, the `$PY` below), `main/` is a plain checkout of the lab's
-original app (for `dev/swap_branch.sh` only), and `rb-<name>/` worktrees exist only
-while an agent round runs.
+one checkout, the clone itself (work here; it holds the one venv, `.venv`, the `$PY`
+below), with `rb-<name>/` agent worktrees as siblings only while a round runs. On the
+lead's Mac that folder is still named `mvc-refactor/` until it is re-cloned; a sibling
+`main/` there is a plain checkout of the lab's original app (for `dev/swap_branch.sh`).
+The lab PC clones fresh from `main` (`git clone --branch main <url>`); no sibling `main/` checkout exists after a fresh clone, and `dev/swap_branch.sh legacy` creates `../legacy-app` from the `legacy` branch when the old app is needed.
 
-**Branch model** (owner, 2026-10-07): `main` is the pre-release line; it receives
-merges from `mvc-refactor` (the integration branch for agent rounds) and feature
-PRs (`feat/*`, `fix/*`, `agent/*`). Releases are tags on main cut with
+**Branch model** (owner, 2026-10-07): `main` is the station, the pre-release line; it receives
+pull requests from short-lived branches (`feat/*`, `fix/*`, `agent/*`). The
+`mvc-refactor` branch is deleted once it is merged into `main`; it is not kept as an
+integration branch. Releases are tags on main cut with
 `dev/release.sh vX.Y.Z` (CI builds, uploads `SHA256SUMS` and publishes the draft
 itself). `legacy` is the lab's original Tk app, frozen; `stable` is the original
 app's packaging ref. `.github/workflows/gate.yml` runs the fast gate, golden and a
-Web launch on PRs and pushes to main and mvc-refactor. The version is the git tag
+Web launch on PRs and pushes to main (the mvc-refactor trigger is harmless and goes away with the branch). The version is the git tag
 (`src/app.py --version`; pyproject says 0.0.0). The lab deploys by git today
-(`git fetch && git checkout main`, `pip install -e .`, `run.sh`); the first
+(a fresh `git clone --branch main <url>`, `pip install -e .`, `run.sh`); the first
 installed release comes after v1.0.0. Details: `packaging/README.md`.
 
 The import rules between the `src/` layers (controller, model, devices, views) are a test (`tests/test_architecture.py`).
@@ -51,7 +53,7 @@ and `tests/TEST_PORTING.md` (the second test wave). The finding ledger
 (`progress.md`, `carry.json`), the design data, the legacy audits and `docs/archive`
 are gone from the tree (history: tag pre-root-cleanup-2026-10-07).
 
-## Commands (from `mvc-refactor/` or an `rb-*` worktree; `$PY` = `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor/.venv/bin/python`, see `station-map`)
+## Commands (from the checkout (today `mvc-refactor/`) or an `rb-*` worktree; `$PY` = `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor/.venv/bin/python`, see `station-map`)
 
 ```
 ./run.sh --no-browser --port 8080       # the Web view, the only one; python3 src/app.py ... in the venv
@@ -67,7 +69,7 @@ are optional and the lead's.
 Launchers: `run.sh` (macOS and Linux) and `run.bat` (Windows) find the venv and
 pass every flag to `src/app.py`, printing nothing on success; the firmware
 check is Setup's Firmware row (`src/controller/firmware.py`), `update.sh` /
-`update.bat` stay. `dev/swap_branch.sh` runs the original app (the `main/` checkout) on the same boards,
+`update.bat` stay. `dev/swap_branch.sh` runs the original app (from the `legacy` branch, `../legacy-app`) on the same boards,
 flashing first (`RUN_SWAP_DRY_RUN=1` prints, runs nothing). Agents do not run
 the Qt pass (a native SIGABRT can kill the session). **While anyone is working
 at this Mac, everything runs strictly in the background**:
