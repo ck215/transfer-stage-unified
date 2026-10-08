@@ -323,7 +323,7 @@ def test_a_scan_runs_off_the_calling_thread_with_progress_in_state(
     state = panel.state
     assert state["scan"]["progress"] == 100
     assert state["scan"]["phase"] == "done"
-    assert state["scan"]["status"] == "ready - 2 device(s) detected"
+    assert state["scan"]["status"] == "ready: 2 devices detected"
     assert state["scan"]["found"] == {"/dev/ttyUSB0": "Stepper Probe",
                                       "/dev/ttyUSB1": "Stepper Probe"}
     assert state["is_scanning"] is False

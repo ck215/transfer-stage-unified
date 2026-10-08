@@ -1135,7 +1135,7 @@ class Setup(PortProbe, Panel):
         held = self._held_ports()
         targets = [p for p in ports if p not in (SIM, ON) and p not in held]
         self.scan_phase = self.IDENTIFYING
-        self.scan_status = (f"scanning {len(targets)} port(s)..." if targets
+        self.scan_status = (f"scanning {len(targets)} port{'' if len(targets) == 1 else 's'}..." if targets
                             else "no ports found")
         self._refresh_rows()
         for index, port in enumerate(targets):
@@ -1175,8 +1175,10 @@ class Setup(PortProbe, Panel):
                             source=self.NAME, exception=exc)
             with self._lock:
                 detected = sum(1 for name in self._found.values() if name)
+            # Real plurals (UX audit 2026-10-08 #14: no "device(s)").
             self.scan_status = ("ready" if not detected else
-                                f"ready - {detected} device(s) detected")
+                                f"ready: {detected} device"
+                                f"{'' if detected == 1 else 's'} detected")
             busy = self.busy_ports
             if busy:
                 self.scan_status += (f"; {', '.join(busy)} "
