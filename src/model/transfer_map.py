@@ -4105,6 +4105,7 @@ class TransferMap(store_choice.StorePrompt, Model):
     def schema(self):
         P = self.PARAMS
         configure = "Configure Transfer Map"
+        past_setup = [p for p in self.PHASES if p != "setup"]
         return sch.schema(
             # The start screen's (owner ruling 2026-10-07: what a step does
             # not use gets out of the way).
@@ -4133,12 +4134,17 @@ class TransferMap(store_choice.StorePrompt, Model):
                 sch.button("Cancel", "cancel_store_choice"),
                 phases=(self.PROMPT,),
             ),
-            # Every step: what to do next and the stage's readouts.
+            # Every step: what to do next and the stage's readouts. In
+            # Setup the readouts are read under the entries that override
+            # them (Start, "Now:"), not in a row of their own beside them
+            # (UX audit 2026-10-08 #15); from Region on they are here.
             sch.section(
                 "Trial",
                 sch.readonly("Next step", "next_step", role="info"),
-                sch.readonly("Tilt", "tilt_now", rail=True, param=P["tilt_now"]),
-                sch.readonly("Speed", "speed_now", rail=True, param=P["speed_now"]),
+                sch.phased(sch.readonly("Tilt", "tilt_now", rail=True,
+                                        param=P["tilt_now"]), *past_setup),
+                sch.phased(sch.readonly("Speed", "speed_now", rail=True,
+                                        param=P["speed_now"]), *past_setup),
             ),
             # setup: the preliminary information, then Arm. One tip
             # control (approved proposal 2026-10-07): the dropdown, whose
@@ -4174,10 +4180,17 @@ class TransferMap(store_choice.StorePrompt, Model):
                 # Bench 2026-09-28: the tilt varies between trials of one
                 # tip and was buried two tiers down; it is asked here, per
                 # trial. Collected, never demanded (TM-3, 2026-10-07).
+                # Under each, what the trial would take now: the typed value,
+                # else the rotator's angle / the probe's speed (`tilt_now`,
+                # `speed_now`, the readouts of the other steps).
                 sch.entry("Tilt for this trial (deg)", "typed_tilt",
                           P["typed_tilt"]),
+                sch.readonly("Tilt now", "tilt_now", param=P["tilt_now"],
+                             secondary=True, lead="Now:"),
                 sch.entry("Speed for this trial (steps/s)", "typed_speed",
                           P["typed_speed"]),
+                sch.readonly("Speed now", "speed_now", param=P["speed_now"],
+                             secondary=True, lead="Now:"),
                 sch.button("Arm trial", "arm_trial",
                            inputs=("typed_tilt", "typed_speed"),
                            role="go", disabled_when=("armed", "latched")),

@@ -2075,7 +2075,9 @@ def _keys(section):
 def test_the_sheet_reads_in_the_order_a_trial_is_run():
     """2026-10-07 (owner ruling: each step shows only its controls): the one
     Trial section is split into the procedure's groups, in its order; what
-    every step needs (Next step, the readouts, Status, Abort) is unphased."""
+    every step needs (Next step, Status, Abort) is unphased. The Tilt and
+    Speed readings are drawn in every step but Setup; in Setup each is read
+    under the entry that overrides it ("Now:", UX audit 2026-10-08 #15)."""
     model = TransferMap()
     sections = model.schema["sections"]
     tier_one = [(s["title"], s.get("phases")) for s in sections
@@ -2099,7 +2101,7 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
         "sample_pick", "chip_pick", "flake_pick",
         # The picked flake's picture (owner 2026-10-08).
         "preview_key", "preview_text", "preview_magnification", "cut_next",
-        "typed_tilt", "typed_speed", "arm_trial"]
+        "typed_tilt", "tilt_now", "typed_speed", "speed_now", "arm_trial"]
     assert _keys(by_title["Capture region"]) == ["set_region"]
     # TM-2: no live plot in the recording steps; the trace is the review's.
     # TM-4: no labelled region frames; the review shows the stage still and
@@ -2115,8 +2117,10 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     phased = {(e.get("command") or e.get("data_command") or e.get("model_attr")):
               e.get("phases") for s in sections for e in s["elements"]
               if e.get("phases")}
+    not_setup = [p for p in TransferMap.PHASES if p != "setup"]
     assert phased == {"end_recording": ["marked"],
-                      "mark_broke": ["marked", "finish"]}
+                      "mark_broke": ["marked", "finish"],
+                      "tilt_now": not_setup, "speed_now": not_setup}
     later = [(s["title"], s.get("tier")) for s in sections
              if s.get("tier", 1) != 1]
     assert later == [("Context", 2), ("Tip", 2), ("Figure", 2),
@@ -2131,6 +2135,28 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
         "video_status", "trial_samples", "force_position_text",
         "rebuild_force", "open_finalizer", "finalize_queue", "finalize_media",
         "finalize_save", "trials_log", "tips_log", "delete_trial"]
+
+
+def test_in_setup_tilt_and_speed_are_read_under_the_entries_that_override_them():
+    """UX audit 2026-10-08 #15: in Setup the "-- deg / -- steps/s" readings
+    sat in a row of their own, away from "Tilt for this trial (deg)" and
+    "Speed for this trial (steps/s)", which override them. In Setup each is
+    a "Now:" line under its entry; from Region on, the readings are back
+    (nothing is dropped: the same value in every step)."""
+    model = TransferMap()
+    by_title = {s["title"]: s for s in model.schema["sections"]}
+    start = by_title["Start"]["elements"]
+    attrs = [e.get("model_attr") for e in start]
+    for entry, reading in (("typed_tilt", "tilt_now"), ("typed_speed", "speed_now")):
+        line = start[attrs.index(entry) + 1]
+        assert line["type"] == "readonly" and line["model_attr"] == reading, line
+        assert line.get("secondary") is True and line.get("lead") == "Now:", line
+        assert not line.get("rail"), "the readings stay the Trial section's"
+    trial = {e["model_attr"]: e for e in by_title["Trial"]["elements"]}
+    for reading in ("tilt_now", "speed_now"):
+        assert trial[reading].get("rail") is True
+        assert "setup" not in trial[reading]["phases"]
+        assert set(trial[reading]["phases"]) == set(model.PHASES) - {"setup"}
 
 
 # -- full pictures: the whole screen at Arm and at Finish (2026-09-28) ----------

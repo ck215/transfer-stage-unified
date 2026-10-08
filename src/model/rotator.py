@@ -136,6 +136,12 @@ class Rotator(Model):
         self.port_name = port
         # A SIM or absent port is not a simulated rotator: it is no rotator.
         self.is_simulated = bool(sim) or str(port) in ("None", "SIM", "")
+        # SIM, chosen by the operator (UX audit 2026-10-07 #8): no stage by
+        # choice, so no alarm. It has no loop to be stale about and nothing
+        # a stop could leave moving; the rail lists it as simulated. Every
+        # command still refuses (ROTATOR-13). An absent port (None) is not
+        # a choice and keeps its unconfirmed stop (MANAGER-21).
+        self.is_sim_choice = bool(sim) or str(port) == "SIM"
         self.smc = None if (self.is_simulated or port is None) else SMC100(
             self.SMC_ID, port, abort_if=self._estop.is_set)
         events.debug("Built", f"port={port!r} sim={sim} -> "
@@ -160,6 +166,21 @@ class Rotator(Model):
             return
         self._arm_boot_grace()
         self._spawn("sample", self._sample_loop)
+
+    def _expects_heartbeat(self):
+        """Only a stage has a sampler to go stale. With none (SIM, or no
+        port) `state["age"]` is None, not a number that grows for ever and
+        reads "Stale" with a red dot."""
+        return self.smc is not None
+
+    @property
+    def state(self):
+        snapshot = super().state
+        if self.is_sim_choice and self.smc is None:
+            # The rail's "Simulated:" line names a model by a simulated
+            # device; a SIM Rotator has none to name, so it says so here.
+            snapshot["devices"] = {"SMC100": "simulated"}
+        return snapshot
 
     def _arm_boot_grace(self):
         """Start the boot window. `open()` does it; a test does it by hand."""
@@ -479,9 +500,13 @@ class Rotator(Model):
         smc = self.smc
         if smc is None:
             # MANAGER-21: a rotator with no controller cannot report that the
-            # stage halted, because it cannot see the stage.
-            events.debug("Stop", "no stage: nothing was sent", source=self.NAME)
-            return False
+            # stage halted, because it cannot see the stage. In SIM there is
+            # no stage by the operator's choice: the station never opened
+            # one, so nothing it commanded can be moving, and "did not
+            # confirm" on every Stop was a false alarm (UX audit 2026-10-07).
+            events.debug("Stop", "no stage: nothing was sent"
+                         + (" (SIM)" if self.is_sim_choice else ""), source=self.NAME)
+            return self.is_sim_choice
         started = time.monotonic()
         landed = bool(smc.stop(priority=True))
         events.debug("Stop", f"priority ST {'confirmed' if landed else 'NOT written'}"

@@ -961,6 +961,13 @@ function renderReadonly(panel, element) {
     ? make('div', 'row stat secondary')
     : row(element, 'stat');
   if (element.model_attr) node.dataset.attr = element.model_attr;
+  // A secondary readout with a `lead` says it before its value ("Now:
+  // 6.50 deg" under Tilt for this trial, UX audit 2026-10-08 #15).
+  const lead = element.secondary && element.lead ? String(element.lead) : '';
+  if (lead) {
+    node.classList.add('has-lead');
+    node.appendChild(make('span', 'lead', lead));
+  }
   const isStatusLine = panel.name === SETUP_NAME && /_status$/.test(element.model_attr || '');
   const value = make('span', 'value is-empty ' + roleClass(element.role), '--');
   value.setAttribute('translate', 'no');
@@ -991,7 +998,7 @@ function renderReadonly(panel, element) {
       // state is still read on purpose. A model's key reading (`rail: true`)
       // is never hidden: unknown is information, drawn "--" muted at the
       // reading's own size (L10, IMP7-6).
-      const hide = widget.tier === 1 && !element.rail && isQuiet(text, shown);
+      const hide = widget.tier === 1 && !element.rail && !lead && isQuiet(text, shown);
       if (node.hidden !== hide) node.hidden = hide;
       value.classList.toggle('is-dash', shown === '--');
       if (value.textContent === shown) return;
@@ -1549,7 +1556,8 @@ function renderFileOpen(panel, element) {
       await panel.run(element, [saved]);
     }
   });
-  const button = make('button', 'button ' + roleClass(element.role), label);
+  // `file-open-key`: the key a prompt's Return presses from the path box.
+  const button = make('button', 'button file-open-key ' + roleClass(element.role), label);
   button.type = 'button';
   button.setAttribute('aria-label', nameFor(label, ownerOf(panel)));
   const load = () => {
@@ -3197,6 +3205,14 @@ class PanelCard {
       && !b.disabled && b.getClientRects().length) || null;
   }
 
+  /** The key of the `file_open` row `input` is the path box of (the row's
+   *  load key, not Choose file…), when it is live in `box`; else null. */
+  fileOpenKey(box, input) {
+    const row = input && input.classList.contains('path-input') && input.closest('.file-open');
+    const key = row && row.querySelector('button.file-open-key');
+    return key && box.contains(key) && !key.disabled && key.getClientRects().length ? key : null;
+  }
+
   /** The live key in `box` whose command declares `input`'s entry among its
    *  inputs, a go key before a neutral one; null when none does. */
   keyTaking(box, input) {
@@ -3226,7 +3242,11 @@ class PanelCard {
       // (the go key first): "Add sample" for Sample ID, "Add material" for
       // New material, "New store" for Name. Return used to find no "Add"
       // in those prompts and did nothing.
-      const add = this.dialogButton(box, 'add') || this.keyTaking(box, event.target);
+      // A photo path (a `file_open` row) is taken by its own key ("Add
+      // photo…"), never by the prompt's Add: Return there swallowed the
+      // row's own Return and found no key, so it did nothing.
+      const add = this.fileOpenKey(box, event.target)
+        || this.dialogButton(box, 'add') || this.keyTaking(box, event.target);
       if (add) add.click();
     } else if (event.key === 'Tab') {
       const live = Array.from(box.querySelectorAll('input, select, textarea, button'))
@@ -4355,7 +4375,8 @@ class Dashboard {
     title.id = 'elsewhere-title';
     const text = make('p', 'gate-note', 'This station is open in another window. '
       + 'Use that one, or take over here.');
-    const stop = make('p', 'gate-note', 'The Stop on the left works from every window.');
+    // Not "on the left": on a phone the rail, and its Stop, is above.
+    const stop = make('p', 'gate-note', 'The Stop works from every window.');
     const take = make('button', 'button role-go', 'Take over here');
     take.type = 'button';
     take.id = 'take-over';

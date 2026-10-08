@@ -815,7 +815,17 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .nav-dot.is-on { background: var(--trace); }
 
+/* An error is a diamond, not a dot (UX audit 2026-10-07 #5): the three
+   fills are all dark (grey/blue 1.13:1, grey/red 1.20:1 between them), so
+   colour alone did not tell them apart. Each fill clears 3:1 on the rail
+   and on the current entry's highlight; enabled also has the energized
+   ring beside it, so every state has a mark that is not its colour. */
 .nav-dot.is-error {
+  width: 0.5625rem;
+  height: 0.5625rem;
+  margin: 0 0.03125rem;
+  border-radius: 1px;
+  transform: rotate(45deg);
   background: var(--signal);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 30%, transparent);
 }
@@ -1537,6 +1547,13 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 }
 
 .dialog-box > .section { flex-direction: column; align-items: stretch; }
+/* A prompt with a text entry is as wide as a store path, and its text
+   entries (Folder, Name, Existing store file, Sample ID) run the box's
+   width (UX audit 2026-10-08 #17: Folder showed "/home/transfer-sta" in a
+   9rem box). On a phone the box is the card's width, never wider. A number
+   keeps a number's width. */
+.dialog-box:has(.input:not([type="number"])) { width: min(40rem, 100%); }
+.dialog-box .group > .input:not([type="number"]) { flex: 1 1 auto; width: auto; }
 /* A dropdown keeps its key's width in a prompt: stretched across the box,
    the key wrapper drew its chevron at the far right, a hand's width from
    the 10rem select it belongs to. */
@@ -1714,6 +1731,13 @@ span.value.is-word,
 .row.secondary > .value { font-size: var(--statistic-size); font-weight: 500; color: var(--muted); line-height: 1.1; }
 .row.secondary > .unit { font-size: var(--caption-size); }
 .sheet.is-overview .row.secondary { display: none; }
+/* A readout with a lead stands in for a reading in its step: the tile
+   keeps it. */
+.sheet.is-overview .row.secondary.has-lead { display: grid; }
+/* "Now:" before the reading an entry overrides (the Transfer Map's Tilt
+   and Speed in Setup): a caption's engraving, on the value's line. */
+.row.secondary.has-lead { grid-template-columns: auto auto auto; }
+.row.secondary > .lead { font-size: var(--caption-size); font-weight: 500; color: var(--muted); text-shadow: var(--engrave); }
 
 /* A reading: the model's key number, in the numeral face at the theme's
    reading sizes - focal for the opened model's axes, compact for a closed
@@ -2924,6 +2948,10 @@ label.row-title[for] { cursor: pointer; }
 
 .gate-title { font-size: var(--t-headline); line-height: 1.1; }
 
+/* "Take over here" is as wide as its words, like every other key; the
+   column stretched it across the notice (UX audit 2026-10-08 #19). */
+.elsewhere-gate #take-over { align-self: flex-start; }
+
 .gate-form { display: flex; flex-direction: column; gap: var(--space-4); }
 
 .gate-field { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--t-sm); font-weight: 600; }
@@ -3237,6 +3265,13 @@ label.row-title[for] { cursor: pointer; }
      squeezed beside them it broke one letter per line. */
   .drawer .section-span > .cell.stat,
   .drawer .section-span > .cell.stat:has(> .value.role-info) { flex: 1 1 100%; }
+  /* A device block at phone width (UX audit 2026-10-08 #19): Port and
+     Gamepad each take a line, so a port reads whole ("Stepper Probe —
+     ACM90" was cut to "Stepper"); Hard reset moves after the Status line it
+     acts on, beside it, not between Port and Gamepad. */
+  .drawer .section-row:not(.section-span):not(.table-head) > .cell { flex: 1 0 100%; }
+  .drawer .section-row:not(.section-span) > .cell:last-child { order: 1; flex: 1 1 10rem; }
+  .drawer .section-row:not(.section-span) > .cell.hard-reset-cell { order: 2; flex: 0 0 auto; margin-left: auto; }
   .tray-head, .tray-log { padding-left: var(--space-5); padding-right: var(--space-5); }
 }
 
