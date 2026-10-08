@@ -260,6 +260,40 @@ def test_controller_remove_confirms_the_heater_off_before_the_port_closes(
     assert off_confirmed_before_close(board.log), board.log[-12:]
 
 
+def test_a_hard_reset_onto_a_new_port_confirms_the_heater_off_first(
+        monkeypatch):
+    """Owner ruling 2026-10-08: Settings' Hard reset applies a changed port
+    without a station Restart. The old board's heater-off is read back
+    before its port closes, and only then is the new port opened."""
+    from controller import setup as station_setup
+    monkeypatch.setattr(SerialPort, "BOOTLOADER_WAIT", 0.05)
+    monkeypatch.setattr(Heater, "OFF_CONFIRM_SECONDS", 0.4)
+    boards = {"/dev/fake-old": FakeBoard(), "/dev/fake-new": FakeBoard()}
+    opened = []
+
+    def serial(**kw):
+        # (the port opened, whether the old board's port was closed by then)
+        opened.append((kw["port"], ("close",) in boards["/dev/fake-old"].log))
+        return boards[kw["port"]]
+    monkeypatch.setattr(serial_port, "pyserial", SimpleNamespace(Serial=serial))
+    setup = station_setup.Setup(Controller())
+    key = station_setup._key_for(Heater.NAME)
+    setup._ports[:] = list(boards)
+    setup._found.update({port: Heater.NAME for port in boards})
+    assert setup.run(f"set_{key}_port", args=("/dev/fake-old",)).is_ok
+    assert setup.run("launch", args=(True,)).is_ok, "launched"
+    heater = setup.controller._model(Heater.NAME)
+    assert _wait(lambda: heater.temperature.endswith("°C")), heater.temperature
+    assert setup.run(f"set_{key}_port", args=("/dev/fake-new",)).is_ok
+    assert setup.run(f"hard_reset_{key}", args=(True,)).is_ok
+    old_log = boards["/dev/fake-old"].log
+    assert off_confirmed_before_close(old_log), old_log[-12:]
+    assert opened == [("/dev/fake-old", False), ("/dev/fake-new", True)]
+    new = setup.controller._model(Heater.NAME)
+    assert new is not heater and setup.controller.config(Heater.NAME)["port"] == "/dev/fake-new"
+    setup.controller.close()
+
+
 def test_controller_close_confirms_the_heater_off_before_the_port_closes(
         board_factory):
     """Quit, Restart, Close every model (reset) and every signal end here."""

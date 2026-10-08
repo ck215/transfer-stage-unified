@@ -2261,6 +2261,9 @@ class PanelCard {
       const block = make('div', 'section' + (isRow ? ' section-row' : '')
                          + (spans ? ' section-span' : '')
                          + (!isRow && section.layout === 'group' ? ' section-group' : ''));
+      // Which section this is, for a page that places one by name (the
+      // Settings drawer's Launch row, audit 2026-10-08).
+      block.dataset.section = section.title || '';
       // An untitled row claims no name column (the rule views/qt.py settled
       // on); a titled one's caption is the row's name. A well does not open
       // onto a heading that repeats its own disclosure ("Diagnostics" under
@@ -2271,8 +2274,16 @@ class PanelCard {
         const repeats = tier !== 1 && !isRow
           && sentenceCase(section.title || '').toLowerCase()
             === String(this.tierLabel(sections, tier)).toLowerCase();
+        // A command row whose title only repeats its one key's legend
+        // ("Launch" beside Launch read as two Launch buttons, owner
+        // 2026-10-08) keeps the title for a screen reader only.
+        const commands = (section.elements || []).filter(
+          (e) => COMMAND_TYPES.indexOf(e.type) !== -1);
+        const echoes = spans && commands.length === 1
+          && sentenceCase(commands[0].text || '').toLowerCase()
+            === sentenceCase(section.title || '').toLowerCase();
         rowTitle = isRow
-          ? make('label', 'row-title', sentence(section.title || ''))
+          ? make('label', 'row-title' + (echoes ? ' sr-only' : ''), sentence(section.title || ''))
           : make('h3', 'section-title' + (repeats ? ' sr-only' : ''), sentenceCase(section.title || ''));
         block.appendChild(rowTitle);
       }
@@ -3469,7 +3480,6 @@ class Dashboard {
       scrim: document.getElementById('scrim'),
       setupLink: document.getElementById('setup-link'),
       drawerTitle: document.querySelector('#setup-drawer .drawer-title'),
-      settingsNote: document.getElementById('settings-note'),
       accountLink: document.getElementById('account-link'),
       accountName: document.querySelector('#account-link .account-name'),
       accountDrawer: document.getElementById('account-drawer'),
@@ -3688,23 +3698,23 @@ class Dashboard {
   }
 
   /** "Setup" before the launch, "Settings" after it (owner 2026-10-07): once
-   *  the station runs the devices are fixed for the session, and what is
-   *  left - Hard reset, Restart, the update and firmware rows, the
-   *  station's defaults - is settings, not set-up. The note at the top of
-   *  the drawer says so. Escape and Close behave the same under both. */
+   *  the station runs, what is left - a row's Hard reset (which also
+   *  applies a changed port, owner ruling 2026-10-08), Restart, the update
+   *  and firmware rows, the station's defaults - is settings, not set-up.
+   *  No note says devices are fixed (struck 2026-10-08). Escape and Close
+   *  behave the same under both. */
   applySetupWords() {
     const word = this.isLaunched ? 'Settings' : 'Setup';
     if (this.setupWord === word) return;
     this.setupWord = word;
     putText(this.dom.setupLink, word);
     this.dom.setupLink.title = this.isLaunched
-      ? 'Open Settings: Hard reset, Restart, updates, firmware and the station\'s defaults'
+      ? 'Open Settings: devices and Hard reset, updates, firmware and the station\'s defaults'
       : 'Open Setup: ports, devices and launch';
     this.dom.drawer.setAttribute('aria-label', word);
     if (this.dom.drawerTitle) putText(this.dom.drawerTitle, word);
     this.dom.drawerClose.title = 'Close ' + word + ' (Escape). The ' + word
       + ' button on the rail brings it back.';
-    if (this.dom.settingsNote) this.dom.settingsNote.hidden = !this.isLaunched;
   }
 
   // -- the account menu (owner 2026-10-07) ------------------------------------
@@ -4507,6 +4517,7 @@ class Dashboard {
         const setup = await apiGet('/api/setup');
         setupState = setup.state;
         this.setupCard.refresh(setupState);
+        this.decorateSetup(setupState);
       } catch (err) { /* the next cycle retries */ }
     }
     this.collapseSetupOnLaunch(models, setupState);
@@ -5290,6 +5301,56 @@ class Dashboard {
     if (said && said !== last.said) this.announce('polite', said);
   }
 
+  /** What the Settings drawer reads from its own state that a generic card
+   *  does not (UX audit 2026-10-08):
+   *  - before the launch a row's Hard reset has nothing to reset, so its
+   *    column is not drawn (`is-prelaunch`); after it the Launch row, which
+   *    can never be pressed again, is not drawn (`is-launched`);
+   *  - a launched row whose Port or Gamepad changed (`pending_reset`) says
+   *    so on its key: "Apply & reset" (owner ruling 2026-10-08: the row's
+   *    Hard reset rebuilds the device on the new port, no Restart);
+   *  - Update now is the drawer's ink key only while there is an update to
+   *    take; otherwise it is outlined, so Launch is the one dark key. */
+  decorateSetup(state) {
+    const card = this.setupCard;
+    if (!card || !state) return;
+    const launched = Boolean(state.is_launched);
+    card.node.classList.toggle('is-launched', launched);
+    card.node.classList.toggle('is-prelaunch', !launched);
+    const byCommand = (command) => card.widgets.find(
+      (w) => w.element && w.element.command === command);
+    for (const row of (state.rows || [])) {
+      const widget = byCommand('hard_reset_' + row.key);
+      const button = widget && widget.node && widget.node.querySelector('button');
+      if (!button) continue;
+      widget.node.classList.add('hard-reset-cell');
+      const pending = launched && Boolean(row.pending_reset);
+      const words = pending ? 'Apply & reset' : 'Hard reset';
+      if (button.dataset.words !== words) {
+        button.dataset.words = words;
+        const legend = Array.from(button.childNodes).find((n) => n.nodeType === 3);
+        if (legend) legend.textContent = words; else button.appendChild(document.createTextNode(words));
+        button.setAttribute('aria-label', nameFor(words, row.name));
+        // The one thing this row asks for: drawn as the ink key.
+        button.classList.toggle('role-go', pending);
+        button.classList.toggle('role-neutral', !pending);
+      }
+    }
+    const head = card.body.querySelector('.table-head');
+    if (head) {
+      for (const cell of head.querySelectorAll('.head-cell')) {
+        if (/^hard reset$/i.test(cell.textContent.trim())) cell.classList.add('hard-reset-cell');
+      }
+    }
+    const update = byCommand('apply_update');
+    const key = update && update.node && update.node.querySelector('button');
+    if (key) {
+      const ready = Boolean(state.has_update);
+      key.classList.toggle('role-go', ready);
+      key.classList.toggle('role-neutral', !ready);
+    }
+  }
+
   async loadSetup() {
     try {
       const setup = await apiGet('/api/setup');
@@ -5299,6 +5360,7 @@ class Dashboard {
       this.setupCard.node.classList.add('setup-card');
       this.dom.drawerBody.appendChild(this.setupCard.node);
       this.setupCard.refresh(setup.state);
+      this.decorateSetup(setup.state);
       // The sign-in screen first, when no choice is made yet: Setup then
       // waits behind it (setDrawerOpen refuses while it is up).
       this.applyAccount(setup.state);
