@@ -99,6 +99,46 @@ def test_the_sheet_is_served_and_run_as_the_account_menu(station):
     assert setup.state["account"]["name"] == "Ian A."
 
 
+def test_the_backup_is_on_the_account_menu(station, tmp_path, monkeypatch):
+    """2026-10-08: the backup line, Backup folder, Set backup folder and Back
+    up now moved from Setup's "Station defaults" to the user's own sheet; a
+    Guest's sheet has none of them."""
+    monkeypatch.setenv("STATION_BACKUP_DIR", str(tmp_path / "root"))  # never a real drive
+    view, controller, setup = station()
+    backup_controls = {"backup_status", "backup_dir", "set_backup_dir", "back_up_now"}
+    status, sheet = _get(view, "/api/user")
+    shown = {e.get("command") or e.get("model_attr")
+             for s in sheet["schema"]["sections"] for e in s["elements"]}
+    assert backup_controls <= shown
+    assert not backup_controls & {e.get("command") or e.get("model_attr")
+                                  for e in sch_elements(setup.schema)}
+    folder = tmp_path / "my backup"
+    status, done = _post(view, "/api/run", {"name": USER_NAME, "command": "set_backup_dir",
+                                            "inputs": {"backup_dir": str(folder)}})
+    assert done["status"] == "ok", done
+    assert UserStore().setting(EMAIL, "backup_dir") == str(folder)
+    assert setup.user.backup_dir == str(folder)
+    assert setup.backup.wait(10)
+    status, sheet = _get(view, "/api/user")
+    assert str(folder) in sheet["state"]["values"]["backup_status"], sheet["state"]["values"]["backup_status"]
+    status, done = _post(view, "/api/run", {"name": USER_NAME, "command": "back_up_now",
+                                            "inputs": {}})
+    assert done["status"] == "ok", done
+    assert setup.backup.wait(10) and (folder / "map.sqlite").is_file()
+    # A fresh sheet for the same user shows the folder they set.
+    assert setup._user_for(EMAIL).backup_dir == str(folder)
+    assert setup.run("switch_user").is_ok and setup.run("open_as_guest").is_ok
+    status, sheet = _get(view, "/api/user")
+    guest = {e.get("command") or e.get("model_attr")
+             for s in sheet["schema"]["sections"] for e in s["elements"]}
+    assert not guest & backup_controls
+
+
+def sch_elements(schema):
+    import schema as sch
+    return sch.elements(schema)
+
+
 # -- 5: a Guest has the tool controls only -------------------------------------------------------
 
 def test_a_guest_launch_has_no_maps_and_their_commands_are_refused(station):

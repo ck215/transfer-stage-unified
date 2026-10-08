@@ -603,7 +603,6 @@ class Setup(PortProbe, Panel):
               label="New store name"),
         # 2026-10-07 (B): the signed-in user's backup folder; blank = the
         # default (`controller.backup.target`).
-        Param("backup_dir", "text", default="", label="Backup folder"),
     )}
 
     def __init__(self, controller, updater=None, firmware=None, restart=None,
@@ -1691,7 +1690,15 @@ class Setup(PortProbe, Panel):
         through `Setup.user`."""
         return User(store=self.users if email else None, email=email,
                     params_of=self._params_of, models=self._models_open,
-                    on_sign_out=self.sign_out, on_switch_user=self.switch_user)
+                    on_sign_out=self.sign_out, on_switch_user=self.switch_user,
+                    backup_status=lambda: self.backup_status,
+                    backup_folder=self._backup_folder_of,
+                    on_set_backup_dir=self.set_backup_dir,
+                    on_back_up_now=self.back_up_now)
+
+    def _backup_folder_of(self, email):
+        """The backup folder `email` set (None: the default)."""
+        return self.users.setting(email, backup_module.SETTING)
 
     def _models_open(self):
         return dict(self.controller.models) if self.controller is not None else {}
@@ -1838,12 +1845,8 @@ class Setup(PortProbe, Panel):
             self.ACCOUNT_SECTION,
             sch.button("Save station settings", "save_station_settings",
                        role="neutral"),
-            # 2026-10-07 (B): the signed-in user's backup of their stores.
-            sch.readonly("Backup", "backup_status", role="info"),
-            sch.entry("Backup folder", "backup_dir", self.PARAMS["backup_dir"]),
-            sch.button("Set backup folder", "set_backup_dir",
-                       inputs=("backup_dir",), role="neutral"),
-            sch.button("Back up now", "back_up_now", role="neutral"),
+            # The signed-in user's backup (2026-10-07, B) is on their own
+            # sheet, the account menu (`model.user`, 2026-10-08).
             layout="row",
         )
 
@@ -2649,7 +2652,6 @@ class Setup(PortProbe, Panel):
         session's store is: the signed-in user's remembered store, or - back
         to Guest from a user - the station's remembered one. The prompt's
         suggested folder becomes the new user's."""
-        self.backup_dir = self._backup_setting() or ""
         for model in self._store_models():
             model.suggest_store_dir(self._suggested_store_dir())
         if not PROFILES_ENABLED:
@@ -2733,7 +2735,6 @@ class Setup(PortProbe, Panel):
         """The backup thread's service, and a final backup when a store
         model closes (bounded, and waited for only at Quit)."""
         self.backup = backup_module.BackupService()
-        self.backup_dir = self._backup_setting() or ""
         subscribe = getattr(self.controller, "subscribe", None)
         if callable(subscribe):
             subscribe(self._on_models_changed)
@@ -2794,8 +2795,8 @@ class Setup(PortProbe, Panel):
 
     @property
     def backup_status(self):
-        """The Account section's line: where the backup goes and how the
-        last one went."""
+        """The account menu's Backup line (`User.backup_status`): where the
+        backup goes and how the last one went."""
         if self.user.is_guest:
             return "No backup for Guest: sign in to have your stores backed up."
         where = self._backup_target()
@@ -2804,12 +2805,13 @@ class Setup(PortProbe, Panel):
                     "default needs ~/QMDL_Drive, or STATION_BACKUP_DIR is off).")
         return self.backup.status(where.folder)
 
-    def set_backup_dir(self):
-        """Set backup folder: the signed-in user's own folder (blank = the
-        default). Never inside the station's folder."""
+    def set_backup_dir(self, folder=""):
+        """Set backup folder, from the account menu (`User.set_backup_dir`):
+        the signed-in user's own folder (blank = the default). Never inside
+        the station's folder."""
         if self.user.is_guest:
             self._refuse("Sign in first: a Guest's stores are not backed up.")
-        typed = (self.backup_dir or "").strip()
+        typed = str(folder or "").strip()
         if typed:
             folder = Path(typed).expanduser()
             if not folder.is_absolute():

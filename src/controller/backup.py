@@ -71,10 +71,21 @@ class Target:
         self.anchor = None if anchor is None else Path(anchor)
 
     def ready(self):
-        if self.anchor is not None and not self.anchor.is_dir():
-            if not os.path.lexists(self.anchor):
-                raise NoFolder(f"no {self.anchor} on this computer")
-            raise Unavailable(f"{self.anchor} is not a folder (is the drive mounted?)")
+        """The folder, made when needed. With an anchor (the default drive,
+        `~/QMDL_Drive`): NoFolder when it does not exist, Unavailable when it
+        is not a folder or is a folder with nothing mounted on it (2026-10-08:
+        an unmounted mountpoint is never written into; what is written there
+        would hide under the drive and never reach it). A folder the user set
+        has no anchor and is used as it is."""
+        if self.anchor is not None:
+            if not self.anchor.is_dir():
+                if not os.path.lexists(self.anchor):
+                    raise NoFolder(f"no {self.anchor} on this computer")
+                raise Unavailable(f"{self.anchor} is not a folder (is the drive "
+                                  "mounted?)")
+            if not os.path.ismount(self.anchor):
+                raise Unavailable(f"{self.anchor} is not mounted (is the drive "
+                                  "connected?)")
         self.folder.mkdir(parents=True, exist_ok=True)
         return self.folder
 

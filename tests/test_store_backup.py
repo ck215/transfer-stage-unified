@@ -38,6 +38,31 @@ def test_target_rules(tmp_path):
         t.ready()                                            # no drive: no folder
 
 
+def test_an_unmounted_drive_folder_is_unavailable_and_never_written(tmp_path, monkeypatch):
+    """2026-10-08: `~/QMDL_Drive` there but nothing mounted on it (rclone not
+    running) is NOT the drive: nothing is written into the mountpoint."""
+    store = _db(tmp_path / "live" / "s.sqlite")
+    (tmp_path / "QMDL_Drive").mkdir()                    # the bare mountpoint
+    t = backup.target("a@b.c", env="", home=tmp_path)
+    mounted = []
+    monkeypatch.setattr(backup.os.path, "ismount",
+                        lambda p: Path(p) in mounted)
+    with pytest.raises(backup.Unavailable, match="not mounted"):
+        t.ready()
+    monkeypatch.setattr(backup.events, "warn", lambda *a, **k: None)
+    service = backup.BackupService()
+    assert not service.run(backup.Job(t, [(store, [])]))
+    assert list((tmp_path / "QMDL_Drive").iterdir()) == []   # untouched
+    assert "Backup failed" in service.status()
+    # Mounted: the same target works.
+    mounted.append(tmp_path / "QMDL_Drive")
+    assert service.run(backup.Job(t, [(store, [])]))
+    assert (t.folder / "s.sqlite").is_file()
+    # A folder the user set has no anchor: used as it is, mounted or not.
+    own = backup.target("a@b.c", setting=str(tmp_path / "mine"), env="")
+    assert own.anchor is None and own.ready() == tmp_path / "mine"
+
+
 def test_backup_writes_a_valid_sqlite_via_rename_and_copies_new_files_only(tmp_path):
     store = _db(tmp_path / "live" / "transfer_map.sqlite", rows=5)
     pics = store.parent / "transfer_map" / "1"

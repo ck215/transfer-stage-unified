@@ -38,8 +38,13 @@ the revert are the composition root's); then the name, Change password, and
 "Remember current values as my defaults", which collects every open model's
 user parameters (`profile.current_params`, the inverse of `apply_defaults`)
 from `models()` - Setup hands in the Controller's open models - the way the
-Transfer Map reads other models by duck type. A Guest's sheet is who it is
-and Sign in / Switch user. The password entries are `SECRET_INPUTS` (the log
+Transfer Map reads other models by duck type. Then the backup of
+this user's stores (2026-10-08, moved here from Setup's "Station defaults"):
+the "Last backup ... -> folder" line, Backup folder, Set backup folder and
+Back up now, each Setup's (handed in as `backup_status`, `backup_folder`,
+`on_set_backup_dir` and `on_back_up_now`: the backup service is the
+composition root's). A Guest's sheet is who it is and Sign in / Switch user:
+a Guest has no backup. The password entries are `SECRET_INPUTS` (the log
 says `<redacted>`), carry `secret: True` for a renderer to mask, read back
 as "" (never in `state`), and are forgotten when the command ends.
 """
@@ -84,19 +89,24 @@ class User(Panel):
         Param("display_name", "text", default="", label="Name"),
         Param("current_password", "text", default="", label="Current password"),
         Param("new_password", "text", default="", label="New password"),
+        Param("backup_dir", "text", default="", label="Backup folder"),
     )}
 
     current_password = _secret_property("current_password")
     new_password = _secret_property("new_password")
 
     def __init__(self, store=None, email=None, params_of=None, models=None,
-                 on_sign_out=None, on_switch_user=None):
+                 on_sign_out=None, on_switch_user=None, backup_status=None,
+                 backup_folder=None, on_set_backup_dir=None, on_back_up_now=None):
         """`User()` is a Guest. `User(store=, email=)` is that account's user;
         an email with no account raises AccountError. `params_of(name)`
         returns a model class's PARAMS (Setup passes the registry's); without
         it the open models' own are used. `models()` returns the open models
         `{name: model}` (Setup passes the Controller's). `on_sign_out()` and
-        `on_switch_user()` are Setup's."""
+        `on_switch_user()` are Setup's, as are the backup's hooks:
+        `backup_status()` (the status line), `backup_folder(email)` (the
+        remembered folder, None for the default), `on_set_backup_dir(text)`
+        and `on_back_up_now()`."""
         self._typed = {name: "" for name in SECRETS}   # before the Panel seeds them
         super().__init__()
         self._store = store
@@ -105,6 +115,9 @@ class User(Panel):
         self._models_of = models
         self._on_sign_out = on_sign_out
         self._on_switch_user = on_switch_user
+        self._backup_status = backup_status
+        self._on_set_backup_dir = on_set_backup_dir
+        self._on_back_up_now = on_back_up_now
         if store is not None and email:
             record = store.user(email)
             if record is None:
@@ -112,6 +125,11 @@ class User(Panel):
                                    "this station.")
             self._email = record["email"]
             self.display_name = record["name"] or ""
+            if callable(backup_folder):
+                try:
+                    self.backup_dir = backup_folder(self._email) or ""
+                except Exception:
+                    self.backup_dir = ""
 
     @classmethod
     def guest(cls, **hooks):
@@ -312,6 +330,34 @@ class User(Panel):
                     source=self.NAME)
         return summary
 
+    # -- the backup (2026-10-08: here, not on Setup) -------------------------------------
+    @property
+    def backup_status(self):
+        """ "Last backup ... -> folder", or why there is none; "" for a
+        Guest (no backup)."""
+        if self.is_guest:
+            return ""
+        if not callable(self._backup_status):
+            return "No backup: this sheet is not connected to the station's Setup."
+        try:
+            return str(self._backup_status())
+        except Exception as exc:
+            return f"The backup's state could not be read ({exc})."
+
+    def set_backup_dir(self):
+        """Set backup folder: this user's own folder (blank = the default)."""
+        self._signed_in()
+        hook = self._on_set_backup_dir
+        typed = str(self.backup_dir or "").strip()
+        folder = self._setups(hook and (lambda: hook(typed)), "set the backup folder")
+        self.backup_dir = typed and str(folder or "")   # blank stays blank (the default)
+        return folder
+
+    def back_up_now(self):
+        """Back up now: every open store, on the backup thread."""
+        self._signed_in()
+        return self._setups(self._on_back_up_now, "back up")
+
     # -- what a view reads ------------------------------------------------------------------
     @property
     def state(self):
@@ -354,5 +400,14 @@ class User(Panel):
                 sch.button("Remember current values as my defaults",
                            "remember_current", role="go"),
                 sch.readonly("Remembered", "remembered"),
+            ),
+            # 2026-10-08: the backup of this user's stores (was Setup's).
+            sch.section(
+                "Backup",
+                sch.readonly("Backup", "backup_status", role="info"),
+                sch.entry("Backup folder", "backup_dir", P["backup_dir"]),
+                sch.button("Set backup folder", "set_backup_dir",
+                           inputs=("backup_dir",), role="neutral"),
+                sch.button("Back up now", "back_up_now", role="neutral"),
             ),
         )
