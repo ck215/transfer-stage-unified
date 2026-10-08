@@ -2892,7 +2892,7 @@ class PanelCard {
     this.setStale(isStale(state) || isLost, isLost ? 'Connection lost' : 'Stale');
     const linkLine = (link && link.line) || '';
     this.setAlert(linkLine || (isLost ? sentence(this.title) + ' lost its ' + this.lost.join(' and ')
-      + '. Its readings are frozen. Press Stop, check the cable, then Hard reset it in Setup.'
+      + '. Its readings are frozen. Press Stop, check the cable, then Hard reset it in Settings.'
       : ''), linkLine ? (link.tier || 'error') : 'error');
     // State classes, not colour: a live model is silent; a lost one's head
     // rule turns signal red; a latched one's readings freeze to muted and
@@ -3114,6 +3114,20 @@ class PanelCard {
       && !b.disabled && b.getClientRects().length) || null;
   }
 
+  /** The live key in `box` whose command declares `input`'s entry among its
+   *  inputs, a go key before a neutral one; null when none does. */
+  keyTaking(box, input) {
+    const entry = this.widgets.find((w) => w.control === input);
+    const attr = entry && entry.element && entry.element.model_attr;
+    if (!attr) return null;
+    const keys = this.widgets
+      .filter((w) => w.element && w.element.type === 'button'
+        && (w.element.inputs || []).indexOf(attr) !== -1)
+      .map((w) => w.node && w.node.querySelector('button'))
+      .filter((b) => b && box.contains(b) && !b.disabled && b.getClientRects().length);
+    return keys.find((b) => b.classList.contains('role-go')) || keys[0] || null;
+  }
+
   dialogKey(event, box) {
     if (event.key === 'Escape') {
       const cancel = this.dialogButton(box, 'cancel');
@@ -3125,7 +3139,11 @@ class PanelCard {
       // also run; Add gathers every entry itself.
       event.preventDefault();
       event.stopPropagation();
-      const add = this.dialogButton(box, 'add');
+      // "Add", or else the dialog's key that takes this entry as an input
+      // (the go key first): "Add sample" for Sample ID, "Add material" for
+      // New material, "New store" for Name. Return used to find no "Add"
+      // in those prompts and did nothing.
+      const add = this.dialogButton(box, 'add') || this.keyTaking(box, event.target);
       if (add) add.click();
     } else if (event.key === 'Tab') {
       const live = Array.from(box.querySelectorAll('input, select, textarea, button'))
