@@ -349,3 +349,19 @@ def test_a_secondary_readout_is_marked_and_otherwise_a_readonly():
     e = sch.readonly("steps/s", "full_speed", secondary=True)
     assert e["type"] == "readonly" and e["secondary"] is True
     assert "secondary" not in sch.readonly("Value:", "value")
+
+
+def test_a_dropdown_gated_by_a_parent_says_why_and_a_file_open_carries_its_hint():
+    """The Sample DB's hierarchy (owner 2026-10-07): the greyed child names
+    its parent; the photo prompt's path box names what it takes."""
+    e = sch.dropdown("Chip", "chip_pick", "select_chip", "chip_options",
+                     enabled_by="has_sample", enabled_by_reason="Choose a sample first")
+    assert (e["enabled_by"], e["enabled_by_reason"]) == ("has_sample", "Choose a sample first")
+    assert not sch.is_enabled(e, "idle", {"has_sample": False})
+    assert sch.is_enabled(e, "idle", {"has_sample": True})
+    assert "enabled_by_reason" not in sch.dropdown("A", "a", "set_a", "a_options")
+    with pytest.raises(ValueError):
+        sch.dropdown("A", "a", "set_a", "a_options", enabled_by_reason="why")
+    hint = sch.file_open("Add photo", "stage_photo", placeholder="Path to a saved microscope image")
+    assert hint["placeholder"] == "Path to a saved microscope image"
+    assert "placeholder" not in sch.file_open("Open", "load")

@@ -1,6 +1,6 @@
 """The user profiles are off by default (owner 2026-10-06) until they are
 validated; their code is kept whole (branch `feature/sample-map-profiles`)
-and `STATION_PROFILES=1` turns them on. The Sample Map was held the same
+and `STATION_PROFILES=1` turns them on. The Sample DB was held the same
 way; since the merge of the lab's stage into the 2026-10-07 round it is ON
 by default (the approved procedure picks every trial's flake from it) and
 `STATION_SAMPLE_MAP=0` turns it off: an owner call flagged to the lead.
@@ -35,13 +35,13 @@ def test_by_default_the_sample_map_is_on_and_there_are_no_profiles():
     # Accounts (owner 2026-10-07) are on by default; Guest keeps the defaults.
     got = _probe()
     assert got["sample"] is True and got["profiles"] is True
-    assert got["models"][-2:] == ["Transfer Map", "Sample Map"]
+    assert got["models"][-2:] == ["Transfer Map", "Sample DB"]
 
 
 def test_the_flags_turn_profiles_on_and_the_sample_map_off():
     got = _probe({"STATION_SAMPLE_MAP": "0", "STATION_PROFILES": "1"})
     assert got["sample"] is False and got["profiles"] is True
-    assert "Sample Map" not in got["models"]
+    assert "Sample DB" not in got["models"]
     assert got["models"][-1] == "Transfer Map"
 
 

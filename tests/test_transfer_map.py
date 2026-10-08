@@ -177,7 +177,7 @@ def fake_display(monkeypatch):
     return made
 
 
-#: The Sample Map's samples, chips and flakes the fake store holds:
+#: The Sample DB's samples, chips and flakes the fake store holds:
 #: sample -> chip -> flakes.
 SAMPLE_TREE = {"4oct26": {"2": ["F3", "F4"], "3": ["F1"]},
                "7/27/26": {"2": ["13"]}}
@@ -186,7 +186,7 @@ FLAKE = ("4oct26", "2", "F3")
 
 
 class FakeSamples:
-    """The Sample Map's store as the Transfer Map reads it (the API of
+    """The Sample DB's store as the Transfer Map reads it (the API of
     `model.sample_store.SampleStore`, read-only): `samples()`, `chips()`,
     `flakes()`, each a list of row dicts."""
 
@@ -205,19 +205,19 @@ class FakeSamples:
 
 
 class FakeSampleMap:
-    """The Sample Map as the Transfer Map finds it: a public `db_path`."""
-    NAME = "Sample Map"
+    """The Sample DB as the Transfer Map finds it: a public `db_path`."""
+    NAME = "Sample DB"
 
     def __init__(self, path):
         self.db_path = path
 
 
 def _give_flake(model, flake=FLAKE, tree=None):
-    """A Sample Map with the fake store beside `model`, and `flake` (sample,
+    """A Sample DB with the fake store beside `model`, and `flake` (sample,
     chip, flake) picked through the dropdowns' commands. -> the fake."""
     fake = FakeSamples(tree)
     model._sample_store_factory = lambda path: fake
-    model.on_model_added("Sample Map", FakeSampleMap(Path("/no/samples.sqlite")))
+    model.on_model_added("Sample DB", FakeSampleMap(Path("/no/samples.sqlite")))
     if flake:
         for command, label in zip(("pick_sample", "pick_chip", "pick_flake"),
                                   flake):
@@ -1257,9 +1257,9 @@ def test_the_next_step_walks_the_operator_through_a_trial(red):
     model.tip_id = " "
     assert step() == "Pick a tip, or press New tip…"
     model.tip_id = "tip-A"
-    assert step() == "Add a sample on the Sample Map first"   # none open
+    assert step() == "Add a sample in the Sample DB first"   # none open
     _give_flake(model, flake=None, tree={})
-    assert step() == "Add a sample on the Sample Map first"   # an empty store
+    assert step() == "Add a sample in the Sample DB first"   # an empty store
     _give_flake(model, flake=None)
     assert step() == "Pick the sample, chip and flake"
     _give_flake(model)
@@ -3093,7 +3093,7 @@ def test_the_telemetry_records_the_maps_peers(wired):
     model, red, log, made = wired
     _arm(model)
     peers = made["telemetry"].controller.models
-    assert set(peers) == {"Red Percent", "Rotator", "Stepper Probe", "Sample Map"}
+    assert set(peers) == {"Red Percent", "Rotator", "Stepper Probe", "Sample DB"}
     assert peers["Red Percent"] is red and model not in peers.values()
     model.on_model_removed("Rotator")
     assert "Rotator" not in made["telemetry"].controller.models
@@ -3507,7 +3507,7 @@ def test_attach_afm_without_heights_leaves_them_unmeasured(station, private_db):
 
 def test_attach_optical_writes_the_three_columns_and_keeps_the_status(
         station, private_db):
-    """Q19: pixels on the capture-region picture times the Sample Map's
+    """Q19: pixels on the capture-region picture times the Sample DB's
     um_per_px (`capture_px`); an optical width never makes a trial
     `measured` (that stays "an AFM width exists")."""
     model, red, *_ = station
@@ -3629,7 +3629,7 @@ def test_the_v6_controls_are_tier_two():
 
 
 # -- TR-2 (approved proposal 2026-10-07): the sample, chip and flake, the cut --
-# Three dropdowns read from the Sample Map's store (read-only), cascading;
+# Three dropdowns read from the Sample DB's store (read-only), cascading;
 # Arm refuses without all three; the trial row names them and the cut's
 # number on that flake. Columns by presence, whatever the file's version.
 
@@ -3693,8 +3693,8 @@ def test_the_pickers_read_the_sample_maps_store_and_cascade(tmp_path):
 
     model = TransferMap(db_path=tmp_path / "map.sqlite",
                         sample_store_factory=factory)
-    assert model.options("sample_options") == []          # no Sample Map yet
-    model.on_model_added("Sample Map", FakeSampleMap(tmp_path / "s.sqlite"))
+    assert model.options("sample_options") == []          # no Sample DB yet
+    model.on_model_added("Sample DB", FakeSampleMap(tmp_path / "s.sqlite"))
     assert model.options("sample_options") == ["4oct26", "7/27/26"]
     assert opened[-1] == tmp_path / "s.sqlite"            # its public db_path
     assert model.options("chip_options") == []            # nothing picked
@@ -3721,25 +3721,25 @@ def test_the_pickers_read_the_sample_maps_store_and_cascade(tmp_path):
         result = model.run(command, None, (label,))
         assert result.is_refused, command
     assert model.run("pick_flake", None, ("13",)).is_refused   # no chip yet
-    model.on_model_removed("Sample Map")
+    model.on_model_removed("Sample DB")
     assert model.options("sample_options") == []
 
 
 def test_without_a_sample_map_or_its_store_the_pickers_offer_nothing(
         tmp_path, red):
-    """No Sample Map, or one whose store is not there (the real read-only
+    """No Sample DB, or one whose store is not there (the real read-only
     opener raises): empty lists, and Next step says what to do."""
     model = TransferMap(db_path=tmp_path / "map.sqlite")
     model.on_model_added("Red Percent", red)
     model.tip_id = "tip-A"
     assert model.sample_options == [] and model.chip_options == []
-    assert model.state["values"]["next_step"] == "Add a sample on the Sample Map first"
-    model.on_model_added("Sample Map", FakeSampleMap(tmp_path / "none.sqlite"))
+    assert model.state["values"]["next_step"] == "Add a sample in the Sample DB first"
+    model.on_model_added("Sample DB", FakeSampleMap(tmp_path / "none.sqlite"))
     assert model.sample_options == []
-    assert model.state["values"]["next_step"] == "Add a sample on the Sample Map first"
+    assert model.state["values"]["next_step"] == "Add a sample in the Sample DB first"
     refused = model.run("pick_sample", None, ("4oct26",))
     assert refused.is_refused
-    assert refused.reason == "Add a sample on the Sample Map first."
+    assert refused.reason == "Add a sample in the Sample DB first."
     assert not (tmp_path / "none.sqlite").exists()        # nothing created
 
 
@@ -3752,7 +3752,7 @@ def test_the_default_opener_reads_the_real_sample_store(tmp_path):
     store.add_flake("4oct26", "2", "F3")
     before = path.stat().st_mtime_ns
     model = TransferMap(db_path=tmp_path / "map.sqlite")
-    model.on_model_added("Sample Map", FakeSampleMap(path))
+    model.on_model_added("Sample DB", FakeSampleMap(path))
     assert model.sample_options == ["4oct26"]
     assert model.run("pick_sample", None, ("4OCT26",)).is_ok
     assert model.run("pick_chip", None, ("2",)).is_ok
@@ -3769,17 +3769,66 @@ def test_arm_refuses_without_a_sample_chip_and_flake(station):
                                                     + (None,) * (3 - keep))
         result = model.run("arm_trial", None, (True,))
         assert result.is_refused, keep
-        assert result.reason == ("Pick the sample, chip and flake before "
-                                 "arming, so the cut can be traced to its "
-                                 "flake.")
+        first = ("Choose a sample first", "Choose a chip first: a flake always "
+                 "belongs to a chip", "Choose a flake first")[keep]
+        assert result.reason == (first + ": pick the sample, chip and flake "
+                                 "before arming, so the cut can be traced to "
+                                 "its flake.")
         assert model.phase == "setup"
-    model.on_model_removed("Sample Map")
+    model.on_model_removed("Sample DB")
     result = model.run("arm_trial", None, (True,))
     assert result.is_refused and result.reason.startswith(
-        "Add a sample on the Sample Map first")
+        "Add a sample in the Sample DB first")
     _give_flake(model)
     assert model.run("arm_trial", None, (True,)).is_ok
     model.abort_trial()
+
+
+def test_a_flake_without_its_chip_is_never_a_trial_context(station):
+    """Owner 2026-10-07: chips are NOT optional (only chip photos are). A
+    sample and a flake with no chip are refused at Arm and at the back-fill,
+    with the chip named."""
+    model, red, *_ = station
+    model._sample, model._chip, model._flake = "4oct26", None, "F3"
+    armed = model.run("arm_trial", None, (True,))
+    assert armed.is_refused and armed.reason.startswith("Choose a chip first")
+    assert model.phase == "setup"
+    backfill = model.run("set_trial_sample", None, ("1", "4oct26", "", "F3"))
+    assert backfill.is_refused and backfill.reason.startswith("Choose a chip first")
+    backfill = model.run("set_trial_sample", None, ("1", "4oct26", None, "F3"))
+    assert backfill.is_refused and backfill.reason.startswith("Choose a chip first")
+
+
+def test_the_pickers_are_a_hierarchy_greyed_until_the_parent_is_chosen(tmp_path):
+    """Owner 2026-10-07: Chip is greyed with no options until a sample is
+    chosen, Flake until a chip is; a view reads the `enabled_by` booleans
+    from state, and the Panel refuses with the same short reason."""
+    model = TransferMap(db_path=tmp_path / "map.sqlite",
+                        sample_store_factory=lambda path: FakeSamples())
+    model.on_model_added("Sample DB", FakeSampleMap(tmp_path / "s.sqlite"))
+    chip, flake = _element(model, "pick_chip"), _element(model, "pick_flake")
+    assert (chip["enabled_by"], chip["enabled_by_reason"]) == (
+        "has_sample_pick", "Choose a sample first")
+    assert (flake["enabled_by"], flake["enabled_by_reason"]) == (
+        "has_chip_pick", "Choose a chip first")
+
+    def live(element):
+        return sch.is_enabled(element, model.gate_mode, model.state["values"])
+    assert not live(chip) and not live(flake)
+    assert model.options("chip_options") == [] and model.options("flake_options") == []
+    refused = model.run("pick_chip", None, ("2",))
+    assert refused.is_refused and "Choose a sample first" in refused.reason
+    model.run("pick_sample", None, ("4oct26",))
+    assert live(chip) and not live(flake)
+    refused = model.run("pick_flake", None, ("F3",))
+    assert refused.is_refused and "Choose a chip first" in refused.reason
+    model.run("pick_chip", None, ("2",))
+    assert live(chip) and live(flake)
+    model.run("pick_flake", None, ("F3",))
+    # A different sample clears both children and greys them again.
+    model.run("pick_sample", None, ("7/27/26",))
+    assert (model.chip_pick, model.flake_pick) == ("", "")
+    assert live(chip) and not live(flake) and model.options("flake_options") == []
 
 
 def test_the_trial_row_names_its_flake_and_its_cut(station, private_db):
@@ -3856,7 +3905,7 @@ def test_set_trial_sample_backfills_an_old_trial(station, tmp_path, private_db):
     assert model.run("set_trial_sample", {"afm_trial_id": "99"}).is_refused
     model._sample = model._chip = model._flake = None
     nothing = model.run("set_trial_sample", {"afm_trial_id": "3"})
-    assert nothing.is_refused and "Pick the sample" in nothing.reason
+    assert nothing.is_refused and nothing.reason.startswith("Choose a sample first")
     _give_flake(model)
     armed = _arm(model)
     still = model.run("set_trial_sample", {"afm_trial_id": str(armed)})

@@ -374,7 +374,7 @@ def sim_station(tmp_path):
             out, fps, mon, frame_source=_synthetic))
     samples = SampleMap(db_path=tmp_path / "sample_map.sqlite")
     models = (("Stepper Probe", probe), ("Temperature Controller", heater),
-              ("RGB analysis", red), ("Transfer Map", transfer), ("Sample Map", samples))
+              ("RGB analysis", red), ("Transfer Map", transfer), ("Sample DB", samples))
     for name, model in models:
         controller.add(name, model)
     for _name, model in models:
@@ -482,7 +482,7 @@ def _drawn(text):
 
 def test_every_anchor_text_is_in_the_real_schema_of_its_sim_model(sim_station):
     view, transfer, samples = sim_station
-    models = {"Transfer Map": transfer, "Sample Map": samples, **_device_models()}
+    models = {"Transfer Map": transfer, "Sample DB": samples, **_device_models()}
     missing = []
     for name, t in _files().items():
         for step in t["steps"]:
@@ -490,7 +490,7 @@ def test_every_anchor_text_is_in_the_real_schema_of_its_sim_model(sim_station):
             if text is None:
                 continue
             schema = models[step["page"]].schema
-            if step["page"] in ("Transfer Map", "Sample Map"):
+            if step["page"] in ("Transfer Map", "Sample DB"):
                 found = _norm(text) in {_norm(x) for x in _texts(schema)}
             else:
                 # A device page's own name is its link in the sidebar.

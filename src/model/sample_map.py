@@ -1533,6 +1533,12 @@ class SampleMap(Model):
     @property
     def staged_text(self):
         if not self._staged:
+            level = self._phase[4:] if self._phase.startswith("new_") else ""
+            if level in self.PHOTO_REQUIRED:
+                # A required choice (the sample, the chip, the flake) is not
+                # the same as a required photo: only a flake needs one.
+                need = "required" if self.PHOTO_REQUIRED[level] else "optional"
+                return f"No photo chosen yet (photo {need} for a {level})"
             return "No photo chosen yet"
         return f"{len(self._staged)} photo(s): " + ", ".join(
             Path(p).name for p in self._staged)
@@ -1829,7 +1835,7 @@ class SampleMap(Model):
             return [sch.file_open("Add photo\u2026", "stage_photo",
                                   extensions=self.IMAGE_EXTENSIONS,
                                   placeholder="Path to a saved microscope image "
-                                              f"({need})"),
+                                              f"(photo {need})"),
                     sch.readonly("Photos", "staged_text"),
                     sch.button("Clear photos", "clear_photos")]
 

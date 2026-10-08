@@ -97,7 +97,7 @@ def warnings():
 BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
              "Temperature Controller", "Rotator", "RGB Analysis",
              "Transfer Map",   # Tier S (2026-09-27)
-             *(["Sample Map"] if station_setup.SAMPLE_MAP_ENABLED else [])]   # the flag: setup.py
+             *(["Sample DB"] if station_setup.SAMPLE_MAP_ENABLED else [])]   # the flag: setup.py
 #: The built-in Setup rows: RGB Analysis is registered but has no row of its
 #: own, being drawn on the Transfer Map's page and launched by its row
 #: (Model.HOST, owner ruling 2026-09-28).

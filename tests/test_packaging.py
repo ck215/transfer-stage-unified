@@ -210,7 +210,7 @@ def test_smoke_sh_is_executable_and_parses():
 
 @pytest.mark.parametrize("script", ["smoke.sh", "smoke.ps1"])
 def test_smoke_scripts_drive_every_setup_row(script):
-    """The smokes name every row (eight since the Sample Map); they must be the Setup panel's rows."""
+    """The smokes name every row (eight since the Sample DB); they must be the Setup panel's rows."""
     from controller.setup import MODEL_TYPES
     with open(os.path.join(PACKAGING, script), encoding="utf-8") as f:
         text = f.read()

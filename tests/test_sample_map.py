@@ -1,4 +1,4 @@
-"""The Sample Map (flake-coords Phase 1): where on the chip each flake is.
+"""The Sample DB (flake-coords Phase 1): where on the chip each flake is.
 
 Corners A-D marked with the optical crosshair (owner 2026-10-04: the tip
 never touches a corner), the chip's frame from them, flakes flagged with
@@ -22,7 +22,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
 
 class FlakeMap(SampleMap):
-    """The Sample Map with its flake-coordinate sheet and modes back on.
+    """The Sample DB with its flake-coordinate sheet and modes back on.
 
     Dormant 2026-10-07: the live schema is the image sheet, and a command the
     schema does not declare is off the allow-list (`Panel._allows`), so the
@@ -34,7 +34,7 @@ class FlakeMap(SampleMap):
 
 
 class FakeStage:
-    """Locating axes, duck-typed as the Sample Map reads them (a probe or
+    """Locating axes, duck-typed as the Sample DB reads them (a probe or
     the Chuck Positioner): position in counts, its age, velocity, epoch."""
 
     def __init__(self, name="Stepper Probe", xy=(1000, 2000), z=500):
@@ -113,13 +113,13 @@ def _register(model, stage, w=5000.0, h=4000.0, corners="ABD"):
 # -- the class and the store -----------------------------------------------------
 
 @pytest.mark.skipif(not station_setup.SAMPLE_MAP_ENABLED,
-                    reason="the Sample Map is off by default (owner 2026-10-06)")
+                    reason="the Sample DB is off by default (owner 2026-10-06)")
 def test_the_class_is_a_portless_model_registered_after_the_transfer_map():
-    assert SampleMap.NAME == "Sample Map"
+    assert SampleMap.NAME == "Sample DB"
     assert SampleMap.IDENTITY is None and SampleMap.RESOURCES == ()
     assert SampleMap.HOST is None                  # its own page
     names = list(station_setup.MODEL_TYPES)
-    assert names.index("Sample Map") == names.index("Transfer Map") + 1
+    assert names.index("Sample DB") == names.index("Transfer Map") + 1
     model = FlakeMap(port="SIM", gamepad=None, sim=True)
     assert model.devices == [] and model._expects_heartbeat() is False
     assert model._halt_hardware() is True and model.is_active is False
@@ -136,7 +136,7 @@ def test_construction_creates_nothing_and_open_announces_the_store(tmp_path,
     try:
         assert path.exists()
         ready = [e for e in events.since(since) if e.title == "Database Ready"
-                 and e.source == "Sample Map"]
+                 and e.source == "Sample DB"]
         assert ready and str(path) in ready[0].message
     finally:
         model.close()
@@ -475,7 +475,7 @@ def test_owner_follows_the_signed_in_user(sample_map, stage):
 # -- the Rotator turns the chip (owner 2026-10-04: model it now) -----------------------
 
 class FakeRotator:
-    """The SMC100 Rotator, duck-typed as the Sample Map reads it: the angle
+    """The SMC100 Rotator, duck-typed as the Sample DB reads it: the angle
     (`position_deg`, None for no reading) and its `motion_state` words."""
 
     def __init__(self, angle=0.0):
@@ -723,14 +723,14 @@ def test_the_rotator_fields_are_exported(sample_map, stage, rotator):
     assert "rotator_calibrations" not in doc        # station-only (Q4)
 
 
-# -- the image sheet (owner 2026-10-07): the Sample Map stores pictures -----------------
+# -- the image sheet (owner 2026-10-07): the Sample DB stores pictures -----------------
 
 import hashlib
 import sqlite3
 
 
 class FakeTransferMap:
-    """The Transfer Map as the Sample Map sees it: a name and a public
+    """The Transfer Map as the Sample DB sees it: a name and a public
     `db_path`. The file has the bench's extra columns, as the real ones do."""
     NAME = "Transfer Map"
 
@@ -792,7 +792,7 @@ def test_the_live_sheet_declares_the_image_commands_and_ends_with_safety(images)
 def test_the_dormant_commands_are_off_the_allow_list(images, command, args):
     # Reason: a command the schema does not show is refused for every view.
     result = images.run(command, None, args)
-    assert not result.is_ok and "is not a command of Sample Map" in str(result)
+    assert not result.is_ok and "is not a command of Sample DB" in str(result)
 
 
 def test_add_image_stores_the_original_under_the_typed_sample(images, tmp_path):
@@ -949,9 +949,10 @@ def _titles(model):
 
 
 def test_the_sheet_declares_its_phases_and_starts_in_browse(images):
-    assert images.PHASES == ("browse", "new_sample", "new_chip", "new_flake")
-    assert images.phase == "browse"
-    assert images.state["phase"] == "browse" and images.state["phases"] == list(images.PHASES)
+    # Browsing is three tiers (owner 2026-10-07): sample, then chip, then flake.
+    assert images.PHASES == ("sample", "chip", "flake", "new_sample", "new_chip", "new_flake")
+    assert images.phase == "sample"
+    assert images.state["phase"] == "sample" and images.state["phases"] == list(images.PHASES)
     assert images.schema["sections"][-1] == images._safety_section()
     assert _titles(images) == ["Sample", "Pictures", "Trials on this sample",
                                "Sample details", "Data", "Diagnostics", "Safety"]
@@ -974,9 +975,143 @@ def test_the_cascade_filters_and_a_new_sample_pick_clears_the_rest(images, tmp_p
     images.run("select_sample", None, ("7/27/26 \u00b7 MoS2",))
     assert (images.chip_pick, images.flake_id_pick) == ("", "")
     assert images.chip_options == ["A"]
-    for command, arg in (("select_chip", "2"), ("select_flake_id", "F1")):
-        result = images.run(command, None, (arg,))           # not this sample's / chip's
-        assert not result.is_ok and arg in str(result)
+    result = images.run("select_chip", None, ("2",))          # not this sample's
+    assert not result.is_ok and "2" in str(result)
+    result = images.run("select_flake_id", None, ("F1",))     # no chip chosen yet
+    assert not result.is_ok and "Choose a chip first" in str(result)
+    images.run("select_chip", None, ("A",))
+    result = images.run("select_flake_id", None, ("F1",))     # not this chip's
+    assert not result.is_ok and "F1" in str(result)
+
+
+def _live(model, command):
+    element = next(e for e in sch.elements(model.schema) if e.get("command") == command)
+    return sch.is_enabled(element, model.gate_mode, model.state["values"])
+
+
+NEW_BUTTONS = ("begin_new_sample", "begin_new_chip", "begin_new_flake")
+
+
+def test_the_pickers_are_a_hierarchy_and_only_the_current_tier_offers_new(images, tmp_path):
+    """Owner 2026-10-07: sample, then chip, then flake. A child dropdown is
+    greyed with no options until its parent is chosen; at each tier the
+    parents' New buttons are gone, and they come back when the parent is
+    cleared."""
+    _tree(images, tmp_path)
+    chip = next(e for e in sch.elements(images.schema) if e.get("command") == "select_chip")
+    flake = next(e for e in sch.elements(images.schema)
+                 if e.get("command") == "select_flake_id")
+    assert (chip["enabled_by"], chip["enabled_by_reason"]) == ("has_sample",
+                                                               "Choose a sample first")
+    assert (flake["enabled_by"], flake["enabled_by_reason"]) == ("has_chip",
+                                                                 "Choose a chip first")
+
+    def offered():
+        return [c for c in NEW_BUTTONS if c in _shown_commands(images)]
+
+    # Nothing chosen: the sample tier.
+    assert images.phase == "sample" and offered() == ["begin_new_sample"]
+    assert not _live(images, "select_chip") and not _live(images, "select_flake_id")
+    assert images.options("chip_options") == [] and images.options("flake_id_options") == []
+    refused = images.run("select_chip", None, ("2",))
+    assert refused.is_refused and "Choose a sample first" in str(refused)
+    assert "clear_sample" not in _shown_commands(images)
+    # A sample: the chip tier. New sample is gone; Clear sample brings it back.
+    images.run("select_sample", None, ("4oct26 \u00b7 hBN",))
+    assert images.phase == "chip" and offered() == ["begin_new_chip"]
+    assert _live(images, "select_chip") and not _live(images, "select_flake_id")
+    assert images.options("flake_id_options") == []
+    refused = images.run("select_flake_id", None, ("F1",))
+    assert refused.is_refused and "Choose a chip first" in str(refused)
+    assert "not part of the chip step" in str(images.run("begin_new_sample"))
+    # A chip: the flake tier.
+    images.run("select_chip", None, ("2",))
+    assert images.phase == "flake" and offered() == ["begin_new_flake"]
+    assert _live(images, "select_flake_id")
+    assert {"clear_sample", "clear_chip"} <= _shown_commands(images)
+    images.run("select_flake_id", None, ("F2",))
+    assert images.phase == "flake" and offered() == ["begin_new_flake"]
+    # Clear chip: back to the chip tier, the flake cleared too.
+    assert images.run("clear_chip").is_ok
+    assert (images.phase, images.chip_pick, images.flake_id_pick) == ("chip", "", "")
+    assert offered() == ["begin_new_chip"] and not _live(images, "select_flake_id")
+    # A different chip clears the flake; a different sample clears both.
+    images.run("select_chip", None, ("2",))
+    images.run("select_flake_id", None, ("F1",))
+    images.run("select_sample", None, ("7/27/26 \u00b7 MoS2",))
+    assert (images.phase, images.chip_pick, images.flake_id_pick) == ("chip", "", "")
+    # Clear sample: back to the sample tier, New sample offered again.
+    assert images.run("clear_sample").is_ok
+    assert (images.phase, images.sample_pick, images.chip_pick) == ("sample", "", "")
+    assert offered() == ["begin_new_sample"] and not _live(images, "select_chip")
+    assert images.state["values"]["has_sample"] is False
+
+
+def test_the_photo_path_hint_names_a_microscope_image_and_the_photo_rule(images, tmp_path):
+    """The New prompts' path box: a saved microscope image; the photo is
+    optional for a sample and a chip, required for a flake (owner
+    2026-10-07). A required choice is not a required photo."""
+    _tree(images, tmp_path)
+
+    def hint():
+        (element,) = [e for e in sch.shown_elements(images.schema, images.phase)
+                      if e.get("command") == "stage_photo"]
+        return element["placeholder"]
+    images.run("begin_new_sample")
+    assert hint() == "Path to a saved microscope image (photo optional)"
+    assert images.staged_text == "No photo chosen yet (photo optional for a sample)"
+    images.run("cancel_new")
+    images.select_sample("4oct26")
+    images.run("begin_new_chip")
+    assert hint() == "Path to a saved microscope image (photo optional)"
+    assert images.staged_text == "No photo chosen yet (photo optional for a chip)"
+    images.run("cancel_new")
+    images.select_chip("2")
+    images.run("begin_new_flake")
+    assert hint() == "Path to a saved microscope image (photo required)"
+    assert images.staged_text == "No photo chosen yet (photo required for a flake)"
+
+
+def test_the_photo_rule_flakes_need_one_samples_and_chips_do_not(images, tmp_path):
+    assert images.PHOTO_REQUIRED == {"sample": False, "chip": False, "flake": True}
+    images.run("begin_new_sample")
+    images.run("set_new_material", None, ("hBN",))
+    assert images.run("create_sample", {"new_sample_id": "S9"}).is_ok
+    images.run("begin_new_chip")
+    assert images.run("create_chip", {"new_chip_id": "C1"}).is_ok
+    assert images._store.images("S9", any=True) == []
+    images.run("begin_new_flake")
+    refused = images.run("create_flake", {"new_flake_id": "F1"})
+    assert refused.is_refused and "photo of the flake" in str(refused)
+    assert images._store.flakes("S9", "C1") == []
+
+
+def test_a_flake_never_stands_without_its_chip(images, tmp_path):
+    """Owner 2026-10-07: chips are NOT optional, only their photos. No path
+    creates or picks a flake without a chip."""
+    _tree(images, tmp_path)
+    images.select_sample("4oct26")
+    from result import Refused
+    with pytest.raises(Refused, match="chip"):
+        images.begin_new_flake()
+    assert images.run("select_flake_id", None, ("F1",)).is_refused
+    with pytest.raises(ss.StoreRefused):
+        images._store.add_flake("4oct26", "", "F9")
+    with pytest.raises(ss.StoreRefused):
+        images._store.add_image("4oct26", str(_shot(tmp_path)), "microscope", 10,
+                                flake_id="F1")
+
+
+def test_stored_records_without_photos_still_load(images, tmp_path):
+    """Records made before the photo rule changed, or with no photo under
+    it, load and list as before (the store never demanded a photo)."""
+    _tree(images, tmp_path)
+    assert [s["sample_id"] for s in images._store.samples()] == ["4oct26", "7/27/26"]
+    assert all(s["photo_count"] == 0 for s in images._store.samples())
+    images.select_sample("4oct26")
+    assert images.chip_options == ["1", "2"]
+    images.select_chip("2")
+    assert images.flake_id_options == ["F1", "F2"]
 
 
 def test_pictures_follow_the_picked_level(images, tmp_path):
@@ -1021,8 +1156,8 @@ def test_browse_commands_are_refused_in_a_prompt_and_prompt_commands_in_browse(i
     for command in ("create_sample", "create_chip", "create_flake", "cancel_new",
                     "stage_photo", "set_new_material", "add_new_material"):
         result = images.run(command, None, ("x",) if command in ("stage_photo", "set_new_material") else ())
-        assert not result.is_ok and "not part of the browse step" in str(result), command
-    assert images.phase == "browse"
+        assert not result.is_ok and "not part of the sample step" in str(result), command
+    assert images.phase == "sample"
 
 
 def test_add_sample_refusals_each_one_sentence_and_nothing_is_stored(images, tmp_path):
@@ -1049,7 +1184,8 @@ def test_a_sample_needs_no_photo(images):
     images.run("set_new_material", None, ("hBN",))
     result = images.run("create_sample", {"new_sample_id": "NOPHOTO1"})
     assert result.is_ok, result
-    assert images.phase == "browse" and images.sample_id == "NOPHOTO1"
+    assert images._phase == "browse" and images.sample_id == "NOPHOTO1"
+    assert images.phase == "chip"                            # the new sample is chosen
 
 
 def test_add_sample_inserts_copies_photos_selects_and_returns_to_browse(images, tmp_path):
@@ -1062,7 +1198,7 @@ def test_add_sample_inserts_copies_photos_selects_and_returns_to_browse(images, 
     assert images.staged_text.startswith("2 photo(s): 1.png, 2.png")
     result = images.run("create_sample", {"new_sample_id": " NEW1 ", "new_sample_note": "hello"})
     assert result.is_ok, result
-    assert images.phase == "browse" and images.sample_id == "NEW1"
+    assert images.phase == "chip" and images.sample_id == "NEW1"
     row = images._store.sample("NEW1")
     assert (row["material"], row["note"]) == ("graphite", "hello")
     assert len(images._store.images("NEW1")) == 2
@@ -1084,15 +1220,16 @@ def test_cancel_discards_the_staged_photos_and_copies_nothing(images, tmp_path):
     images.run("stage_photo", None, (str(_shot(tmp_path)),))
     images.run("set_new_material", None, ("hBN",))
     assert images.run("cancel_new").is_ok
-    assert images.phase == "browse" and images._staged == [] and images.new_material == ""
+    assert images.phase == "sample" and images._staged == [] and images.new_material == ""
     assert images._store.images() == [] and not (images._store.directory / "images").exists()
     images.run("begin_new_sample")
-    assert images.staged_text == "No photo chosen yet"       # nothing carried over
+    assert images.staged_text.startswith("No photo chosen yet")     # nothing carried over
 
 
 def test_new_chip_needs_a_picked_sample_and_names_it_in_the_title(images, tmp_path):
     _tree(images, tmp_path)
-    assert "Pick the sample" in str(images.run("begin_new_chip"))
+    # New chip is not drawn (nor runnable) until a sample is chosen.
+    assert "not part of the sample step" in str(images.run("begin_new_chip"))
     images.select_sample("4oct26")
     assert images.run("begin_new_chip").is_ok
     assert _titles(images) == ["New chip on 4oct26", "Safety"]
@@ -1100,7 +1237,7 @@ def test_new_chip_needs_a_picked_sample_and_names_it_in_the_title(images, tmp_pa
     assert "already" in str(images.run("create_chip", {"new_chip_id": "2"}))
     result = images.run("create_chip", {"new_chip_id": "3", "new_chip_note": "n"})
     assert result.is_ok, result                              # a photo is optional here
-    assert images.phase == "browse" and images.chip_pick == "3"
+    assert images.phase == "flake" and images.chip_pick == "3"
     assert [c["chip_id"] for c in images._store.chips("4oct26")] == ["1", "2", "3"]
     assert images._store.chips("4oct26")[2]["note"] == "n"
 
@@ -1125,7 +1262,10 @@ def test_a_label_with_no_sample_row_cannot_take_a_chip(images, tmp_path):
 def test_new_flake_needs_a_chip_a_photo_and_a_fresh_id(images, tmp_path):
     _tree(images, tmp_path)
     images.select_sample("4oct26")
-    assert "Pick the chip" in str(images.run("begin_new_flake"))
+    assert "not part of the chip step" in str(images.run("begin_new_flake"))
+    from result import Refused
+    with pytest.raises(Refused, match="Pick the chip"):     # the model's own belt
+        images.begin_new_flake()
     images.select_chip("2")
     assert images.run("begin_new_flake").is_ok
     assert _titles(images) == ["New flake on 4oct26 \u00b7 2", "Safety"]
@@ -1137,7 +1277,7 @@ def test_new_flake_needs_a_chip_a_photo_and_a_fresh_id(images, tmp_path):
     assert [f["flake_id"] for f in images._store.flakes("4oct26", "2")] == ["F1", "F2"]
     images.run("stage_photo", None, (str(_shot(tmp_path)),))
     assert images.run("create_flake", {"new_flake_id": "F3", "new_flake_note": "x"}).is_ok
-    assert images.phase == "browse"
+    assert images.phase == "flake"
     assert (images.chip_pick, images.flake_id_pick) == ("2", "F3")
     assert len(images._store.images("4oct26", "2", "F3")) == 1
 

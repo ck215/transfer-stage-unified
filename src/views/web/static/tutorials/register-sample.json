@@ -6,13 +6,13 @@
     {
       "page": "Sample DB",
       "anchor": {"text": "New sample…"},
-      "say": "A sample must be registered before a trial can be filed under it. Press New sample.",
+      "say": "A sample must be registered before a trial can be filed under it. Press New sample (if a sample is already chosen, press Clear sample first).",
       "wait": {"click": true}
     },
     {
       "page": "Sample DB",
       "anchor": {"text": "Add photo…"},
-      "say": "Type the sample ID and pick its material. A photo is optional for a sample (a flake needs one); press Add photo to attach one, or press Next.",
+      "say": "Type the sample ID and pick its material. The sample is required; its photo is optional (only a flake needs one). Press Add photo to attach one, or press Next.",
       "wait": null
     },
     {
@@ -24,25 +24,25 @@
     {
       "page": "Sample DB",
       "anchor": {"text": "New chip…"},
-      "say": "A chip belongs to the sample picked above. Press New chip.",
+      "say": "A chip belongs to the sample chosen above; the Chip list opens once a sample is chosen. Press New chip.",
       "wait": {"click": true}
     },
     {
       "page": "Sample DB",
       "anchor": {"text": "Add chip"},
-      "say": "Type the chip ID and press Add chip.",
+      "say": "Type the chip ID and press Add chip. Every flake belongs to a chip, so the chip is required; only its photo is optional.",
       "wait": {"click": true}
     },
     {
       "page": "Sample DB",
       "anchor": {"text": "New flake…"},
-      "say": "A flake belongs to the chip picked above. Press New flake.",
+      "say": "A flake belongs to the chip chosen above; the Flake list opens once a chip is chosen. Press New flake.",
       "wait": {"click": true}
     },
     {
       "page": "Sample DB",
       "anchor": {"text": "Add flake"},
-      "say": "Type the flake ID and press Add flake. The sample, chip and flake now appear in the pickers.",
+      "say": "Type the flake ID and add at least one photo with Add photo (a flake needs one), then press Add flake. The sample, chip and flake now appear in the pickers.",
       "wait": {"click": true}
     }
   ]

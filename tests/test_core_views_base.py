@@ -690,7 +690,7 @@ def test_mod5_a_state_without_the_key_falls_back_to_the_old_class_names():
 
 
 def test_the_sample_maps_gate_words():
-    """flake-coords section 5.3: the Sample Map's two tokens. A control
+    """flake-coords section 5.3: the Sample DB's two tokens. A control
     that needs the frame is `disabled_when=("unregistered",)`, so the
     sentence is the disabled-direction word (the `armed` convention)."""
     from views.base import GATE_WORDS, gate_reason

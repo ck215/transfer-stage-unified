@@ -1361,7 +1361,7 @@ from param import Param  # noqa: E402
 
 
 class FakeImages(_Plain):
-    """The Sample Map's "Add image" as the contract allows it: a `file_open`
+    """The Sample DB's "Add image" as the contract allows it: a `file_open`
     whose `inputs` (instrument, magnification) travel with the command."""
     NAME = "Fake Images"
     PARAMS = {"instrument": Param("instrument", "text", default="", label="Instrument"),

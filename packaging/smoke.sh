@@ -33,12 +33,12 @@ PORT="${SMOKE_PORT:-8099}"
 BASE="http://127.0.0.1:$PORT"
 LOGDIR="${TRANSFER_STAGE_DATA_ROOT:-$HOME/transfer-stage-runs}/logs"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/station-smoke.XXXXXX")"
-# The Setup rows, in display order. The Transfer Map and the Sample Map are
+# The Setup rows, in display order. The Transfer Map and the Sample DB are
 # stores with no port (their choice is "On"), so they are only ticked; rgb_analysis (screen
 # capture) has no row of its own since 2026-09-28: it is drawn on the
 # Transfer Map's page and launches with that row.
 PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotator"
-ALL_ROWS="$PORT_ROWS transfer_map sample_map"
+ALL_ROWS="$PORT_ROWS transfer_map sample_db"
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
 SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller"

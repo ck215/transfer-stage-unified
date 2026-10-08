@@ -32,7 +32,7 @@ from test_setup import RecordingController
 
 CONFIGS = [{"model": "Stepper Probe", "port": "SIM", "gamepad": "None", "sim": True},
            {"model": "Transfer Map", "port": "On", "sim": False},
-           {"model": "Sample Map", "port": "On", "sim": False}]
+           {"model": "Sample DB", "port": "On", "sim": False}]
 PASSWORD = "correct-horse-4821"
 EMAIL = "ian@uci.edu"
 
@@ -168,7 +168,7 @@ def test_a_new_station_is_a_guest_and_launching_as_guest_changes_nothing(setup):
     assert "User" not in setup.controller.model_names, "a Guest has no sheet"
     probe = models(setup)["Stepper Probe"]
     assert int(probe.x_step) == int(probe.PARAMS["x_step"].default)
-    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample Map"]
+    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample DB"]
     assert (tmap.operator_id, tmap.operator_auth) == ("guest", "guest")
     assert (smap.owner, smap.owner_auth) == ("guest", "guest")
 
@@ -289,7 +289,7 @@ def test_switching_users_reverts_the_first_users_values(setup):
 
 def test_built_models_carry_the_operator_and_how_it_was_established(setup):
     setup.build(CONFIGS)
-    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample Map"]
+    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample DB"]
     create(setup)
     assert (tmap.operator_id, tmap.operator_auth) == (EMAIL, "password")
     assert (smap.owner, smap.owner_auth) == (EMAIL, "password")
@@ -297,7 +297,7 @@ def test_built_models_carry_the_operator_and_how_it_was_established(setup):
     # the dormant flake path below is driven with the method.
     smap.sample_id = "S1"
     smap.save_sample()
-    # The flake commands are dormant since 2026-10-07 (the Sample Map is an
+    # The flake commands are dormant since 2026-10-07 (the Sample DB is an
     # image store; flake-coordinate homing is retired for now), so they are
     # off the allow-list: drive the method directly. The provenance under
     # test is unchanged.
@@ -316,7 +316,7 @@ def test_launch_while_signed_in_keeps_the_users_sheet(setup):
     create(setup)
     UserStore().remember(EMAIL, "Stepper Probe", {"x_step": 9})
     built = setup.build(CONFIGS)
-    assert built == ["Stepper Probe", "Transfer Map", "Sample Map"]
+    assert built == ["Stepper Probe", "Transfer Map", "Sample DB"]
     assert "User" in setup.controller.model_names
     sheet = models(setup)["User"]
     assert sheet.email == EMAIL and not sheet.is_estopped
@@ -346,7 +346,7 @@ def test_remember_current_values_on_the_sheet_keeps_only_user_params(setup):
     kept = UserStore().preferences(EMAIL)
     assert kept["Stepper Probe"]["x_step"] == 7
     assert "slow_speed" not in kept["Stepper Probe"]
-    assert "RGB Analysis" not in kept and "Sample Map" not in kept
+    assert "RGB Analysis" not in kept and "Sample DB" not in kept
 
 
 def test_a_closed_sheet_reopens_for_the_same_user(setup):
@@ -362,13 +362,23 @@ def test_a_closed_sheet_reopens_for_the_same_user(setup):
 
 def test_save_station_settings_asks_and_keeps_the_brakes_out(setup, root):
     setup.build(CONFIGS)
-    smap = models(setup)["Sample Map"]
+    smap = models(setup)["Sample DB"]
     smap.um_per_count = "0.4"
     assert setup.run("save_station_settings").needs_confirm
     assert setup.run("save_station_settings", None, (True,)).is_ok
     saved = json.loads((root / "station.json").read_text())
-    assert saved["model_params"]["Sample Map"] == {"um_per_count": "0.4"}
+    assert saved["model_params"]["Sample DB"] == {"um_per_count": "0.4"}
     assert "slow_speed" not in saved["model_params"].get("Stepper Probe", {})
+
+
+def test_station_settings_saved_under_the_sample_maps_old_name_still_apply(setup, root):
+    """The Sample Map became the Sample DB (owner 2026-10-07): a station
+    document written before the rename keeps working."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "station.json").write_text(json.dumps(
+        {"model_params": {"Sample Map": {"um_per_count": "0.7"}}}))
+    setup.build(CONFIGS)
+    assert models(setup)["Sample DB"].um_per_count == "0.7"
 
 
 # -- the Phase 1 profiles migrate -------------------------------------------------------------

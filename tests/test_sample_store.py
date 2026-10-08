@@ -1,4 +1,4 @@
-"""The Sample Map's store, `data/sample_map.sqlite` (flake-coords Phase 1).
+"""The Sample DB's store, `data/sample_map.sqlite` (flake-coords Phase 1).
 
 Owner rulings 2026-10-04: a separate file following the Transfer Map store's
 conventions, joined to it by `sample_id` / `flake_uid`; quality 1-5 and the
@@ -306,7 +306,7 @@ def test_the_csv_export_writes_the_four_tables(store, tmp_path):
     assert row["quality"] == "5"
 
 
-# -- the Sample Map's incremental writes (each mark is its own transaction) ------
+# -- the Sample DB's incremental writes (each mark is its own transaction) ------
 
 def test_a_corner_is_added_or_replaced_on_a_registration(store):
     store.put_sample({"sample_id": "S1"})

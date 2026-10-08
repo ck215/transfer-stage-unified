@@ -74,7 +74,7 @@ class PhasedModel(Model):
 
 CLASSES = dict(MODEL_TYPES)
 from model.sample_map import SampleMap                # noqa: E402  (held feature, still held to the contract)
-CLASSES.setdefault("Sample Map", SampleMap)
+CLASSES.setdefault("Sample DB", SampleMap)
 CLASSES["Minimal"] = MinimalModel
 CLASSES["Phased"] = PhasedModel
 

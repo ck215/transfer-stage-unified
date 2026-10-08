@@ -1532,8 +1532,9 @@ class TransferMap(Model):
             if not self.sample_options:
                 raise Refused(self.SAMPLE_FIRST + ", then pick it here "
                               "(Sample, Chip, Flake).")
-            raise Refused("Pick the sample, chip and flake before arming, so "
-                          "the cut can be traced to its flake.")
+            raise Refused(self.missing_tier(where) + ": pick the sample, chip "
+                          "and flake before arming, so the cut can be traced "
+                          "to its flake.")
         if getattr(red, "is_running", False):
             # The trial's run starts on the region picked after Arm; a run
             # already going measures some other region, and Red Percent
@@ -3256,7 +3257,7 @@ class TransferMap(Model):
         """The Chip dropdown (the sample's chips). A different chip clears
         the flake."""
         if not self._sample:
-            raise Refused("Pick the sample first.")
+            raise Refused(self.missing_tier(("", "", "")) + ".")
         found = self._match(label, self.chip_options)
         if found is None:
             raise Refused(f"{label!r} is not a chip of sample {self._sample}. "
@@ -3269,7 +3270,7 @@ class TransferMap(Model):
     def pick_flake(self, label):
         """The Flake dropdown (the chip's flakes)."""
         if not (self._sample and self._chip):
-            raise Refused("Pick the sample and the chip first.")
+            raise Refused(self.missing_tier((self._sample, "", "")) + ".")
         found = self._match(label, self.flake_options)
         if found is None:
             raise Refused(f"{label!r} is not a flake of chip {self._chip}. "
@@ -3277,6 +3278,19 @@ class TransferMap(Model):
         self._flake = found
         self._touch()
         return found
+
+    @staticmethod
+    def missing_tier(where):
+        """The sentence for the first tier `where` (sample, chip, flake)
+        lacks, in the hierarchy's order: a chip is a required choice (only
+        its photo is optional), so a flake given without one is refused at
+        the chip."""
+        sample, chip, _flake = (str(v or "").strip() for v in where)
+        if not sample:
+            return "Choose a sample first"
+        if not chip:
+            return "Choose a chip first: a flake always belongs to a chip"
+        return "Choose a flake first"
 
     @property
     def cut_next(self):
@@ -3302,8 +3316,10 @@ class TransferMap(Model):
         where = tuple(str(v or "").strip() for v in (
             given if any(v is not None for v in given) else self._where()))
         if not all(where):
-            raise Refused("Pick the sample, chip and flake on the trial's "
-                          "setup, then press Set sample for trial.")
+            # Sample -> chip -> flake: a flake never stands without its chip.
+            raise Refused(self.missing_tier(where) + ": pick the sample, chip "
+                          "and flake on the trial's setup, then press Set "
+                          "sample for trial.")
         row = self._store.trial(number)
         if row is None:
             raise Refused(f"No trial {number} in the database.")

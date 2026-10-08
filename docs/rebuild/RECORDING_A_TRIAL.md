@@ -32,7 +32,7 @@ stays on record and in the export, off the map), and six tip-shade columns
 (`force_position`, `force_class`, `contact_lowered`, `shade_baseline`, `shade_peak`,
 `shade_mark`). An older file is upgraded the first time the station opens it, by
 column presence (a column the file has is skipped, so a cut-short upgrade finishes; no backup is written, so copy a store before first opening it with a new version). A v9 is no longer planned. Plan rows: Tier S
-in `BUGFIX_PLAN.md`. The Sample Map has its own store (v4, see `docs/rebuild/STATUS.md`).
+in `BUGFIX_PLAN.md`. The Sample DB has its own store (v4, see `docs/rebuild/STATUS.md`).
 
 ## The procedure, for the owner
 
@@ -59,16 +59,16 @@ region step on, and the stop overrides everything.
      list is added with **New model** / **Add model**), then **Add tip** (refuses an empty or known ID and stays) or
      **Cancel**. A tip's model can be corrected later under Configure Transfer Map -> Tip
      (**Tip model**, `set_tip_model`).
-   - **Sample**, **Chip**, **Flake**: three cascading dropdowns that read the Sample Map's
+   - **Sample**, **Chip**, **Flake**: three cascading dropdowns that read the Sample DB's
      store read-only (a new sample clears the chip and the flake; each refreshes on
      change). **Arm refuses unless all three are picked**, so every cut is traceable to its
-     flake; with no samples registered the refusal points at the Sample Map. **Cut** shows
+     flake; with no samples registered the refusal points at the Sample DB. **Cut** shows
      the cut number, derived: 1 + the trials already on that flake (every status).
    - **Tilt for this trial** and **Speed for this trial** (a rotator's reading fills
      the tilt when one is connected; without one, type it; the tilt is collected, never
      demanded, and not drawn on the map).
    RGB Analysis must not be running a run of its own (Arm refuses; the trial starts its own
-   run). Trials also carry the free-text `sample_id` column of older stores; the Sample Map's
+   run). Trials also carry the free-text `sample_id` column of older stores; the Sample DB's
    "Trials for this sample" listing reads the picked flake's trials.
 2. **Arm trial.** The station asks for confirmation, and the first question is always
    **"Is the sample vacuum ON? Check it now."** (the station cannot sense it; trials were once cut with it
@@ -111,7 +111,7 @@ region step on, and the stop overrides everything.
    **Mark trial invalid** / **Mark trial valid** (under Configure Transfer Map -> AFM measurement, with the Trial number) sets the lab's flag on a recorded trial.
 
 8. Later, after AFM: under Configure Transfer Map, type the trial number, the channel width (AFM) and its uncertainty (and, when measured, the thickness, the **channel height** — the AFM step from the substrate to the channel's top, positive up — and the **trench depth** — how deep the tip cut into the flake, positive down), then **Attach AFM**. The trial becomes "measured" and turns from hollow to coloured on the map. **Set tilt for trial** and **Set speed for trial** (same section, using the Trial number and the two entries) correct a recorded trial.
-9. An optical width (store version 6): under **Optical measurement**, type the trial number, the channel width read on the capture-region picture (pixels × the Sample Map's µm per pixel; method `capture_px`, or pick another method) and its uncertainty, then **Attach optical width**. It never makes a trial "measured": on the map an optical-only trial draws **ringed**, and the slice and the comparison use AFM widths only unless **Width source** (under Figure) is set to "AFM, else optical", where an optical point counts with 3× the default uncertainty. Every figure says which widths it used.
+9. An optical width (store version 6): under **Optical measurement**, type the trial number, the channel width read on the capture-region picture (pixels × the Sample DB's µm per pixel; method `capture_px`, or pick another method) and its uncertainty, then **Attach optical width**. It never makes a trial "measured": on the map an optical-only trial draws **ringed**, and the slice and the comparison use AFM widths only unless **Width source** (under Figure) is set to "AFM, else optical", where an optical point counts with 3× the default uncertainty. Every figure says which widths it used.
 10. Figures, exports and imports are under Configure Transfer Map. The figure dropdown is Map (speed x force, coloured by width), Heatmap (the Gaussian process over speed x force), Compare and Profile.
 11. **Tips**, under Configure Transfer Map → **Tip**: type the tip ID in the Trial section. **Tip note** + **Save tip note** keeps a note on its record. **Retire tip** (it asks first) marks a tip you will not use again; arming on it later asks. **Return tip to use** undoes that. Diagnostics → **Tips** lists every tip with its trial count, its first and last trial, and whether it broke or is retired. **Export tips** (under Data) writes the tips file with each tip's trial count and trial numbers.
 

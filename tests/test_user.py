@@ -4,7 +4,7 @@
 A non-hardware Model (`NAME = "User"`, no devices, no identity byte, no
 port) that OWNS the signed-in user's config: `config()` reads it from the
 accounts file, `remember()` writes it (the Q4 split still decides what a
-user may keep), `operator()` is who the Transfer Map and the Sample Map
+user may keep), `operator()` is who the Transfer Map and the Sample DB
 stamp on their records. A Guest is a User with no account row: its config
 is empty, so every model keeps the station's defaults.
 
@@ -72,7 +72,7 @@ class FakeTransferMap(FakeProbe):
 
 
 class FakeSampleMap(FakeProbe):
-    NAME = "Sample Map"
+    NAME = "Sample DB"
     PARAMS = {}
 
     def __init__(self):
@@ -202,7 +202,7 @@ def test_opening_as_guest_changes_nothing(station, profiles):
     probe.x_step, probe.setpoint = 7, 31.0
     assert User.guest().load_into(station.models, profiles) == {}
     assert (probe.x_step, probe.setpoint, probe.man_full_speed) == (7, 31.0, 300)
-    tmap, smap = station.models["Transfer Map"], station.models["Sample Map"]
+    tmap, smap = station.models["Transfer Map"], station.models["Sample DB"]
     assert (tmap.operator_id, tmap.operator_auth) == ("guest", "guest")
     assert (smap.owner, smap.owner_auth) == ("guest", "guest")
 
@@ -258,7 +258,7 @@ def test_load_into_applies_station_then_user_through_apply_defaults(store, stati
     probe = station.models["Stepper Probe"]
     assert (probe.x_step, probe.man_full_speed) == (8, 250)
     assert station.models["Temperature Controller"].p_term == 1.5
-    tmap, smap = station.models["Transfer Map"], station.models["Sample Map"]
+    tmap, smap = station.models["Transfer Map"], station.models["Sample DB"]
     assert (tmap.operator_id, tmap.operator_auth) == ("ian@uci.edu", "password")
     assert (smap.owner, smap.owner_auth) == ("ian@uci.edu", "password")
 
