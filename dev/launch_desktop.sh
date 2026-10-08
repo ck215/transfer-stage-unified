@@ -15,7 +15,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
 if [ "${1:-}" = "classic" ]; then
-    inner="'$REPO/dev/swap_branch.sh' main || read -p 'Launch failed (see above). Press Enter to close.'"
+    inner="'$REPO/dev/swap_branch.sh' legacy || read -p 'Launch failed (see above). Press Enter to close.'"
     if command -v gnome-terminal >/dev/null 2>&1; then
         exec gnome-terminal -- bash -c "$inner"
     fi

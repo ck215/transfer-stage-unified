@@ -12,7 +12,7 @@
 #                             default view), no terminal; a failed launch is
 #                             shown in a dialog.
 #   Transfer Stage Classic    dev/launch_desktop.sh classic  = the stable app on
-#                             `main` (dev/swap_branch.sh main, flashing the
+#                             `legacy` (dev/swap_branch.sh legacy, flashing the
 #                             Megas to its firmware first) in a terminal.
 #
 # macOS and Windows have no .desktop files; this script does nothing there.
