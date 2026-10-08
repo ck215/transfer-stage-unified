@@ -2172,6 +2172,22 @@ class PanelCard {
       head.appendChild(keys);
       this.wideKey = wide;
       this.moveKey = move;
+      // UX audit 2026-10-08 #19: Wide, Move and Open were three Tab stops
+      // per tile before its controls. Wide and Move are Tab stops only
+      // while focus is in this tile: Tab forward meets Open, and Shift+Tab
+      // from Open reaches Move (its arrow keys move the tile), then Wide.
+      wide.tabIndex = -1;
+      move.tabIndex = -1;
+      this.node.addEventListener('focusin', () => {
+        wide.tabIndex = 0;
+        move.tabIndex = 0;
+      });
+      this.node.addEventListener('focusout', (event) => {
+        if (event.relatedTarget && this.node.contains(event.relatedTarget)) return;
+        wide.tabIndex = -1;
+        move.tabIndex = -1;
+      });
+      open.setAttribute('aria-description', 'Shift+Tab for Move and Wide');
       head.appendChild(open);
       this.openButton = open;
     }
