@@ -104,3 +104,28 @@ def test_the_link_lost_words_name_settings_not_setup():
                  if "Hard reset it in" in line][0]
     assert "in Settings" in words and "in Setup" not in words
     assert "Hard reset it in Setup" not in APP_JS
+
+
+@needs_browser
+def test_tutorials_take_focus_and_their_end_key_is_not_called_stop(named_station, tmp_path):
+    """The Tutorials side window takes focus like Settings and the account
+    menu, gives it back on Escape, and the coach card's key that ends a
+    tutorial says so: "Stop" beside the rail's red Stop read as the machine's
+    stop."""
+    view, model = named_station
+    out = _browse(view, _READY + r"""
+      await page.focus('#tutorials-link');
+      await page.keyboard.press('Enter');
+      await until(() => !document.getElementById('tutorial-panel').hidden);
+      await sleep(300);
+      const opened = await page.evaluate(() => document.activeElement.id);
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      return { opened,
+               closed: await page.evaluate(() => [document.getElementById('tutorial-panel').hidden,
+                                                   document.activeElement.id]),
+               end: await page.evaluate(() => document.querySelector('#tutorial-card .tutorial-stop').textContent) };
+    """, tmp_path)
+    assert out["opened"] == "tutorial-panel", out
+    assert out["closed"] == [True, "tutorials-link"], out
+    assert out["end"] == "End tutorial", out

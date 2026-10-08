@@ -416,7 +416,7 @@
       const text = make('div', 'tutorial-row-text');
       text.appendChild(make('h3', 'tutorial-row-title', t.title));
       const saved = readProgress(t.id);
-      const meta = t.steps.length + ' steps' + (t.requires === 'sim' ? ' - simulated hardware' : '');
+      const meta = t.steps.length + ' steps' + (t.requires === 'sim' ? ', simulated hardware only' : '');
       text.appendChild(make('p', 'tutorial-row-meta', meta));
       row.appendChild(text);
       const actions = make('div', 'tutorial-row-actions');
@@ -463,12 +463,17 @@
     ui.panel.hidden = false;
     ui.link.setAttribute('aria-expanded', 'true');
     renderList();
+    // Like Settings and the account menu: focus moves into the side window
+    // it opened (it stayed on the rail's Tutorials key).
+    ui.panel.focus({ preventScroll: true });
     await readAccount();
     if (!ui.panel.hidden) renderList();
   }
 
   function closePanel() {
+    const inside = ui.panel.contains(document.activeElement);
     ui.panel.hidden = true;
+    if (inside) ui.link.focus({ preventScroll: true });
     ui.link.setAttribute('aria-expanded', 'false');
   }
 
@@ -478,6 +483,7 @@
     const panel = make('aside', 'tutorial-panel');
     panel.id = 'tutorial-panel';
     panel.setAttribute('aria-label', 'Tutorials');
+    panel.tabIndex = -1;
     panel.dataset.sideWindow = '';
     panel.hidden = true;
     const head = make('header', 'tutorial-panel-head');
@@ -486,7 +492,7 @@
     panel.appendChild(head);
     panel.appendChild(make('p', 'tutorial-intro',
       'A tutorial points at the controls and waits for you to press them. '
-      + 'It never presses one for you. Escape stops it.'));
+      + 'It never presses one for you. Escape ends it.'));
     ui.note = make('p', 'tutorial-note');
     ui.note.setAttribute('role', 'alert');
     ui.note.hidden = true;
@@ -510,7 +516,9 @@
     card.appendChild(say);
     card.appendChild(make('p', 'tutorial-hint'));
     const row = make('div', 'tutorial-card-actions');
-    row.appendChild(button('Stop', 'ghost tutorial-stop', stop));
+    // "End tutorial", not "Stop": beside the rail's red Stop, a key that
+    // only ends the coaching must not read as the machine's stop.
+    row.appendChild(button('End tutorial', 'ghost tutorial-stop', stop));
     row.appendChild(button('Back', 'button role-neutral tutorial-back',
       () => { if (run && run.i > 0) enter(run.i - 1, true); }));
     row.appendChild(button('Next', 'button role-neutral tutorial-next', advance));
