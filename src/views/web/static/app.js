@@ -615,6 +615,13 @@ function isRowSection(section) {
   return section && section.layout === 'row';
 }
 
+/** The tier a section takes on its HOST's page (schema.section's
+ *  `hosted_tier`, owner ruling 2026-10-07), or 0 when it keeps its own. */
+function hostedTierOf(section) {
+  const tier = Number(section && section.hosted_tier);
+  return tier === 2 || tier === 3 ? tier : 0;
+}
+
 /** A section's tier of prominence (schema.section's `tier`, E 2026-09-25):
  *  1 always drawn, 2 behind the model's disclosure, 3 behind Diagnostics
  *  inside it. A schema from before tiers is all tier 1. */
@@ -2085,6 +2092,29 @@ class PanelCard {
     this.build();
   }
 
+  /** Put every section that declares a `hosted_tier` where its page wants
+   *  it: that tier's container on the host's page (`hosted` true), its own
+   *  tier's on the model's own page. A section whose target tier has no
+   *  disclosure (nothing else lives there) stays where it is rather than
+   *  land behind a disclosure that was never drawn. */
+  placeSections(hosted) {
+    for (const entry of this.phaseSections) {
+      if (!entry.hostedTier) continue;
+      const want = hosted ? entry.hostedTier : entry.ownTier;
+      if (want === entry.tier) continue;
+      const target = want === 1 ? this.body : (want === 2 ? this.well : this.deep);
+      if (!target || (want !== 1 && !(want === 2 ? this.disclose2 : this.disclose3))) continue;
+      // Keep the schema's order among the sections already in `target`.
+      const at = this.phaseSections.indexOf(entry);
+      const after = this.phaseSections.slice(at + 1)
+        .find((other) => other.node.parentNode === target);
+      const tail = want === 2 ? (this.disclose3 || target.querySelector(':scope > .well-foot')) : null;
+      target.insertBefore(entry.node, after ? after.node : tail);
+      entry.tier = want;
+      for (const widget of entry.widgets) widget.tier = want;
+    }
+  }
+
   /** Where a section of `tier` is drawn: tier 1 in the entry's body, tier 2
    *  in the well behind the model's disclosure, tier 3 in the Diagnostics
    *  strip inside that well. */
@@ -2249,7 +2279,8 @@ class PanelCard {
       // The block (header and all) goes with its section, or when every
       // element in it is hidden by the step.
       this.phaseSections.push({
-        node: block, phases: section.phases || null, tier,
+        node: block, phases: section.phases || null, tier, ownTier: tier,
+        hostedTier: hostedTierOf(section),
         widgets: mine, title: section.title || '',
       });
       const drops = mine.filter((w) => w.element.type === 'dropdown' && w.reload);
@@ -2380,6 +2411,7 @@ class PanelCard {
     for (const other of ['span-2', 'span-3', 'span-6', 'is-pinned']) this.node.classList.remove(other);
     if (this.titleNode) this.titleNode.setAttribute('aria-level', '3');
     host.node.insertBefore(this.node, host.disclose2 || host.firstGuestTiers() || null);
+    this.placeSections(true);
     if (this.disclose2) {
       const tiers = make('div', 'card-tiers');
       for (const name of ['is-latched', 'stale', 'is-lost', 'is-opened']) {
@@ -2398,6 +2430,7 @@ class PanelCard {
     this.hostName = null;
     this.node.classList.remove('is-hosted');
     if (this.titleNode) this.titleNode.removeAttribute('aria-level');
+    this.placeSections(false);
     if (this.tiersNode) {
       this.node.appendChild(this.disclose2);
       this.node.appendChild(this.well);

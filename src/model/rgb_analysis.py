@@ -1849,6 +1849,7 @@ class RgbAnalysis(Model):
                            disabled_when=("running", "latched", "no_region")),
                 sch.button("Stop run", "end_run", role="neutral",
                            enabled_when=("running",), stop=True),
+                hosted_tier=2,
             ),
             sch.section(
                 "Run",

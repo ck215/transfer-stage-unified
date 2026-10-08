@@ -1621,3 +1621,18 @@ def test_sp2_the_secondary_style_is_tokens_only_and_off_the_overview():
     assert "var(--muted)" in body and "var(--statistic-size)" in body
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|\d+px", body), "a literal"
     assert "display: none" in _css_rule(".sheet.is-overview .row.secondary")
+
+
+# --------------------------------------------------------------------------
+# SP-3: a hosted model's section takes its hosted_tier on the host's page
+# --------------------------------------------------------------------------
+def test_sp3_the_placement_rule_is_read_from_the_schema_and_applied_on_attach_and_detach():
+    assert "section && section.hosted_tier" in _body(r"(function hostedTierOf\(section\) \{.*?\n\})")
+    attach = _body(r"\n  attachTo\(host\) \{(.*?)\n  \}\n")
+    assert "this.placeSections(true)" in attach
+    detach = _body(r"\n  detachFromHost\(\) \{(.*?)\n  \}\n")
+    assert "this.placeSections(false)" in detach
+    place = _body(r"\n  placeSections\(hosted\) \{(.*?)\n  \}\n")
+    assert "hosted ? entry.hostedTier : entry.ownTier" in place
+    # Only a tier with a disclosure drawn is a target.
+    assert "this.disclose2" in place and "this.disclose3" in place
