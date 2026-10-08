@@ -465,6 +465,7 @@ def test_d_a_refusal_in_the_group_is_said_in_the_group(hosted_station, tmp_path)
 
 
 @needs_browser
+@pytest.mark.usefixtures("test_routes")
 def test_d_closing_the_host_gives_the_hosted_model_its_page_back(hosted_station, tmp_path):
     view, controller, host, guest = hosted_station
     out = _browse(view, _HOSTED + r"""
@@ -745,6 +746,7 @@ def test_w1_a_host_page_is_not_pinned_the_whole_page_scrolls(hosted_station, tmp
 
 
 @needs_browser
+@pytest.mark.usefixtures("test_routes")
 def test_w1_the_same_page_without_a_guest_keeps_todays_pin(hosted_station, tmp_path):
     """Every other page keeps O15's rule: the same host with its guest
     closed is a page of its own, and its short tier 1 is pinned again."""
@@ -1635,6 +1637,7 @@ def test_sp3_the_live_group_leaves_the_hosts_tier_one_and_is_behind_details(live
 
 
 @needs_browser
+@pytest.mark.usefixtures("test_routes")
 def test_sp3_the_live_group_is_tier_one_on_the_models_own_page_and_returns_there(live_station, tmp_path):
     out = _browse(live_station, _LIVE_WHERE + r"""
       if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {

@@ -243,6 +243,15 @@ sys.modules['tkinter.filedialog'] = MagicMock()
 sys.modules['tkinter.messagebox'] = MagicMock()
 
 
+@pytest.fixture
+def test_routes(monkeypatch):
+    """`/api/close_model` and `/api/open_model` answer only with
+    STATION_TEST_ROUTES=1 (architecture audit 2026-10-08 item 10: they close
+    and reopen launched models past Setup's rules, and no page uses them).
+    A test that drives a model's removal through them asks for this."""
+    monkeypatch.setenv("STATION_TEST_ROUTES", "1")
+
+
 @pytest.fixture(autouse=True)
 def _transfer_map_db_in_tmp(monkeypatch, tmp_path):
     """The Transfer Map makes its database ready at `open()` (bench
@@ -259,6 +268,8 @@ def _transfer_map_db_in_tmp(monkeypatch, tmp_path):
     # And the stores' backup (2026-10-07): off, so no test ever writes to
     # ~/QMDL_Drive; a test of the backup sets its own folder.
     monkeypatch.setenv("STATION_BACKUP_DIR", "off")
+    # And the test-only routes: off unless a test asks (`test_routes`).
+    monkeypatch.delenv("STATION_TEST_ROUTES", raising=False)
     # And the station's choices file (a Guest's store choices): never the
     # operator's ~/transfer-stage-runs/station.json.
     monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))

@@ -30,15 +30,15 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 | 3 | P1 | A backup folder set under an unmounted `~/QMDL_Drive` is written into the bare mountpoint | Fixed `c7e2c51` |
 | 4 | P1 | The Quit backup wait (up to 20 s) sits inside the Controller's close loop | Documented |
 | 5 | P1 | Changed firmware (chuck, temperature controller) is offered by the flash prompt before bench validation | Documented (owner) |
-| 6 | P1 | Backups of stores with the same file name overwrite each other | Documented |
-| 7 | P1 | A live store may be chosen on the rclone drive | Documented |
+| 6 | P1 | Backups of stores with the same file name overwrite each other | Fixed `04a6f97` |
+| 7 | P1 | A live store may be chosen on the rclone drive | Fixed `ffe5ab3` |
 | 8 | P2 | The picture preview opens SQLite 12 times per Transfer Map state poll (48/s), in every phase | Documented |
 | 9 | P2 | `Controller.add` does not refuse after `close()` began; `remove` drops before it stops | Documented (core) |
-| 10 | P2 | `/api/open_model` and `/api/close_model` kept for tests bypass Setup's rules | Documented |
-| 11 | P2 | Guest session gating is enforced in the Web adapter, not below it | Documented |
-| 12 | P2 | The Transfer Map duplicates `store_choice`'s install-folder rules | Documented |
+| 10 | P2 | `/api/open_model` and `/api/close_model` kept for tests bypass Setup's rules | Fixed `f88942f` |
+| 11 | P2 | Guest session gating is enforced in the Web adapter, not below it | Fixed `1740189` |
+| 12 | P2 | The Transfer Map duplicates `store_choice`'s install-folder rules | Fixed `02a264d` |
 | 13 | P2 | Hard reset is not refused during a scan; Guest switch races an Arm | Documented |
-| 14 | P2 | Back up now / the close backup copy a trial video still being recorded | Documented |
+| 14 | P2 | Back up now / the close backup copy a trial video still being recorded | Fixed `f513104` |
 | 15 | P2 | Setup's A3 Trial-store commands survive with no control | Partly fixed `ffa978b` |
 | 16 | P3 | `Setup._store_section` dead, stale comments in `setup.py` | Fixed `ffa978b` |
 | 17 | P3 | "Export/Import sample map" in operator text | Fixed `ffa978b` |
@@ -142,7 +142,7 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   unvalidated changes. Update the temperature-controller banner to match the
   approval.
 
-### 6. Backups of stores with the same file name overwrite each other (documented)
+### 6. Backups of stores with the same file name overwrite each other (fixed `04a6f97`)
 
 - **Evidence.** One flat folder per user (`backup.py:110-116`); the database is
   written to `folder / db.name` (`backup.py:265`), manifest key `"db:" + db.name`
@@ -154,8 +154,15 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 - **Recommended fix.** A subfolder per store in the backup (by store folder
   name or a hash of its path), or refuse the clash. Changes the restore steps
   in `RECORDING_A_TRIAL.md`. Behavioural.
+- **Fix landed.** Each store backs up into its own subfolder
+  `<name>-<8 hex of the SHA-1 of its full path>/` (`backup.store_subfolder`),
+  mirroring its folder there. Nothing is migrated: a flat copy an earlier
+  version wrote stays where it is; `RECORDING_A_TRIAL.md` "Backups" says how
+  to restore from either. A store moved to another folder starts a new
+  subfolder. Test `test_stores_with_the_same_name_never_share_a_backup`
+  failed before the fix.
 
-### 7. A live store may be chosen on the rclone drive (documented)
+### 7. A live store may be chosen on the rclone drive (fixed `ffe5ab3`)
 
 - **Evidence.** The store prompt refuses only the install folder
   (`store_choice.py:237-241`, `transfer_map.py:1073-1076`,
@@ -167,6 +174,17 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 - **Recommended fix.** Refuse store paths under `~/QMDL_Drive` (or any path
   whose mount is not the local disk) in `StorePrompt` and the Transfer Map's
   copy. It changes what an operator may choose: the owner's call.
+- **Fix landed (lead's brief).** `store_choice.remote_reason` refuses New
+  store / Open store (and the Sample DB's legacy copy) under `~/QMDL_Drive`
+  by path alone, and on any `fuse.*` or network mount (`/proc/mounts`,
+  longest mountpoint; `fuseblk`, a local NTFS disk, is allowed), with a
+  sentence saying why. Without a mount table only the path rule holds.
+  Tests `test_a_store_under_the_drive_folder_is_refused_even_unmounted`,
+  `test_a_store_on_a_fuse_or_network_mount_is_refused`,
+  `test_both_maps_refuse_new_and_open_store_on_the_drive` failed before.
+  **Still open:** a store already remembered on the drive (a user's
+  `map_store`/`sample_store` setting, `STATION_MAP_DB`) still opens at
+  sign-in; only the prompt refuses.
 
 ## P2: structure
 
@@ -201,7 +219,7 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 - **Recommended fix.** Refuse `add` once closing; stop before dropping, or keep
   the model in a "closing" set that `estop_all` also reaches. Core file.
 
-### 10. Test-only routes bypass Setup's rules (documented)
+### 10. Test-only routes bypass Setup's rules (fixed `f88942f`)
 
 - **Evidence.** `/api/close_model` and `/api/open_model`
   (`server.py:355-376`) are kept "for the browser tests". `open_model` calls
@@ -209,8 +227,12 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   `_reset_lock` (the Guest rule still holds: `model_from_config` refuses).
 - **Recommended fix.** Gate them behind a test-only environment switch, or
   route `open_model` through Setup's Hard reset.
+- **Fix landed.** Both answer "no route" (404) unless
+  `STATION_TEST_ROUTES=1`; the conftest fixture `test_routes` sets it for
+  the six tests that use them (conftest clears it otherwise). Test
+  `test_the_close_and_open_routes_are_test_only` failed before.
 
-### 11. Guest gating lives in the Web adapter (documented)
+### 11. Guest gating lives in the Web adapter (fixed `1740189`)
 
 - **Evidence.** `WebView._run` asks `setup.session_refusal(name, command)`
   (`server.py:493-501`) before `controller.run`; the Controller itself has no
@@ -220,8 +242,15 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   holds only for the Web route.
 - **Recommended fix.** Move the per-command refusal into Setup's hold on the
   Controller (or a Controller hook), so any frontend inherits it.
+- **Fix landed.** `Controller.command_gate(name, command)`, asked by
+  `Controller.run` (and so `set_value`) for every non-stop command; Setup
+  installs `session_refusal` at construction. A stop never reaches the gate
+  (`toggle_estop`/`estop`) or is passed by it (`UNGATED_COMMANDS`); a gate
+  that raises refuses. `WebView._run` keeps its check as a second layer.
+  Test `test_the_controller_itself_refuses_a_guest_the_maps_commands`
+  failed before. (`controller.py` is a core file: the lead's review.)
 
-### 12. The Transfer Map duplicates `store_choice` (documented)
+### 12. The Transfer Map duplicates `store_choice` (fixed `02a264d`)
 
 - **Evidence.** `transfer_map.py:136-150` (`_install_root`, `_inside`),
   `:1022`, `:1073-1076` (`_refuse_inside_install` overriding the mixin's) copy
@@ -230,6 +259,13 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   `transfer_map._install_root`, which is why the copy survives.
 - **Recommended fix.** Point the Transfer Map at `store_choice` and move the
   tests' monkeypatch to `store_choice.install_root`.
+- **Fix landed.** `_install_root`, `_inside`, `INSIDE_INSTALL` and the
+  `_refuse_inside_install` override are gone; `TransferMap.install_root`
+  returns `store_choice.install_root()` and the mixin's rule (same words)
+  applies. The four fixtures now patch `store_choice.install_root` (the
+  install-folder tests failed against the copy, then passed). The
+  Transfer Map's `_SQLITE_MAGIC` read in `open_store` still duplicates
+  `store_choice.is_sqlite` (left: its error wording differs).
 
 ### 13. Hard reset during a scan; Guest switch versus Arm (documented)
 
@@ -241,13 +277,18 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   aborted. A switch during the region step discards the Arm still, because
   `is_active` (`transfer_map.py:1219`) counts only an armed trial.
 
-### 14. Backups copy a video still being recorded (documented)
+### 14. Backups copy a video still being recorded (fixed `f513104`)
 
 - Saves skip the backup while a recording runs (`transfer_map.py:3646-3651`),
   but Back up now (`setup.py:2931-2942`) and the backup when a store model is
   removed (`setup.py:2877-2880`) do not. A partial video lands in the backup
   until a later run replaces it; disk contention with the recorder.
 - Fix: `backup_sources` returns only the database while a trial is open.
+- **Fix landed.** That, from the region step to Finish/Abort; and
+  `BackupService` skips any mirrored file modified in the last `SETTLE_S`
+  (5 s), leaving it out of the manifest so the next run copies it. Tests
+  `test_the_backup_takes_only_the_database_while_a_trial_records` and
+  `test_a_file_still_being_written_waits_for_the_next_backup` failed before.
 
 ### 15. Setup's A3 Trial-store commands survive with no control (partly fixed `ffa978b`)
 
@@ -333,6 +374,12 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   path; requests coalesce; one warning per failure streak; the backup thread
   cannot die.
 
+## Follow-up round (2026-10-08 night, items 6, 7, 10, 11, 12, 14)
+
+Branch `worktree-agent-a41acf06b4b34cd56` from `0361333`, one commit per
+item, each with a test that failed first. Items 4, 5, 8, 9, 13, 15 (rest)
+and the P3 rows not marked fixed are unchanged by this round.
+
 ## Tests run (this branch)
 
 Environment: `STATION_NO_WINDOWS=1 QT_QPA_PLATFORM=offscreen
@@ -355,3 +402,22 @@ STATION_NO_UPDATE_CHECK=1 TRANSFER_STAGE_DATA_ROOT=$(mktemp -d)`, `-m "not qt"`.
   tests/test_transfer_map.py`: 1103 passed, 1 skipped, 1 xfailed.
 - Golden `tests/test_wire_golden.py`: 77 passed.
 - The full fast gate and a launch were not run (the lead's gate before merge).
+
+Follow-up round (items 6, 7, 10, 11, 12, 14), same environment:
+
+- On `02a264d`: `tests/test_transfer_map.py tests/test_setup.py
+  tests/test_setup_profile.py tests/test_store_isolation.py
+  tests/test_store_backup.py tests/test_sample_map.py
+  tests/test_architecture.py tests/test_model_contract.py
+  tests/test_wire_golden.py` (golden 77 included): 1188 passed, 1 skipped,
+  1 xfailed.
+- After `1740189`: `tests/test_setup_profile.py tests/test_store_isolation.py
+  tests/test_core_controller.py tests/test_architecture.py
+  tests/test_user.py`: 309 passed; `tests/test_setup.py
+  tests/test_setup_identify.py tests/test_setup_registry.py
+  tests/test_view_web_server.py`: 306 passed, 77 skipped (browser).
+- Browser (headless Chrome), only what uses the changed routes and backup:
+  the three `/api/close_model`/`open_model` server tests, the new 404 test
+  and the three dashboard tests that drive them (`test_d_closing_the_host...`,
+  `test_w1_...`, `test_sp3_..._returns_there`): 7 passed;
+  `tests/test_view_web_account_menu.py`: 8 passed.

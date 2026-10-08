@@ -106,7 +106,6 @@ import os
 import queue
 import re
 import sqlite3
-import sys
 import tempfile
 import threading
 import time
@@ -133,23 +132,8 @@ from result import NeedsConfirm, Refused
 #: Every recording command's refusal while no store is chosen (A3).
 NO_STORE = ("Choose a trial store first: the Transfer Map's page asks where "
             "(New store, or Open store).")
-INSIDE_INSTALL = ("the store cannot live inside the station's own folder; "
-                  "updates replace that folder")
 #: The file the SQLite library writes first in every database.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
-
-
-def _install_root():
-    """The station's own folder: beside the launchers in a PyInstaller
-    bundle, else the checkout (the directory holding `src/`)."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[2]
-
-
-def _inside(root, path):
-    root, path = Path(root).resolve(), Path(path).resolve()
-    return path == root or root in path.parents
 
 
 #: The figure dropdown, in the operator's words -> `plot_data` kind.
@@ -1020,8 +1004,9 @@ class TransferMap(store_choice.StorePrompt, Model):
 
     @staticmethod
     def install_root():
-        """The station's own folder: no store may live under it."""
-        return _install_root()
+        """The station's own folder: no store may live under it (the shared
+        rule, `store_choice.install_root`)."""
+        return store_choice.install_root()
 
     @classmethod
     def legacy_store_path(cls):
@@ -1070,11 +1055,6 @@ class TransferMap(store_choice.StorePrompt, Model):
     def store_status(self):
         return self.describe_store(self.db_path if self._store_chosen else None)
 
-    def _refuse_inside_install(self, path):
-        if _inside(self.install_root(), path):
-            raise Refused(f"{path}: {INSIDE_INSTALL}. Choose a folder outside "
-                          f"{self.install_root()}.")
-
     def open_store(self):
         """Open store: the SQLite file typed in Store file becomes the
         trial store, and is remembered."""
@@ -1083,7 +1063,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise Refused("Type the path of an existing store under Existing "
                           "store file.")
         path = Path(typed).expanduser().resolve()
-        self._refuse_inside_install(path)
+        self._refuse_store_place(path)
         if not path.is_file():
             raise Refused(f"{path}: no file there. Check the path, or press "
                           "New store to make one.")
@@ -1109,7 +1089,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         if not name.endswith(".sqlite"):
             name += ".sqlite"
         path = (Path(folder).expanduser() / name).resolve()
-        self._refuse_inside_install(path)
+        self._refuse_store_place(path)
         if path.exists():
             raise Refused(f"{path} already exists. Type it under Existing store "
                           "file and press Open store to use it.")
@@ -1123,9 +1103,13 @@ class TransferMap(store_choice.StorePrompt, Model):
     def backup_sources(self):
         """`[(database, [folders beside it])]` for the backup: the database's
         pictures and videos (`pictures_root`) and the exports; [] with no
-        store."""
+        store. While a trial is open (Arm to Finish or Abort) the database
+        only: its video is still being written (audit 2026-10-08 item 14);
+        the folders go with the backup after the trial is saved."""
         if not self._store_chosen:
             return []
+        if self._trial is not None or self._pending is not None:
+            return [(self.db_path, [])]
         return [(self.db_path, [self.pictures_root, self.output_root / "exports"])]
 
     def _choose(self, path, created):

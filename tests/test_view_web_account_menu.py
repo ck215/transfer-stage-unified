@@ -125,7 +125,7 @@ def test_the_backup_is_on_the_account_menu(station, tmp_path, monkeypatch):
     status, done = _post(view, "/api/run", {"name": USER_NAME, "command": "back_up_now",
                                             "inputs": {}})
     assert done["status"] == "ok", done
-    assert setup.backup.wait(10) and (folder / "map.sqlite").is_file()
+    assert setup.backup.wait(10) and [p for p in folder.glob("*/map.sqlite")]
     # A fresh sheet for the same user shows the folder they set.
     assert setup._user_for(EMAIL).backup_dir == str(folder)
     assert setup.run("switch_user").is_ok and setup.run("open_as_guest").is_ok

@@ -35,6 +35,16 @@ FOLDER_LIMIT = 200
 #: Where the prompt suggests a signed-in user keeps their stores:
 #: `~/transfer-stage-runs/stores/<email>/` (the home is read at call time).
 SUGGESTED_PARTS = ("transfer-stage-runs", "stores")
+#: The cloud drive's mountpoint in the home folder (rclone; `controller.backup`
+#: writes the automatic backups there). No live store may be under it.
+DRIVE = "QMDL_Drive"
+#: The mount table read to tell a remote folder from a local one (Linux);
+#: where it cannot be read, only the `DRIVE` path rule holds.
+MOUNTS = "/proc/mounts"
+#: Network file systems: no live store on them either. Every `fuse.<kind>`
+#: (rclone, sshfs, gvfs...) is refused too; `fuseblk` (NTFS or exFAT on a
+#: local disk) is a local disk.
+REMOTE_FSTYPES = ("nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "afs")
 
 
 def install_root():
@@ -48,6 +58,62 @@ def install_root():
 def inside(root, path):
     root, path = Path(root).resolve(), Path(path).resolve()
     return path == root or root in path.parents
+
+
+def _mount_of(path):
+    """`(mountpoint, fstype)` of the mount holding `path` (the longest
+    mountpoint above it in `MOUNTS`), or None when the table cannot be
+    read. Reads one small file; never touches the store's folder."""
+    try:
+        with open(MOUNTS, encoding="utf-8", errors="replace") as handle:
+            rows = handle.read().splitlines()
+    except OSError:
+        return None
+    best = None
+    for row in rows:
+        fields = row.split()
+        if len(fields) < 3:
+            continue
+        # /proc/mounts escapes a space in a mountpoint as \040.
+        point = Path(fields[1].replace("\\040", " ").replace("\\011", "\t"))
+        if (path == point or point in path.parents) and (
+                best is None or len(point.parts) > len(best[0].parts)):
+            best = (point, fields[2])
+    return best
+
+
+def remote_reason(path):
+    """Why `path` cannot hold a live store (a sentence), or None. Refused:
+    anything under `~/QMDL_Drive` (by its path alone, mounted or not), and
+    anything on a FUSE (rclone, sshfs...) or network mount. A live SQLite
+    database needs a local disk (its locking and every write over FUSE are
+    slow and can lose data when the mount drops; with the drive unmounted a
+    write would land in the bare mountpoint), and the drive already gets an
+    automatic backup of every store (audit 2026-10-08 item 7)."""
+    path = Path(path).expanduser()
+    why = ("a live store must be on this computer's own disk (SQLite over a "
+           "cloud or network mount is slow and can lose data when the mount "
+           "drops), and the drive already gets an automatic backup of your "
+           "stores. Choose a local folder, e.g. "
+           f"{suggested_dir()}.")
+    drive = Path.home() / DRIVE
+    for candidate in {path, path.resolve()}:
+        if candidate == drive or drive in candidate.parents:
+            return f"{path}: the store cannot be on the cloud drive ({drive}); {why}"
+    found = _mount_of(path.resolve())
+    if found is not None:
+        point, kind = found
+        if kind.startswith("fuse.") or kind in REMOTE_FSTYPES:
+            return (f"{path}: the store cannot be on the cloud drive or a "
+                    f"network folder ({point} is a {kind} mount); {why}")
+    return None
+
+
+def refuse_remote(path):
+    """Refused (`remote_reason`) when `path` cannot hold a live store."""
+    reason = remote_reason(path)
+    if reason:
+        raise Refused(reason)
 
 
 def user_folder(email):
@@ -243,6 +309,12 @@ class StorePrompt:
             raise Refused(f"{path}: the store cannot live inside the station's "
                           "own folder; updates replace that folder. Choose a "
                           f"folder outside {install_root()}.")
+
+    def _refuse_store_place(self, path):
+        """Every store path New store / Open store accepts passes here: not
+        inside the install, not on the cloud drive or a network mount."""
+        self._refuse_inside_install(path)
+        refuse_remote(path)
 
     def _request_backup(self):
         hook = self.backup_hook

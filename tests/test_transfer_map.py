@@ -379,7 +379,8 @@ def no_store(tmp_path, monkeypatch):
     monkeypatch.setattr(TransferMap, "choices", user_config)
     install = tmp_path / "install"
     (install / "src").mkdir(parents=True)
-    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    from model import store_choice
+    monkeypatch.setattr(store_choice, "install_root", lambda: install)
     yield install
     user_config.forget()
 
@@ -806,6 +807,26 @@ def test_new_database_refuses_while_armed(station, private_db):
     assert model.db_path == private_db
     with pytest.raises(Refused, match="Finish or abort"):
         model.new_database()
+
+
+def test_the_backup_takes_only_the_database_while_a_trial_records(wired):
+    """Architecture audit 2026-10-08 item 14: Back up now and the backup
+    when a store model closes copied the trial video still being written.
+    While a trial is open (the region step included) the backup gets the
+    database only (a consistent snapshot); the pictures and videos go with
+    the next backup, after the trial is saved."""
+    model = wired[0]
+    full = [(model.db_path, [model.pictures_root, model.output_root / "exports"])]
+    assert model.backup_sources() == full
+    _arm_only(model)
+    assert model.backup_sources() == [(model.db_path, [])]
+    model.run("set_region", None, REGION)
+    assert model.phase == "live"
+    assert model.backup_sources() == [(model.db_path, [])]
+    model.end_recording()
+    assert model.backup_sources() == [(model.db_path, [])]   # not saved yet
+    _confirmed(model, "finish_trial", {"note": ""})
+    assert model.backup_sources() == full
 
 
 def test_the_rotator_reads_its_tilt_as_position_deg():

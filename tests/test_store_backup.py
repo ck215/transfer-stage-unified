@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,13 @@ def _db(path, rows=1):
     db.commit()
     db.close()
     return path
+
+
+def _age(*paths, seconds=60):
+    """Make files look written `seconds` ago (past `BackupService.SETTLE_S`)."""
+    when = time.time() - seconds
+    for path in paths:
+        os.utime(path, (when, when))
 
 
 def _titled(title, since):
@@ -57,7 +65,7 @@ def test_an_unmounted_drive_folder_is_unavailable_and_never_written(tmp_path, mo
     # Mounted: the same target works.
     mounted.append(tmp_path / "QMDL_Drive")
     assert service.run(backup.Job(t, [(store, [])]))
-    assert (t.folder / "s.sqlite").is_file()
+    assert (t.folder / backup.store_subfolder(store) / "s.sqlite").is_file()
     # A folder the user set has no anchor: used as it is, mounted or not.
     own = backup.target("a@b.c", setting=str(tmp_path / "mine"), env="")
     assert own.anchor is None and own.ready() == tmp_path / "mine"
@@ -109,26 +117,84 @@ def test_backup_writes_a_valid_sqlite_via_rename_and_copies_new_files_only(tmp_p
     pics = store.parent / "transfer_map" / "1"
     pics.mkdir(parents=True)
     (pics / "a.png").write_bytes(b"one")
+    _age(pics / "a.png")                    # settled (`SETTLE_S`)
     dest = tmp_path / "backup"
     service = backup.BackupService()
     job = backup.Job(backup.Target(dest), [(store, [store.parent / "transfer_map"])])
     assert service.run(job)
-    copy = dest / "transfer_map.sqlite"
+    sub = backup.store_subfolder(store)
+    copy = dest / sub / "transfer_map.sqlite"
     db = sqlite3.connect(copy)
     assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert db.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 5
     db.close()
     assert not [p for p in dest.rglob("*.part")]
-    assert (dest / "transfer_map" / "1" / "a.png").read_bytes() == b"one"
-    assert sorted(service.copied) == ["transfer_map.sqlite", "transfer_map/1/a.png"]
+    assert (dest / sub / "transfer_map" / "1" / "a.png").read_bytes() == b"one"
+    assert sorted(service.copied) == [f"{sub}/transfer_map.sqlite",
+                                      f"{sub}/transfer_map/1/a.png"]
     # nothing changed: nothing copied
     assert service.run(job) and service.copied == []
     # one new file: only it
     (pics / "b.png").write_bytes(b"two")
-    assert service.run(job) and service.copied == ["transfer_map/1/b.png"]
+    _age(pics / "b.png")
+    assert service.run(job) and service.copied == [f"{sub}/transfer_map/1/b.png"]
     # a fresh service (a restart) reads the manifest: nothing again
     again = backup.BackupService()
     assert again.run(job) and again.copied == []
+
+
+def test_stores_with_the_same_name_never_share_a_backup(tmp_path):
+    """Audit 2026-10-08 item 6: one flat folder per user, so two stores
+    named `transfer_map.sqlite` in different folders (the default name), and
+    their `exports/`, backed up over each other. Each store now has its own
+    subfolder; a flat copy an earlier version left there is not touched."""
+    dest = tmp_path / "backup"
+    dest.mkdir()
+    (dest / "transfer_map.sqlite").write_bytes(b"an older version's copy")
+    stores = []
+    for who, rows in (("one", 2), ("two", 7)):
+        store = _db(tmp_path / who / "transfer_map.sqlite", rows=rows)
+        (store.parent / "exports").mkdir()
+        (store.parent / "exports" / "trials.csv").write_text(who)
+        _age(store.parent / "exports" / "trials.csv")
+        stores.append(store)
+    service = backup.BackupService()
+    job = backup.Job(backup.Target(dest), [(s, [s.parent / "exports"]) for s in stores])
+    assert service.run(job)
+    subs = [backup.store_subfolder(s) for s in stores]
+    assert len(set(subs)) == 2 and all(sub.startswith("transfer_map-") for sub in subs)
+    for store, sub, rows, who in zip(stores, subs, (2, 7), ("one", "two")):
+        db = sqlite3.connect(dest / sub / "transfer_map.sqlite")
+        assert db.execute("SELECT COUNT(*) FROM t").fetchone()[0] == rows
+        db.close()
+        assert (dest / sub / "exports" / "trials.csv").read_text() == who
+    assert (dest / "transfer_map.sqlite").read_bytes() == b"an older version's copy"
+
+
+def test_a_file_still_being_written_waits_for_the_next_backup(tmp_path):
+    """Architecture audit 2026-10-08 item 14: a file modified in the last
+    `SETTLE_S` seconds (a video still recording, a picture being saved) is
+    not copied half-written; it is not marked done either, so the next run
+    copies it."""
+    store = _db(tmp_path / "live" / "transfer_map.sqlite")
+    pics = store.parent / "transfer_map" / "7"
+    pics.mkdir(parents=True)
+    old, busy = pics / "before.png", pics / "trial.mp4"
+    old.write_bytes(b"settled")
+    _age(old)
+    busy.write_bytes(b"half a vid")                 # written just now
+    dest = tmp_path / "backup"
+    service = backup.BackupService()
+    job = backup.Job(backup.Target(dest), [(store, [store.parent / "transfer_map"])])
+    assert service.run(job)
+    sub = backup.store_subfolder(store)
+    assert (dest / sub / "transfer_map" / "7" / "before.png").is_file()
+    assert not (dest / sub / "transfer_map" / "7" / "trial.mp4").exists()
+    busy.write_bytes(b"the whole video")
+    _age(busy)                                      # the recording ended
+    assert service.run(job)
+    assert service.copied == [f"{sub}/transfer_map/7/trial.mp4"]
+    assert (dest / sub / "transfer_map" / "7" / "trial.mp4").read_bytes() == b"the whole video"
 
 
 def test_requests_coalesce(tmp_path, monkeypatch):
@@ -278,3 +344,78 @@ def test_the_quit_backup_wait_is_one_budget_for_every_store(monkeypatch):
     Setup._on_models_changed(stub, "removed", "Sample DB")
     assert len(waited) == 2
     assert sum(waited) <= 15.0, f"Quit waited {sum(waited):g} s for backups"
+
+
+# -- a live store is never on the cloud drive (audit 2026-10-08 item 7) -----
+
+def _fake_mounts(tmp_path, monkeypatch, rows):
+    """A private mount table (`/proc/mounts` format) and a private home, so
+    nothing here looks at the real drive."""
+    table = tmp_path / "mounts"
+    table.write_text("".join(f"{src} {point} {kind} rw 0 0\n"
+                             for src, point, kind in rows))
+    monkeypatch.setattr(store_choice, "MOUNTS", str(table))
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def test_a_store_under_the_drive_folder_is_refused_even_unmounted(tmp_path, monkeypatch):
+    """`~/QMDL_Drive/...` is refused by its path alone: mounted it is the
+    rclone drive (live SQLite over FUSE), unmounted it is the bare
+    mountpoint (files there hide under the drive once it mounts)."""
+    home = _fake_mounts(tmp_path, monkeypatch, [("/dev/sda1", "/", "ext4")])
+    reason = store_choice.remote_reason(home / "QMDL_Drive" / "stores" / "x.sqlite")
+    assert reason and "QMDL_Drive" in reason
+    assert "local" in reason and "backup" in reason
+    assert store_choice.remote_reason(home / "stores" / "x.sqlite") is None
+
+
+def test_a_store_on_a_fuse_or_network_mount_is_refused(tmp_path, monkeypatch):
+    cloud, sshfs, nfs = tmp_path / "cloud", tmp_path / "ssh", tmp_path / "nfs"
+    disk = tmp_path / "data"
+    _fake_mounts(tmp_path, monkeypatch, [
+        ("/dev/sda1", "/", "ext4"),
+        ("remote:", str(cloud), "fuse.rclone"),
+        ("me@host:", str(sshfs), "fuse.sshfs"),
+        ("srv:/x", str(nfs), "nfs4"),
+        ("/dev/sdb1", str(disk), "fuseblk")])            # NTFS on a local disk
+    for where in (cloud, sshfs, nfs):
+        reason = store_choice.remote_reason(where / "a" / "x.sqlite")
+        assert reason and str(where) in reason, where
+    assert store_choice.remote_reason(disk / "x.sqlite") is None
+    assert store_choice.remote_reason(tmp_path / "cloudy" / "x.sqlite") is None
+    # No mount table (not Linux): only the path rule.
+    monkeypatch.setattr(store_choice, "MOUNTS", str(tmp_path / "no-such-file"))
+    assert store_choice.remote_reason(cloud / "x.sqlite") is None
+
+
+def test_both_maps_refuse_new_and_open_store_on_the_drive(tmp_path, monkeypatch):
+    from controller import user_config
+    from model.transfer_map import TransferMap
+    from result import Refused
+    home = _fake_mounts(tmp_path, monkeypatch, [("/dev/sda1", "/", "ext4")])
+    drive = home / "QMDL_Drive" / "stores"
+    existing = _db(drive / "old.sqlite")
+    monkeypatch.delenv("STATION_SAMPLE_DB", raising=False)
+    monkeypatch.delenv("STATION_MAP_DB", raising=False)
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
+    user_config.forget()
+    monkeypatch.setattr(SampleMap, "choices", None)
+    monkeypatch.setattr(TransferMap, "choices", user_config)
+    try:
+        for model in (SampleMap(), TransferMap()):
+            model.store_dir, model.store_name = str(drive), "new"
+            with pytest.raises(Refused, match="cannot be on the cloud drive"):
+                model.new_store()
+            model.store_path = str(existing)
+            with pytest.raises(Refused, match="cannot be on the cloud drive"):
+                model.open_store()
+            assert not model.has_store
+            assert not (drive / "new.sqlite").exists()
+            model.store_dir = str(home / "local" / model.NAME)   # local works
+            assert Path(model.new_store()).is_file() and model.has_store
+            model.close()
+    finally:
+        user_config.forget()

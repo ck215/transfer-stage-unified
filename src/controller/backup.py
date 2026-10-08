@@ -15,16 +15,23 @@ Any of these under `~/QMDL_Drive` is used only while the drive is mounted.
 A folder that is a store's own folder (or inside the folders it mirrors) is
 refused: the snapshot would be renamed over the live database.
 
-The folder mirrors each store's own folder: `<name>.sqlite` beside the
-folders the store keeps there (the Transfer Map's `<name>/` pictures and
-videos and `exports/`, the Sample DB's `images/`). A database is copied with
+Each store has its own subfolder, `<name>-<8 hex>/` (`store_subfolder`: the
+store's file name and a hash of its full path), so two stores with the same
+file name never overwrite each other's copies (audit 2026-10-08 item 6). The
+subfolder mirrors the store's own folder: `<name>.sqlite` beside the folders
+the store keeps there (the Transfer Map's `<name>/` pictures and videos and
+`exports/`, the Sample DB's `images/`). Copies an earlier version wrote flat
+into the backup folder are left where they are. A database is copied with
 SQLite's online backup API into a temporary file on THIS computer, that file
 copied to a hidden part file in the backup folder, then renamed over the
 backup: a reader never sees half a database, and SQLite never runs on the
 (slow, rclone-mounted) drive. Other files are copied when their size or
 modification time changed since the last copy (`.backup-manifest.json` in the
 backup folder remembers them), so nothing on the drive is ever scanned
-beyond one stat of a file the manifest does not know yet.
+beyond one stat of a file the manifest does not know yet. A file modified
+in the last `BackupService.SETTLE_S` seconds is still being written and waits
+for the next run (and the Transfer Map hands over its database only while a
+trial is open).
 
 One background thread does the work; a request while it runs schedules one
 more run after it (requests coalesce per backup folder). A run stops at
@@ -32,6 +39,7 @@ more run after it (requests coalesce per backup folder). A run stops at
 warning per streak of failures, never a dialog; the next success says so.
 Restoring is in docs/rebuild/RECORDING_A_TRIAL.md, "Backups".
 """
+import hashlib
 import json
 import os
 import shutil
@@ -129,6 +137,16 @@ def _on_drive(folder, drive):
     return Target(folder, anchor=drive if under else None)
 
 
+def store_subfolder(db):
+    """The backup subfolder of the store `db`: its file name without
+    `.sqlite` and the first 8 hex digits of the SHA-1 of its full path, e.g.
+    `transfer_map-1a2b3c4d`. The same store always lands in the same place;
+    two stores of the same name in different folders never share one."""
+    db = Path(db)
+    digest = hashlib.sha1(str(db.resolve()).encode("utf-8")).hexdigest()[:8]
+    return f"{db.stem}-{digest}"
+
+
 def _clash(folder, sources):
     """The database whose own folder `folder` is, or whose mirrored folders
     hold `folder`; None. Backing up there would rename the snapshot over
@@ -176,6 +194,10 @@ class BackupService:
     RUN_BUDGET_S = 300.0
     #: How long Quit waits for the final backup.
     QUIT_WAIT_S = 20.0
+    #: A file modified less than this long ago is still being written (a
+    #: trial video recording, a picture being saved): not copied, and not
+    #: marked done, so the next run copies it (audit 2026-10-08 item 14).
+    SETTLE_S = 5.0
 
     def __init__(self):
         self._cond = threading.Condition()
@@ -265,11 +287,14 @@ class BackupService:
                 for db, folders in job.sources:
                     if not db.is_file():
                         continue
-                    if self._copy_db(db, folder, manifest):
-                        copied.append(db.name)
+                    sub = store_subfolder(db)
+                    here = folder / sub
+                    here.mkdir(exist_ok=True)
+                    if self._copy_db(db, here, manifest, sub):
+                        copied.append(f"{sub}/{db.name}")
                     for side in folders:
-                        copied += self._mirror(db.parent, side, folder, manifest,
-                                               deadline)
+                        copied += self._mirror(db.parent, side, here, manifest,
+                                               deadline, sub)
             finally:
                 self._save_manifest(folder, manifest)
         except (OSError, sqlite3.Error) as exc:
@@ -288,10 +313,11 @@ class BackupService:
                      "copied", source=SOURCE)
         return True
 
-    def _copy_db(self, db, folder, manifest):
-        """The database, through a local snapshot, a part file and a rename;
-        skipped while the file (and its WAL) are as they were last time."""
-        key = "db:" + db.name
+    def _copy_db(self, db, folder, manifest, sub):
+        """The database, through a local snapshot, a part file and a rename
+        into `folder` (its subfolder `sub`); skipped while the file (and its
+        WAL) are as they were last time."""
+        key = f"db:{sub}/{db.name}"
         signature = _signature(db)
         wal = db.with_name(db.name + "-wal")
         if wal.exists():
@@ -313,9 +339,10 @@ class BackupService:
         manifest[key] = signature
         return True
 
-    def _mirror(self, root, side, folder, manifest, deadline):
+    def _mirror(self, root, side, folder, manifest, deadline, sub):
         """New or changed files under `side` (a folder beside the database
-        in `root`), copied to the same place under `folder`."""
+        in `root`), copied to the same place under `folder` (the store's
+        subfolder `sub`; the manifest keys and the copied list name it)."""
         side = Path(side)
         if not side.is_dir():
             return []
@@ -331,13 +358,15 @@ class BackupService:
                     continue
                 source = Path(here) / name
                 relative = (base / source.relative_to(side)).as_posix()
-                key = "file:" + relative
+                key = f"file:{sub}/{relative}"
                 try:
                     signature = _signature(source)
                 except OSError:
                     continue                  # gone while we walked
                 if manifest.get(key) == signature:
                     continue
+                if time.time() - signature[1] / 1e9 < self.SETTLE_S:
+                    continue                  # still being written: next run
                 dest = folder / relative
                 if key not in manifest and _same(dest, signature):
                     manifest[key] = signature   # there from an earlier run
@@ -351,7 +380,7 @@ class BackupService:
                 shutil.copy2(source, part)
                 os.replace(part, dest)
                 manifest[key] = signature
-                copied.append(relative)
+                copied.append(f"{sub}/{relative}")
         return copied
 
     def _manifest(self, folder):

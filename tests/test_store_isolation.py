@@ -46,7 +46,6 @@ def disk(tmp_path, monkeypatch):
     user_config.forget()
     install = tmp_path / "install"
     install.mkdir()
-    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
     monkeypatch.setattr(store_choice, "install_root", lambda: install)
     paths = {}
     for who in ("station", "a"):

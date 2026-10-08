@@ -653,6 +653,13 @@ class Setup(PortProbe, Panel):
         if legacy is not None:
             self.map_store_path = str(legacy)   # offered, never opened for them
         self.controller = controller
+        # A Guest's refusal (`session_refusal`) is the Controller's own, so
+        # every frontend inherits it; the Web adapter asks too, a second
+        # layer (architecture audit 2026-10-08 item 11).
+        try:
+            controller.command_gate = self.session_refusal
+        except AttributeError:
+            pass                    # a stand-in controller without one
         self._restart = restart
         # The accounts (2026-10-07; were the Phase 1 profiles): the station
         # scope, users.sqlite and the session, a Guest until someone signs in.
@@ -885,9 +892,10 @@ class Setup(PortProbe, Panel):
 
     def session_refusal(self, name, command=""):
         """Why `name`'s `command` is refused for this session, or "": a
-        signed-in-only model while a Guest works. The Web server asks
-        before it runs any model command (a belt under their absence). A
-        stop is never refused (`Panel.UNGATED_COMMANDS`)."""
+        signed-in-only model while a Guest works. The Controller asks before
+        it runs any model command (`Controller.command_gate`, set in
+        `__init__`) and the Web server asks too (a belt under their
+        absence). A stop is never refused (`Panel.UNGATED_COMMANDS`)."""
         if command in Panel.UNGATED_COMMANDS:
             return ""
         if self.guest_locked and is_signed_in_only(name):

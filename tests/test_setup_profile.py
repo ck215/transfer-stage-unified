@@ -201,6 +201,31 @@ def test_a_guest_cannot_build_or_reopen_a_map(setup):
     assert setup.session_refusal("Transfer Map", "arm") == ""
 
 
+def test_the_controller_itself_refuses_a_guest_the_maps_commands(setup):
+    """Architecture audit 2026-10-08 item 11: the Guest's per-command
+    refusal lived only in the Web adapter, so a map open while a Guest
+    works (however it got there) took commands from any other caller.
+    Setup now holds the Controller to `session_refusal`: every frontend
+    inherits it, and a stop still always runs."""
+    from result import Result
+    from test_view_web_server import FakeProbe
+    ran = []
+    probe = FakeProbe()
+    probe.run = lambda command, inputs=None, args=(): (
+        ran.append(command) or Result(Result.OK))
+    assert setup.guest_locked
+    setup.controller.add("Sample DB", probe, {"model": "Sample DB"})
+    refused = setup.controller.run("Sample DB", "save_sample")
+    assert refused.status == "refused" and "signed-in users" in refused.reason
+    assert not setup.controller.set_value("Sample DB", "label", "x").is_ok
+    assert ran == [], "the map ran a command for a Guest"
+    for stop in ("toggle_estop", "estop", "halt"):
+        assert setup.controller.run("Sample DB", stop).is_ok
+    assert ran == ["toggle_estop", "estop", "halt"]
+    create(setup)                                  # signed in: it runs
+    assert setup.controller.run("Sample DB", "save_sample").is_ok
+
+
 def test_signing_in_adds_the_maps_to_a_running_station_and_guest_removes_them(setup):
     setup.build(CONFIGS)
     probe = models(setup)["Stepper Probe"]
@@ -536,7 +561,8 @@ def stores(tmp_path, monkeypatch):
     user_config.forget()
     install = tmp_path / "install"
     install.mkdir()
-    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    from model import store_choice
+    monkeypatch.setattr(store_choice, "install_root", lambda: install)
     station, mine = tmp_path / "station.sqlite", tmp_path / "mine.sqlite"
     TrialStore(station).ensure()
     TrialStore(mine).ensure()
