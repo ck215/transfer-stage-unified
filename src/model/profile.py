@@ -136,6 +136,42 @@ def validate_model_params(scope, body, params_of):
     return clean, problems
 
 
+# -- applying and collecting a config (the accounts, 2026-10-07) ---------------------
+
+def _stored_params(panel, names=None):
+    """`{name: Param}` the panel stores: declared, not a read-only property
+    (a derived readout is declared for its type and unit only), narrowed
+    to `names` when given."""
+    params = getattr(panel, "PARAMS", None) or {}
+    out = {}
+    for name in sorted(params if names is None else set(params) & set(names)):
+        found = getattr(type(panel), name, None)
+        if isinstance(found, property) and found.fset is None:
+            continue
+        out[name] = params[name]
+    return out
+
+
+def current_params(panel, names=None):
+    """The inverse of `Panel.apply_defaults`: `{param: value}` as the panel
+    holds its stored Params now, the blank ones left out. What "Remember
+    current values as my defaults" and "Save station settings" collect;
+    `names` narrows it (Q4's `USER_PARAMS` for a user)."""
+    out = {}
+    for name in _stored_params(panel, names):
+        value = getattr(panel, name, None)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        out[name] = value
+    return out
+
+
+def param_defaults(panel, names=None):
+    """`{param: Param.default}` for the panel's stored Params: what a model
+    is rebuilt to when a user signs out (never a restart)."""
+    return {name: param.default for name, param in _stored_params(panel, names).items()}
+
+
 # -- local files (Phase 1's PrefsSource) --------------------------------------------
 
 def _check_username(username):
@@ -277,8 +313,9 @@ class ProfileService:
         return (f"{self._user}, signed in offline, unverified (no lab server "
                 "yet): records name you with that mark.")
 
-    def _layer(self, scope, scope_id):
-        body = self.source.documents(scope, scope_id).get("model_params", {})
+    def _layer(self, scope, scope_id, body=None):
+        if body is None:
+            body = self.source.documents(scope, scope_id).get("model_params", {})
         clean, problems = validate_model_params(scope, body, self.params_of)
         for problem in problems:
             key = (scope, scope_id, problem)
@@ -290,11 +327,20 @@ class ProfileService:
                             source="Profile")
         return clean
 
-    def effective_model_params(self):
-        """`(effective, provenance)` over station and (signed in) user
-        scopes; the lab scope is the models' own defaults, already set."""
-        layers = [("station", self._layer("station", ""))]
-        if self._user != STATION:
+    def station_layer(self):
+        """The station's saved defaults, validated (Q4: station and user
+        parameters, never the brakes)."""
+        return self._layer("station", "")
+
+    def effective_model_params(self, user_config=None, user_id=""):
+        """`(effective, provenance)` over the station scope and a user scope:
+        `user_config` (`{model: {param: value}}`, a signed-in User's, see
+        `model.user`) when given, else the Phase 1 profile signed in here.
+        The lab scope is the models' own defaults, already set."""
+        layers = [("station", self.station_layer())]
+        if user_config:
+            layers.append(("user", self._layer("user", user_id, user_config)))
+        elif self._user != STATION:
             layers.append(("user", self._layer("user", self._user)))
         return merge(layers)
 

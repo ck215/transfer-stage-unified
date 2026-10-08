@@ -13,6 +13,7 @@ import pytest
 
 from events import events
 from model import profile as pf
+from panel import Panel
 from param import Param
 
 PARAMS = {
@@ -202,6 +203,68 @@ def test_a_hand_edited_bad_value_falls_back_and_warns_once(service, root):
     service.effective_model_params()
     warned = [e for e in events.since(since) if e.title == "Profile Value Ignored"]
     assert len(warned) == 1 and "man_full_speed" in warned[0].message
+
+
+def test_effective_model_params_layer_a_users_config_over_the_station(service):
+    service.save_station({"Stepper Probe": {"man_full_speed": 250},
+                          "Red Percent": {"red_min": 140}})
+    mine = {"Stepper Probe": {"x_step": 8, "man_full_speed": 280}}
+    effective, provenance = service.effective_model_params(mine, "ian@uci.edu")
+    assert effective["Stepper Probe"] == {"x_step": 8, "man_full_speed": 280}
+    assert effective["Red Percent"] == {"red_min": 140}
+    assert provenance["Stepper Probe.x_step"] == "user"
+    assert provenance["Red Percent.red_min"] == "station"
+    effective, _ = service.effective_model_params()
+    assert effective["Stepper Probe"] == {"man_full_speed": 250}
+
+
+def test_a_users_config_never_sets_a_station_only_or_brake_value(service):
+    service.save_station({"Temperature Controller": {"p_term": 1.5}})
+    effective, provenance = service.effective_model_params(
+        {"Temperature Controller": {"p_term": 9.0},
+         "Stepper Probe": {"slow_speed": 10, "x_step": 3}}, "ian@uci.edu")
+    assert effective["Temperature Controller"] == {"p_term": 1.5}
+    assert effective["Stepper Probe"] == {"x_step": 3}
+    assert provenance["Temperature Controller.p_term"] == "station"
+
+
+# -- apply_defaults' inverse, and the Params' own defaults ---------------------------------
+
+class Probe(Panel):
+    NAME = "Stepper Probe"
+    PARAMS = {"x_step": Param("x_step", "int", default=4, minimum=1, maximum=3200),
+              "man_full_speed": Param("man_full_speed", "int", default=300, minimum=1),
+              "slow_speed": Param("slow_speed", "int", default=50, minimum=1),
+              "note": Param("note", "text", default=""),
+              "reading": Param("reading", "float", default=0.0)}
+
+    @property
+    def reading(self):              # a derived readout: declared, never stored
+        return 1.5
+
+    @property
+    def schema(self):
+        return {"version": 2, "sections": []}
+
+
+def test_current_params_is_the_inverse_of_apply_defaults():
+    probe = Probe()
+    probe.x_step, probe.slow_speed = 9, 33
+    assert pf.current_params(probe) == {"x_step": 9, "man_full_speed": 300,
+                                        "slow_speed": 33}      # blank and read-only left out
+    assert pf.current_params(probe, pf.USER_PARAMS) == {"x_step": 9, "man_full_speed": 300}
+    other = Probe()
+    assert other.apply_defaults(pf.current_params(probe)) == {}
+    assert pf.current_params(other) == pf.current_params(probe)
+
+
+def test_param_defaults_rebuild_what_the_code_declares():
+    probe = Probe()
+    probe.x_step, probe.man_full_speed = 9, 280
+    assert pf.param_defaults(probe, pf.USER_PARAMS) == {"x_step": 4, "man_full_speed": 300}
+    assert probe.apply_defaults(pf.param_defaults(probe, pf.USER_PARAMS)) == {}
+    assert (probe.x_step, probe.man_full_speed) == (4, 300)
+    assert "reading" not in pf.param_defaults(probe)
 
 
 def test_the_profiles_root_follows_the_environment(monkeypatch, tmp_path):
