@@ -37,9 +37,9 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 | 10 | P2 | `/api/open_model` and `/api/close_model` kept for tests bypass Setup's rules | Fixed `f88942f` |
 | 11 | P2 | Guest session gating is enforced in the Web adapter, not below it | Fixed `1740189` |
 | 12 | P2 | The Transfer Map duplicates `store_choice`'s install-folder rules | Fixed `02a264d` |
-| 13 | P2 | Hard reset is not refused during a scan; Guest switch races an Arm | Guest half fixed `36e5556`; Hard reset documented |
+| 13 | P2 | Hard reset is not refused during a scan; Guest switch races an Arm | Guest half fixed `36e5556`, its lock window `61d934b`; Hard reset documented |
 | 14 | P2 | Back up now / the close backup copy a trial video still being recorded | Fixed `f513104` |
-| 15 | P2 | Setup's A3 Trial-store commands survive with no control | Partly fixed `ffa978b` |
+| 15 | P2 | Setup's A3 Trial-store commands survive with no control | Fixed `ffa978b`, `9b3fb57` |
 | 16 | P3 | `Setup._store_section` dead, stale comments in `setup.py` | Fixed `ffa978b` |
 | 17 | P3 | "Export/Import sample map" in operator text | Fixed `ffa978b` |
 | 18 | P3 | `isinstance(model, User)` filters that can no longer match | Fixed `c706f3c` |
@@ -207,6 +207,11 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   by store path and level for a poll interval), and read nothing outside the
   phases that show the preview. The contract doc now says a still's key must be
   cheap.
+- **Follow-ups (open issues 2026-10-08 section 4).** The Sample DB's trial
+  labels and trials readouts read the Transfer Map's trial file once per
+  change of it, not per poll (`6985c68`); a preview whose file is missing
+  falls back to the next picture on disk, and the Shown line agrees with
+  the frame (`1f0759d`).
 
 ### 9. `Controller.add` after `close()`; `remove` drops before it stops (documented; core)
 
@@ -281,9 +286,16 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   sign-in as someone else) refuses while a trial is being armed, as it does
   for an open trial. Test:
   `test_setup_profile.py::test_switching_to_guest_while_a_trial_is_being_armed_is_refused`.
-  The check still runs outside the map's lock: an Arm pressed in the
+  ~~The check still runs outside the map's lock: an Arm pressed in the
   instant between the check and the removal is aborted and saved as aborted
-  (nothing energized, nothing lost silently). The Hard reset half is open.
+  (nothing energized, nothing lost silently).~~ **Fixed `61d934b`:**
+  `TransferMap.hold_arm` makes the check atomic under the map's own lock
+  and refuses Arm ("The user is being switched...") until `release_arm`;
+  Setup's `_held_for_switch` wraps check + switch (Guest, Sign out, Switch
+  user, a sign-in as someone else) and always releases. The lock is held
+  for the check only, so a FULL STOP never waits on it. Test
+  `test_an_arm_pressed_during_the_guest_switch_is_refused_not_lost`.
+  The Hard reset half is open.
 
 ### 14. Backups copy a video still being recorded (fixed `f513104`)
 
@@ -298,7 +310,7 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   `test_the_backup_takes_only_the_database_while_a_trial_records` and
   `test_a_file_still_being_written_waits_for_the_next_backup` failed before.
 
-### 15. Setup's A3 Trial-store commands survive with no control (partly fixed `ffa978b`)
+### 15. Setup's A3 Trial-store commands survive with no control (fixed `ffa978b`, `9b3fb57`)
 
 - `Setup.map_store_status`, `open_map_store`, `new_map_store`, `_map_target`
   and the `map_store_*` Params (`setup.py:2688-2725`, `594-603`) back a "Trial
@@ -309,6 +321,12 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   `tests/test_setup_profile.py` exercise the per-user store choice through
   them. Recommended: move those tests onto the maps' own commands, then delete
   the A3 block.
+- **Fix landed (`9b3fb57`).** Done: the A3 block (`map_store_status`,
+  `open_map_store`, `new_map_store`, `_map_target`, `_transfer_map`, the
+  `map_store_*` Params and the legacy-store offer in `Setup.__init__`) is
+  gone; the per-user store tests run the Transfer Map's own `open_store` /
+  `new_store`; the install-folder refusal and the legacy offer are covered
+  on the Transfer Map. Test `test_setups_leftover_trial_store_commands_are_gone`.
 
 ## P3: docs and hygiene
 

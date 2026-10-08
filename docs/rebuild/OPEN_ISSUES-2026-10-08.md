@@ -80,16 +80,25 @@ bench, ready to run these checks.
 
 Ranked. None blocks operation or safety.
 
-**P2**
-- Guest switch vs Arm: the switch is refused while a trial is armed or being
+**P2** (all four fixed after this list was written; kept for the record)
+- ~~Guest switch vs Arm: the switch is refused while a trial is armed or being
   armed, but the check runs outside the Transfer Map's lock; an Arm pressed in
-  the same instant is saved as aborted (not lost).
-- The Sample DB's sample picker still reads the Transfer Map's trial file once
-  per state poll for trial labels (not covered by the change counter).
-- A preview whose picture file is missing: the "Shown" line names the picture
-  while the frame says "No picture".
-- Setup's old Trial-store commands survive with no control (partly cleaned,
-  audit #15).
+  the same instant is saved as aborted (not lost).~~ **Fixed `61d934b`:**
+  `TransferMap.hold_arm` checks under the map's own lock and refuses Arm
+  until the switch is over (`release_arm`); the lock is never held across
+  the switch, so a stop never waits on it.
+- ~~The Sample DB's sample picker still reads the Transfer Map's trial file once
+  per state poll for trial labels (not covered by the change counter).~~
+  **Fixed `6985c68`:** the labels and the picked sample's trials are read
+  once per change of the trial file (`change_token`: the stat of the file,
+  its journal and WAL).
+- ~~A preview whose picture file is missing: the "Shown" line names the picture
+  while the frame says "No picture".~~ **Fixed `1f0759d`:** the preview falls
+  back to the next picture on disk by the same rule; with none, the Shown
+  line says "No picture (file missing: <name>)".
+- ~~Setup's old Trial-store commands survive with no control (partly cleaned,
+  audit #15).~~ **Fixed `9b3fb57`:** the commands, handlers and Params are
+  gone; their tests run on the maps' own commands.
 
 **P2, UX (proposals in `docs/ux-audit-2026-10-08.md`)**
 - Transfer Map Setup step: Tilt and Speed readouts beside their entries
