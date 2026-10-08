@@ -2856,3 +2856,77 @@ label.row-title[for] { cursor: pointer; }
     transition-duration: 0s !important;
   }
 }
+
+/* -- tutorial ------------------------------------------------------------ */
+/* The coach: a card beside the control a step is about, a ring on the
+   control, and a panel that lists the tutorials. Beside the rail, above the
+   tray, never over the stop; tokens only. */
+.tutorial-panel[hidden], .tutorial-card[hidden], .tutorial-ring[hidden],
+.tutorial-hint[hidden], .tutorial-note[hidden] { display: none; }
+
+.rail-foot { flex-wrap: wrap; }
+
+.tutorial-panel {
+  position: fixed;
+  top: var(--rail-top);
+  left: var(--rail-left);
+  bottom: var(--tray-h);
+  z-index: 9;
+  width: min(560px, 100%);
+  max-width: calc(100vw - var(--rail-left));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-8);
+  overflow-y: auto;
+  background: var(--bg);
+  border-right: 1px solid var(--surface);
+}
+
+.tutorial-panel-head { display: flex; align-items: center; gap: var(--space-4); }
+.tutorial-panel-title { font-size: var(--t-headline); line-height: 1.1; margin-right: auto; }
+.tutorial-intro, .tutorial-row-meta, .tutorial-empty { font-size: var(--t-sm); color: var(--muted); }
+.tutorial-note { font-size: var(--t-md); font-weight: 600; padding: var(--space-4); border: 1px solid var(--text); border-radius: var(--radius-key); }
+.tutorial-list { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.tutorial-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  background: var(--surface);
+  border-radius: var(--radius-key);
+}
+.tutorial-row-text { margin-right: auto; min-width: 0; }
+.tutorial-row-title { font-size: var(--t-lg); }
+.tutorial-row-actions { display: flex; gap: var(--space-3); flex-wrap: wrap; justify-content: flex-end; }
+
+.tutorial-card {
+  position: fixed;
+  z-index: 9;
+  width: 22rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--bg);
+  color: var(--text);
+  border: var(--line) solid var(--text);
+  border-radius: var(--radius-key);
+  box-shadow: var(--shadow-raised);
+}
+.tutorial-card-top { display: flex; align-items: baseline; gap: var(--space-4); font-size: var(--t-cap); color: var(--muted); }
+.tutorial-count { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.tutorial-say { font-size: var(--t-md); line-height: 1.45; }
+.tutorial-hint { font-size: var(--t-cap); color: var(--muted); }
+.tutorial-card-actions { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-2); }
+.tutorial-stop { margin-right: auto; }
+
+.tutorial-ring {
+  position: fixed;
+  z-index: 9;
+  pointer-events: none;
+  border: 3px solid var(--text);
+  border-radius: var(--radius-key);
+  box-shadow: 0 0 0 2px var(--bg);
+}
