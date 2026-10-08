@@ -281,6 +281,25 @@ def test_a_closing_model_takes_no_new_commands_and_its_name_is_not_reused(contro
         remover.join(5)
 
 
+def test_a_peer_that_raises_during_remove_still_lets_the_model_close(controller):
+    """Setup's hard reset relies on it: the model ends stopped and closed,
+    its name reusable, and the peer's error still reaches the caller."""
+    peer, model = FakeModel(), FakeModel()
+    controller.add("peer", peer)
+    controller.add("probe", model)
+
+    def boom(name, removed):
+        raise RuntimeError("a peer fell over")
+    peer.on_model_removed = boom
+    with pytest.raises(RuntimeError):
+        controller.remove("probe")
+    assert model.is_estopped and model.disable_calls == 1
+    assert "probe" not in controller.model_names and "probe" in controller.closed_names
+    again = FakeModel()
+    controller.add("probe", again)
+    assert controller.models["probe"] is again
+
+
 def test_views_hear_removed_only_once_the_model_is_closed(controller):
     model = _SlowDisable()
     controller.add("heater", model)

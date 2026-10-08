@@ -155,8 +155,16 @@ class Controller:
             config = self._configs.pop(name, {})
             self._locks.pop(name, None)
             others = list(self._models.values())
-        for other in others:
-            other.on_model_removed(name, model)
+        try:
+            # A peer that raises still lets the model stop, close and leave
+            # `_removing` (its name reusable); the error then propagates.
+            for other in others:
+                other.on_model_removed(name, model)
+        finally:
+            self._finish_remove(name, model, config)
+        return True
+
+    def _finish_remove(self, name, model, config):
         try:
             model.estop()
             model.close()
@@ -166,7 +174,6 @@ class Controller:
                     del self._removing[name]
                 self._remembered[name] = config
             self._notify("removed", name)
-        return True
 
     def reopen(self, name):
         with self._lock:
