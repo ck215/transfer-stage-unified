@@ -493,7 +493,7 @@ def test_opening_without_a_store_warns_and_creates_nothing(no_store, tmp_path):
     finally:
         events.unsubscribe(seen.append)
     [ask] = [e for e in seen if e.title == "Trial Store Not Chosen"]
-    assert "its page asks" in ask.message
+    assert "press New store or Open store" in ask.message   # UX audit #14
     assert not list(tmp_path.rglob("*.sqlite"))
 
 
@@ -575,7 +575,7 @@ def test_an_existing_store_is_opened_and_remembered(no_store, tmp_path):
 
 @pytest.mark.parametrize("make, why", [
     (lambda p: None, "no file"),
-    (lambda p: p.write_text("not a database"), "not a Transfer Map store"),
+    (lambda p: p.write_text("not a database"), "not a trial store"),
 ])
 def test_opening_what_is_not_a_store_is_refused(no_store, tmp_path, make, why):
     path = tmp_path / "x.sqlite"
@@ -676,7 +676,7 @@ def test_open_creates_the_database_and_says_where(private_db):
         assert {"trials", "profile"} <= tables
         ready = _titled("Database Ready", since)
         assert len(ready) == 1
-        assert ready[0].message == f"{private_db}: 0 trial(s)"
+        assert ready[0].message == f"{private_db}: 0 trials"
         assert ready[0].source == "Transfer Map"
     finally:
         model.close()
@@ -690,7 +690,7 @@ def test_open_on_an_existing_database_counts_and_keeps_its_trials(private_db):
     model.open()
     try:
         assert _titled("Database Ready", since)[0].message == \
-            f"{private_db}: 1 trial(s)"
+            f"{private_db}: 1 trial"
         assert model.trial_count == 1
         assert model._store.ensure() is False          # a no-op now
         assert _rows(private_db, "SELECT tip_id FROM trials") == [{"tip_id": "T1"}]
@@ -714,14 +714,14 @@ def test_open_with_an_unwritable_folder_still_opens_and_says_so(tmp_path):
 def test_the_session_section_leads_tier_one():
     model = TransferMap()
     first = model.schema["sections"][0]
-    assert first["title"] == "Session" and first.get("tier", 1) == 1
+    assert first["title"] == "Trial store" and first.get("tier", 1) == 1
     # 2026-10-07: the start screen's only (a step shows its own controls).
     assert first["phases"] == ["setup"]
     keys = [e.get("model_attr") or e.get("command") for e in first["elements"]]
     assert keys == ["db_path", "trial_count", "new_database"]
     button = first["elements"][2]
     # 2026-10-08: it opens the store prompt (asks where), so no confirm.
-    assert button["text"] == "New session database\u2026"
+    assert button["text"] == "New trial store\u2026"   # UX audit #15: one term
     assert "confirm" not in button
     diagnostics = next(s for s in model.schema["sections"]
                        if s["title"] == "Diagnostics")
@@ -2063,7 +2063,7 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     # session and the trial it would refuse without one: the store prompt,
     # the `new_store` step (2026-10-08; the start screen's Store line and
     # Change store… are under Configure).
-    assert tier_one == [("Session", ["setup"]),
+    assert tier_one == [("Trial store", ["setup"]),
                         ("Where to save the trial store", ["new_store"]),
                         ("Trial", None),
                         ("Start", ["setup"]), ("New tip", ["new_tip"]),
@@ -2437,7 +2437,7 @@ def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1 and str(private_db) in upgraded[0].message
         assert _titled("Database Ready", since)[0].message == \
-            f"{private_db}: 1 trial(s)"
+            f"{private_db}: 1 trial"
         assert model.run("before_full_image").is_ok
         assert model.before_full_image == b""  # the stored paths are gone files
     finally:
@@ -2775,7 +2775,7 @@ def test_retire_asks_and_unretire_returns_the_tip(station):
     model.tip_id = "T7"
     first = _record(model, red)
     asked = model.run("retire_tip")
-    assert asked.needs_confirm and asked.reason.startswith("Retire tip T7? Its 1 trial(s)")
+    assert asked.needs_confirm and asked.reason.startswith("Retire tip T7? Its 1 trial is kept")
     assert asked.inputs == {}
     assert model._store.tip("T7")["retired_at"] is None       # nothing yet
     assert model.run(asked.command, asked.inputs, (*asked.args, True)).is_ok
@@ -2824,9 +2824,9 @@ def test_the_tips_log_has_one_line_per_tip(station):
     model.run("set_tip_note", {"tip_note": "chipped"})
     assert model.run("set_tip_model", None, ("T8", "TAP300")).is_ok
     assert model.tips_log == [
-        f"tip-A  no model  2 trial(s), trials {first}-{second}  broke on "
+        f"tip-A  no model  2 trials, trials {first}-{second}  broke on "
         f"trial {second}",
-        f"T8  TAP300  1 trial(s), trial {third}  retired  chipped"]
+        f"T8  TAP300  1 trial, trial {third}  retired  chipped"]
     assert model.run("tips_log").is_ok            # a declared source
 
 
@@ -2861,7 +2861,7 @@ def test_an_import_creates_the_tips_its_trials_name(tmp_path, private_db):
     assert model._store.tip("T7")["broke_trial_id"] == 2
     assert model._store.tip("T9")["trials"] == [4]
     assert [t["tip_id"] for t in model._store.tips()] == ["T7", "T9"]
-    assert "tip(s) created: T7, T9" in _titled("Map Imported", since)[0].message
+    assert "tips created: T7, T9" in _titled("Map Imported", since)[0].message
 
 
 def test_deleting_a_trial_keeps_its_tips_record_current(station):
@@ -4624,7 +4624,7 @@ def test_set_tip_model_corrects_a_label_and_the_rows_carry_it(station):
     assert model._store.tip("tip-A")["model"] == "TAP300"
     assert model.state["values"]["tip_model"] == "TAP300"
     assert [(r["id"], r["model"]) for r in model._map_rows()] == [(first, "TAP300")]
-    assert model.tips_log[0].startswith("tip-A  TAP300  1 trial(s)")
+    assert model.tips_log[0].startswith("tip-A  TAP300  1 trial,")
     # The Tip section's dropdown sends the model only: the picked tip.
     assert model.run("add_tip_model", {"new_model_name": "AC160"}).is_refused  # setup step
     model._store.add_tip_model("AC160")

@@ -814,7 +814,7 @@ def test_add_image_stores_the_original_under_the_typed_sample(images, tmp_path):
     assert images.image_note == ""                           # the note was used up
     (line,) = images.image_log
     assert line.startswith("4oct26  transfer_stage  50x  ") and line.endswith("left edge")
-    assert images.image_text == "1 picture(s) of 4oct26"
+    assert images.image_text == "1 picture of 4oct26"
 
 
 def test_the_image_log_is_the_picked_samples_newest_first(images, tmp_path):
@@ -826,7 +826,7 @@ def test_the_image_log_is_the_picked_samples_newest_first(images, tmp_path):
     images.select_sample("A1")
     assert [l.split()[0] for l in images.image_log] == ["A1", "A1"]
     ids = [r["id"] for r in images._store.images("A1")]
-    assert ids == [1, 3] and images.image_text == "2 picture(s) of A1"
+    assert ids == [1, 3] and images.image_text == "2 pictures of A1"
     images.select_sample("B2")
     assert len(images.image_log) == 1
 
@@ -863,7 +863,7 @@ def test_trials_for_a_sample_are_listed_newest_first_with_the_force_class(images
     assert [t["id"] for t in images.trials_for("4oct26")] == [2, 1]
     assert images.sample_trials_log == [
         "#2  2026-10-04T09:00:00  recorded  Low", "#1  2026-09-27T17:25:08  recorded"]
-    assert images.trials_text == "2 trial(s) recorded for 4oct26"
+    assert images.trials_text == "2 trials recorded for 4oct26"
     images.sample_id = "never"
     assert images.sample_trials_log == [] and "No trial" in images.trials_text
 
@@ -1132,9 +1132,9 @@ def test_pictures_follow_the_picked_level(images, tmp_path):
         [(None, None), ("2", None), ("2", "F1")]
     (line,) = images.image_log
     assert line.startswith("4oct26 \u00b7 2 \u00b7 F1  microscope  100x  ")
-    assert images.image_text == "1 picture(s) of 4oct26 \u00b7 2 \u00b7 F1"
+    assert images.image_text == "1 picture of 4oct26 \u00b7 2 \u00b7 F1"
     images.select_chip("2")
-    assert images.image_text == "1 picture(s) of 4oct26 \u00b7 2"
+    assert images.image_text == "1 picture of 4oct26 \u00b7 2"
     images.select_flake_id("F2")
     assert images.image_log == [] and "No pictures of 4oct26 \u00b7 2 \u00b7 F2" in images.image_text
 
@@ -1207,7 +1207,7 @@ def test_add_sample_inserts_copies_photos_selects_and_returns_to_browse(images, 
     assert (row["material"], row["note"]) == ("graphite", "hello")
     assert len(images._store.images("NEW1")) == 2
     assert images.sample_pick == "NEW1 \u00b7 graphite" and images._staged == []
-    assert images.image_text == "2 picture(s) of NEW1"
+    assert images.image_text == "2 pictures of NEW1"
     assert images.new_sample_id == ""                        # the prompt resets
 
 
@@ -1310,15 +1310,15 @@ def test_trials_narrow_from_the_sample_to_the_chip_to_the_flake(images, tmp_path
     images.select_sample("4oct26")
     assert [t["id"] for t in images.trials_for("4oct26")] == [4, 3, 2, 1]
     assert images.trials_level == "sample" and len(images.sample_trials_log) == 4
-    assert images.trials_text == "4 trial(s) recorded for 4oct26"
+    assert images.trials_text == "4 trials recorded for 4oct26"
     assert _titles(images)[2] == "Trials on this sample"
     images.select_chip("2")
     assert [t["id"] for t in images._picked_trials()] == [2, 1]
-    assert images.trials_text == "2 trial(s) recorded for 4oct26 \u00b7 2"
+    assert images.trials_text == "2 trials recorded for 4oct26 \u00b7 2"
     assert _titles(images)[2] == "Trials on this chip"
     images.select_flake_id("F2")
     assert [t["id"] for t in images._picked_trials()] == [2]
-    assert images.trials_text == "1 trial(s) recorded for 4oct26 \u00b7 2 \u00b7 F2"
+    assert images.trials_text == "1 trial recorded for 4oct26 \u00b7 2 \u00b7 F2"
     assert _titles(images)[2] == "Trials on this flake"
     images.select_chip("1")
     assert [t["id"] for t in images._picked_trials()] == [3]
@@ -1376,7 +1376,7 @@ def test_the_preview_readouts_open_no_sqlite_while_nothing_changed(
     assert images.run("add_image", None, (str(source),)).is_ok   # 100x again
     assert images.preview_key != before["preview_key"]
     assert "newest of 2" in images.preview_text
-    assert images.image_text == "3 picture(s) of " + images._level_text()
+    assert images.image_text == "3 pictures of " + images._level_text()
     images._store.add_sample("9sep26", "MoS2")                  # a write elsewhere
     assert any(o.startswith("9sep26") for o in images.sample_options)
 

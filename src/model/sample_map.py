@@ -458,7 +458,7 @@ class SampleMap(store_choice.StorePrompt, Model):
                             f"the choice could not be saved ({exc}); the station "
                             "will ask again next time.", source=self.NAME)
         events.info("Sample Store", f"Samples go to {path}: "
-                    f"{len(self._store.samples())} sample(s).", source=self.NAME,
+                    f"{count(len(self._store.samples()), 'sample')}.", source=self.NAME,
                     resolves=events.SAMPLE_STORE_NOT_CHOSEN)
         self._request_backup()
         return str(path)
@@ -522,9 +522,9 @@ class SampleMap(store_choice.StorePrompt, Model):
         super().open()
         if not self._store_chosen:
             legacy = self.legacy_store_path()
-            events.warn(events.SAMPLE_STORE_NOT_CHOSEN, f"Choose where the {self.NAME} "
-                        "keeps its samples: its page asks (New store in a folder "
-                        "of your choice, or Open store)." + (
+            events.warn(events.SAMPLE_STORE_NOT_CHOSEN, f"Open the {self.NAME} "
+                        "page and press New store or Open store to choose where "
+                        "its samples are saved." + (
                             f" A database from an earlier version is at {legacy}; "
                             "Copy it here keeps its samples." if legacy else ""),
                         source=self.NAME)
@@ -539,10 +539,13 @@ class SampleMap(store_choice.StorePrompt, Model):
             return
         absolute = self._store.absolute_image_paths()
         events.info("Database Ready", f"{self.db_path}: "
-                    f"{len(self._store.samples())} sample(s), "
-                    f"{len(self._store.images())} image(s)"
-                    + (f"; {absolute} older picture path(s) are absolute and "
-                       "were left as they are" if absolute else ""),
+                    f"{count(len(self._store.samples()), 'sample')}, "
+                    f"{count(len(self._store.images()), 'picture')}"
+                    + (f"; {count(absolute, 'older picture path')} "
+                       f"{'is' if absolute == 1 else 'are'} absolute and "
+                       f"{'was' if absolute == 1 else 'were'} left as "
+                       f"{'it is' if absolute == 1 else 'they are'}"
+                       if absolute else ""),
                     source=self.NAME)
 
     @property
@@ -1992,7 +1995,7 @@ class SampleMap(store_choice.StorePrompt, Model):
         n = self._store_cached(("level_count", sample, chip, flake),
                                lambda: len(self._store.images(sample, chip, flake)))
         where = self._level_text()
-        return f"{n} picture(s) of {where}" if n else f"No pictures of {where} yet"
+        return f"{count(n, 'picture')} of {where}" if n else f"No pictures of {where} yet"
 
     # -- the preview of the picked level's picture (owner 2026-10-08) ---------------------
     def _preview_rows(self):
@@ -2137,7 +2140,7 @@ class SampleMap(store_choice.StorePrompt, Model):
             return "The Transfer Map is not open: no trials to list"
         n = len(self._picked_trials())
         where = self._level_text()
-        return f"{n} trial(s) recorded for {where}" if n else \
+        return f"{count(n, 'trial')} recorded for {where}" if n else \
             f"No trial is recorded for {where}"
 
     @property
