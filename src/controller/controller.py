@@ -27,11 +27,23 @@ class Controller:
     #: s a second `close()` waits for the first. Above the heater's worst
     #: read-back (3 x 1.5 s) plus every other model's bounded teardown.
     CLOSE_WAIT = 30.0
+    #: s `close()` waits for an `add` whose open was under way when it
+    #: began; that add then stops and closes its model itself.
+    OPEN_WAIT = 10.0
 
     def __init__(self):
         self._lock = threading.RLock()
         self._models, self._configs, self._locks = {}, {}, {}
         self._remembered = {}       # configs of removed models, for reopen()
+        #: Models `remove` is stopping and closing: off the table (no
+        #: commands, no panel) but still reached by every stop.
+        self._removing = {}
+        #: Names `add` has reserved while their model opens (lock released).
+        self._opening = {}
+        #: Bumped by every stop of the whole station; `add` compares it
+        #: across an open so a stop pressed meanwhile reaches the new model.
+        self._stop_count = 0
+        self._opening_changed = threading.Condition(self._lock)
         self._subscribers = []
         self._closed = False
         self._closing_thread = None
@@ -44,42 +56,124 @@ class Controller:
 
     # -- construct / destruct on demand -----------------------------------
     def add(self, name, model, config=None):
-        """Register and open. A model that fails to open is closed and not kept."""
+        """Register and open. A model that fails to open is closed and not kept.
+
+        The name is reserved (`_opening`) under the lock before the model
+        opens, so a second add of the same name is refused instead of
+        opening a second handle and replacing the first in the table (audit
+        2026-10-08 item 1: the replaced model kept its port and threads
+        where no FULL STOP reached them). The open itself runs with the lock
+        released: FULL STOP never waits behind a port handshake. A FULL STOP
+        pressed while the model was opening is applied to it after the open
+        and before it is published (`_stop_count`).
+
+        Once `close()` has begun nothing is added: the model is closed and
+        RuntimeError raised, before the open or, when the close began during
+        it, right after (`close()` waits, bounded, for such an open)."""
         with self._lock:
-            if name in self._models:
-                raise ValueError(f"{name} is already open")
+            refused = self._closed
+            if not refused:
+                if name in self._models:
+                    raise ValueError(f"{name} is already open")
+                if name in self._removing:
+                    raise ValueError(f"{name} is still closing")
+                if name in self._opening:
+                    raise ValueError(f"{name} is already opening")
+                self._opening[name] = model
+                stops_seen = self._stop_count
+        if refused:
+            self._close_refused(name, model, opened=False)
+            raise RuntimeError(f"{name} was not opened: the station is closing")
+        published = False
         try:
-            model.open()
-        except Exception:
-            model.close()
-            raise
-        with self._lock:
-            others = dict(self._models)
-            self._models[name] = model
-            self._configs[name] = dict(config or {})
-            self._locks[name] = threading.Lock()
-            self._remembered.pop(name, None)
+            try:
+                model.open()
+            except Exception:
+                model.close()
+                raise
+            while True:
+                with self._lock:
+                    if self._closed:
+                        break
+                    if self._stop_count == stops_seen:
+                        others = dict(self._models)
+                        del self._opening[name]
+                        self._models[name] = model
+                        self._configs[name] = dict(config or {})
+                        self._locks[name] = threading.Lock()
+                        self._remembered.pop(name, None)
+                        published = True
+                        break
+                    stops_seen = self._stop_count
+                # A FULL STOP ran while this model was opening and could not
+                # reach its port; stop it now, before anyone can use it.
+                events.debug("Stopped After Open", f"{name}: a FULL STOP ran "
+                             "while it was opening", source="Controller")
+                model.estop()
+            if not published:
+                self._close_refused(name, model, opened=True)
+                raise RuntimeError(f"{name} was closed again: the station is "
+                                   "closing")
+        finally:
+            if not published:
+                with self._lock:
+                    if self._opening.get(name) is model:
+                        del self._opening[name]
+                    self._opening_changed.notify_all()
         for other_name, other in others.items():
             other.on_model_added(name, model)
             model.on_model_added(other_name, other)
         self._notify("added", name)
         return model
 
+    def _close_refused(self, name, model, opened):
+        """Stop (when it opened) and close a model `add` refused because the
+        station is closing. Never raises: the refusal is what the caller
+        hears."""
+        events.debug("Add Refused", f"{name}: the station is closing",
+                     source="Controller")
+        for step in ((model.estop, model.close) if opened else (model.close,)):
+            try:
+                step()
+            except Exception as exc:
+                events.debug("Close Failed", f"{name}: {exc!r}",
+                             source="Controller", exception=exc)
+
     def remove(self, name):
-        """Estop, close, drop. The config is remembered so reopen() works."""
+        """Estop, close, drop. The config is remembered so reopen() works.
+
+        While it stops and closes (the heater's off read-back takes up to
+        4.5 s) the model sits in `_removing`: it takes no commands and its
+        name cannot be opened again, but FULL STOP (`estop_all`) and the
+        close path still reach it (audit 2026-10-08 item 9; it used to be
+        dropped first). The views hear "removed" once it is closed."""
         with self._lock:
             model = self._models.pop(name, None)
             if model is None:
                 return False
-            self._remembered[name] = self._configs.pop(name, {})
+            self._removing[name] = model
+            config = self._configs.pop(name, {})
             self._locks.pop(name, None)
             others = list(self._models.values())
-        for other in others:
-            other.on_model_removed(name, model)
-        self._notify("removed", name)
-        model.estop()
-        model.close()
+        try:
+            # A peer that raises still lets the model stop, close and leave
+            # `_removing` (its name reusable); the error then propagates.
+            for other in others:
+                other.on_model_removed(name, model)
+        finally:
+            self._finish_remove(name, model, config)
         return True
+
+    def _finish_remove(self, name, model, config):
+        try:
+            model.estop()
+            model.close()
+        finally:
+            with self._lock:
+                if self._removing.get(name) is model:
+                    del self._removing[name]
+                self._remembered[name] = config
+            self._notify("removed", name)
 
     def reopen(self, name):
         with self._lock:
@@ -123,6 +217,7 @@ class Controller:
             return
         try:
             self._close_models()
+            self._wait_for_opens()
         finally:
             self._close_done.set()
         deferred, self._deferred_signal = self._deferred_signal, None
@@ -133,26 +228,58 @@ class Controller:
             signal.signal(deferred, signal.SIG_DFL)
             signal.raise_signal(deferred)
 
+    def _wait_for_opens(self):
+        """Until every `add` under way has refused and closed its model, at
+        most OPEN_WAIT s (a handshake that hangs is the port's to bound)."""
+        import time
+        deadline = time.monotonic() + self.OPEN_WAIT
+        with self._lock:
+            while self._opening:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    events.debug("Open Wait Expired", "still opening at close: "
+                                 + ", ".join(self._opening), source="Controller")
+                    return
+                self._opening_changed.wait(left)
+
     def _close_models(self):
         with self._lock:
             models = dict(self._models)
+            closing = dict(self._removing)   # `remove` closes these itself
+            self._stop_count += 1
             self._models.clear()
             self._configs.clear()
             self._locks.clear()
-        if not models:
+        if not models and not closing:
             return
-        unconfirmed = sorted(n for n, ok in self._estop_concurrently(models).items() if not ok)
+        targets = dict(models)
+        for name, model in closing.items():
+            targets.setdefault(name, model)
+        unconfirmed = sorted(n for n, ok in self._estop_concurrently(targets).items() if not ok)
         if unconfirmed:
             # never a popup from inside a close path: it would block the exit
             events.error("Stop Not Confirmed", "Shutdown could not confirm the stop "
                          f"of: {', '.join(unconfirmed)}. Treat them as live.",
                          source="Controller", ack=False)
-        for name, model in models.items():
+        # Every model closes before any subscriber hears "removed", and the
+        # models that own devices (ports, the heater's off read-back) close
+        # first: at Quit Setup's "removed" handler waits for a store's final
+        # backup, and that wait used to sit between two closes (audit
+        # 2026-10-08 item 4), delaying a heater's teardown past the 30 s a
+        # SIGTERM close waits.
+        def _has_devices(model):
             try:
-                model.close()
+                return bool(getattr(model, "devices", None))
+            except Exception:
+                return True
+        order = sorted(models, key=lambda n: not _has_devices(models[n]))
+        for name in order:
+            try:
+                models[name].close()
             except Exception as exc:
                 events.warn("Close Failed", f"{name}: {exc}", source="Controller",
                             exception=exc)
+        for name in models:
             self._notify("removed", name)
 
     # -- what views call ---------------------------------------------------
@@ -290,9 +417,9 @@ class Controller:
             return any(getattr(m, "is_energized", False) for m in self._models.values())
 
     def estop_all(self):
-        """Every model's estop, wired together. {name: confirmed}. Never hangs."""
-        with self._lock:
-            models = dict(self._models)
+        """Every model's estop, wired together. {name: confirmed}. Never hangs.
+        A model `remove` is still closing is included."""
+        models = self._stop_targets()
         results = self._estop_concurrently(models)
         unconfirmed = sorted(n for n, ok in results.items() if not ok)
         confirmed = sorted(n for n, ok in results.items() if ok)
@@ -331,6 +458,18 @@ class Controller:
         for model in latched.values():
             model.clear_estop(confirmed=True)
         return Result(Result.OK)
+
+    def _stop_targets(self):
+        """Everything a stop must reach: the open models, then the ones
+        `remove` is closing. A snapshot; never held across a stop. A model
+        still opening is not in it (its port may not be open yet); the
+        count bump makes `add` stop it once its open returns."""
+        with self._lock:
+            self._stop_count += 1
+            models = dict(self._models)
+            for name, model in self._removing.items():
+                models.setdefault(name, model)
+        return models
 
     def _estop_concurrently(self, models):
         import time

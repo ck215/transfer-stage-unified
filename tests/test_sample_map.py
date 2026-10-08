@@ -1337,6 +1337,46 @@ def test_a_trial_store_without_chip_and_flake_columns_lists_at_sample_level_only
     assert images.sample_trials_log == []
 
 
+def test_the_preview_readouts_open_no_sqlite_while_nothing_changed(
+        images, tmp_path, monkeypatch):
+    """Audit 2026-10-08 item 8: the Sample DB's preview readouts opened the
+    store several times on every state poll. They read it once per change."""
+    from PIL import Image
+    from model import sample_store as ss_module
+    _tree(images, tmp_path)
+    images.select_sample("4oct26")
+    images.select_chip("2")
+    images.select_flake_id("F1")
+    for mag, colour in (("10x", (0, 0, 200)), ("100x", (200, 0, 0))):
+        source = tmp_path / f"{mag}.png"
+        Image.new("RGB", (64, 48), colour).save(source)
+        images.run("set_image_magnification", None, (mag,))
+        assert images.run("add_image", None, (str(source),)).is_ok
+    readouts = ("preview_key", "preview_text", "preview_magnification",
+                "preview_magnification_options")
+    before = {name: getattr(images, name) for name in readouts}
+    real, opened = ss_module.sqlite3.connect, []
+    monkeypatch.setattr(ss_module.sqlite3, "connect",
+                        lambda *a, **k: opened.append(a) or real(*a, **k))
+    for _ in range(3):
+        assert {name: getattr(images, name) for name in readouts} == before
+    assert opened == [], f"{len(opened)} SQLite opens for unchanged previews"
+    values = images.state["values"]
+    del opened[:]
+    for _ in range(3):
+        assert images.state["values"] == values
+    assert opened == [], f"{len(opened)} SQLite opens in 3 unchanged state polls"
+    monkeypatch.setattr(ss_module.sqlite3, "connect", real)
+    source = tmp_path / "newer.png"
+    Image.new("RGB", (64, 48), (0, 200, 0)).save(source)
+    assert images.run("add_image", None, (str(source),)).is_ok   # 100x again
+    assert images.preview_key != before["preview_key"]
+    assert "newest of 2" in images.preview_text
+    assert images.image_text == "3 picture(s) of " + images._level_text()
+    images._store.add_sample("9sep26", "MoS2")                  # a write elsewhere
+    assert any(o.startswith("9sep26") for o in images.sample_options)
+
+
 def test_the_pictures_section_previews_the_100x_picture_and_can_switch(images, tmp_path):
     """Owner 2026-10-08: a preview of the picked level's picture, 100x by
     default; the operator may pick another magnification on offer."""

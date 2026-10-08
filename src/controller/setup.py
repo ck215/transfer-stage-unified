@@ -100,6 +100,10 @@ LOST = ConnectionState.LOST.value
 #: The check that matters is the one *inside* the wait; between ports is not
 #: enough, because that is not where the time goes (MANAGER-20).
 PROBE_SLICE = 0.1
+#: s Quit waits, in all, for the stores' final backups. With every device
+#: closed first (the heater's read-back is at most 4.5 s) the Quit stays
+#: well under the 30 s a SIGTERM close waits (audit 2026-10-08 item 4).
+_QUIT_BACKUP_BUDGET_S = 15.0
 #: Refresh never waits on the calling (view) thread for a cancelled scan to
 #: notice: a helper thread waits and starts the next scan (F18; the Qt audit
 #: measured a 1 s freeze when Refresh joined here).
@@ -3075,7 +3079,10 @@ class Setup(PortProbe, Panel):
         """Remember the store models while they are open; when one is
         removed (a tab close, a relaunch, Quit) back its store up. At Quit
         (the Controller closing) the backup is waited for, at most
-        `BackupService.QUIT_WAIT_S`."""
+        `_QUIT_BACKUP_BUDGET_S` for the whole Quit, however many stores
+        (audit 2026-10-08 item 4: it was QUIT_WAIT_S per store). The
+        Controller notifies "removed" only once every device has closed, so
+        this wait never delays a heater's teardown."""
         if event == "added":
             lookup = getattr(self.controller, "_model_or_none", None)
             model = lookup(name) if callable(lookup) else None
@@ -3089,9 +3096,15 @@ class Setup(PortProbe, Panel):
             return
         if self.backup.request(self._backup_job([model])) and \
                 getattr(self.controller, "_closed", False):
-            if not self.backup.wait(self.backup.QUIT_WAIT_S):
+            budget = min(self.backup.QUIT_WAIT_S, _QUIT_BACKUP_BUDGET_S)
+            deadline = getattr(self, "_quit_backup_deadline", None)
+            if deadline is None:
+                deadline = self._quit_backup_deadline = time.monotonic() + budget
+            if not self.backup.wait(max(0.0, deadline - time.monotonic())) and \
+                    not getattr(self, "_quit_backup_warned", False):
+                self._quit_backup_warned = True
                 events.warn("Backup Not Finished", "The last backup was still "
-                            f"running after {self.backup.QUIT_WAIT_S:g} s; the "
+                            f"running after {budget:g} s; the "
                             "stores are safe on this computer and are backed "
                             "up at the next start.", source=self.NAME)
 

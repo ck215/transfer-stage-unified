@@ -1653,13 +1653,33 @@ class SampleMap(store_choice.StorePrompt, Model):
         return row["path"]
 
     # -- the pickers: sample > chip > flake -----------------------------------------
+    def _store_cached(self, key, read):
+        """`read()` once per change of the chosen store (`change_token`: a
+        write through any store object here, or the file changed on disk),
+        not on every state poll (audit 2026-10-08 item 8). One entry per
+        `key`; a read that raises is not cached. No store: read as is."""
+        path = getattr(self._store, "path", None)
+        if path is None:
+            return read()
+        cache = self.__dict__.setdefault("_store_reads", {})
+        token = ss.change_token(path)
+        slot = key[0] if isinstance(key, tuple) else key
+        hit = cache.get(slot)
+        if hit is not None and hit[0] == (token, key):
+            return hit[1]
+        value = read()
+        cache[slot] = ((token, key), value)
+        return value
+
     def _sample_entries(self):
         """[(shown text, sample ID)] for every sample: the saved ones, those
         with pictures, and the labels the Transfer Map's trials carry (older
         data has pictures and trials under labels with no sample row)."""
-        material = {s["sample_id"]: s["material"] for s in self._store.samples()}
+        material, pictured = self._store_cached("entries", lambda: (
+            {s["sample_id"]: s["material"] for s in self._store.samples()},
+            frozenset(i["sample_id"] for i in self._store.images())))
         ids = set(material)
-        ids |= {i["sample_id"] for i in self._store.images()}
+        ids |= pictured
         ids |= set(self._trial_labels())
         return [(f"{i}{self.SEP}{material[i]}" if material.get(i) else i, i)
                 for i in sorted(ids, key=str.lower)]
@@ -1924,7 +1944,8 @@ class SampleMap(store_choice.StorePrompt, Model):
         sample, chip, flake = self._picked()
         if not sample:
             return "Pick a sample"
-        n = len(self._store.images(sample, chip, flake))
+        n = self._store_cached(("level_count", sample, chip, flake),
+                               lambda: len(self._store.images(sample, chip, flake)))
         where = self._level_text()
         return f"{n} picture(s) of {where}" if n else f"No pictures of {where} yet"
 
@@ -1936,7 +1957,8 @@ class SampleMap(store_choice.StorePrompt, Model):
         if not picked[0]:
             return picked, []
         try:
-            rows = self._store.images(*picked) or self._store.images(*picked, any=True)
+            # Once per store change, not per readout (audit 2026-10-08 item 8).
+            rows = self._preview.rows(self._store, picked)
         except Exception as exc:
             events.debug("Preview Not Read", repr(exc), source=self.NAME, every=5.0)
             rows = []

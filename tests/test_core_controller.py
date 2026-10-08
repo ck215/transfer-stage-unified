@@ -59,6 +59,116 @@ def test_adding_a_name_twice_is_refused_before_anything_opens(controller):
     assert second.start_calls == 0, "the duplicate opened a second handle"
 
 
+class _SlowOpen(FakeModel):
+    """A model whose open takes a while (a port handshake does)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.opening = threading.Event()
+        self.open_gate = threading.Event()
+
+    def _start_threads(self):
+        self.opening.set()
+        self.open_gate.wait(5)
+        super()._start_threads()
+
+
+def _add_in_thread(controller, name, model):
+    errors = []
+
+    def _add():
+        try:
+            controller.add(name, model)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_add, daemon=True)
+    thread.start()
+    return thread, errors
+
+
+def test_a_second_add_of_a_name_that_is_still_opening_is_refused(controller):
+    """Audit 2026-10-08 item 1: `add` checked the name, opened with the lock
+    released, then inserted. Two concurrent adds (the Web server runs Setup
+    commands concurrently) both opened, the second replaced the first in the
+    table, and the first kept its port and threads where no FULL STOP
+    reached them."""
+    first = _SlowOpen()
+    thread, errors = _add_in_thread(controller, "probe", first)
+    try:
+        assert first.opening.wait(2)
+        second = FakeModel()
+        with pytest.raises(ValueError):
+            controller.add("probe", second)
+        assert second.start_calls == 0, "the duplicate opened a second handle"
+    finally:
+        first.open_gate.set()
+        thread.join(5)
+    assert errors == []
+    assert controller.models == {"probe": first}
+
+
+def test_a_full_stop_during_an_open_latches_the_model_before_it_is_published(
+        controller):
+    """FULL STOP never waits behind an opening port, and a model whose open
+    was under way when it was pressed is stopped before anyone can use it."""
+    model = _SlowOpen()
+    thread, errors = _add_in_thread(controller, "probe", model)
+    try:
+        assert model.opening.wait(2)
+        started = time.monotonic()
+        controller.estop_all()
+        assert time.monotonic() - started < controller.ESTOP_ALL_BUDGET + 0.5, \
+            "FULL STOP waited behind an opening port"
+    finally:
+        model.open_gate.set()
+        thread.join(5)
+    assert errors == []
+    assert controller.model_names == ["probe"]
+    assert model.is_estopped, "a model opened across a FULL STOP came up unlatched"
+    assert "halt" in model.close_order
+
+
+def test_add_after_close_began_is_refused_and_the_model_closed(controller):
+    """Audit 2026-10-08 item 9: `add` never checked `_closed`; a Hard reset
+    or sign-in landing during a tab-close quit added a model nobody closed."""
+    controller.close()
+    device = FakeDevice("a")
+    model = FakeModel(devices=[device])
+    with pytest.raises(RuntimeError, match="closing"):
+        controller.add("probe", model)
+    assert model.start_calls == 0, "a model opened on a closing station"
+    assert model.disable_calls == 1, "the refused model was not closed"
+    assert controller.model_names == []
+
+
+def test_close_during_an_open_closes_that_model_too(controller):
+    model = _SlowOpen(devices=[FakeDevice("a")])
+    thread, errors = _add_in_thread(controller, "probe", model)
+    assert model.opening.wait(2)
+    closer = threading.Thread(target=controller.close, daemon=True)
+    closer.start()
+    time.sleep(0.1)
+    model.open_gate.set()
+    closer.join(5)
+    thread.join(5)
+    assert not closer.is_alive() and not thread.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], RuntimeError)
+    assert controller.model_names == []
+    assert model.is_estopped and model.disable_calls == 1
+    assert not model.devices[0].is_open, "the port opened during Quit stayed open"
+
+
+def test_a_failed_open_frees_the_name(controller):
+    model = FakeModel()
+    model.start_error = OSError("handshake timed out")
+    with pytest.raises(OSError):
+        controller.add("probe", model)
+    again = FakeModel()
+    controller.add("probe", again)
+    assert controller.models == {"probe": again}
+
+
 def test_a_model_that_fails_to_open_is_closed_and_not_kept(controller):
     """One port must never be left half-open and unowned."""
     device = FakeDevice("a")
@@ -131,6 +241,74 @@ def test_remove_stops_the_model_before_it_closes_it(controller):
     assert model.is_estopped, "remove closed a model it had not latched"
     assert model.close_order.index("halt") < model.close_order.index("disable")
     assert model.stop_calls == 1
+
+
+def test_a_full_stop_during_a_slow_remove_still_reaches_the_model(controller):
+    """Audit 2026-10-08 item 9: `remove` dropped the model from the table
+    before it stopped and closed it, so a FULL STOP pressed during the
+    heater's 0.6-4.5 s close did not include it."""
+    model = _SlowDisable()
+    controller.add("heater", model)
+    remover = threading.Thread(target=controller.remove, args=("heater",))
+    remover.start()
+    try:
+        assert model.entered.wait(2), "remove never reached the model's close"
+        halts_before = model.close_order.count("halt")
+        results = controller.estop_all()
+        assert "heater" in results, "FULL STOP missed a model that was still closing"
+        assert model.close_order.count("halt") > halts_before
+    finally:
+        model.gate.set()
+        remover.join(5)
+    assert controller.model_names == []
+    assert "heater" in controller.closed_names
+
+
+def test_a_closing_model_takes_no_new_commands_and_its_name_is_not_reused(controller):
+    model = _SlowDisable()
+    controller.add("heater", model)
+    remover = threading.Thread(target=controller.remove, args=("heater",))
+    remover.start()
+    try:
+        assert model.entered.wait(2)
+        assert controller.run("heater", "move").is_refused
+        second = FakeModel()
+        with pytest.raises(ValueError):
+            controller.add("heater", second)
+        assert second.start_calls == 0, "a second handle opened on a closing port"
+    finally:
+        model.gate.set()
+        remover.join(5)
+
+
+def test_a_peer_that_raises_during_remove_still_lets_the_model_close(controller):
+    """Setup's hard reset relies on it: the model ends stopped and closed,
+    its name reusable, and the peer's error still reaches the caller."""
+    peer, model = FakeModel(), FakeModel()
+    controller.add("peer", peer)
+    controller.add("probe", model)
+
+    def boom(name, removed):
+        raise RuntimeError("a peer fell over")
+    peer.on_model_removed = boom
+    with pytest.raises(RuntimeError):
+        controller.remove("probe")
+    assert model.is_estopped and model.disable_calls == 1
+    assert "probe" not in controller.model_names and "probe" in controller.closed_names
+    again = FakeModel()
+    controller.add("probe", again)
+    assert controller.models["probe"] is again
+
+
+def test_views_hear_removed_only_once_the_model_is_closed(controller):
+    model = _SlowDisable()
+    controller.add("heater", model)
+    heard = []
+    controller.subscribe(lambda event, name: heard.append(
+        (event, name, model.closed.is_set())))
+    model.gate.set()
+    controller.remove("heater")
+    assert heard == [("removed", "heater", True)]
 
 
 def test_remove_drops_the_model_but_remembers_its_config(controller):
@@ -212,6 +390,29 @@ def test_close_stops_every_model_before_it_closes_any(controller):
     controller.close()
     assert first.halt_latched_at_call and second.halt_latched_at_call
     assert first.halt_latched_at_call[0] is True
+
+
+def test_close_closes_every_model_before_any_view_hears_removed(controller):
+    """Audit 2026-10-08 item 4: Setup's "removed" subscriber waits up to
+    20 s for a store's final backup at Quit. Inside the close loop that
+    wait delayed the next model's close, so after a Hard reset (which
+    re-adds its device last) the heater's off read-back and port release
+    could run past the 30 s SIGTERM window. Every model closes first."""
+    store, heater = FakeModel(), FakeModel(devices=[FakeDevice("port")])
+    controller.add("Transfer Map", store)
+    controller.add("Temperature Controller", heater)
+    seen = []
+
+    def _slow_subscriber(event, name):
+        if event == "removed":
+            seen.append((name, heater.disable_calls, heater.devices[0].is_open))
+            time.sleep(0.05)       # the backup wait
+
+    controller.subscribe(_slow_subscriber)
+    controller.close()
+    assert [name for name, *_ in seen] == ["Transfer Map", "Temperature Controller"]
+    assert all(disabled == 1 and not port_open for _n, disabled, port_open in seen), \
+        f"a view's removed handler ran before the heater was closed: {seen}"
 
 
 def test_close_is_idempotent(controller):

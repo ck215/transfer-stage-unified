@@ -243,3 +243,38 @@ def test_sample_writes_request_a_backup(monkeypatch, tmp_path):
     assert asked and asked[0] is model
     assert model.backup_sources() == [(model.db_path, [model.output_root / "images",
                                                        model.output_root / "sample_map"])]
+
+
+def test_the_quit_backup_wait_is_one_budget_for_every_store(monkeypatch):
+    """Audit 2026-10-08 item 4: at Quit Setup waited up to QUIT_WAIT_S
+    (20 s) per store model, so both maps on a hung mount held the Quit 40 s,
+    past the 30 s a SIGTERM close waits. The wait is one budget for the
+    whole Quit (the Controller notifies "removed" only once every device
+    has closed, `test_close_closes_every_model_before_any_view_hears_removed`)."""
+    import types
+    from controller import setup as setup_module
+    from controller.setup import Setup
+
+    clock = [1000.0]
+    monkeypatch.setattr(setup_module.time, "monotonic", lambda: clock[0])
+    waited = []
+
+    class _HungBackup:
+        QUIT_WAIT_S = backup.BackupService.QUIT_WAIT_S
+
+        def request(self, job):
+            return True
+
+        def wait(self, timeout):
+            waited.append(timeout)
+            clock[0] += max(0.0, timeout)       # the mount never answers
+            return False
+
+    stub = types.SimpleNamespace(
+        backup=_HungBackup(), controller=types.SimpleNamespace(_closed=True),
+        _closing_store_models={"Transfer Map": object(), "Sample DB": object()},
+        _backup_job=lambda models: object(), NAME="Setup")
+    Setup._on_models_changed(stub, "removed", "Transfer Map")
+    Setup._on_models_changed(stub, "removed", "Sample DB")
+    assert len(waited) == 2
+    assert sum(waited) <= 15.0, f"Quit waited {sum(waited):g} s for backups"

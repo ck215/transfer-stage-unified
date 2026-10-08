@@ -3311,7 +3311,9 @@ class TransferMap(store_choice.StorePrompt, Model):
         if store is None:
             return None, level, []
         try:
-            rows = store.images(*level) or store.images(*level, any=True)
+            # Read once per store change, not per readout (audit 2026-10-08
+            # item 8): opening the store is a stat, its rows are cached.
+            rows = self._preview_or_new().rows(store, level)
         except Exception as exc:
             events.debug("Preview Not Read", repr(exc), source=self.NAME, every=5.0)
             rows = []

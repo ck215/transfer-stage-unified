@@ -4928,6 +4928,59 @@ def test_rebuild_force_reads_the_stored_shade_when_the_video_is_gone(tmp_path):
         model.close()
 
 
+def _count_sqlite_connects(monkeypatch):
+    from model import sample_store as ss_module
+    real = ss_module.sqlite3.connect
+    opened = []
+
+    def _counting(*args, **kwargs):
+        opened.append(args[0] if args else kwargs.get("database"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ss_module.sqlite3, "connect", _counting)
+    return opened
+
+
+def test_a_state_poll_reads_the_sample_store_only_when_it_changed(tmp_path, monkeypatch):
+    """Audit 2026-10-08 item 8: the preview readouts opened the Sample DB 12
+    times per `TransferMap.state` (48/s at the page's 4 Hz poll, during a
+    recording too). Now nothing is opened while nothing changed, and a
+    write to the store shows at the next poll."""
+    from PIL import Image
+    from model.sample_store import SampleStore
+    instrument = "microscope"
+    store_path = tmp_path / "samples" / "sample_map.sqlite"
+    writer = SampleStore(store_path)
+    writer.add_sample("S", "hBN")
+    writer.add_chip("S", "1")
+    writer.add_flake("S", "1", "F")
+    for mag, colour in ((10, (0, 0, 200)), (100, (200, 0, 0))):
+        source = tmp_path / f"{mag}.png"
+        Image.new("RGB", (40, 30), colour).save(source)
+        writer.add_image("S", source, instrument, mag, chip_id="1", flake_id="F")
+    model = TransferMap(db_path=tmp_path / "map.sqlite")
+    try:
+        model.on_model_added("Sample DB", FakeSampleMap(store_path))
+        for command, label in (("pick_sample", "S"), ("pick_chip", "1"),
+                               ("pick_flake", "F")):
+            assert model.run(command, None, (label,)).is_ok
+        first = model.state["values"]
+        assert first["preview_magnification"] == "100x"
+        opened = _count_sqlite_connects(monkeypatch)
+        for _ in range(3):
+            assert model.state["values"]["preview_key"] == first["preview_key"]
+        assert len(opened) == 0, f"{len(opened)} SQLite opens in 3 unchanged polls"
+        # A write from the Sample DB (its own store object) shows at once.
+        source = tmp_path / "another.png"
+        Image.new("RGB", (40, 30), (0, 200, 0)).save(source)
+        SampleStore(store_path).add_image("S", source, instrument, 100,
+                                          chip_id="1", flake_id="F")
+        assert model.state["values"]["preview_key"] != first["preview_key"]
+        assert model.preview_text.endswith("newest of 2")
+    finally:
+        model.close()
+
+
 def test_the_trial_setup_previews_the_picked_flakes_picture(tmp_path):
     """Owner 2026-10-08: the picked flake's picture in the trial setup,
     100x by default (else 50x, else lower), from the Sample DB's store."""
