@@ -1024,7 +1024,10 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 }
 
 .sheet.is-overview > .card > .card-head { grid-column: 1; grid-row: 1; }
-.sheet.is-overview > .card > .tile-keys { grid-column: 2; grid-row: 1; }
+/* On the head's first line, level with Open: a state on a line of its own
+   under the name makes the head two lines tall, and keys centred on the
+   whole head sat ~8 px below Open. */
+.sheet.is-overview > .card > .tile-keys { grid-column: 2; grid-row: 1; align-self: start; }
 
 .tile-keys {
   position: relative;
