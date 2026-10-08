@@ -815,7 +815,17 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .nav-dot.is-on { background: var(--trace); }
 
+/* An error is a diamond, not a dot (UX audit 2026-10-07 #5): the three
+   fills are all dark (grey/blue 1.13:1, grey/red 1.20:1 between them), so
+   colour alone did not tell them apart. Each fill clears 3:1 on the rail
+   and on the current entry's highlight; enabled also has the energized
+   ring beside it, so every state has a mark that is not its colour. */
 .nav-dot.is-error {
+  width: 0.5625rem;
+  height: 0.5625rem;
+  margin: 0 0.03125rem;
+  border-radius: 1px;
+  transform: rotate(45deg);
   background: var(--signal);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--signal) 30%, transparent);
 }

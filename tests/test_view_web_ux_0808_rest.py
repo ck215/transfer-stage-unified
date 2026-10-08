@@ -330,3 +330,69 @@ def test_the_take_over_key_is_as_wide_as_its_words(two_window_station, tmp_path)
         assert got["height"] >= 36, out
         assert got["sideways"] <= 0, out
     assert "on the left" not in out["phone"]["text"], out
+
+
+# ------------------------------------- 2026-10-07 #5 the rail's status dots
+#: Every rail dot: its fill, the background it sits on (its ancestors'
+#: backgrounds composited), their WCAG contrast, and its shape.
+_DOT_READ = r"""() => {
+  const rgba = (text) => {
+    const m = String(text).match(/rgba?\(([^)]+)\)/);
+    if (!m) return [0, 0, 0, 0];
+    const p = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number);
+    return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+  };
+  const over = (top, under) => {
+    const a = top[3];
+    return [0, 1, 2].map((i) => top[i] * a + under[i] * (1 - a)).concat([1]);
+  };
+  const backdrop = (node) => {
+    const layers = [];
+    for (let n = node.parentElement; n; n = n.parentElement) {
+      const c = rgba(getComputedStyle(n).backgroundColor);
+      if (c[3] > 0) layers.push(c);
+      if (c[3] >= 1) break;
+    }
+    let colour = [255, 255, 255, 1];
+    for (const layer of layers.reverse()) colour = over(layer, colour);
+    return colour;
+  };
+  const lum = (c) => {
+    const ch = c.slice(0, 3).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+  };
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  return Array.from(document.querySelectorAll('#model-nav .model-link[data-model] .nav-dot')).map((d) => {
+    const s = getComputedStyle(d);
+    const fill = rgba(s.backgroundColor);
+    return { name: d.parentNode.dataset.model, label: d.getAttribute('aria-label'),
+             error: d.classList.contains('is-error'), on: d.classList.contains('is-on'),
+             contrast: Math.round(ratio(fill, backdrop(d)) * 100) / 100,
+             shape: [s.borderRadius, s.transform, s.clipPath].join('|') };
+  });
+}"""
+
+
+@needs_browser
+def test_the_rail_dots_meet_3_to_1_and_an_error_differs_by_shape(two_window_station, tmp_path):
+    """The dots differed by hue alone (grey/blue 1.13:1, grey/red 1.20:1):
+    every one now clears 3:1 against what it sits on (the rail, the current
+    entry's highlight), and an error dot is a different shape, so it reads
+    without colour."""
+    out = _browse(two_window_station, _READY + r"""
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(900);
+      const idle = await page.evaluate(%s);
+      await page.click('#full-stop');
+      await until(() => document.querySelector('#model-nav .nav-dot.is-error'));
+      await sleep(400);
+      const stopped = await page.evaluate(%s);
+      return { idle, stopped };
+    """ % (_DOT_READ, _DOT_READ), tmp_path)
+    idle, stopped = out["idle"], out["stopped"]
+    assert idle and stopped, out
+    assert not any(d["error"] for d in idle), out
+    assert all(d["error"] for d in stopped), out
+    for dot in idle + stopped:
+        assert dot["contrast"] >= 3.0, dot
+    assert {d["shape"] for d in idle}.isdisjoint({d["shape"] for d in stopped}), out
