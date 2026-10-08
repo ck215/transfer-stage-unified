@@ -1334,6 +1334,102 @@ def test_grab_frame_is_none_without_a_region_or_a_frame(monitor):
     assert closed.grab_frame() is None                   # screen never opened
 
 
+# -- the one-shot grabs settle too (2026-10-07): Arm's capture check, the
+# whole-screen still and the Sample Map's photos take no mid-repaint read ---
+
+class _Flicker:
+    """The first `unsettled` reads each show a different picture (a repaint
+    in progress); from then on every read shows `held`."""
+
+    def __init__(self, held, unsettled):
+        self.held, self.unsettled, self.grabs = held, unsettled, 0
+        self.monitors = [{"left": 0, "top": 0, "width": 10, "height": 10}]
+
+    def grab(self, region):
+        self.grabs += 1
+        if self.grabs <= self.unsettled:
+            partial = self.held.copy()
+            partial[: self.grabs % self.held.shape[0] + 1] = (self.grabs, 0, 0)
+            return partial
+        return self.held.copy()
+
+    def close(self):
+        pass
+
+
+def _flicker_model(tmp_path, held, unsettled):
+    capture = _Flicker(held, unsettled)
+    model = RgbAnalysis(screen=Screen(factory=lambda: capture))
+    model.output_root = tmp_path / "runs"
+    model.open()
+    model.set_region(0, 0, 10, 10)
+    return model, capture
+
+
+def test_grab_frame_takes_the_first_two_reads_that_agree(tmp_path):
+    from PIL import Image
+    import io
+    model, capture = _flicker_model(tmp_path, _lit((200, 0, 0)), unsettled=3)
+    try:
+        png = model.grab_frame()
+        assert png and capture.grabs == 5                # 3 unsettled, then 2 that agree
+        assert Image.open(io.BytesIO(png)).getpixel((0, 0))[:3] == (200, 0, 0)
+    finally:
+        model.close()
+
+
+def test_grab_frame_is_none_when_the_reads_never_agree(tmp_path):
+    model, capture = _flicker_model(tmp_path, _lit((200, 0, 0)), unsettled=100)
+    try:
+        assert model.grab_frame() is None
+        assert capture.grabs == RgbAnalysis.SETTLE_READS
+    finally:
+        model.close()
+
+
+def test_grab_frame_refuses_a_black_fill(tmp_path):
+    black = numpy.zeros((10, 10, 3), dtype=numpy.uint8)
+    model, _capture = _flicker_model(tmp_path, black, unsettled=0)
+    try:
+        assert model.grab_frame() is None
+    finally:
+        model.close()
+
+
+class _FlickerShot:
+    def __init__(self, width, height, fill):
+        self.size = (width, height)
+        self.bgra = bytes(fill) * (width * height)
+
+
+class _FlickerDesktop(_Flicker):
+    """The whole-desktop grab repaints for the first `unsettled` reads."""
+
+    def grab(self, region):
+        self.grabs += 1
+        fill = (0, 0, 200, 255) if self.grabs > self.unsettled else (self.grabs, 0, 0, 255)
+        return _FlickerShot(region["width"], region["height"], fill)
+
+
+def test_grab_screen_takes_the_first_two_screenshots_that_agree(tmp_path):
+    from PIL import Image
+    import io
+    capture = _FlickerDesktop(_lit(), unsettled=2)
+    model = RgbAnalysis(screen=Screen(factory=lambda: capture))
+    model.output_root = tmp_path / "runs"
+    model.open()
+    try:
+        png = model.grab_screen()
+        assert png and capture.grabs == 4
+        assert Image.open(io.BytesIO(png)).getpixel((0, 0))[:3] == (200, 0, 0)
+        capture.unsettled = 10 ** 6
+        capture.grabs = 0
+        assert model.grab_screen() is None
+        assert capture.grabs == RgbAnalysis.SETTLE_READS
+    finally:
+        model.close()
+
+
 # -- trial sheet T2: a run's identity that no later run shares (additive) ------
 
 def test_run_token_names_this_run_and_no_later_one(monitor):

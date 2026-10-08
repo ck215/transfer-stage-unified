@@ -1550,9 +1550,14 @@ class RgbAnalysis(Model):
         region = self.region
         if not region or not self.screen.is_open or numpy is None:
             return None
-        frame = self.screen.grab(region)
+        frame = self._settled_once(
+            lambda: self.screen.grab(region),
+            lambda a, b: self._same_picture(self._pixels(a), self._pixels(b)))
         if frame is None:
             return None
+        pixels = self._pixels(frame)
+        if pixels is None or not pixels.any():
+            return None                      # a black fill: the repaint, not the feed
         try:
             import io
             from PIL import Image
@@ -1577,12 +1582,35 @@ class RgbAnalysis(Model):
         if not self.screen.is_open:
             return None
         try:
-            png, _bounds = self.screen.screenshot_png(max_width=None)
+            png = self._settled_once(
+                lambda: self.screen.screenshot_png(max_width=None)[0] or None,
+                lambda a, b: a == b)
         except Exception as exc:
             events.debug("Screen Grab Failed", repr(exc), source=self.NAME,
                          exception=exc)
             return None
         return png or None
+
+    def _settled_once(self, read, same):
+        """The settle gate for a grab OUTSIDE the run loop (Arm's capture
+        check, the whole-screen pictures, the Sample Map's photos): read
+        until two reads at least SETTLE_S apart show the same picture, at
+        most SETTLE_READS reads, and return the later one; None when a read
+        returned nothing or the reads ran out. A one-off read can land
+        mid-repaint exactly as the loop's did (CAP-1), and a black or
+        half-drawn still is worse there: the operator draws the region on
+        it, or it is filed as the sample's picture."""
+        pending = None
+        for attempt in range(self.SETTLE_READS):
+            if attempt:
+                time.sleep(self.SETTLE_S)
+            current = read()
+            if current is None:
+                return None
+            if pending is not None and same(pending, current):
+                return current
+            pending = current
+        return None
 
     def _wants_row(self, run, red):
         if run.sample_mode == "change":
