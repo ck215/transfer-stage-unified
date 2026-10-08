@@ -32,6 +32,9 @@ class Controller:
         self._lock = threading.RLock()
         self._models, self._configs, self._locks = {}, {}, {}
         self._remembered = {}       # configs of removed models, for reopen()
+        #: Models `remove` is stopping and closing: off the table (no
+        #: commands, no panel) but still reached by every stop.
+        self._removing = {}
         self._subscribers = []
         self._closed = False
         self._closing_thread = None
@@ -48,6 +51,8 @@ class Controller:
         with self._lock:
             if name in self._models:
                 raise ValueError(f"{name} is already open")
+            if name in self._removing:
+                raise ValueError(f"{name} is still closing")
         try:
             model.open()
         except Exception:
@@ -66,19 +71,32 @@ class Controller:
         return model
 
     def remove(self, name):
-        """Estop, close, drop. The config is remembered so reopen() works."""
+        """Estop, close, drop. The config is remembered so reopen() works.
+
+        While it stops and closes (the heater's off read-back takes up to
+        4.5 s) the model sits in `_removing`: it takes no commands and its
+        name cannot be opened again, but FULL STOP (`estop_all`) and the
+        close path still reach it (audit 2026-10-08 item 9; it used to be
+        dropped first). The views hear "removed" once it is closed."""
         with self._lock:
             model = self._models.pop(name, None)
             if model is None:
                 return False
-            self._remembered[name] = self._configs.pop(name, {})
+            self._removing[name] = model
+            config = self._configs.pop(name, {})
             self._locks.pop(name, None)
             others = list(self._models.values())
         for other in others:
             other.on_model_removed(name, model)
-        self._notify("removed", name)
-        model.estop()
-        model.close()
+        try:
+            model.estop()
+            model.close()
+        finally:
+            with self._lock:
+                if self._removing.get(name) is model:
+                    del self._removing[name]
+                self._remembered[name] = config
+            self._notify("removed", name)
         return True
 
     def reopen(self, name):
@@ -136,12 +154,16 @@ class Controller:
     def _close_models(self):
         with self._lock:
             models = dict(self._models)
+            closing = dict(self._removing)   # `remove` closes these itself
             self._models.clear()
             self._configs.clear()
             self._locks.clear()
-        if not models:
+        if not models and not closing:
             return
-        unconfirmed = sorted(n for n, ok in self._estop_concurrently(models).items() if not ok)
+        targets = dict(models)
+        for name, model in closing.items():
+            targets.setdefault(name, model)
+        unconfirmed = sorted(n for n, ok in self._estop_concurrently(targets).items() if not ok)
         if unconfirmed:
             # never a popup from inside a close path: it would block the exit
             events.error("Stop Not Confirmed", "Shutdown could not confirm the stop "
@@ -290,9 +312,9 @@ class Controller:
             return any(getattr(m, "is_energized", False) for m in self._models.values())
 
     def estop_all(self):
-        """Every model's estop, wired together. {name: confirmed}. Never hangs."""
-        with self._lock:
-            models = dict(self._models)
+        """Every model's estop, wired together. {name: confirmed}. Never hangs.
+        A model `remove` is still closing is included."""
+        models = self._stop_targets()
         results = self._estop_concurrently(models)
         unconfirmed = sorted(n for n, ok in results.items() if not ok)
         confirmed = sorted(n for n, ok in results.items() if ok)
@@ -331,6 +353,15 @@ class Controller:
         for model in latched.values():
             model.clear_estop(confirmed=True)
         return Result(Result.OK)
+
+    def _stop_targets(self):
+        """Everything a stop must reach: the open models, then the ones
+        `remove` is closing. A snapshot; never held across a stop."""
+        with self._lock:
+            models = dict(self._models)
+            for name, model in self._removing.items():
+                models.setdefault(name, model)
+        return models
 
     def _estop_concurrently(self, models):
         import time

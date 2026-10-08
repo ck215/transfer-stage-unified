@@ -133,6 +133,55 @@ def test_remove_stops_the_model_before_it_closes_it(controller):
     assert model.stop_calls == 1
 
 
+def test_a_full_stop_during_a_slow_remove_still_reaches_the_model(controller):
+    """Audit 2026-10-08 item 9: `remove` dropped the model from the table
+    before it stopped and closed it, so a FULL STOP pressed during the
+    heater's 0.6-4.5 s close did not include it."""
+    model = _SlowDisable()
+    controller.add("heater", model)
+    remover = threading.Thread(target=controller.remove, args=("heater",))
+    remover.start()
+    try:
+        assert model.entered.wait(2), "remove never reached the model's close"
+        halts_before = model.close_order.count("halt")
+        results = controller.estop_all()
+        assert "heater" in results, "FULL STOP missed a model that was still closing"
+        assert model.close_order.count("halt") > halts_before
+    finally:
+        model.gate.set()
+        remover.join(5)
+    assert controller.model_names == []
+    assert "heater" in controller.closed_names
+
+
+def test_a_closing_model_takes_no_new_commands_and_its_name_is_not_reused(controller):
+    model = _SlowDisable()
+    controller.add("heater", model)
+    remover = threading.Thread(target=controller.remove, args=("heater",))
+    remover.start()
+    try:
+        assert model.entered.wait(2)
+        assert controller.run("heater", "move").is_refused
+        second = FakeModel()
+        with pytest.raises(ValueError):
+            controller.add("heater", second)
+        assert second.start_calls == 0, "a second handle opened on a closing port"
+    finally:
+        model.gate.set()
+        remover.join(5)
+
+
+def test_views_hear_removed_only_once_the_model_is_closed(controller):
+    model = _SlowDisable()
+    controller.add("heater", model)
+    heard = []
+    controller.subscribe(lambda event, name: heard.append(
+        (event, name, model.closed.is_set())))
+    model.gate.set()
+    controller.remove("heater")
+    assert heard == [("removed", "heater", True)]
+
+
 def test_remove_drops_the_model_but_remembers_its_config(controller):
     controller.add("probe", FakeModel(), {"port": "COM3"})
     controller.remove("probe")
