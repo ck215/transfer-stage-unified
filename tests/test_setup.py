@@ -2425,3 +2425,54 @@ def test_a_failed_flash_warns_with_what_to_do(fake_types, warnings):
     wait_firmware(panel)
     [failed] = [e for e in warnings if e.title == "Firmware Flash Failed"]
     assert "Install Rosetta 2, then flash again." in failed.message
+
+
+# -- owner 2026-10-07: no Flash now for a board that is not plugged in ------
+
+def test_the_startup_offer_names_only_boards_the_scan_found(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware(result=firmware_result(stale=["Stepper Probe"],
+                                                   never=["DC Probe"]))
+    panel = Setup(RecordingController(), firmware=firmware)
+    panel._found = {"/dev/ttyACM0": "Stepper Probe"}   # the DC Probe is off
+    panel._scan_settled = True
+    _listening(panel)
+    [offer] = _prompts(warnings, events.FIRMWARE_OUT_OF_DATE)
+    assert offer.message.startswith("Stepper Probe out of date. Flash it now?")
+    assert "DC Probe" not in offer.message
+
+
+def test_no_offer_when_no_out_of_date_board_is_plugged_in(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware(result=firmware_result(never=["DC Probe"]))
+    panel = Setup(RecordingController(), firmware=firmware)
+    panel._found = {"/dev/ttyACM0": "Stepper Probe"}
+    panel._scan_settled = True
+    _listening(panel)
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    assert "DC Probe" in panel.firmware_status   # the row still says so
+
+
+def test_a_running_scan_holds_the_offer_until_it_settles(
+        fake_types, firmware_checking, warnings):
+    firmware = FakeFirmware(result=firmware_result(stale=["Stepper Probe"]))
+    panel = Setup(RecordingController(), firmware=firmware)
+    panel._scan_thread = object()                    # a scan started, not done
+    _listening(panel)
+    assert _prompts(warnings, events.FIRMWARE_OUT_OF_DATE) == []
+    panel._found = {"/dev/ttyACM0": "Stepper Probe"}
+    panel._scan_settled = True
+    panel._deliver_startup_offer()                   # what the scan's end does
+    assert len(_prompts(warnings, events.FIRMWARE_OUT_OF_DATE)) == 1
+
+
+def test_answering_the_sign_in_screen_rescans_when_the_station_has_scanned(
+        fake_types, monkeypatch):
+    panel = Setup(RecordingController())
+    scans = []
+    monkeypatch.setattr(panel, "scan", lambda: scans.append(1))
+    panel.open_as_guest()
+    assert scans == []                  # never scanned (a test, no app): no rescan
+    panel._scan_thread = threading.Thread(target=lambda: None)   # one ran and ended
+    panel.open_as_guest()
+    assert scans == [1]

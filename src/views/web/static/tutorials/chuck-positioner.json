@@ -23,20 +23,20 @@
     },
     {
       "page": "Chuck Positioner",
+      "anchor": {"text": "Target X dist"},
+      "say": "Control system 1 is the Autonomous group. Target X, Y and Z dist are the move one Step makes, relative to where the stage is now, in step-size units. The sign picks the direction; 0 leaves that axis still.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
       "anchor": {"text": "Autonomous speed"},
       "say": "Autonomous speed is how fast a Step moves, as a percent of this board's 600 steps/s ceiling (lower than the probes'). The steps/s figure with it is what is sent. It is locked while the stage is in a mode.",
       "wait": null
     },
     {
       "page": "Chuck Positioner",
-      "anchor": {"text": "Manual speed"},
-      "say": "Manual speed is the gamepad's jog speed, on the same scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
-      "wait": null
-    },
-    {
-      "page": "Chuck Positioner",
       "anchor": {"text": "Configure Chuck Positioner"},
-      "say": "The step sizes and the targets of a Step sit one level down. Press Configure Chuck Positioner to open them.",
+      "say": "The step sizes sit one level down: both control systems use them. Press Configure Chuck Positioner to open them.",
       "wait": {"click": true}
     },
     {
@@ -47,14 +47,8 @@
     },
     {
       "page": "Chuck Positioner",
-      "anchor": {"text": "Target X dist"},
-      "say": "Target X, Y and Z dist are the move one Step makes, relative to where the stage is now, in step-size units. The sign picks the direction; 0 leaves that axis still.",
-      "wait": null
-    },
-    {
-      "page": "Chuck Positioner",
       "anchor": {"text": "Enter autonomous mode"},
-      "say": "Control system 1, autonomous: press Enter autonomous mode. It powers the motors but moves nothing; the stage then waits for Step.",
+      "say": "Now press Enter autonomous mode. It powers the motors but moves nothing; the stage then waits for Step.",
       "wait": {"state": {"name": "Chuck Positioner", "key": "model_mode", "equals": "autonomous"}}
     },
     {
@@ -72,7 +66,13 @@
     {
       "page": "Chuck Positioner",
       "anchor": {"text": "Gamepad"},
-      "say": "Control system 2, manual: a gamepad drives the stage. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "say": "Control system 2 is the Manual group: a gamepad drives the stage. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Manual speed"},
+      "say": "Manual speed is the gamepad's jog speed, on the autonomous speed's scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
       "wait": null
     },
     {
