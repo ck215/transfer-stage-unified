@@ -66,7 +66,10 @@ def _titles_and_commands(monkeypatch, on):
 
 def test_setup_has_no_profile_row_or_sign_in_when_profiles_are_off(monkeypatch):
     titles, commands = _titles_and_commands(monkeypatch, False)
-    assert titles[0] == "Update" and "Account" not in titles and "Profile" not in titles
+    # Updated (2026-10-08, Settings audit): Devices comes first now; what
+    # this pins is that no account row is built when accounts are off.
+    assert titles[0] == "Devices" and "Update" in titles
+    assert not {"Account", "Profile", "Station defaults"} & set(titles)
     assert not commands & {"sign_in", "sign_out", "add_profile", "remember_settings"}
 
 
@@ -74,7 +77,9 @@ def test_the_profile_row_returns_when_profiles_are_on(monkeypatch):
     titles, commands = _titles_and_commands(monkeypatch, True)
     # Updated (2026-10-07, the sign-in gate): signing in is on the sign-in
     # screen before Setup, Switch user on the account menu (owner 2026-10-07).
-    assert titles[0] == "Station defaults" and "save_station_settings" in commands
+    # 2026-10-08 (Settings audit): Station defaults moved below Devices,
+    # Launch, Update and Firmware; it returns, last, when accounts are on.
+    assert titles[-1] == "Station defaults" and "save_station_settings" in commands
 
 
 def test_a_model_is_not_given_an_operator_when_profiles_are_off(monkeypatch):
