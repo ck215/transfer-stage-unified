@@ -32,7 +32,7 @@ with no hardware that owns a local store, reads other models by duck type
    scan asks before the firmware handshake (the Rotator's SMC100 query is
    the example).
    `HOST` (default `None`) names the model whose page draws this one:
-   Red Percent sets `HOST = "Transfer Map"` (owner ruling 2026-09-28, one
+   RGB Analysis (formerly Red Percent) sets `HOST = "Transfer Map"` (owner ruling 2026-09-28, one
    dashboard). A hosted model keeps its own Panel, commands, stop path and
    tests; while its host is launched the views draw its sections on the
    host's page and list no page of its own. It has no Setup row: the
@@ -97,7 +97,7 @@ with no hardware that owns a local store, reads other models by duck type
    `self._spawn(name, target)`; the loop waits on `self._threads_stop`.
    The base `_stop_threads` sets the flag and joins every spawned loop
    within `THREAD_JOIN_TIMEOUT` (2 s); override it only to end something a
-   join cannot (Red Percent's in-flight run), then call the base.
+   join cannot (RGB Analysis's in-flight run), then call the base.
    `disable()` de-energizes. `close()` calls `_stop_threads`, then `halt`,
    then `disable`, then closes the devices.
 9. **Optional capabilities.**
@@ -115,7 +115,7 @@ with no hardware that owns a local store, reads other models by duck type
      `devices.gamepad.NEUTRAL` (`axis_x`, `axis_y`, `trigger_left`,
      `trigger_right`; edges `hat_x`, `hat_y`, `bumper_left`,
      `bumper_right`); the model maps them to its own axes.
-   - Position source for Red Percent: `position` as `(x, y, z)`,
+   - Position source for RGB Analysis: `position` as `(x, y, z)`,
      `position_time` and `position_age`.
    - Downloads: a `file_save` command returns the path it wrote, under
      `output_root`.
@@ -150,8 +150,12 @@ armed, capture region, force mark, finalise or abort) declares its steps and
 hides what the current step does not need. Owner ruling 2026-10-07; the
 retired Tk and Qt views ignore the key and draw everything.
 
-- `PHASES = ("setup", "region", "live", "marked", "finish")` on the class: the
-  step names, in order. Empty (the default) means no procedure.
+- `PHASES = ("setup", "new_tip", "region", "live", "marked", "finish")` (the Transfer Map's) on the class: the
+  step names, in order. Empty (the default) means no procedure. A name that
+  starts `new_` is a **prompt phase**: a sub-step that asks for a few entries
+  (the Transfer Map's `new_tip`, the Sample Map's `new_sample`, `new_chip`,
+  `new_flake`), entered from and left back to the main procedure; the Web draws
+  it as a card dialog and does not number it in the strip.
 - `phase` property: the current step, one of `PHASES`, or `""` at rest. It is
   published as `state["phase"]` (and the ordered steps as `state["phases"]`,
   so the Web view draws a step strip for any phased model), beside `state["mode"]`; a phase is WHERE IN
@@ -173,6 +177,33 @@ retired Tk and Qt views ignore the key and draw everything.
 two-step `PhasedModel`: every phase named is declared, `phase` is one of
 them before and after a stop, no stop is ever hidden, every command is shown
 in at least one step, and a model without a procedure hides nothing.
+
+## Secondary readouts and hosted tiers (2026-10-07)
+
+- `sch.readonly(label, attr, ..., secondary=True)` marks a readout as a small
+  quiet line under the control it follows, in that control's row (the speed
+  dials' steps/s under the percent). The client never counts it as the
+  model's reading. Absent means an ordinary readout.
+- `sch.section(..., hosted_tier=N)` (N in `schema.TIERS`) says which tier of
+  its HOST's page (`HOST`, above) a hosted model's section is drawn in; on its
+  own page the section keeps its `tier`. RGB Analysis's Live group is
+  `hosted_tier=2` (behind its details on the trial page) and its Estimators
+  section `hosted_tier=1`. A section without it follows its own tier on the
+  host's page.
+- **Speed dials** are percent in the schema (`Param(unit="%")`, 0-100) over a
+  per-class ceiling (`MAX_SPEED`: stepper 3200, chuck 600 steps/s); the stored
+  value stays steps/s and the wire is unchanged.
+
+## Operator words (accounts)
+
+`model.user.User` is a non-hardware model that owns the signed-in account's
+config; Guest is a User with no account row, so every model gets the station's
+defaults. The records the maps write are stamped with the operator: the
+Transfer Map's `operator_id` / `operator_auth` and the Sample Map's `owner` /
+`owner_auth` carry the account's email and the word `password`, or `guest` and
+`guest` for a Guest (a map built without Setup says `station`).
+Passwords are `SECRET_INPUTS` (masked in the client, redacted in the log, never
+in `state`).
 
 ## Still open
 

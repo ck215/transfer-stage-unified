@@ -1,6 +1,6 @@
 # S16 — bench checklist
 
-> **Input, kept for its procedure (banner added 2026-09-23).** Written for the old tree; current until 2026-09-23. The open bench questions are Tier B of `docs/rebuild/BUGFIX_PLAN.md`, which names the rebuild's code locations; the code paths here mean `legacy/src/`.
+> **Input, kept for its procedure (banner added 2026-09-23).** Written for the old tree; current until 2026-09-23. The open bench questions are Tier B of `docs/rebuild/BUGFIX_PLAN.md`, which names the rebuild's code locations; the code paths here mean the removed `legacy/src/`, and `progress.md` and `plan.md` (linked below) are gone with the ledger (all: history, tag pre-root-cleanup-2026-10-07). Moved here from the repository root on 2026-10-07.
 
 **Owner only. Never delegated.** This file is the procedure and the record
 sheet for the work that can only be done on the physical stage.

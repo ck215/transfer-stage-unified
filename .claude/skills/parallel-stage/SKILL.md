@@ -35,8 +35,8 @@ belongs to the lead, who is editing it right now" is not.
 
 ## 2. Worktrees
 
-Siblings of the repo. The parent directory is not a git repo, so create
-them from `mvc-refactor/`:
+Siblings of the repo, under `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/`. The parent directory is not a git repo, so create
+them from `mvc-refactor/` (the integration checkout; rounds merge back into the `mvc-refactor` branch):
 
 ```
 git -C ../mvc-refactor worktree add ../rb-probes -b rb-probes

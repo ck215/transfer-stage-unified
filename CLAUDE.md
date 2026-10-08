@@ -2,12 +2,29 @@
 
 A lab-instrument control app, "the station": stepper and DC probes, a chuck
 positioner, a Temperature Controller, an SMC100 Rotator, and a
-screen-capture Red Percent monitor, plus the Transfer Map (the recorded-trial
-end goal) with its Sample Map. One frontend, the Web view (owner ruling
+screen-capture RGB Analysis monitor (formerly Red Percent), plus the Transfer Map (the recorded-trial
+end goal) with its Sample Map, and user accounts (Guest = the station defaults). One frontend, the Web view (owner ruling
 2026-10-07; the Tk and PySide6 views are frozen at `413f504` and
 unregistered), over one Controller. Firmware is untouched;
 every byte on the wire is identical to the old app's (the repair tree
 the lab ran Aug 26–Sep 22, 2026; history: tag pre-root-cleanup-2026-10-07), pinned by `tests/golden/`.
+
+The repository lives at `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/`:
+`mvc-refactor/` is the integration checkout (work here; it holds the one venv,
+`mvc-refactor/.venv`, the `$PY` below), `main/` is a plain checkout of the lab's
+original app (for `dev/swap_branch.sh` only), and `rb-<name>/` worktrees exist only
+while an agent round runs.
+
+**Branch model** (owner, 2026-10-07): `main` is the pre-release line; it receives
+merges from `mvc-refactor` (the integration branch for agent rounds) and feature
+PRs (`feat/*`, `fix/*`, `agent/*`). Releases are tags on main cut with
+`dev/release.sh vX.Y.Z` (CI builds, uploads `SHA256SUMS` and publishes the draft
+itself). `legacy` is the lab's original Tk app, frozen; `stable` is the original
+app's packaging ref. `.github/workflows/gate.yml` runs the fast gate, golden and a
+Web launch on PRs and pushes to main and mvc-refactor. The version is the git tag
+(`src/app.py --version`; pyproject says 0.0.0). The lab deploys by git today
+(`git fetch && git checkout main`, `pip install -e .`, `run.sh`); the first
+installed release comes after v1.0.0. Details: `packaging/README.md`.
 
 The import rules between the `src/` layers (controller, model, devices, views) are a test (`tests/test_architecture.py`).
 
@@ -30,25 +47,27 @@ The import rules between the `src/` layers (controller, model, devices, views) a
 
 Inputs that open work still reads, kept with a banner: `root-causes.md`,
 `safety-pattern.md` (in `docs/architecture/`), `docs/rebuild/bench-checklist.md`,
-and `tests/TEST_PORTING.md` (the second test wave). The finding ledger and the
-legacy audits are gone from the tree (history: tag pre-root-cleanup-2026-10-07).
+and `tests/TEST_PORTING.md` (the second test wave). The finding ledger
+(`progress.md`, `carry.json`), the design data, the legacy audits and `docs/archive`
+are gone from the tree (history: tag pre-root-cleanup-2026-10-07).
 
-## Commands (from the repo root; `$PY` = `../main/.venv/bin/python`, see `station-map`)
+## Commands (from `mvc-refactor/` or an `rb-*` worktree; `$PY` = `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor/.venv/bin/python`, see `station-map`)
 
 ```
 ./run.sh --no-browser --port 8080       # the Web view, the only one; python3 src/app.py ... in the venv
-# test gates: see the verify skill (the fast gate, golden, legacy, a launch)
+# test gates: see the verify skill (the fast gate, golden (77), a launch; no legacy gate)
 ```
 
 One entry point, `station-web` (`pyproject.toml` `[project.scripts]`), and one
-PyInstaller launcher. `--tk` and `--qt` print a retired message and exit 2.
+PyInstaller launcher; the one venv is made with `python3 -m venv .venv &&
+.venv/bin/pip install -e ".[dev]"`. `--tk` and `--qt` print a retired message and exit 2.
 `pip install -e .[qt]` is needed only to run the frozen Qt view's tests, which
 are optional and the lead's.
 
 Launchers: `run.sh` (macOS and Linux) and `run.bat` (Windows) find the venv and
 pass every flag to `src/app.py`, printing nothing on success; the firmware
 check is Setup's Firmware row (`src/controller/firmware.py`), `update.sh` /
-`update.bat` stay. `dev/swap_branch.sh` runs `main`'s app on the same boards,
+`update.bat` stay. `dev/swap_branch.sh` runs the original app (the `main/` checkout) on the same boards,
 flashing first (`RUN_SWAP_DRY_RUN=1` prints, runs nothing). Agents do not run
 the Qt pass (a native SIGABRT can kill the session). **While anyone is working
 at this Mac, everything runs strictly in the background**:
@@ -104,5 +123,7 @@ lookups only; its design-system generator is off-target for this product).
 
 The staged repair, the from-scratch rebuild, the 2026-09-23 relayout, the
 retirement of `legacy/` and the 2026-10-07 round (Web the only frontend,
-settled-frame recording, the full-display recorder, the procedure phases) are
-in `docs/rebuild/STATUS.md` under "History" and "Round 2026-10-07".
+settled-frame recording, the full-display recorder, the procedure phases), then
+the proposal round, the lab's stage merge, the root cleanup and the move to
+`~/GitHub`, are in `docs/rebuild/STATUS.md` under "History", "Round 2026-10-07"
+and "Round 2026-10-07 (proposal)".

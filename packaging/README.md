@@ -81,12 +81,17 @@ build); the workflow sets it, so a release can never ship without them.
 `STATION_TOOLS_DIR` and `STATION_STABLE_DIST` point the assembly elsewhere;
 `STATION_STABLE_SRC` points `stable.spec` at another checkout.
 
-The stable ref is `stable`; until the lead fast-forwards it, `origin/stable`
-is a July commit and today's original app is `origin/main` (use that ref in
-step 2 for a local build; the workflow's `stable_ref` input does the same).
+The stable ref is `stable`, the original app's packaging ref. Until the first
+merge from `mvc-refactor` replaces `origin/main`, `origin/main` is still the
+lab's original app (the local branch `legacy` tracks it, and the plain checkout
+`main/` runs it); whether `origin/stable` carries that app's latest changes is
+unverified, so use whichever ref you mean in step 2 for a local build (the
+workflow's `stable_ref` input does the same).
 
 Output: `dist/station/` as above. Ship the whole folder, zipped
-(`release.py zip`). One-folder only: one-file mode unpacks the whole bundle to
+(`release.py zip`). The repository's checkouts live under
+`~/GitHub/transfer-stage-unified/` (`mvc-refactor/` holds the one venv, made from
+pyproject's `[dev]` extra). One-folder only: one-file mode unpacks the whole bundle to
 a temp dir on every launch and trips antivirus.
 
 ## Sizes (macOS arm64, measured 2026-09-30, with the three-launcher bundle)
@@ -268,7 +273,9 @@ frozen as `stable/`. Every action is pinned to a commit SHA.
 The lab PC runs a git checkout with local code GitHub does not have. In
 this order:
 
-1. **Push the bench's work first.** In the checkout: `git status` to see
+1. **Push the bench's work first.** (The lab's 2026-10-07 stage push is already
+   merged: tag `bench-2026-10-07-stage`, Transfer Map store v8, the tip-shade
+   estimator.) For anything the PC has changed since, in the checkout: `git status` to see
    what changed, then commit the source changes on their own branch and
    push it, so nothing lives only on that PC:
 
@@ -282,10 +289,11 @@ this order:
    Tell the lead the branch's name: it is merged (into mvc-refactor, then
    main) before the first release the lab installs. Then switch the checkout
    to main once ("Branches" above).
-2. **Wait for a release that holds that work.** The lab's Transfer Map
-   stores are newer than the repository's store code (v7/v8 against v6, as
-   of 2026-10-07): do not point an installed release at them until its notes
-   say the bench's store code is in.
+2. **Wait for a release that holds that work.** The repository's Transfer Map
+   store code is v8, the lab's (as of 2026-10-07); the lab's own stores may
+   still be v7. A store is upgraded by column presence on first open (no backup is
+   written: copy it first), so do not point an installed release at the lab's data until its notes say the
+   bench's work is in.
 3. **Install the bundle beside the checkout**, never inside it: download
    `station-windows-x86_64.zip` from the repository's latest release, unzip
    it to a folder the lab account can write (for example

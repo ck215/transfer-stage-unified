@@ -5,6 +5,8 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 model: opus
 ---
 
+(The 2026-09-23 relayout is done; this profile is kept for the record and for any later move. `legacy/` it mentions was deleted 2026-10-07; history: tag pre-root-cleanup-2026-10-07.)
+
 You are moving code, not changing it. The brief gives the exact target
 layout. Your commit must be readable as renames plus import rewrites and
 nothing else; any other hunk needs a one-line justification in the handoff.

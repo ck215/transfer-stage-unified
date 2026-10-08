@@ -79,7 +79,7 @@ unpiped:
 
 ```
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt" > "$S/fast.txt" 2>&1; echo EXIT=$?; tail -1 "$S/fast.txt"    # counts: the verify skill
-$PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                                                      # 78 passed
+$PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                                                      # 77 passed
 ```
 
 Never run the Qt pass (the frozen Qt view's tests; the lead's, and optional).
