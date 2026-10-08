@@ -4416,9 +4416,8 @@ class Dashboard {
     this.sawState = true;
     // The rail's Stop arrives with the launch (owner 2026-10-07), and is
     // never withheld while anything could move: a device model, a launched
-    // Setup, anything energized or active. The account sheet is not one.
-    const sheetName = accountSheet(setupState);
-    const devices = Object.keys(models).some((name) => name !== sheetName);
+    // Setup, anything energized or active. The account is never a model.
+    const devices = Object.keys(models).length > 0;
     if (devices || this.energized.length || this.isActive
         || (setupState && setupState.is_launched)) this.revealStop();
     // After the launch edge, so leaving the sign-in screen knows whether
