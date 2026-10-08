@@ -1615,6 +1615,7 @@ def test_the_launch_box_follows_the_model_not_the_click(station, tmp_path):
 # G4: the Gamepad log behind a button, in an in-page panel
 # --------------------------------------------------------------------------
 @needs_browser
+@pytest.mark.usefixtures("test_routes")
 def test_the_gamepad_log_opens_in_one_panel_that_never_covers_the_stop(station, tmp_path):
     """G4: a detached log stream is a "Gamepad log…" button, not a feed. It
     opens ONE non-modal panel under the rail (the stop stays what a click at
