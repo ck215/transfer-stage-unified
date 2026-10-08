@@ -1,0 +1,43 @@
+{
+  "id": "first-trial",
+  "title": "Your first trial",
+  "requires": "sim",
+  "steps": [
+    {
+      "page": "Overview",
+      "anchor": {"selector": "#setup-link"},
+      "say": "Open Setup, set every port to SIM and launch. Everything here runs on simulated hardware.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Transfer Map",
+      "anchor": {"text": "Arm trial"},
+      "say": "Enter the tip ID, then press Arm trial. The station takes a picture of the stage.",
+      "wait": {"state": {"name": "Transfer Map", "key": "phase", "equals": "region"}}
+    },
+    {
+      "page": "Transfer Map",
+      "anchor": {"text": "Capture region…"},
+      "say": "Press Capture region and drag a rectangle on the picture of the stage, over the part to watch. Then use it.",
+      "wait": {"state": {"name": "Transfer Map", "key": "phase", "equals": "live"}}
+    },
+    {
+      "page": "Transfer Map",
+      "anchor": {"text": "Mark force"},
+      "say": "The recording is running. Lower the tip, and press Mark force when the force is right.",
+      "wait": {"state": {"name": "Transfer Map", "key": "phase", "equals": "marked"}}
+    },
+    {
+      "page": "Transfer Map",
+      "anchor": {"text": "End recording"},
+      "say": "When the cut is done, press End recording.",
+      "wait": {"state": {"name": "Transfer Map", "key": "phase", "equals": "finish"}}
+    },
+    {
+      "page": "Transfer Map",
+      "anchor": {"text": "Finish trial"},
+      "say": "Review the trial, add a note if you like, then press Finish trial to keep it.",
+      "wait": {"state": {"name": "Transfer Map", "key": "phase", "equals": "setup"}}
+    }
+  ]
+}

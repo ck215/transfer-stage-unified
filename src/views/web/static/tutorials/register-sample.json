@@ -1,0 +1,49 @@
+{
+  "id": "register-sample",
+  "title": "Register a sample",
+  "requires": "any",
+  "steps": [
+    {
+      "page": "Sample Map",
+      "anchor": {"text": "New sample…"},
+      "say": "A sample must be registered before a trial can be filed under it. Press New sample.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Sample Map",
+      "anchor": {"text": "Add photo…"},
+      "say": "Type the sample ID and pick its material. A photo is optional; press Add photo to attach one, or press Next.",
+      "wait": null
+    },
+    {
+      "page": "Sample Map",
+      "anchor": {"text": "Add sample"},
+      "say": "Press Add sample to save it.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Sample Map",
+      "anchor": {"text": "New chip…"},
+      "say": "A chip belongs to the sample picked above. Press New chip.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Sample Map",
+      "anchor": {"text": "Add chip"},
+      "say": "Type the chip ID and press Add chip.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Sample Map",
+      "anchor": {"text": "New flake…"},
+      "say": "A flake belongs to the chip picked above. Press New flake.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Sample Map",
+      "anchor": {"text": "Add flake"},
+      "say": "Type the flake ID and press Add flake. The sample, chip and flake now appear in the pickers.",
+      "wait": {"click": true}
+    }
+  ]
+}
