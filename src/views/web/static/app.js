@@ -667,13 +667,15 @@ function railElements(schema) {
   const flagged = [];
   for (const section of ((schema && schema.sections) || [])) {
     for (const element of (section.elements || [])) {
-      if (element.type === 'readonly' && element.model_attr && element.rail) flagged.push(element);
+      if (element.type === 'readonly' && element.model_attr && element.rail
+          && !element.secondary) flagged.push(element);
     }
   }
   if (flagged.length) return flagged.slice(0, RAIL_READOUTS);
   for (const section of ((schema && schema.sections) || [])) {
     const readouts = (section.elements || [])
-      .filter((element) => element.type === 'readonly' && element.model_attr);
+      .filter((element) => element.type === 'readonly' && element.model_attr
+        && !element.secondary);
     if (readouts.length) return readouts.slice(0, RAIL_READOUTS);
   }
   return [];
@@ -859,7 +861,12 @@ function clockTime(date) {
  *  last-change time is `changedAt`). In tier 1 a normal state
  *  (theme.QUIET_VALUES) is not drawn at all: status by exception. */
 function renderReadonly(panel, element) {
-  const node = row(element, 'stat');
+  // A secondary readout (schema `secondary: true`) is a small quiet line
+  // under the control before it: no caption column, no reading, no rail.
+  // Its words are the unit beside the number ("416 steps/s").
+  const node = element.secondary
+    ? make('div', 'row stat secondary')
+    : row(element, 'stat');
   if (element.model_attr) node.dataset.attr = element.model_attr;
   const isStatusLine = panel.name === SETUP_NAME && /_status$/.test(element.model_attr || '');
   const value = make('span', 'value is-empty ' + roleClass(element.role), '--');
@@ -2147,6 +2154,7 @@ class PanelCard {
       const mine = [];
       const axes = [];
       const goes = [];
+      let lastCell = null;
       for (const element of (section.elements || [])) {
         const render = ELEMENT_RENDERERS[element.type];
         if (!render) {
@@ -2160,6 +2168,14 @@ class PanelCard {
         this.widgets.push(widget);
         mine.push(widget);
         if (widget.note) goes.push(widget);
+        // A secondary readout lives INSIDE the control row it belongs to
+        // (the one drawn just before it), so it sits directly beneath it
+        // whatever the section's flow; alone in a section it is a cell.
+        if (element.type === 'readonly' && element.secondary && widget.node && lastCell
+            && !isRow) {
+          lastCell.appendChild(widget.node);
+          continue;
+        }
         // L17: a command that exists only while a scan runs ("Cancel scan")
         // is not drawn outside one, rather than sitting greyed on its own.
         const only = element.enabled_when || [];
@@ -2187,6 +2203,7 @@ class PanelCard {
             }
           }
           cells.push(widget.node);
+          lastCell = widget.node;
         }
       }
       if (axes.length > 1) {

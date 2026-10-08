@@ -1462,3 +1462,87 @@ def test_web5_a_thumbnail_is_served_by_relative_path_under_the_output_root(image
     assert get("images/missing.png")[0] == 404
     status, _, _ = _request(view, "/api/image?name=Nobody&path=images/a.png")
     assert status == 404
+
+
+# ==========================================================================
+# SP-2 / SP-3 (2026-10-07): the secondary readout, and hosted_tier
+# ==========================================================================
+class FakeDial(_Plain):
+    """A percent dial with its steps/s underneath, as a probe's Speeds."""
+
+    NAME = "Fake Dial"
+    PARAMS = {"speed_pct": Param("speed_pct", "int", default=13, minimum=0,
+                                 maximum=100, label="Speed", unit="%")}
+
+    def __init__(self):
+        super().__init__()
+        self.speed_pct = 13
+        self.speed = 416
+        self.x = 0
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Position", sch.readonly("X:", "x", rail=True, unit="steps")),
+            sch.section(
+                "Speeds",
+                sch.entry("Speed:", "speed_pct", self.PARAMS["speed_pct"], slider=(0, 100)),
+                sch.readonly("steps/s", "speed", secondary=True, unit="steps/s"),
+            ),
+        )
+
+
+@pytest.fixture
+def dial_station():
+    controller = Controller()
+    controller.factory = lambda config: FakeDial()
+    controller.add("Fake Dial", FakeDial(), {})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        yield view
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_sp2_the_secondary_is_a_quiet_line_under_its_control_and_not_on_the_overview(dial_station, tmp_path):
+    out = _browse(dial_station, r"""
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await until(() => document.querySelector('#cards .card'));
+      await sleep(400);
+      const overview = await page.evaluate(() => {
+        const n = document.querySelector('#cards .row.secondary');
+        return { drawn: Boolean(n && n.getClientRects().length) };
+      });
+      await page.click('#model-nav [data-model="Fake Dial"]');
+      await sleep(500);
+      const device = await page.evaluate(() => {
+        const sec = document.querySelector('#cards .row.secondary');
+        const row = sec.parentElement;
+        const group = row.querySelector('.group').getBoundingClientRect();
+        const box = sec.getBoundingClientRect();
+        const value = sec.querySelector('.value');
+        return {
+          drawn: Boolean(sec.getClientRects().length),
+          inRow: row.classList.contains('has-slider') && Boolean(row.querySelector('input[name="speed_pct"]')),
+          below: box.top >= group.bottom - 1,
+          label: Boolean(sec.querySelector('.label')),
+          text: sec.textContent,
+          size: parseFloat(getComputedStyle(value).fontSize),
+          quiet: getComputedStyle(value).color === getComputedStyle(row.querySelector('.label')).color,
+          readings: document.querySelectorAll('#cards .reading').length,
+          secondaryReading: Boolean(sec.classList.contains('reading')),
+        };
+      });
+      return { overview, device };
+    """, tmp_path)
+    assert not out["overview"]["drawn"], out
+    d = out["device"]
+    assert d["drawn"] and d["inRow"] and d["below"] and not d["label"], d
+    assert d["text"].replace(" ", " ").strip() == "416steps/s" or "416" in d["text"], d
+    assert 24 <= d["size"] <= 26, d
+    assert d["quiet"], d
+    assert d["readings"] == 1 and not d["secondaryReading"], d   # the X reading only

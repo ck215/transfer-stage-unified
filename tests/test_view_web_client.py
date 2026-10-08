@@ -1598,3 +1598,26 @@ def test_web3_the_phone_reflow_keeps_the_boundary():
     phone = re.search(r"@media \(max-width: 47\.5rem\) \{\n(.*?)\n\}\n", STYLES, re.S).group(1)
     assert ".sheet.is-overview > .card" in phone
     assert "border" not in phone.split(".sheet.is-overview > .card")[1].split("\n")[0]
+
+
+# --------------------------------------------------------------------------
+# SP-2: a secondary readout is a small quiet line under its control
+# --------------------------------------------------------------------------
+def test_sp2_a_secondary_readout_has_no_caption_and_is_never_a_reading():
+    render = _body(r"function renderReadonly\(panel, element\) \{(.*?)\n  const value = ")
+    assert "element.secondary" in render
+    assert "make('div', 'row stat secondary')" in render, "a secondary drew a caption row"
+    rail = _body(r"function railElements\(schema\) \{(.*?)\n\}\n")
+    assert rail.count("!element.secondary") == 2, "a secondary can reach the readings"
+
+
+def test_sp2_the_secondary_sits_inside_the_control_row_before_it():
+    build = _body(r"\n  build\(\) \{(.*?)\n  /\*\* The words of the disclosure")
+    assert "element.secondary" in build and "lastCell.appendChild(widget.node)" in build
+
+
+def test_sp2_the_secondary_style_is_tokens_only_and_off_the_overview():
+    body = _css_rule(".row.secondary > .value")
+    assert "var(--muted)" in body and "var(--statistic-size)" in body
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|\d+px", body), "a literal"
+    assert "display: none" in _css_rule(".sheet.is-overview .row.secondary")
