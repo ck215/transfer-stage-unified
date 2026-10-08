@@ -1,11 +1,10 @@
-# The gate (owner, 2026-10-07): every pull request into main or mvc-refactor,
-# and every push to either, runs what the `verify` skill runs before a merge,
-# on Ubuntu: the fast suite, the golden wire gate (78 scenarios byte for byte
-# against legacy/src) and a real launch of the Web view answering /api/setup.
+# The gate (owner, 2026-10-07): every pull request into main, and every push
+# to it, runs what the `verify` skill runs before a merge,
+# on Ubuntu: the fast suite, the golden wire gate (77 stored captures byte for
+# byte) and a real launch of the Web view answering /api/setup.
 #
 # Not here: the Qt pass (optional, the frozen view's, the lead's) and the
-# legacy suite (it proves only that legacy/src is still a valid golden
-# reference). The headless-Chrome tests skip where puppeteer is absent, as it
+# legacy suite (the legacy tree left the repository; history keeps it).
 # is on this runner; the node-only client checks run with the runner's node.
 # Nothing here reaches GitHub's API: the update check is off and the token is
 # read-only. Actions are pinned by commit SHA (the tag in the comment).
@@ -13,9 +12,9 @@ name: gate
 
 on:
   pull_request:
-    branches: [main, mvc-refactor]
+    branches: [main]
   push:
-    branches: [main, mvc-refactor]
+    branches: [main]
 
 permissions:
   contents: read

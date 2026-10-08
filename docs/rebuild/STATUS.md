@@ -306,7 +306,7 @@ first installed release comes after v1.0.0.
 merge, and the planned v9 (with a `.v8.bak` backup) is no longer needed. The Sample Map
 store is v4.
 
-**Gates**: fast **<FAST>**, golden **77**, a launch; known flakes are listed in the
+**Gates**: fast **4194**, golden **77**, a launch; known flakes are listed in the
 `verify` skill (the first-trial tutorial walk is an xfail, `test_o15` under load, the Sample
 Map's rated-later flake, the transfer-map mark timing flake). The lead fills the count after the
 final gate. Collected under `-m "not qt"`: 4211 (collect-only, 2026-10-07).

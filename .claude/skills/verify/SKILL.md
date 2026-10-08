@@ -16,7 +16,7 @@ $PY -m pytest tests -q -p no:cacheprovider -m "not qt"
 ```
 
 Minutes, not seconds; run after every edit. Baseline (2026-10-07, after the
-proposal round, the lab merge and the root cleanup): **<FAST>** (the lead
+proposal round, the lab merge and the root cleanup): **4194** (the lead
 fills it after the final gate; the 200-odd deselected are the Qt tests of the
 frozen view); golden **77** captures (the re-capture test and the three live
 frame comparisons against the deleted legacy tree are retired). There is no
