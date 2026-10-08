@@ -65,14 +65,17 @@ from param import Param
 from result import NeedsConfirm, Refused
 
 #: The Port dropdown's one fixed entry. Everything else in the list is a
-#: real port name. A row is switched off by its Launch checkbox (G3), never
-#: by a dropdown entry: the "Off" entry that used to live here could sit
-#: beside a chosen port and disagree with it, the way the Mode dropdown
-#: before it did.
+#: real port name. SIM is the development choice (a model without hardware);
+#: it is the only way a row launches without a board that answered.
 SIM = "SIM"
 #: What a model that needs no port (the screen-capture monitor) offers instead
 #: of a port name: it is either on (real) or simulated.
 ON = "On"
+#: A port row's value while no board has answered for it (owner 2026-10-07:
+#: "on setup all connected devices should be launched"). Not an option: the
+#: operator does not choose which devices to add; a row launches when its
+#: board answered on its port (or it is set to SIM), and not otherwise.
+NOT_CONNECTED = ""
 
 #: What `discover_ports` fell back to when pyserial was missing. Kept
 #: verbatim: an operator who sees it knows what it means. It is offered ONLY
@@ -592,6 +595,9 @@ class Setup(PortProbe, Panel):
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
         self._is_launched = False
+        #: Rows whose board answered only after the launch: {key: port}. Not
+        #: launched (owner 2026-10-07: a new device needs a restart).
+        self._seen = {}
         self._restart_thread = None     # Refresh's "then scan again" helper
         self._scan_started = None       # monotonic, for the elapsed seconds
         self._scan_port = None          # the port being probed right now
@@ -602,11 +608,12 @@ class Setup(PortProbe, Panel):
         self._selected = "nothing selected"
         for key, row in self._rows.items():
             setattr(self, f"{key}_name", row["name"])
-            # Unticked until a board answers or the operator ticks it. The
-            # dropdown always holds a launchable choice, so ticking a row
-            # needs no second step: SIM for a port row, On for the screen.
+            # `<row>_enabled` is what the row WILL launch with, derived in
+            # `_refresh_rows`, never ticked (owner 2026-10-07). A port row
+            # is not connected until its board answers; a row with no port
+            # (the Transfer Map) is always on.
             setattr(self, f"{key}_enabled", False)
-            setattr(self, f"{key}_port", SIM if row["needs_port"] else ON)
+            setattr(self, f"{key}_port", NOT_CONNECTED if row["needs_port"] else ON)
             setattr(self, f"{key}_gamepad", "None")
             for field, kind, _, _ in row["columns"]:
                 if field != "gamepad":
@@ -622,7 +629,8 @@ class Setup(PortProbe, Panel):
             for field in fields:
                 setattr(self, f"set_{key}_{field}",
                         _Selector(self, key, field))
-            setattr(self, f"set_{key}_enabled", _Enabler(self, key))
+            if row["needs_port"]:
+                setattr(self, f"hard_reset_{key}", _HardReset(self, key))
         # Reopen goes through the registry from the start, not only after a
         # build: a model added with `controller.add(NAME, model, config)`
         # comes back from its remembered config like one Setup built.
@@ -689,7 +697,8 @@ class Setup(PortProbe, Panel):
             return ("Scanning. Launch waits for the scan to finish; "
                     "press Cancel scan to launch now.")
         if selected == "nothing selected":
-            return "Nothing selected. Tick a device to launch."
+            return ("Nothing to launch: no device is connected. Plug it in "
+                    "and press Refresh.")
         return selected
 
     @summary.setter
@@ -714,6 +723,7 @@ class Setup(PortProbe, Panel):
             found = dict(self._found)
             ports, gamepads = list(self._ports), list(self._gamepads)
             chosen = set(self._chosen)
+            seen = dict(self._seen)
         is_scanning = self.is_scanning
         rows = []
         for key, row in self._rows.items():
@@ -729,6 +739,9 @@ class Setup(PortProbe, Panel):
                 "needs_port": row["needs_port"],
                 "needs_gamepad": row["needs_gamepad"],
                 "is_chosen": key in chosen,
+                # A board that answered after the launch: its port, until a
+                # restart (or Close every model) lets it launch.
+                "seen_after_launch": seen.get(key),
                 "options_command": row["options_command"],
             })
         snapshot.update({
@@ -760,12 +773,15 @@ class Setup(PortProbe, Panel):
 
     @property
     def configs(self):
-        """The operator's current choices as build configs. Unticked rows
-        are dropped here and nowhere else: Web used to carry them through with
-        a stripped `enabled` flag and build every one of them (WEB-4)."""
+        """What Launch builds: every row that is connected (its board
+        answered on its port), every row set to SIM, and every row with no
+        port. A row that is not connected is dropped here and nowhere else
+        (owner 2026-10-07; there is no Launch tick any more)."""
+        with self._lock:
+            found = dict(self._found)
         configs = []
         for key, row in self._rows.items():
-            if not getattr(self, f"{key}_enabled"):
+            if not self._will_launch(key, row, found):
                 continue
             choice = getattr(self, f"{key}_port")
             is_sim = choice == SIM
@@ -947,7 +963,12 @@ class Setup(PortProbe, Panel):
                              "the Flashing cell is empty.")
             self._abort.clear()
             self._warned_ports.clear()
-            self._found.clear()
+            # A port a launched model holds is never probed (opening it
+            # again would reset its board under the model): what it
+            # answered before stands.
+            held = self._held_ports()
+            self._found = {port: name for port, name in self._found.items()
+                           if port in held}
             self.scan_phase = self.LISTING
             self.scan_status = "scanning for ports..."
             self.scan_progress = 0
@@ -975,7 +996,8 @@ class Setup(PortProbe, Panel):
         with self._lock:
             self._ports, self._gamepads = ports, gamepads
         self._drop_stale_selections()
-        targets = [p for p in ports if p not in (SIM, ON)]
+        held = self._held_ports()
+        targets = [p for p in ports if p not in (SIM, ON) and p not in held]
         self.scan_phase = self.IDENTIFYING
         self.scan_status = (f"scanning {len(targets)} port(s)..." if targets
                             else "no ports found")
@@ -1039,13 +1061,25 @@ class Setup(PortProbe, Panel):
         the machine's guess never overrides a person's choice - unless
         `force` says otherwise.
         """
-        assigned, kept, taken = [], [], {}
+        assigned, kept, taken, seen = [], [], {}, []
         with self._lock:
             found = dict(self._found)
             chosen = set(self._chosen)
+        running = set(self._running_names())
         for port, name in found.items():
             key = self._key_of(name)
             if key is None:
+                continue
+            if name in running:
+                continue        # launched: its port is held, its row stands
+            if self._is_launched:
+                # Owner 2026-10-07: a device plugged in after the launch is
+                # not added to the running station; a restart launches it.
+                with self._lock:
+                    is_new = self._seen.get(key) != port
+                    self._seen[key] = port
+                if is_new:
+                    seen.append((name, port))
                 continue
             if key in chosen and not force:
                 kept.append(f"{name}: operator chose "
@@ -1060,16 +1094,24 @@ class Setup(PortProbe, Panel):
                             "choose the port by hand.", source=self.NAME)
                 continue
             taken[key] = port
-            if getattr(self, f"{key}_port") == port and getattr(self, f"{key}_enabled"):
+            if getattr(self, f"{key}_port") == port:
                 continue
+            # A board that answered is a row that launches.
             setattr(self, f"{key}_port", port)
-            # A board that answered is a row worth launching: the machine
-            # ticks it, and the operator unticks what they do not want.
-            setattr(self, f"{key}_enabled", True)
             assigned.append(f"{name} on {port}")
         self._refresh_rows()
         if assigned:
             events.info("Auto-assign", ", ".join(assigned), source=self.NAME)
+        if seen:
+            words = _and([f"{name} on {port}" for name, port in seen])
+            many = len(seen) > 1
+            events.warn(events.RESTART_NEEDED,
+                        f"{words} {'were' if many else 'was'} plugged in after "
+                        f"the launch and {'are' if many else 'is'} not running. "
+                        "Restart the station to launch "
+                        f"{'them' if many else 'it'}.", source=self.NAME, ack=True,
+                        action=("Restart now", events.SETUP_PANEL,
+                                "restart_station", (True,)))
         events.debug("Auto-assign", "; ".join(assigned + kept) or
                      "nothing to assign", source=self.NAME)
         return assigned
@@ -1107,25 +1149,75 @@ class Setup(PortProbe, Panel):
         self._refresh_rows()
         return choice
 
-    def _enable(self, key, flag):
-        """Tick or untick one row (G3). Reached through `set_<row>_enabled`.
-        The row's dropdowns keep their choices either way, so unticking a
-        row and ticking it again costs nothing."""
+    def _hard_reset(self, key, confirmed=False):
+        """Hard reset one launched device (owner 2026-10-07). Reached
+        through `hard_reset_<row>`. Its model is stopped and closed (the
+        Controller's own remove: estop, then the port is closed), then built
+        again from the config it was launched with and opened on the same
+        port: opening the port pulses DTR, which resets the board, and the
+        identity handshake runs again. Refused while the model is energized
+        or running; asked first. A reset that did not come back can be
+        pressed again: the config is remembered."""
         if key not in self._rows:
             self._refuse(f"{key} is not a configurable model")
-        if isinstance(flag, str):
-            lowered = flag.strip().lower()
-            if lowered not in ("true", "false"):
-                self._refuse(f"{flag!r} is not a tick state")
-            flag = lowered == "true"
-        elif not isinstance(flag, (bool, int)):
-            self._refuse(f"{flag!r} is not a tick state")
-        flag = bool(flag)
-        setattr(self, f"{key}_enabled", flag)
-        events.debug("Ticked" if flag else "Unticked", self._rows[key]["name"],
-                     source=self.NAME)
+        name = self._rows[key]["name"]
+        controller = self.controller
+        if name not in self._running_names() and \
+                name not in list(getattr(controller, "closed_names", ()) or ()):
+            self._refuse(f"{name} is not launched, so there is nothing to reset.")
+        model = controller._model_or_none(name)
+        if model is not None and (getattr(model, "is_energized", False)
+                                  or getattr(model, "is_active", False)):
+            self._refuse(f"{name} is energized. Stop it and put it out of its "
+                         "mode first, then hard reset.")
+        config = controller.config(name)
+        where = ("its simulator" if config.get("sim")
+                 else f"{config.get('port') or 'its port'}")
+        if not confirmed:
+            latched = (" It is stopped now; the reset clears that."
+                       if getattr(model, "is_estopped", False) else "")
+            raise NeedsConfirm(
+                f"Hard reset {name}? It is stopped and disconnected, its board "
+                f"is reset, and it is opened again on {where}.{latched}",
+                f"hard_reset_{key}")
+        events.info("Hard Reset", f"{name} on {where}: closing, then opening "
+                    "again.", source=self.NAME)
+        if model is not None:
+            controller.remove(name)
+        try:
+            controller.reopen(name)
+        except Refused:
+            raise
+        except Exception as exc:
+            events.debug("Hard Reset Failed", f"{name}: {exc!r}", source=self.NAME,
+                         exception=exc)
+            self._refresh_rows()
+            self._refuse(f"{name} did not come back on {where}. Check its cable, "
+                         "then press Hard reset again or restart the station.")
         self._refresh_rows()
-        return flag
+        return name
+
+    def _running_names(self):
+        return list(getattr(self.controller, "model_names", None) or ())
+
+    def _held_ports(self):
+        """The real ports the launched models hold, by their configs."""
+        held = set()
+        config_of = getattr(self.controller, "config", None)
+        if not callable(config_of):
+            return held
+        for name in self._running_names():
+            try:
+                config = config_of(name) or {}
+            except Exception:
+                continue
+            if config.get("sim"):
+                continue
+            for resource, value in config.items():
+                if (_kind(resource) == "port" and isinstance(value, str)
+                        and value not in (NOT_CONNECTED, SIM, ON, "None", "Off")):
+                    held.add(value)
+        return held
 
     def _port_choices(self, key):
         return (self.port_options() if self._rows[key]["needs_port"]
@@ -1202,7 +1294,8 @@ class Setup(PortProbe, Panel):
                          "start it again before launching.")
         configs = self.configs
         if not configs:
-            self._refuse("Select at least one device: tick its Launch box.")
+            self._refuse("No device is connected. Plug it in and press "
+                         "Refresh; every device that answers launches.")
         self.validate(configs)
         self._ask_about_firmware(configs, confirmed)
         self._ask_before_taking_down("Relaunch", "launch", confirmed)
@@ -1229,6 +1322,7 @@ class Setup(PortProbe, Panel):
         self._ask_before_taking_down("Close every model", "stop_system", confirmed)
         self.controller.reset()
         self._is_launched = False
+        self._take_seen()
         self._refresh_rows()
         events.info("Stopped", ", ".join(running) or "nothing was running",
                     source=self.NAME)
@@ -1274,6 +1368,8 @@ class Setup(PortProbe, Panel):
                          f"in {(time.monotonic() - started) * 1000:.0f} ms",
                          source=self.NAME)
         self._is_launched = True
+        with self._lock:
+            self._seen.clear()
         self._keep_account_page()       # the reset above closed the User sheet
         self._refresh_rows()
         events.info("Launched", ", ".join(built), source=self.NAME)
@@ -2399,22 +2495,26 @@ class Setup(PortProbe, Panel):
         )]
         for key, row in self._rows.items():
             # The row's caption is the model's name; no second copy in a cell.
-            # G3: the Launch box first, as on `main`; the dropdowns are live
-            # only while it is ticked.
+            # No Launch tick (owner 2026-10-07): every connected device
+            # launches, and the Status cell says which are.
             elements = [
-                sch.checkbox("Launch", f"{key}_enabled", f"set_{key}_enabled",
-                             tooltip=f"Launch {row['name']}"),
                 sch.dropdown("Port", f"{key}_port", f"set_{key}_port",
-                             row["options_command"],
-                             enabled_by=f"{key}_enabled"),
+                             row["options_command"]),
             ]
+            if row["needs_port"]:
+                # Its board reset and the model opened again on the same
+                # port; asks first, refused while energized (`_hard_reset`).
+                # Right after Port, so a row without it (no port) or without
+                # a Gamepad still lines up: a view pads before the Status.
+                elements.append(sch.button("Hard reset", f"hard_reset_{key}",
+                                           role="neutral",
+                                           enabled_when=[self.LAUNCHED]))
             # Built from the class's resources; for the six built-ins that is
             # a Gamepad dropdown where one is declared, and nothing else.
             for field, kind, label, _ in row["columns"]:
                 elements.append(sch.dropdown(
                     label, f"{key}_{field}", f"set_{key}_{field}",
-                    "port_options" if kind == "port" else "gamepad_options",
-                    enabled_by=f"{key}_enabled"))
+                    "port_options" if kind == "port" else "gamepad_options"))
             elements.append(sch.readonly("Status:", f"{key}_status"))
             sections.append(sch.section(row["name"], *elements, layout="row"))
         sections.append(sch.section(
@@ -2448,28 +2548,52 @@ class Setup(PortProbe, Panel):
         return None
 
     def _refresh_rows(self):
-        """Every row's status line and the launch summary, from one place."""
+        """Every row's launch flag, status line and the launch summary, from
+        one place."""
         with self._lock:
             found = dict(self._found)
         for key, row in self._rows.items():
+            setattr(self, f"{key}_enabled", self._will_launch(key, row, found))
             setattr(self, f"{key}_status", self._row_status(key, row, found))
         self._refresh_summary()
 
+    def _will_launch(self, key, row, found):
+        """A row launches when its board answered as this model on its port,
+        when it is set to SIM, or when it needs no port. Nothing else."""
+        choice = getattr(self, f"{key}_port")
+        if choice == SIM or not row["needs_port"]:
+            return True
+        return bool(choice) and found.get(choice) == row["name"]
+
     def _row_status(self, key, row, found):
-        """What the row's Status cell says: off / simulated / detected: X /
-        not detected. The one sentence the operator reads to know whether the
-        handshake agreed with the dropdown."""
-        if not getattr(self, f"{key}_enabled"):
-            return "off"
+        """What the row's Status cell says: simulated / on / detected: X /
+        not connected / not scanned, and a board seen after the launch. The
+        one sentence the operator reads to know whether the row launches."""
+        with self._lock:
+            seen = self._seen.get(key)
+        if seen:
+            return f"seen on {seen}: restart to launch"
         choice = getattr(self, f"{key}_port")
         if choice == SIM:
             return "simulated"
         if not row["needs_port"]:
             return "on"
+        if choice == NOT_CONNECTED:
+            return "not connected"
         if choice not in found:
             return "not scanned"
         answered = found[choice]
-        return f"detected: {answered}" if answered else "not detected"
+        return f"detected: {answered}" if answered else "not connected"
+
+    def _take_seen(self):
+        """After Close every model: a board seen after the launch is a row
+        like any other again, so the next Launch includes it."""
+        with self._lock:
+            seen, self._seen = dict(self._seen), {}
+            chosen = set(self._chosen)
+        for key, port in seen.items():
+            if key not in chosen and port in self._port_choices(key):
+                setattr(self, f"{key}_port", port)
 
     def _drop_stale_selections(self):
         """A port that is no longer attached must not stay selected: the old
@@ -2478,13 +2602,14 @@ class Setup(PortProbe, Panel):
         free to fill the row in."""
         gamepads = self.gamepad_options()
         for key, row in self._rows.items():
-            if getattr(self, f"{key}_port") not in self._port_choices(key):
-                # The board is gone: the row goes back to unticked and to
-                # SIM, so a Launch cannot silently open some other port.
-                setattr(self, f"{key}_port", SIM)
-                setattr(self, f"{key}_enabled", False)
+            choice = getattr(self, f"{key}_port")
+            if choice != NOT_CONNECTED and choice not in self._port_choices(key):
+                # The board is gone: the row is not connected again, so a
+                # Launch cannot silently open some other port.
+                setattr(self, f"{key}_port", NOT_CONNECTED)
                 with self._lock:
                     self._chosen.discard(key)
+                    self._seen.pop(key, None)
             if row["needs_gamepad"] and getattr(self, f"{key}_gamepad") not in gamepads:
                 setattr(self, f"{key}_gamepad", "None")
             for field, kind, _, _ in row["columns"]:
@@ -2503,7 +2628,7 @@ class Setup(PortProbe, Panel):
             self._selected = "nothing selected"
         else:
             self._selected = (f"{count} device{'s' if count != 1 else ''} "
-                              "ticked to launch.")
+                              "to launch.")
 
 
 def _exe(name):
@@ -2589,16 +2714,16 @@ class _Selector:
         return f"<set_{self.key}_{self.field}>"
 
 
-class _Enabler:
-    """One row's Launch checkbox handler: `set_<row>_enabled(flag)`."""
+class _HardReset:
+    """One launched row's Hard reset: `hard_reset_<row>(confirmed=False)`."""
 
     __slots__ = ("setup", "key")
 
     def __init__(self, setup, key):
         self.setup, self.key = setup, key
 
-    def __call__(self, flag):
-        return self.setup._enable(self.key, flag)
+    def __call__(self, confirmed=False):
+        return self.setup._hard_reset(self.key, confirmed)
 
     def __repr__(self):
-        return f"<set_{self.key}_enabled>"
+        return f"<hard_reset_{self.key}>"

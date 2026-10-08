@@ -121,17 +121,22 @@ def panel(fake_types):
     return Setup(RecordingController())
 
 
-def tick(panel, key, flag=True):
-    """What a view does: send the row's Launch checkbox command (G3)."""
-    result = panel.run(f"set_{key}_enabled", args=(flag,))
+def connect(panel, key):
+    """There is no Launch tick (owner 2026-10-07): a row launches when its
+    board answered. Without a board, SIM is the development choice."""
+    result = panel.run(f"set_{key}_port", args=(SIM,))
     assert result.is_ok, result.reason
     return result
 
 
+def disconnect(panel, key):
+    """The row's board is gone, as a scan finds it: not connected."""
+    setattr(panel, f"{key}_port", station_setup.NOT_CONNECTED)
+    panel._refresh_rows()
+
+
 def select(panel, key, field, choice):
-    """What a view does: tick the row (its dropdowns are greyed out until
-    then), then send the dropdown's command with the choice."""
-    tick(panel, key)
+    """What a view does: send the dropdown's command with the choice."""
     result = panel.run(f"set_{key}_{field}", args=(choice,))
     assert result.is_ok, result.reason
     return result
@@ -177,20 +182,30 @@ def test_every_section_is_a_row_so_setup_is_a_table_not_a_column(panel):
         ["row"] * len(panel.schema["sections"])
 
 
-def test_a_row_is_name_then_launch_box_then_dropdowns_then_status(panel):
-    """G3: the Launch checkbox leads the row, as on `main`; the dropdowns
-    are gated on it."""
+def test_a_row_is_name_then_port_hard_reset_gamepad_then_status(panel):
+    """Owner 2026-10-07: no Launch tick - every connected device launches -
+    and a launched device's row carries its Hard reset."""
     row = next(s for s in panel.schema["sections"] if s["title"] == "Alpha")
-    assert [(e["type"], e.get("model_attr")) for e in row["elements"]] == [
-        ("checkbox", "alpha_enabled"),
+    assert [(e["type"], e.get("model_attr") or e.get("command"))
+            for e in row["elements"]] == [
         ("dropdown", "alpha_port"),
+        ("button", "hard_reset_alpha"),
         ("dropdown", "alpha_gamepad"),
         ("readonly", "alpha_status"),
     ]
-    box, port, pad, _ = row["elements"]
-    assert box["command"] == "set_alpha_enabled"
-    assert port["enabled_by"] == "alpha_enabled" == pad["enabled_by"]
+    port, reset, pad, _ = row["elements"]
+    assert "enabled_by" not in port and "enabled_by" not in pad
+    assert reset["text"] == "Hard reset" and reset["enabled_when"] == ["launched"]
     assert panel.alpha_name == "Alpha"
+    # A row with no port has no board to reset.
+    screen = next(s for s in panel.schema["sections"] if s["title"] == "Screen")
+    assert "button" not in [e["type"] for e in screen["elements"]]
+
+
+def test_there_is_no_launch_tick(panel):
+    assert "checkbox" not in [e["type"] for e in _elements(panel)]
+    assert not hasattr(panel, "set_alpha_enabled")
+    assert panel.run("set_alpha_enabled", args=(True,)).is_refused
 
 
 def test_there_is_no_mode_dropdown_and_no_set_mode_command(panel):
@@ -422,12 +437,14 @@ def test_a_port_that_answered_nothing_is_still_allowed(panel):
     assert panel.controller.model_names == ["Alpha"]
 
 
-def test_a_row_left_off_builds_nothing(panel, fake_types):
-    """WEB-4/MANAGER-12: Web dropped the enabled flag and built every row."""
+def test_a_row_not_connected_builds_nothing(panel, fake_types):
+    """WEB-4/MANAGER-12: Web dropped the enabled flag and built every row.
+    Beta's board never answered: it is not built. The Screen needs no port
+    and is always built."""
     select(panel, "alpha", "port", SIM)
-    assert [c["model"] for c in panel.configs] == ["Alpha"]
+    assert [c["model"] for c in panel.configs] == ["Alpha", "Screen"]
     panel.run("launch")
-    assert panel.controller.model_names == ["Alpha"]
+    assert panel.controller.model_names == ["Alpha", "Screen"]
 
 
 def test_sim_works_for_every_model(panel, fake_types):
@@ -461,17 +478,27 @@ def test_build_sets_the_factory_so_reopen_works(panel):
     assert reopened.is_open and panel.controller.model_names == ["Alpha"]
 
 
-def test_launch_refuses_when_nothing_is_selected(panel):
-    result = panel.run("launch")
-    assert result.is_refused and "at least one" in result.reason
+@pytest.fixture
+def port_panel(fake_types):
+    """A station of port rows only: nothing launches until a board answers."""
+    fake_types.pop("Screen")
+    return Setup(RecordingController())
 
 
-def test_launch_refuses_a_collision_before_building_anything(panel):
-    offer(panel, "/dev/ttyUSB0")
-    for key in ("alpha", "beta"):
-        select(panel, key, "port", "/dev/ttyUSB0")
-    result = panel.run("launch")
-    assert result.is_refused and "already assigned" in result.reason
+def test_launch_refuses_when_nothing_is_connected(port_panel):
+    result = port_panel.run("launch")
+    assert result.is_refused and "No device is connected" in result.reason
+    assert port_panel.controller.calls == []
+
+
+def test_a_build_refuses_a_collision_before_building_anything(panel):
+    """Rows launch only on a port their own board answered on, so two rows
+    cannot share one through Launch; a build handed such configs refuses
+    before the reset."""
+    with pytest.raises(Refused) as refusal:
+        panel.build([{"model": "Alpha", "port": "/dev/ttyUSB0", "sim": False},
+                      {"model": "Beta", "port": "/dev/ttyUSB0", "sim": False}])
+    assert "already assigned" in refusal.value.reason
     assert panel.controller.calls == []      # not even a reset
 
 
@@ -498,7 +525,7 @@ def test_launch_gives_way_to_relaunch_once_the_system_is_up(panel):
     # Both buttons carry the one command, and it stays runnable: a relaunch
     # resets the Controller first, like any build.
     assert panel.run("launch").is_ok
-    assert panel.controller.model_names == ["Alpha"]
+    assert panel.controller.model_names == ["Alpha", "Screen"]
 
 
 def test_stop_system_takes_everything_down_and_offers_launch_again(panel):
@@ -525,14 +552,12 @@ def test_a_dropdown_choice_travels_as_the_command_argument(panel):
 
 
 def test_a_choice_that_is_not_on_offer_is_refused(panel):
-    tick(panel, "alpha")
     result = panel.run("set_alpha_port", args=("/dev/nope",))
     assert result.is_refused and "options" in result.reason
 
 
 def test_a_port_name_is_refused_for_a_model_that_has_no_port(panel):
     offer(panel, "/dev/ttyUSB0")
-    tick(panel, "screen")
     result = panel.run("set_screen_port", args=("/dev/ttyUSB0",))
     assert result.is_refused and "options" in result.reason
 
@@ -558,9 +583,10 @@ def test_auto_assign_points_each_row_at_the_port_that_answered(panel):
     panel._found = {"/dev/ttyUSB0": "Beta", "/dev/ttyUSB1": None}
     assert panel.auto_assign() == ["Beta on /dev/ttyUSB0"]
     assert panel.beta_port == "/dev/ttyUSB0" and panel.beta_enabled is True
-    assert panel.alpha_port == SIM and panel.alpha_enabled is False
+    assert panel.alpha_port == station_setup.NOT_CONNECTED
+    assert panel.alpha_enabled is False
     assert panel.beta_status == "detected: Beta"
-    assert panel.alpha_status == "off"
+    assert panel.alpha_status == "not connected"
 
 
 def test_auto_assign_never_overrides_what_the_operator_chose(panel):
@@ -591,19 +617,20 @@ def test_two_ports_answering_as_one_model_keeps_the_first_and_warns(
 
 # -- the status column -----------------------------------------------------
 
-def test_the_status_column_says_off_simulated_detected_or_not_detected(panel):
-    assert panel.alpha_status == "off"
+def test_the_status_column_says_not_connected_simulated_or_detected(panel):
+    assert panel.alpha_status == "not connected"
     select(panel, "alpha", "port", SIM)
     assert panel.alpha_status == "simulated"
     offer(panel, "/dev/ttyUSB0")
     select(panel, "alpha", "port", "/dev/ttyUSB0")
     assert panel.alpha_status == "not scanned"
+    assert panel.alpha_enabled is False
     panel._found["/dev/ttyUSB0"] = None
     panel._refresh_rows()
-    assert panel.alpha_status == "not detected"
+    assert panel.alpha_status == "not connected" and panel.alpha_enabled is False
     panel._found["/dev/ttyUSB0"] = "Alpha"
     panel._refresh_rows()
-    assert panel.alpha_status == "detected: Alpha"
+    assert panel.alpha_status == "detected: Alpha" and panel.alpha_enabled is True
 
 
 def test_a_row_pointed_at_a_port_that_answered_otherwise_says_so(panel):
@@ -611,8 +638,14 @@ def test_a_row_pointed_at_a_port_that_answered_otherwise_says_so(panel):
     select(panel, "alpha", "port", "/dev/ttyUSB0")
     panel._found["/dev/ttyUSB0"] = "Beta"
     panel._refresh_rows()
-    assert panel.alpha_status == "detected: Beta"      # and build() refuses it
-    assert panel.run("launch").is_refused
+    assert panel.alpha_status == "detected: Beta"
+    # Not connected as Alpha, so it does not launch (and build() refuses it).
+    assert "Alpha" not in [c["model"] for c in panel.configs]
+    assert panel.run("launch").is_ok
+    assert "Alpha" not in panel.controller.model_names
+    with pytest.raises(Refused):
+        panel.build([{"model": "Alpha", "port": "/dev/ttyUSB0",
+                      "gamepad": None, "sim": False}])
 
 
 # -- the schema every view renders ----------------------------------------
@@ -682,10 +715,12 @@ def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
     assert state["is_scanning"] is False and state["is_launched"] is False
     alpha = next(r for r in state["rows"] if r["key"] == "alpha")
     assert alpha == {"key": "alpha", "name": "Alpha", "enabled": False,
-                     "port": SIM,
-                     "gamepad": "None", "status": "off", "detected": None,
+                     "port": station_setup.NOT_CONNECTED,
+                     "gamepad": "None", "status": "not connected",
+                     "detected": None,
                      "needs_port": True, "needs_gamepad": True,
-                     "is_chosen": False, "options_command": "port_options"}
+                     "is_chosen": False, "seen_after_launch": None,
+                     "options_command": "port_options"}
     assert state["values"]["scan_status"] == "not scanned yet"
     assert state["scan"]["elapsed"] is None and state["scan"]["port"] is None
 
@@ -712,7 +747,6 @@ def test_launching_is_gated_while_a_scan_runs_but_choosing_is_not(
     try:
         assert panel.mode_name == "scanning"
         assert panel.run("launch").is_refused
-        assert panel.run("set_alpha_enabled", args=(True,)).is_ok
         assert panel.run("set_alpha_port", args=(SIM,)).is_ok
         # Refresh cancels the running scan first. This one will not stop;
         # F18: Refresh returns at once anyway (it used to join for up to 1 s
@@ -854,93 +888,70 @@ def test_refresh_during_a_hung_scan_does_not_block_the_caller(hung_port):
     assert time.monotonic() - began < 0.2
 
 
-def test_the_summary_is_a_sentence_when_nothing_is_selected(panel):
-    assert panel.summary.startswith("Nothing selected.")
+def test_the_summary_is_a_sentence_when_nothing_is_connected(port_panel):
+    assert port_panel.summary.startswith("Nothing to launch: no device is connected.")
 
 
-# -- G3: the Launch checkbox ------------------------------------------------
+# -- every connected device launches (owner 2026-10-07; was the G3 tick) ----
 
-def test_every_row_starts_unticked_with_a_launchable_default_choice(panel):
+def test_every_port_row_starts_not_connected_and_a_row_with_no_port_is_on(panel):
     assert (panel.alpha_enabled, panel.beta_enabled, panel.screen_enabled) == \
-        (False, False, False)
-    assert panel.alpha_port == SIM and panel.screen_port == ON
-    assert panel.configs == []
+        (False, False, True)
+    assert panel.alpha_port == station_setup.NOT_CONNECTED and panel.screen_port == ON
+    assert [c["model"] for c in panel.configs] == ["Screen"]
 
 
-def test_ticking_a_row_puts_it_in_the_configs_and_unticking_takes_it_out(panel):
-    tick(panel, "alpha")
-    assert [c["model"] for c in panel.configs] == ["Alpha"]
+def test_sim_puts_a_row_in_the_configs_and_losing_the_board_takes_it_out(panel):
+    connect(panel, "alpha")
+    assert [c["model"] for c in panel.configs] == ["Alpha", "Screen"]
     assert panel.alpha_status == "simulated"
-    tick(panel, "alpha", False)
-    assert panel.configs == [] and panel.alpha_status == "off"
+    disconnect(panel, "alpha")
+    assert [c["model"] for c in panel.configs] == ["Screen"]
+    assert panel.alpha_status == "not connected"
 
 
-def test_unticking_keeps_the_rows_choices_for_the_next_tick(panel):
+def test_not_connected_is_not_on_offer(panel):
+    """The operator does not choose to leave a connected device out."""
     offer(panel, "/dev/ttyUSB0")
-    select(panel, "alpha", "port", "/dev/ttyUSB0")
-    tick(panel, "alpha", False)
-    assert panel.alpha_port == "/dev/ttyUSB0"
-    tick(panel, "alpha")
-    assert [c["port"] for c in panel.configs] == ["/dev/ttyUSB0"]
+    assert station_setup.NOT_CONNECTED not in panel.port_options()
+    assert panel.run("set_alpha_port",
+                     args=(station_setup.NOT_CONNECTED,)).is_refused
 
 
-def test_a_dropdown_is_refused_until_its_row_is_ticked(panel):
-    """The one gating rule (`enabled_by`) is enforced by the Panel, not
-    only greyed out by a view, so the API and the widgets agree."""
-    result = panel.run("set_alpha_port", args=(SIM,))
-    assert result.is_refused and "Launch box" in result.reason
-    tick(panel, "alpha")
-    assert panel.run("set_alpha_port", args=(SIM,)).is_ok
-
-
-def test_the_tick_command_takes_a_boolean_or_its_json_spelling(panel):
-    assert panel.run("set_alpha_enabled", args=("true",)).is_ok
-    assert panel.alpha_enabled is True
-    assert panel.run("set_alpha_enabled", args=("false",)).is_ok
-    assert panel.alpha_enabled is False
-    result = panel.run("set_alpha_enabled", args=("maybe",))
-    assert result.is_refused and "tick state" in result.reason
-    assert panel.run("set_nobody_enabled", args=(True,)).is_refused
-
-
-def test_a_board_that_answered_ticks_its_row_and_the_operator_may_untick_it(panel):
+def test_a_board_that_answered_launches_its_row(panel):
     panel._found = {"/dev/ttyUSB0": "Beta"}
     panel.auto_assign()
     assert panel.beta_enabled is True
-    tick(panel, "beta", False)
-    assert panel.configs == [] and panel.beta_port == "/dev/ttyUSB0"
+    assert [(c["model"], c["port"]) for c in panel.configs] == [
+        ("Beta", "/dev/ttyUSB0"), ("Screen", None)]
 
 
-def test_a_port_that_vanished_unticks_its_row_and_falls_back_to_sim(panel):
+def test_a_port_that_vanished_is_not_connected_again(panel):
     offer(panel, "/dev/ttyUSB0")
     select(panel, "alpha", "port", "/dev/ttyUSB0")
     panel._ports.remove("/dev/ttyUSB0")
     panel._drop_stale_selections()
-    assert panel.alpha_enabled is False and panel.alpha_port == SIM
+    panel._refresh_rows()
+    assert panel.alpha_enabled is False
+    assert panel.alpha_port == station_setup.NOT_CONNECTED
     assert "alpha" not in panel._chosen
 
 
 def test_the_summary_is_a_count_not_a_list_of_names_and_ports(panel):
     """G3: the joined "Alpha (/dev/x), Beta (simulated), ..." line widened
     every table it sat in; the rows already say which and where."""
-    tick(panel, "alpha")
-    assert panel.summary == "1 device ticked to launch."
-    tick(panel, "beta")
-    tick(panel, "screen")
-    assert panel.summary == "3 devices ticked to launch."
+    assert panel.summary == "1 device to launch."
+    connect(panel, "alpha")
+    connect(panel, "beta")
+    assert panel.summary == "3 devices to launch."
     assert len(panel.summary) < 40
     assert "Alpha" not in panel.summary and SIM not in panel.summary
 
 
-def test_state_rows_carry_the_tick(panel):
-    tick(panel, "beta")
+def test_state_rows_carry_whether_the_row_launches(panel):
+    connect(panel, "beta")
     rows = {r["key"]: r["enabled"] for r in panel.state["rows"]}
-    assert rows == {"alpha": False, "beta": True, "screen": False}
-
-
-def test_launch_refusal_names_the_launch_box(panel):
-    result = panel.run("launch")
-    assert result.is_refused and "Launch box" in result.reason
+    assert rows == {"alpha": False, "beta": True, "screen": True}
 
 
 def _launch_alpha(panel):
@@ -1002,19 +1013,14 @@ def test_a_hosted_model_has_no_setup_row(hosted_types):
     assert not hasattr(panel, "red_enabled")
 
 
-def test_ticking_a_host_launches_the_hosted_model_first_with_its_sim_choice(hosted_types):
+def test_a_host_launches_the_hosted_model_first_with_its_sim_choice(hosted_types):
     panel = Setup(RecordingController())
-    tick(panel, "map")
     assert [c["model"] for c in panel.configs] == ["Red", "Map"]
     red = panel.configs[0]
     assert red["port"] is None and red["gamepad"] is None
     assert red["sim"] == panel.configs[1]["sim"]
-
-
-def test_an_unticked_host_launches_nothing_of_its_own(hosted_types):
-    panel = Setup(RecordingController())
-    tick(panel, "alpha")
-    assert [c["model"] for c in panel.configs] == ["Alpha"]
+    connect(panel, "map")
+    assert [c["sim"] for c in panel.configs] == [True, True]
 
 
 def test_a_hosted_class_may_declare_no_resources():
@@ -1023,6 +1029,113 @@ def test_a_hosted_class_may_declare_no_resources():
     with pytest.raises(ValueError, match="no Setup row"):
         station_setup.register(hosted)
     station_setup.MODEL_TYPES.pop("Needy", None)
+
+
+# -- Hard reset, and a board plugged in after the launch (owner 2026-10-07) --
+
+def _launch_alpha_on(panel, port="/dev/ttyUSB0"):
+    """Alpha's board answered on `port`, and the station is launched."""
+    offer(panel, port)
+    panel._found[port] = "Alpha"
+    select(panel, "alpha", "port", port)
+    assert panel.run("launch").is_ok
+    return panel.controller._model("Alpha")
+
+
+def test_hard_reset_is_not_offered_before_the_launch(panel):
+    assert panel.run("hard_reset_alpha", args=(True,)).is_refused
+    assert panel.controller.calls == []
+
+
+def test_hard_reset_asks_then_reopens_the_same_device_on_the_same_port(panel):
+    old = _launch_alpha_on(panel)
+    config = panel.controller.config("Alpha")
+    asked = panel.run("hard_reset_alpha")
+    assert asked.needs_confirm and asked.command == "hard_reset_alpha"
+    assert asked.reason.startswith("Hard reset Alpha?")
+    assert "/dev/ttyUSB0" in asked.reason
+    assert panel.controller._model("Alpha") is old, "nothing was reset by the question"
+    panel.controller.calls.clear()
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert panel.controller.calls == ["remove:Alpha", "add:Alpha"]
+    new = panel.controller._model("Alpha")
+    assert new is not old and new.is_open and old.closed == 1 and not old.is_open
+    assert new.port == "/dev/ttyUSB0" and panel.controller.config("Alpha") == config
+    assert panel.is_launched and "Screen" in panel.controller.model_names
+
+
+def test_hard_reset_is_refused_while_the_device_is_energized(panel):
+    old = _launch_alpha_on(panel)
+    old.is_energized = True     # this file's fake is a plain class
+    result = panel.run("hard_reset_alpha", args=(True,))
+    assert result.is_refused and "energized" in result.reason
+    assert panel.controller._model("Alpha") is old and old.closed == 0
+
+
+def test_hard_reset_of_a_row_that_did_not_launch_is_refused(panel):
+    _launch_alpha_on(panel)
+    result = panel.run("hard_reset_beta", args=(True,))
+    assert result.is_refused and "not launched" in result.reason
+
+
+def test_a_hard_reset_that_did_not_come_back_says_so_and_can_be_pressed_again(
+        panel, fake_types):
+    _launch_alpha_on(panel)
+    fake_types["Alpha"].FAIL_ON_OPEN = True
+    result = panel.run("hard_reset_alpha", args=(True,))
+    assert result.is_refused and "did not come back" in result.reason
+    assert "Alpha" not in panel.controller.model_names
+    fake_types["Alpha"].FAIL_ON_OPEN = False
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert "Alpha" in panel.controller.model_names
+
+
+def _scan_with(panel, monkeypatch, answers):
+    asked = []
+    monkeypatch.setattr(serial_port_module, "list_ports",
+                        lambda: list(answers), raising=False)
+
+    def identify(self, port, should_abort=None):
+        asked.append(port)
+        return answers[port]
+
+    monkeypatch.setattr(Setup, "identify", identify)
+    panel.scan()
+    panel._scan_thread.join(5)
+    assert not panel.is_scanning
+    return asked
+
+
+def test_a_scan_after_the_launch_never_opens_a_port_a_model_holds(panel, monkeypatch):
+    """Opening it again would reset the board under the running model."""
+    _launch_alpha_on(panel)
+    asked = _scan_with(panel, monkeypatch, {"/dev/ttyUSB0": "Alpha",
+                                            "/dev/ttyUSB1": None})
+    assert asked == ["/dev/ttyUSB1"]
+    assert panel._found["/dev/ttyUSB0"] == "Alpha"
+    assert panel.alpha_port == "/dev/ttyUSB0" and panel.alpha_enabled is True
+
+
+def test_a_board_plugged_in_after_the_launch_is_seen_not_launched(
+        panel, monkeypatch, warnings):
+    _launch_alpha_on(panel)
+    answers = {"/dev/ttyUSB0": "Alpha", "/dev/ttyUSB1": "Beta"}
+    _scan_with(panel, monkeypatch, answers)
+    assert "Beta" not in panel.controller.model_names
+    assert "Beta" not in [c["model"] for c in panel.configs]
+    assert panel.beta_status == "seen on /dev/ttyUSB1: restart to launch"
+    row = next(r for r in panel.state["rows"] if r["key"] == "beta")
+    assert row["seen_after_launch"] == "/dev/ttyUSB1"
+    said = [e for e in warnings if e.title == events.RESTART_NEEDED]
+    assert len(said) == 1 and "Beta on /dev/ttyUSB1" in said[0].message
+    assert "Restart the station" in said[0].message
+    assert said[0].action["command"] == "restart_station"
+    _scan_with(panel, monkeypatch, answers)       # seen again: said once
+    assert len([e for e in warnings if e.title == events.RESTART_NEEDED]) == 1
+    # Close every model: the board is a row like any other again.
+    assert panel.run("stop_system").is_ok
+    assert panel.beta_port == "/dev/ttyUSB1" and panel.beta_enabled is True
+    assert panel.state["rows"][1]["seen_after_launch"] is None
 
 
 # -- the update check (owner, 2026-09-28) ------------------------------------
@@ -1206,7 +1319,7 @@ def test_update_now_refuses_when_there_is_nothing_to_update(fake_types, checking
 def test_update_now_refuses_while_the_station_is_launched(fake_types, checking):
     updater = FakeUpdater(check=behind(2))
     panel = _ready(Setup(RecordingController(), updater=updater))
-    tick(panel, "alpha")
+    connect(panel, "alpha")
     assert panel.run("launch").is_ok
     result = panel.run("apply_update", args=(True,))
     assert result.status == "refused"
@@ -1311,7 +1424,7 @@ def test_launch_waits_while_an_update_is_landing(fake_types, checking):
 
     updater.apply = slow_apply
     assert panel.run("apply_update", args=(True,)).is_ok
-    tick(panel, "alpha")
+    connect(panel, "alpha")
     result = panel.run("launch")
     assert result.status == "refused"
     assert "update" in result.reason.lower()
@@ -1328,7 +1441,7 @@ def test_launch_is_refused_after_an_update_until_the_restart(fake_types, checkin
     assert panel.run("apply_update", args=(True,)).is_ok
     wait_idle(panel)
     assert panel.update_status.startswith("Updated to")
-    tick(panel, "alpha")
+    connect(panel, "alpha")
     result = panel.run("launch")
     assert result.status == "refused"
     assert "start it again" in result.reason
@@ -1419,7 +1532,9 @@ def checked(firmware):
 
 
 def on_port(panel, key, port):
+    """The row's board answered on `port` (a row launches only then)."""
     offer(panel, port)
+    panel._found[port] = panel._rows[key]["name"]
     select(panel, key, "port", port)
 
 
@@ -1695,7 +1810,7 @@ def test_flash_refuses_without_the_tools_and_says_flash_by_hand(fake_types):
 def test_flash_refuses_while_the_station_is_launched(fake_types):
     firmware = FakeFirmware()
     panel = checked(firmware)
-    tick(panel, "alpha")
+    connect(panel, "alpha")
     assert panel.run("launch").is_ok
     assert refused(lambda: panel.flash_firmware(True)).startswith("Close every model first")
     assert panel.run("stop_system").is_ok
@@ -1726,7 +1841,7 @@ def test_a_flash_streams_its_lines_then_rechecks(fake_types, warnings):
     # While it runs: no second flash, no check, no launch, no scan.
     assert "already running" in refused(lambda: panel.flash_firmware(True))
     assert "flash is running" in refused(panel.check_firmware)
-    tick(panel, "alpha")
+    connect(panel, "alpha")
     result = panel.run("launch")
     assert result.status == "refused" and "being flashed" in result.reason
     assert "being flashed" in refused(panel.scan)
@@ -1792,7 +1907,7 @@ def test_launch_names_every_out_of_date_board_it_opens(board_types):
 
 def test_a_simulated_row_is_never_warned_about(board_types):
     panel = checked(FakeFirmware())
-    tick(panel, "stepper_probe")          # SIM by default
+    connect(panel, "stepper_probe")          # SIM by default
     assert panel.run("launch").is_ok
 
 
@@ -1810,7 +1925,7 @@ def test_launch_does_not_wait_on_an_unchecked_firmware(board_types):
 
 def test_a_relaunch_over_energized_models_asks_one_question_not_two(board_types):
     panel = checked(FakeFirmware())
-    tick(panel, "dc_probe")
+    connect(panel, "dc_probe")
     assert panel.run("launch").is_ok
     panel.controller._model_or_none("DC Probe").is_energized = True
     on_port(panel, "stepper_probe", "/dev/ttyACM0")
@@ -1887,7 +2002,7 @@ def test_a_landed_update_asks_to_restart_with_restart_now(
     # "Later": the line and the Launch refusal stay as they were.
     assert panel.update_status == ("Updated to def5678. Quit and start the "
                                    "station again to run it.")
-    tick(panel, "alpha")
+    connect(panel, "alpha")
     assert panel.run("launch").status == "refused"
 
 
@@ -2101,7 +2216,7 @@ def test_an_update_waiting_for_the_restart_says_press_restart(fake_types, checki
     assert panel.update_status == "Updated to v1.3.0. Press Restart to run it."
     [prompt] = _prompts(warnings, events.RESTART_NEEDED)
     assert prompt.to_dict()["action"]["command"] == "restart_station"
-    tick(panel, "alpha")
+    connect(panel, "alpha")
     refused = panel.run("launch")
     assert refused.status == "refused"
     assert refused.reason == ("The station was updated to v1.3.0. Press Restart "
@@ -2257,9 +2372,9 @@ def test_the_switch_closes_flashes_stable_launches_it_then_exits(fake_types, sta
     firmware.order = order
     controller = RecordingController()
     panel = switching(stable, firmware, order, controller)
-    tick(panel, "alpha")
+    connect(panel, "alpha")
     assert panel.run("launch").is_ok
-    assert controller.model_names == ["Alpha"]
+    assert controller.model_names == ["Alpha", "Screen"]
     assert panel.run("switch_to_stable", args=(True,)).is_ok
     wait_stable(panel)
     assert controller.model_names == [] and "reset" in controller.calls

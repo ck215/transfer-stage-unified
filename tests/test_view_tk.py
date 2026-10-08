@@ -3120,39 +3120,6 @@ def setup_view():
     built.close()
 
 
-def test_the_setup_table_puts_the_launch_box_first_in_every_model_row(setup_view):
-    view, setup = setup_view
-    boxes = [e for e in view._elements if e["type"] == "checkbox"]
-    ports = [e for e in view._elements
-             if e["type"] == "dropdown" and e["text"] == "Port"]
-    assert boxes and len(boxes) == len(ports) == len(setup._rows)
-    assert view._table_columns["Launch"] == 1, "the first column after the name"
-    for box, port in zip(boxes, ports):
-        box_cell, port_cell = _cell(view, box), _cell(view, port)
-        assert box_cell["row"] == port_cell["row"]
-        assert box_cell["column"] == 1 and port_cell["column"] > 1
-        assert box_cell["sticky"] == "w", "narrow: it never stretches"
-    table = cell_widget(view, boxes[0]).master
-    # One "Launch" caption over the boxes (the Launch bar's own row name is
-    # the other "Launch", in column 0 at the bottom of the table).
-    header = [c for c in table.children if c.cget("text") == "Launch"
-              and (c.grid_info or {}).get("column") == 1]
-    assert len(header) == 1, "the caption is said once, in the header"
-    assert header[0].grid_info["row"] < _cell(view, boxes[0])["row"]
-    assert table.column_weights.get(1, {}).get("weight") in (None, 0)
-
-
-def test_the_setup_row_dropdowns_follow_the_launch_box(setup_view):
-    view, setup = setup_view
-    key = next(iter(setup._rows))
-    box = next(e for e in view._elements if e.get("model_attr") == f"{key}_enabled")
-    port = next(e for e in view._elements if e.get("model_attr") == f"{key}_port")
-    assert widget_of(view, port).cget("state") == "disabled"
-    tick(view, box)
-    assert getattr(setup, f"{key}_enabled") is True
-    assert widget_of(view, port).cget("state") == "readonly"
-
-
 # ---------------------------------------------------------------------------
 # G4: a detached log stream is a button that opens its own window
 # ---------------------------------------------------------------------------

@@ -1332,8 +1332,9 @@ def test_setup_port_dropdown_shows_friendly_labels_and_keeps_raw_values(
 @needs_browser
 def test_focus_is_contained_returned_and_never_torn_down_by_a_poll(station, tmp_path):
     """F12 (CRIT-5, WDG-3/6/7): the open drawer keeps Tab out of the rack;
-    Escape returns focus to Setup; a Reopen button survives the poll; the
-    link live region is not rewritten while nothing changes."""
+    Escape returns focus to Setup; the link live region is not rewritten
+    while nothing changes. (The Reopen button it also held went with the
+    rail's closed list, owner 2026-10-07.)"""
     view, controller, _ = station
     out = _browse(view, r"""
       const r = {};
@@ -1355,17 +1356,11 @@ def test_focus_is_contained_returned_and_never_torn_down_by_a_poll(station, tmp_
         watch.observe(document.getElementById('connection'), { childList: true, characterData: true, subtree: true });
         setTimeout(() => { watch.disconnect(); done(n); }, 1500);
       }));
-      await api('/api/close_model', { name: 'Fake Probe' });
-      await until(() => document.querySelector('#closed-models button'));
-      await page.focus('#closed-models button');
-      await sleep(1200);
-      r.kept = await page.evaluate(() => Boolean(document.activeElement.closest('#closed-models')));
       return r;
     """, tmp_path)
     assert not out["leaked"], "Tab walked into the rack behind the open drawer"
     assert out["returned"] == "setup-link", out
     assert out["mutations"] == 0, "the link live region is rewritten every poll"
-    assert out["kept"], "the Reopen button lost focus to a poll"
 
 
 @needs_browser
@@ -1758,7 +1753,6 @@ def sim_station():
     controller = Controller()
     setup = Setup(controller)
     for key, row in setup._rows.items():
-        getattr(setup, f"set_{key}_enabled")(True)
         if row["needs_port"]:
             getattr(setup, f"set_{key}_port")(SIM)
     assert len(setup.launch()) == 8   # + the Transfer Map (Tier S) and the Sample Map
@@ -1951,6 +1945,7 @@ def _assert_shut_down(out, unconfirmed=()):
     assert out["announced"].count(_SHUT_DOWN) == 1, out["announced"]
     if unconfirmed:
         assert out["red"] and all(("rail-alert" in r or "card" in r or "nav-mark" in r
+                                   or "nav-dot is-error" in r
                                    or "unconfirmed" in r) for r in out["red"]), out["red"]
     else:
         assert out["red"] == [], f"signal red is still on the page: {out['red']}"
@@ -2910,9 +2905,9 @@ _TARGETS = r"""
 def test_every_pressable_is_a_real_target(sim_station, tmp_path):
     """L4 (S2, IMP7-8): every pressable is at least 24 px both ways (WCAG
     2.5.8) and every command at least 36 px tall - on the Overview, on a
-    device page with both tiers open, and in Setup, where a row's tick and
-    its name are one target (the name is the tick's label). Not 44: that
-    is an owner call."""
+    device page with both tiers open, and in Setup, whose device rows carry
+    no Launch tick (owner 2026-10-07) and a Hard reset key each. Not 44:
+    that is an owner call."""
     view, controller = sim_station
     out = _browse(view, _PAGES + _TARGETS + r"""
       await until(() => document.querySelectorAll('#cards .card:not(.setup-card)').length >= 6, 8000);
@@ -2933,13 +2928,10 @@ def test_every_pressable_is_a_real_target(sim_station, tmp_path):
       await page.click('#setup-link');
       await sleep(500);
       r.setup = await page.evaluate(() => {
-        const rows = Array.from(document.querySelectorAll('#setup-drawer .section-row'))
-          .filter((s) => s.querySelector('input[type="checkbox"]'));
-        return rows.map((s) => {
-          const name = s.querySelector('.row-title');
-          const box = s.querySelector('input[type="checkbox"]');
-          return { name: name && name.textContent, isLabel: Boolean(name && name.control === box) };
-        });
+        const rows = Array.from(document.querySelectorAll('#setup-drawer .section-row'));
+        return { ticks: rows.filter((s) => s.querySelector('input[type="checkbox"]')).length,
+                 resets: rows.filter((s) => Array.from(s.querySelectorAll('button'))
+                   .some((b) => b.textContent.trim() === 'Hard reset')).length };
       });
       r.setupTargets = (await targets()).filter((t) => true);
       return r;
@@ -2949,7 +2941,7 @@ def test_every_pressable_is_a_real_target(sim_station, tmp_path):
         assert not small, (key, small)
         short = [t for t in out[key] if t["command"] and t["h"] < 35.5]
         assert not short, (key, short)
-    assert out["setup"] and all(row["isLabel"] for row in out["setup"]), out["setup"]
+    assert out["setup"]["ticks"] == 0 and out["setup"]["resets"] == 5, out["setup"]
 
 
 @needs_browser
@@ -3539,6 +3531,58 @@ def test_n3_the_close_tab_guard_is_armed_exactly_while_something_is_energized(
     assert mark["border"] not in ("0px", ""), "the energized mark is a ring"
     assert on["marks"]["DC Probe"] is None, on
     assert out["off"]["prevented"] is False and out["off"]["line"] == "", out["off"]
+
+
+#: Each rail entry's status dot: its words, and which theme colour it is.
+_DOTS = r"""
+  const dots = () => page.evaluate(() => {
+    const read = (name) => {
+      const s = document.createElement('span');
+      s.style.color = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      document.body.appendChild(s);
+      const c = getComputedStyle(s).color;
+      s.remove();
+      return c;
+    };
+    const colours = { trace: read('--trace'), muted: read('--muted'), signal: read('--signal') };
+    const out = {};
+    for (const link of document.querySelectorAll('#model-nav .model-link[data-model]')) {
+      const d = link.querySelector('.nav-dot');
+      const bg = d && getComputedStyle(d).backgroundColor;
+      out[link.dataset.model] = d ? {
+        label: d.getAttribute('aria-label'), title: d.title, role: d.getAttribute('role'),
+        text: d.textContent, shown: d.getClientRects().length > 0,
+        colour: Object.keys(colours).find((k) => colours[k] === bg) || bg } : null;
+    }
+    return out;
+  });
+"""
+
+
+@needs_browser
+def test_each_rail_entry_has_a_status_dot_enabled_disabled_or_error(mode_station, tmp_path):
+    """Owner 2026-10-07: a device's rail entry has a dot - the trace colour
+    while it is enabled (energized), grey (muted) while it is disabled, the
+    signal red in any error state - with its words as its accessible name
+    and title, never colour alone, and no text of its own."""
+    view, controller, first, second = mode_station
+    script = _RAIL + _DOTS + r"""
+      await sleep(700);
+      return dots();
+    """
+    idle = _browse(view, script, tmp_path)
+    for name in ("Stepper Probe", "DC Probe"):
+        assert idle[name] == {"label": "Disabled", "title": "Disabled", "role": "img",
+                              "text": "", "shown": True, "colour": "muted"}, idle
+    first.is_energized = True
+    on = _browse(view, script, tmp_path)
+    assert on["Stepper Probe"]["label"] == "Enabled" and on["Stepper Probe"]["colour"] == "trace", on
+    assert on["DC Probe"]["colour"] == "muted", on
+    second.is_estopped = True
+    error = _browse(view, script, tmp_path)
+    assert error["DC Probe"]["label"] == "Error: stopped", error
+    assert error["DC Probe"]["colour"] == "signal" and error["DC Probe"]["title"] == "Error: stopped"
+    assert error["Stepper Probe"]["colour"] == "trace", error
 
 
 #: A faulted entry, its rail mark and its mode toggle.

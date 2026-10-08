@@ -252,9 +252,30 @@ def test_the_unconfirmed_stop_line_follows_the_latch_from_the_poll():
     assert "state.stop_confirmed === false" in refresh
 
 
-def test_model_cards_can_be_closed_and_a_closed_model_can_be_reopened():
-    assert "/api/close_model" in APP_JS and "/api/open_model" in APP_JS
-    assert "renderClosed(closed)" in APP_JS
+def test_a_model_is_neither_closed_nor_reopened_from_the_page():
+    """Owner 2026-10-07: devices are not added or removed after the launch;
+    Setup's Hard reset recovers one, a restart launches a new one."""
+    assert "/api/close_model" not in APP_JS and "/api/open_model" not in APP_JS
+    assert "renderClosed" not in APP_JS and "closeModel" not in APP_JS
+    assert "closable" not in APP_JS and "card-close" not in APP_JS
+    assert "closed-models" not in INDEX and "card-close" not in STYLES
+
+
+def test_each_rail_entry_has_a_status_dot_with_words_not_colour_alone():
+    """Owner 2026-10-07: the trace colour while enabled (energized), grey
+    while disabled, the signal red for any error state."""
+    nav = _body(r"\n  renderNav\(models\) \{(.*?)\n  \}")
+    assert "'nav-dot'" in nav and "setAttribute('role', 'img')" in nav
+    dots = _body(r"\n  setDots\(\) \{(.*?)\n  \}")
+    for word in ("'Error: '", "'Enabled'", "'Disabled'", "'aria-label'", "'title'",
+                 "lostDevices(", "isStale(", "this.unconfirmed", "this.faulted",
+                 "this.latched", "link.tier === 'error'"):
+        assert word in dots, word
+    apply = _body(r"\n  async applyState\(state, askedAt\) \{(.*?)\n  \}")
+    assert "this.setDots()" in apply
+    assert re.search(r"\.nav-dot\s*\{[^}]*background:\s*var\(--muted\)", STYLES)
+    assert re.search(r"\.nav-dot\.is-on\s*\{[^}]*var\(--trace\)", STYLES)
+    assert re.search(r"\.nav-dot\.is-error\s*\{[^}]*var\(--signal\)", STYLES)
 
 
 def test_the_setup_panel_goes_through_the_same_renderer():
@@ -599,17 +620,17 @@ def test_an_axis_readout_is_known_by_its_letter():
                        ".map((t) => axisLetter({text: t}))") == ["X", "Y", "Z", "", ""]
 
 
-def test_the_setup_drawers_table_has_a_narrow_launch_column_first():
-    """G3: the drawer overrides the table's tracks (name, then one per
-    cell); with the Launch box that is name, Launch, Port, Gamepad, Status,
-    and the Launch track is only as wide as the box."""
+def test_the_setup_drawers_table_has_a_narrow_hard_reset_column_after_port():
+    """The drawer overrides the table's tracks (name, then one per cell):
+    name, Port, Hard reset, Gamepad, Status (owner 2026-10-07: no Launch
+    box), and the Hard reset track is only as wide as the key."""
     rule = re.search(r"\.drawer \.card-body\.table\s*\{[^}]*grid-template-columns:([^;]*);",
                      STYLES)
     assert rule, "the drawer no longer shapes Setup's table"
     tracks = re.findall(r"minmax\([^)]*\)|max-content|min-content|auto|[0-9.]+(?:rem|fr)",
                         rule.group(1).replace("!important", ""))
     assert len(tracks) == 5, tracks
-    assert tracks[1] in ("max-content", "min-content", "auto"), tracks
+    assert tracks[2] in ("max-content", "min-content", "auto"), tracks
 
 
 def test_every_dropdown_is_the_same_width_and_the_log_is_compact():
@@ -912,18 +933,11 @@ def test_the_fixed_layers_measure_where_the_rail_is():
 
 def test_rail_and_tray_controls_are_real_touch_targets():
     assert re.search(r"--hit:\s*2\.75rem", STYLES), "44 px is the floor"
-    assert re.search(r"\.rail-control, \.closed \.ghost\s*\{[^}]*min-height:\s*var\(--hit\)",
+    assert re.search(r"\.rail-control\s*\{[^}]*min-height:\s*var\(--hit\)",
                      STYLES)
     for control in ("setup-link", "quit-link", "drawer-close", "log-toggle"):
         tag = re.search(r'<button id="' + control + r'"[^>]*>', INDEX)
         assert tag and "rail-control" in tag.group(0), control
-
-
-def test_closing_a_module_is_quiet_says_what_it_does_and_asks_first():
-    head = _body(r"constructor\(dashboard, name, schema, options\) \{(.*?)\n  \}")
-    assert "'ghost card-close'" in head and "close.title" in head
-    close = _body(r"async closeModel\(name\) \{(.*?)\n  \}")
-    assert "this.confirm(" in close
 
 
 def test_every_font_size_is_on_the_scale():
@@ -1071,7 +1085,7 @@ def test_the_page_loads_the_theme_and_the_client():
     assert 'href="/styles.css"' in INDEX
     assert 'src="/app.js"' in INDEX
     for element_id in ("full-stop", "cards", "event-log", "ack-modal",
-                       "region-picker", "closed-models", "connection",
+                       "region-picker", "connection",
                        "log-panel", "log-toggle", "model-nav", "sim-line",
                        "stop-ring", "rail-latched", "sheet-headline",
                        "setup-drawer", "drawer-body", "drawer-close",

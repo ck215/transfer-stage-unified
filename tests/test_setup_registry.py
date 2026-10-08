@@ -248,8 +248,9 @@ def test_a_second_port_is_configured_validated_and_passed_in(registry):
     Setup.register(TwoPortStage)
     panel = Setup(RecordingController())
     panel._ports = ["/dev/ttyUSB0", "/dev/ttyUSB1"]
-    for command, value in (("set_two_port_stage_enabled", True),
-                           ("set_two_port_stage_port", "/dev/ttyUSB0"),
+    # The row launches because its board answered on its port.
+    panel._found["/dev/ttyUSB0"] = "Two Port Stage"
+    for command, value in (("set_two_port_stage_port", "/dev/ttyUSB0"),
                            ("set_two_port_stage_port_aux", "/dev/ttyUSB0")):
         assert panel.run(command, args=(value,)).is_ok
     config = next(c for c in panel.configs if c["model"] == "Two Port Stage")

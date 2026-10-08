@@ -637,11 +637,14 @@ const COMMAND_TYPES = ['button', 'file_save', 'file_open'];
  *  hold buttons and a sentence (the scan status; the selection count, or
  *  while scanning why Launch waits), and in a shared grid those would set the
  *  widths of every model row's columns. A row that holds a command spans the
- *  table instead of lining up with it. A checkbox is not a command: the
- *  Launch box is a column of each model row (G3). */
+ *  table instead of lining up with it. A row that holds a dropdown is a
+ *  model row, whatever else it holds: its Hard reset key (owner 2026-10-07)
+ *  is one of its columns. */
 function isCommandRow(section) {
+  const elements = section.elements || [];
   return isRowSection(section)
-    && (section.elements || []).some((e) => COMMAND_TYPES.indexOf(e.type) !== -1);
+    && elements.some((e) => COMMAND_TYPES.indexOf(e.type) !== -1)
+    && !elements.some((e) => e.type === 'dropdown');
 }
 
 /** How many element columns the widest data row needs. */
@@ -2052,21 +2055,8 @@ class PanelCard {
       head.appendChild(open);
       this.openButton = open;
     }
-    if (options && options.closable) {
-      // Closing a model is housekeeping, not a stop: it is chrome, and the
-      // signal red is spent on the stop alone ("one red"). But it destructs
-      // the model (owner ruling: close = destruct), so it is the quietest
-      // control the entry has, it sits at the foot of the model's details,
-      // it says what it does when pointed at, and it asks first
-      // (Dashboard.closeModel).
-      const close = make('button', 'ghost card-close', 'Close this model…');
-      close.type = 'button';
-      close.title = 'Close ' + name + ': it stops and disconnects. '
-        + 'Reopen it from the rail.';
-      close.setAttribute('aria-label', 'Close this model: ' + name);
-      close.addEventListener('click', () => dashboard.closeModel(name));
-      this.closeButton = close;
-    }
+    // No Close on an entry (owner 2026-10-07): devices are not added or
+    // removed after the launch. Setup's Hard reset recovers one device.
     this.node.appendChild(head);
     // The procedure strip (W2-1): drawn only for a model whose state names
     // its `phases`; built from state in refresh(), never from a fetch.
@@ -2313,7 +2303,7 @@ class PanelCard {
    *  marked by a muted rule. Their open state is the page's, per model,
    *  for the session (Dashboard.tierState) - not the browser's storage. */
   buildTiers(sections) {
-    if (!this.well && !this.deep && !this.closeButton) return;
+    if (!this.well && !this.deep) return;
     this.containerFor(2);
     const label = (tier) => this.tierLabel(sections, tier);
     this.disclose2 = this.makeDisclosure(2, label(2), this.well);
@@ -2323,11 +2313,6 @@ class PanelCard {
       this.disclose3 = this.makeDisclosure(3, label(3), this.deep);
       this.well.appendChild(this.disclose3);
       this.well.appendChild(this.deep);
-    }
-    if (this.closeButton) {
-      const foot = make('div', 'well-foot');
-      foot.appendChild(this.closeButton);
-      this.well.appendChild(foot);
     }
     const remembered = (this.dashboard && this.dashboard.tierState)
       ? this.dashboard.tierState(this.name) : {};
@@ -3297,7 +3282,6 @@ class Dashboard {
     //: The event the tray's one line is saying, and when it was put there.
     this.trayEvent = null;
     this.trayAt = 0;
-    this.closedKey = null;
     this.ackQueue = [];
     this.confirmPending = null;
     this.isShutDown = false;
@@ -3325,7 +3309,6 @@ class Dashboard {
       nav: document.getElementById('model-nav'),
       simLine: document.getElementById('sim-line'),
       cards: document.getElementById('cards'),
-      closed: document.getElementById('closed-models'),
       log: document.getElementById('event-log'),
       modal: document.getElementById('ack-modal'),
       modalCount: document.getElementById('ack-count'),
@@ -3479,7 +3462,6 @@ class Dashboard {
     setInert(this.dom.cards, covered || this.isDrawerOpen || gone);
     setInert(this.dom.logPanel, covered || gone);
     setInert(this.dom.drawer, covered || !this.isDrawerOpen || gone);
-    setInert(this.dom.closed, gone);
     for (const layer of overlays) setInert(layer, layer !== top);
     for (const win of this.floating) setInert(win, covered || gone);
   }
@@ -3829,6 +3811,10 @@ class Dashboard {
         + (unsure.length > 1 ? ' did not confirm their stops. Check them by hand.'
                              : ' did not confirm its stop. Check it by hand.'));
     }
+    // The dots: grey (disabled) for what stopped, red for what did not confirm.
+    this.faulted = new Map();
+    this.modelStates = {};
+    this.setDots();
     this.setLogCollapsed(true);
     this.setTray({ severity: 'info', text: 'Quit from the Web console' });
     document.body.classList.add('is-offline', 'is-shut-down');
@@ -3939,7 +3925,6 @@ class Dashboard {
     this.layoutSheet();
     this.renderLostLines(models);
     this.renderEmptyRack();
-    this.renderClosed(state.closed || []);
     // L1 (round 7): what the page says about the stop is the server's
     // `stop_words` (views.base.stop_words), never re-derived here; which
     // models are latched or did not confirm is `stop`.
@@ -3950,6 +3935,8 @@ class Dashboard {
       .map((n) => [n, models[n].mode === 'fault']));
     this.setUnconfirmed(stop.latched || [], stop.unconfirmed || []);
     this.setEnergized(this.energized);
+    this.modelStates = models;
+    this.setDots();
     this.renderEnergizedLine();
     this.renderIdleLines(models);
     this.forgetStopLine(stop, askedAt);
@@ -3972,8 +3959,8 @@ class Dashboard {
     const isEmpty = this.cards.size === 0 && !this.isDrawerOpen;
     if (isEmpty && !this.emptyNote) {
       this.emptyNote = make('p', 'rack-empty',
-        'No models yet. In Setup, tick each device you are using, choose its '
-        + 'port (SIM runs a model without hardware) and launch.');
+        'No models yet. Plug the devices in, press Refresh in Setup and '
+        + 'launch: every connected device launches (SIM runs a model without hardware).');
       this.dom.cards.appendChild(this.emptyNote);
     } else if (!isEmpty && this.emptyNote) {
       if (this.emptyNote.parentNode) {
@@ -4019,7 +4006,7 @@ class Dashboard {
       return;
     }
     if (!schema || !schema.sections) return;
-    const card = new PanelCard(this, name, schema, { closable: true, openable: true });
+    const card = new PanelCard(this, name, schema, { openable: true });
     // The one launch moment: entries arrive one after another, 60 ms apart,
     // once, as the drawer withdraws.
     card.node.classList.add('is-entering');
@@ -4184,6 +4171,12 @@ class Dashboard {
         const ring = make('span', 'nav-energized');
         ring.hidden = true;
         link.appendChild(ring);
+        // Owner 2026-10-07: the device's status dot (setDots). Its words are
+        // its accessible name (role img), never its text, so the link's
+        // text stays the name alone.
+        const dot = make('span', 'nav-dot');
+        dot.setAttribute('role', 'img');
+        link.appendChild(dot);
         link.appendChild(make('span', 'nav-name', sentence(name)));
         link.type = 'button';
         link.dataset.model = name;
@@ -4193,6 +4186,7 @@ class Dashboard {
       }
       if (this.latched) this.setUnconfirmed(Array.from(this.latched), Array.from(this.unconfirmed));
       this.setEnergized(this.energized);
+      this.setDots();
     }
     for (const link of this.dom.nav.querySelectorAll('.model-link')) {
       const current = link.dataset.page === 'overview' ? !this.opened
@@ -4311,6 +4305,42 @@ class Dashboard {
       putText(mark, words);
       putAttr(mark, 'title', title);
       if (mark.hidden !== !words) mark.hidden = !words;
+    }
+  }
+
+  /** Owner 2026-10-07: each rail entry's status dot. Red (the signal) for
+   *  any error state - stopped, did not confirm, faulted, a link lost or
+   *  reconnecting, a device lost, readings stale; the trace colour while it
+   *  is enabled (energized); grey while it is disabled. A host's dot stands
+   *  for its guests too: the worst of them shows. Read from the last
+   *  `/api/state` (this.modelStates) and the stop facts applyState keeps. */
+  setDots() {
+    const states = this.modelStates || {};
+    const energized = new Set(this.energized || []);
+    const linkOf = (n) => (this.linkWords || {})[n] || null;
+    const errorOf = (n) => {
+      const state = states[n] || null;
+      if (this.unconfirmed && this.unconfirmed.has(n)) return 'did not confirm the stop';
+      if (this.faulted && this.faulted.has(n)) return 'faulted';
+      const link = linkOf(n);
+      if (link && link.tier === 'error') return link.line || 'link lost';
+      if (lostDevices(state).length) return 'connection lost';
+      if ((this.latched && this.latched.has(n)) || (state && state.values && state.values.is_estopped)) {
+        return 'stopped';
+      }
+      if (isStale(state)) return 'readings stale';
+      return '';
+    };
+    for (const dot of this.dom.nav.querySelectorAll('.model-link[data-model] .nav-dot')) {
+      const name = dot.parentNode.dataset.model;
+      const group = [name].concat(this.guestsOf(name).map((c) => c.name));
+      const error = group.map(errorOf).find((w) => w) || '';
+      const isOn = !error && !this.isShutDown && group.some((n) => energized.has(n));
+      const words = error ? 'Error: ' + error : (isOn ? 'Enabled' : 'Disabled');
+      dot.classList.toggle('is-error', Boolean(error));
+      dot.classList.toggle('is-on', isOn);
+      putAttr(dot, 'aria-label', words);
+      putAttr(dot, 'title', words);
     }
   }
 
@@ -4454,54 +4484,6 @@ class Dashboard {
       this.setupCard.refresh(setup.state);
       this.setDrawerOpen(true);        // Setup is where a run begins
     } catch (err) { /* setup is optional once models are built */ }
-  }
-
-  /** A model the operator closed is not gone, it is put away. The way back
-   *  is on the rail, beside Setup - the other thing that reopens. */
-  renderClosed(closed) {
-    // Rebuilt only when the list changes: rebuilt every poll, a Reopen
-    // button lost keyboard focus four times a second (WDG-3, F21).
-    const key = closed.join('\n');
-    if (key === this.closedKey) return;
-    this.closedKey = key;
-    clear(this.dom.closed);
-    if (!closed.length) return;
-    this.dom.closed.appendChild(make('span', 'closed-label', 'Reopen'));
-    for (const name of closed) {
-      const button = make('button', 'ghost', sentence(name));
-      button.type = 'button';
-      button.title = 'Reopen ' + name + ': it is built and connected again.';
-      button.addEventListener('click', () => this.openModel(name));
-      this.dom.closed.appendChild(button);
-    }
-  }
-
-  async openModel(name) {
-    let answer;
-    try {
-      answer = await apiPost('/api/open_model', { name });
-    } catch (err) {
-      answer = { status: 'error', reason: 'the station did not answer (' + failureReason(err) + ')' };
-    }
-    // Not a popup: only an error event may open one. The tray says it.
-    if (answer.status !== 'ok') {
-      this.notice(sentence(name) + ' did not reopen: ' + (answer.reason || 'no reason given')
-        + '. Check its port in Setup.');
-    }
-    await this.refreshNow();
-  }
-
-  async closeModel(name) {
-    const isSure = await this.confirm('Close ' + name + '?\n\nIt stops and disconnects. '
-                                      + 'You can reopen it from the rail.', 'Close ' + name);
-    if (!isSure) return;
-    try {
-      await apiPost('/api/close_model', { name });
-    } catch (err) {
-      this.notice(sentence(name) + ' did not close: the station did not answer ('
-        + failureReason(err) + ').');
-    }
-    await this.refreshNow();
   }
 
   /** A line the page itself has to say, on the tray. */

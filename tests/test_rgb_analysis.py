@@ -2012,9 +2012,7 @@ def test_the_registry_builds_rgb_analysis_under_its_new_name_on_the_map(
     try:
         assert not any(row["name"] == "RGB Analysis" for row in setup._rows.values()), \
             "a hosted model has no Setup row"
-        key = next(k for k, row in setup._rows.items()
-                   if row["name"] == "Transfer Map")
-        getattr(setup, f"set_{key}_enabled")(True)
+        # The Transfer Map needs no port: it always launches, with its guest.
         assert "RGB Analysis" in [c["model"] for c in setup.configs]
         setup.launch()
         models = controller.state()["models"]
