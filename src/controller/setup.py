@@ -270,6 +270,7 @@ class PortProbe:
         super().__init__()
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
+        self._busy_ports = set()    # held by another program, this scan
 
     def scan_ports(self):
         """Attached serial ports as the wizard shows them.
@@ -361,7 +362,7 @@ class PortProbe:
         # rotator does not have to burn through both firmware handshake
         # timeouts before reaching the check that identifies it.
         name = self._identify_by_class(port, aborted)
-        if name or aborted():
+        if name or aborted() or port in self._busy_ports:
             self._log_probe(port, name, started)
             return name
 
@@ -370,7 +371,7 @@ class PortProbe:
             if aborted():
                 break
             name = self._identify_firmware(port, baud, aborted)
-            if name:
+            if name or port in self._busy_ports:
                 break
         self._log_probe(port, name, started)
         return name
@@ -394,6 +395,9 @@ class PortProbe:
                 if hook(port, aborted):
                     return name
             except Exception as exc:
+                if serial_port_module.is_busy_error(exc):
+                    self._note_busy(port, exc)
+                    return None
                 self._warn_probe(port, exc)
         return None
 
@@ -404,7 +408,9 @@ class PortProbe:
             device.probe = True   # the scan asks; an unanswered port is information
             device.open()
             identity = self._wait_identity(device, aborted)
-            if self._status_of(device) == LOST:
+            if self._status_of(device) == LOST and getattr(device, "open_busy", False) is True:
+                self._note_busy(port, f"busy at {baud} baud")
+            elif self._status_of(device) == LOST:
                 # `wait_open()` answers False both for "still connecting" and
                 # for "the open failed"; the state is the honest answer, and
                 # a port that could not be opened at all is worth saying out
@@ -486,6 +492,24 @@ class PortProbe:
         events.debug("Probe", f"{port} -> {name or 'nothing'} in "
                      f"{(time.monotonic() - started) * 1000:.0f} ms",
                      source=self.NAME)
+
+    def _note_busy(self, port, exc):
+        """Another program holds `port` (bench 2026-10-07: a second station's
+        scan reset the running station's boards). Nothing was sent to it and
+        no further open is tried this scan; said once, plainly, not as a
+        failure."""
+        events.debug("Port In Use", f"{port}: {exc}", source=self.NAME)
+        if port in self._busy_ports:
+            return
+        self._busy_ports.add(port)
+        events.info("Port In Use", f"{port} is {serial_port_module.BUSY_WORDS} "
+                    f"(another station still running?), so it was not checked. "
+                    f"Quit that program, then press Refresh.", source=self.NAME)
+
+    @property
+    def busy_ports(self):
+        """The ports the last scan found held by another program."""
+        return sorted(self._busy_ports)
 
     def _warn_probe(self, port, exc):
         """One warning per port per scan; the rest go to the log file."""
@@ -594,6 +618,7 @@ class Setup(PortProbe, Panel):
         self._chosen = set()        # rows the operator set by hand
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
+        self._busy_ports = set()    # held by another program, this scan
         self._is_launched = False
         #: Rows whose board answered only after the launch: {key: port}. Not
         #: launched (owner 2026-10-07: a new device needs a restart).
@@ -967,6 +992,7 @@ class Setup(PortProbe, Panel):
                              "the Flashing cell is empty.")
             self._abort.clear()
             self._warned_ports.clear()
+            self._busy_ports.clear()
             # A port a launched model holds is never probed (opening it
             # again would reset its board under the model): what it
             # answered before stands.
@@ -1045,6 +1071,11 @@ class Setup(PortProbe, Panel):
                 detected = sum(1 for name in self._found.values() if name)
             self.scan_status = ("ready" if not detected else
                                 f"ready - {detected} device(s) detected")
+            busy = self.busy_ports
+            if busy:
+                self.scan_status += (f"; {', '.join(busy)} "
+                                     f"{'is' if len(busy) == 1 else 'are'} "
+                                     f"{serial_port_module.BUSY_WORDS}")
         events.debug("Scan", f"{self.scan_status}; {len(targets)} port(s) in "
                      f"{time.monotonic() - started:.1f} s", source=self.NAME)
         self._scan_settled = True

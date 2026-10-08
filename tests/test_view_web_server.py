@@ -824,6 +824,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const page = await browser.newPage();
     await page.setViewport({ width: 1400, height: 900 });
     page.on('pageerror', (e) => errors.push(e.message));
+    // The close guard asks on every reload after a click (owner
+    // 2026-10-07); a scenario that reloads means it. One that tests the
+    // prompt itself sets page.ownDialogs and answers it.
+    page.on('dialog', (d) => { if (!page.ownDialogs && d.type() === 'beforeunload') d.accept(); });
     const until = async (fn, ms) => {
       const end = Date.now() + (ms || 5000);
       for (;;) {
@@ -855,6 +859,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 %(body)s
     })();
   } finally {
+    // Close the pages as a closed tab does (their pagehide tells the
+    // station), so the next scenario's page is the live one at once (one
+    // live page, owner 2026-10-07); a killed browser says nothing.
+    for (const open of await browser.pages()) {
+      try { await open.close(); } catch (e) { /* already gone */ }
+    }
+    await new Promise((r) => setTimeout(r, 200));
     await browser.close();
   }
   console.log('RESULT ' + JSON.stringify({ result, errors }));
@@ -3496,12 +3507,17 @@ _ENERGIZED = r"""
 @needs_browser
 def test_n3_the_close_tab_guard_is_armed_exactly_while_something_is_energized(
         mode_station, tmp_path, monkeypatch):
-    """N3: `beforeunload` is armed on `state.energized`, not `is_active`: a
-    probe merely in a mode arms it, an active-but-not-energized station does
-    not. While armed the rail says so in ink under the chord's hint, with the
-    watchdog's seconds as served (here 12, to prove they are not the page's
-    own 15). O6: an energized model carries a ring before its name in the
-    rail, after the stop marks, not red, titled and read "energized"."""
+    """N3: the rail's energized line keys on `state.energized`, not
+    `is_active`: a probe merely in a mode shows it, an active-but-not-
+    energized station does not. It says so in ink under the chord's hint,
+    with the watchdog's seconds as served (here 12, to prove they are not
+    the page's own 15). O6: an energized model carries a ring before its
+    name in the rail, after the stop marks, not red, titled and read
+    "energized".
+
+    Updated (owner 2026-10-07, closing the last tab quits the station): the
+    `beforeunload` guard itself is no longer keyed on energized - it asks on
+    every close while the station runs, idle included."""
     monkeypatch.setattr(WebView, "STOP_SECONDS", 12.0)
     view, controller, first, second = mode_station
     first.is_active = True                  # active, but nothing energized
@@ -3511,17 +3527,17 @@ def test_n3_the_close_tab_guard_is_armed_exactly_while_something_is_energized(
       await page.click('#model-nav [data-model="Stepper Probe"]');
       await sleep(300);
       await page.click('.card.is-opened .toggle');
-      await when(async () => (await guard()).prevented);
+      await when(async () => (await guard()).line !== '');
       await sleep(300);
       r.energized = await guard();
       r.hintAbove = await page.evaluate(() => document.querySelector('.stop-hint').getBoundingClientRect().bottom
         <= document.getElementById('energized-line').getBoundingClientRect().top + 0.5);
       await page.click('.card.is-opened .toggle');
-      await when(async () => !(await guard()).prevented);
+      await when(async () => (await guard()).line === '');
       r.off = await guard();
       return r;
     """, tmp_path)
-    assert out["idle"]["prevented"] is False and out["idle"]["line"] == "", out["idle"]
+    assert out["idle"]["prevented"] is True and out["idle"]["line"] == "", out["idle"]
     on = out["energized"]
     assert on["prevented"] is True, on
     assert on["line"] == ("Devices are energized. Disable them before closing this tab; "
@@ -3532,7 +3548,7 @@ def test_n3_the_close_tab_guard_is_armed_exactly_while_something_is_energized(
     assert mark["afterStopMark"] and mark["background"] != on["signal"], mark
     assert mark["border"] not in ("0px", ""), "the energized mark is a ring"
     assert on["marks"]["DC Probe"] is None, on
-    assert out["off"]["prevented"] is False and out["off"]["line"] == "", out["off"]
+    assert out["off"]["prevented"] is True and out["off"]["line"] == "", out["off"]
 
 
 #: Each rail entry's status dot: its words, and which theme colour it is.
@@ -4567,3 +4583,177 @@ def test_r4_the_page_waits_for_the_restarted_station_and_reloads(tmp_path):
     assert out["reloaded"] is True, "the page did not reload for the new station"
     assert out["after"]["link"] == "" and out["after"]["cards"] >= 1, out
     assert out["quietBeats"] == 0, "the page kept beating while it waited"
+
+
+# --------------------------------------------------------------------------
+# Closing the last tab quits the station (owner 2026-10-07), in a real
+# browser: the browser asks first on every close (not only while energized),
+# the closed tab's pagehide reaches /api/leave, a reload and a second tab
+# keep the station up, and the last tab closing releases wait() - the Quit
+# control's own path - within the grace.
+# --------------------------------------------------------------------------
+@pytest.fixture
+def leaving_station(tmp_path, monkeypatch):
+    monkeypatch.setenv("STATION_LEAVE_GRACE_SECONDS", "1.5")
+    controller = Controller()
+    probe = FakeProbe(root=str(tmp_path))
+    controller.add("Fake Probe", probe, {"root": str(tmp_path)})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open()
+    leaves = []
+    real_leave = view.leave
+    view.leave = lambda page=None, tab=None: (leaves.append((time.monotonic(), page)),
+                                              real_leave(page=page, tab=tab))[1]
+    waiter = threading.Thread(target=view.wait, name="launcher", daemon=True)
+    waiter.start()
+    try:
+        yield view, waiter, leaves
+    finally:
+        view.close()
+        waiter.join(timeout=5)
+
+
+#: Node-side: is the station still answering? A new connection each time: a
+#: kept-alive one is served by its handler thread after the listener closes
+#: (in this test process; a real station's process is gone by then).
+_ALIVE = r"""
+  const alive = () => new Promise((done) => {
+    const req = require('http').get(BASE + '/api/state', { agent: false }, (res) => {
+      res.resume(); done(res.statusCode === 200);
+    });
+    req.on('error', () => done(false));
+    req.setTimeout(2000, () => { req.destroy(); done(false); });
+  });
+"""
+
+
+@needs_browser
+def test_closing_asks_first_even_with_nothing_energized(leaving_station, tmp_path):
+    """The browser's own "Leave site?" (its words, not the page's): asked on
+    a close while idle; dismissed, the tab and the station stay."""
+    view, waiter, leaves = leaving_station
+    out = _browse(view, _ALIVE + r"""
+      await page.click('.rail');               // the gesture a prompt needs
+      const dialogs = [];
+      page.ownDialogs = true;
+      page.on('dialog', async (d) => { dialogs.push(d.type()); await d.dismiss(); });
+      await page.close({ runBeforeUnload: true });
+      await sleep(3500);                       // past the 1.5 s grace
+      return { dialogs, closed: page.isClosed(), alive: await alive() };
+    """, tmp_path)
+    assert out["dialogs"] == ["beforeunload"], out
+    assert out["closed"] is False and out["alive"] is True, out
+    # (the scenario's own end closes the page, which then leaves)
+    assert len(leaves) <= 1
+
+
+@needs_browser
+def test_closing_the_last_tab_quits_the_station(leaving_station, tmp_path):
+    view, waiter, leaves = leaving_station
+    out = _browse(view, _ALIVE + r"""
+      await page.click('.rail');
+      await page.close({ runBeforeUnload: true });
+      const closedAt = Date.now();
+      const gone = await when(async () => !(await alive()), 8000);
+      return { gone, after: Date.now() - closedAt };
+    """, tmp_path)
+    assert len(leaves) == 1 and leaves[0][1], "the closed tab's leave never arrived"
+    waiter.join(timeout=5)
+    assert not waiter.is_alive(), "the last tab closed and the station kept running"
+    assert out["gone"] is True and out["after"] >= 1000, out
+    assert view.controller.is_estopped or not view.controller.model_names, (
+        "the station quit without the Quit control's stop")
+
+
+#: The "open in another window" notice, as a page shows it.
+_ELSEWHERE = r"""
+  const elsewhere = (p) => p.evaluate(() => {
+    const gate = document.getElementById('elsewhere-gate');
+    return Boolean(gate && !gate.hidden && gate.getClientRects().length);
+  });
+"""
+
+
+@needs_browser
+def test_a_reload_keeps_the_station_and_a_second_tab_only_stops(leaving_station, tmp_path):
+    """Owner 2026-10-07: one live page. The reload stays live; a second tab
+    shows the notice, its commands are refused, its Stop lands; closing it
+    changes nothing; closing the live page quits."""
+    view, waiter, leaves = leaving_station
+    out = _browse(view, _ALIVE + _ELSEWHERE + r"""
+      await page.click('.rail');
+      await page.reload({ waitUntil: 'load' });
+      await sleep(3500);                       // two graces and more
+      const r = { afterReload: await alive(), firstElsewhere: await elsewhere(page) };
+      const second = await browser.newPage();
+      await second.goto(BASE + '/', { waitUntil: 'load' });
+      r.secondElsewhere = await when(() => elsewhere(second), 6000);
+      r.secondRun = await second.evaluate(async () => {
+        const res = await fetch('/api/clear_estop_all', { method: 'POST',
+          headers: { 'Content-Type': 'application/json',
+                     'X-Station-Tab': sessionStorage.getItem('station-tab') },
+          body: '{}' });
+        return res.status;
+      });
+      await second.click('#full-stop');        // the stop always wins
+      r.latched = await when(async () => (await page.evaluate(async () =>
+        (await (await fetch('/api/state')).json()).is_estopped)), 4000);
+      await second.close();                    // not the live page
+      await sleep(3500);
+      r.afterSecondClosed = await alive();
+      await page.close();                      // the live one
+      r.afterLast = !(await when(async () => !(await alive()), 8000));
+      return r;
+    """, tmp_path)
+    assert out == {"afterReload": True, "firstElsewhere": False, "secondElsewhere": True,
+                   "secondRun": 409, "latched": True, "afterSecondClosed": True,
+                   "afterLast": False}, out
+    waiter.join(timeout=5)
+    assert not waiter.is_alive()
+
+
+@needs_browser
+def test_take_over_moves_the_live_page_between_windows(leaving_station, tmp_path):
+    view, waiter, leaves = leaving_station
+    out = _browse(view, _ELSEWHERE + r"""
+      await sleep(2500);
+      const second = await browser.newPage();
+      await second.goto(BASE + '/', { waitUntil: 'load' });
+      const r = { secondFirst: await when(() => elsewhere(second), 6000) };
+      r.focus = await second.evaluate(() => document.activeElement && document.activeElement.id);
+      await second.click('#take-over');
+      r.secondAfter = await when(async () => !(await elsewhere(second)), 4000);
+      r.firstAfter = await when(() => elsewhere(page), 6000);
+      r.firstQuitDisabled = await page.evaluate(() => document.getElementById('quit-link').disabled);
+      r.stopReachable = await page.evaluate(() => {
+        const b = document.getElementById('full-stop').getBoundingClientRect();
+        const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+        return Boolean(hit && hit.closest('#full-stop'));
+      });
+      return r;
+    """, tmp_path)
+    assert out == {"secondFirst": True, "focus": "take-over", "secondAfter": True,
+                   "firstAfter": True, "firstQuitDisabled": True,
+                   "stopReachable": True}, out
+
+
+@needs_browser
+def test_the_pages_own_reload_does_not_ask(leaving_station, tmp_path):
+    """Restart and a new station run reload the page by itself: no prompt."""
+    view, waiter, leaves = leaving_station
+    out = _browse(view, r"""
+      await page.click('.rail');
+      const dialogs = [];
+      page.ownDialogs = true;
+      page.on('dialog', async (d) => { dialogs.push(d.type()); await d.accept(); });
+      await page.evaluate(() => { window.beforeReload = true; });
+      await page.evaluate(() => window.station.reloadPage());
+      const reloaded = await when(async () => {
+        try { return await page.evaluate(() => window.beforeReload === undefined); }
+        catch (e) { return false; }
+      }, 5000);
+      await sleep(3000);
+      return { dialogs, reloaded };
+    """, tmp_path)
+    assert out == {"dialogs": [], "reloaded": True}, out
+    assert len(leaves) >= 1, "the reload sent no leave"

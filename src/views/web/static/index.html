@@ -74,8 +74,8 @@
               title="Step-by-step tutorials that point at the controls">Tutorials</button>
       <button id="setup-link" type="button" class="ghost rail-control"
               title="Open Setup: ports, devices and launch">Setup</button>
-      <!-- Closing the tab never quits: the station keeps running for the
-           next tab, and the watchdog guards it. This is the only exit. -->
+      <!-- Quit now; closing the live tab quits the same way a few seconds
+           later (owner 2026-10-07), after the browser's "Leave site?". -->
       <button id="quit-link" type="button" class="ghost rail-control text-key"
               aria-label="Quit the station program"
               title="Quit the station program: stops every model, closes every port and exits (asks first)">Quit</button>
