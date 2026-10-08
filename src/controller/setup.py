@@ -49,6 +49,7 @@ from devices import serial_port as serial_port_module
 from devices.serial_port import ConnectionState, SerialPort
 from events import events
 from model import profile as profiles_module
+from model import user_store as user_store_module
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
@@ -56,6 +57,8 @@ from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
+from model.user import User, secret
+from model.user_store import AccountError, UserStore
 from panel import Panel
 from param import Param
 from result import NeedsConfirm, Refused
@@ -555,12 +558,9 @@ class Setup(PortProbe, Panel):
             self.map_store_path = str(legacy)   # offered, never opened for them
         self.controller = controller
         self._restart = restart
-        # User-system Phase 1: local profiles. Setup is the composition root,
-        # the one place the service is built (section 5.4).
-        self.profiles = profiles_module.ProfileService(
-            profiles_module.LocalFilesSource(profiles_module.profiles_root()),
-            lambda name: getattr(MODEL_TYPES.get(name), "PARAMS", {}))
-        self._profile_pick = profiles_module.STATION_DISPLAY
+        # The accounts (2026-10-07; were the Phase 1 profiles): the station
+        # scope, users.sqlite and the session, a Guest until someone signs in.
+        self._init_accounts()
         self._rows = self._build_rows()
         self._schema = self._build_schema()
         self._lock = threading.RLock()
@@ -1239,120 +1239,239 @@ class Setup(PortProbe, Panel):
                          f"in {(time.monotonic() - started) * 1000:.0f} ms",
                          source=self.NAME)
         self._is_launched = True
+        self._keep_account_page()       # the reset above closed the User sheet
         self._refresh_rows()
         events.info("Launched", ", ".join(built), source=self.NAME)
         return built
 
-    # -- profiles (user-system Phase 1) -------------------------------------------
+    # -- the account (owner request 2026-10-07; was the Phase 1 profiles) ---------
+    #: The section's title. "Account" in the 2026-10-07 brief; still "Profile"
+    #: while `tests/test_launchers.py` and `tests/test_setup_registry.py` pin
+    #: it (outside the accounts write set; see handoff/fix-accounts.md).
+    ACCOUNT_SECTION = "Profile"
     #: Merged with the Trial store row's fields above (A3): a second plain
     #: `PARAMS =` here would replace them.
-    PARAMS = {**PARAMS, "profile_new_name": Param(
-        "profile_new_name", "text", default="", label="New profile")}
+    PARAMS = {**PARAMS,
+              "account_email": Param("account_email", "text", default="",
+                                     label="Email"),
+              "account_password": Param("account_password", "text", default="",
+                                        label="Password")}
+    #: The typed password never reaches the log: `Panel.run` writes
+    #: `<redacted>` for it (user-system section 6.1).
+    SECRET_INPUTS = frozenset({"account_password"})
+
+    def _init_accounts(self):
+        """The station scope, the accounts file with the Phase 1 profiles
+        migrated into it, and the session: a Guest until someone signs in.
+        Setup is the composition root, the one place these are built
+        (section 5.4)."""
+        root = profiles_module.profiles_root()
+        self.profiles = profiles_module.ProfileService(
+            profiles_module.LocalFilesSource(root), self._params_of)
+        self.users = UserStore(user_store_module.default_path())
+        self.user = User.guest()
+        self._account_lock = threading.RLock()
+        try:
+            migrated = self.users.migrate_profiles(self.profiles.source)
+        except Exception as exc:
+            migrated = []
+            events.warn("Profiles Not Migrated", f"The profiles in {root} could not "
+                        "be made accounts; they are left as they are, and nobody "
+                        "can sign in with them until this is fixed.",
+                        source=self.NAME, exception=exc)
+        if migrated:
+            events.info("Profiles Migrated", f"{_and(migrated)}: now accounts with no "
+                        "password yet; each sets one at the first sign-in.",
+                        source=self.NAME)
+
+    @staticmethod
+    def _params_of(name):
+        return getattr(MODEL_TYPES.get(name), "PARAMS", {})
 
     @property
-    def profile_user(self):
-        return self._profile_pick
+    def account_password(self):
+        """Always "": a typed password is never read back, so it is never in
+        `state`. The setter keeps it for the one command it travels with."""
+        return ""
 
-    def profile_options(self):
-        """Station first, then the local profiles (an options source is a
-        method on Setup, as `port_options` is)."""
-        return [u["display_name"] if u["username"] == profiles_module.STATION
-                else u["username"] for u in self.profiles.users]
+    @account_password.setter
+    def account_password(self, value):
+        self._pending_password = "" if value is None else str(value)
 
-    def set_profile_user(self, name):
-        if name not in self.profile_options():
-            raise Refused(f"No profile named {name} on this station.")
-        self._profile_pick = name
-        return name
+    def _take_password(self):
+        """The typed password, forgotten as it is handed over."""
+        password, self._pending_password = self._pending_password, ""
+        return password
 
     @property
-    def profile_status(self):
-        return self.profiles.status
+    def account_status(self):
+        if self.user.is_guest:
+            return "Guest (station defaults)"
+        return f"Signed in as {self.user.user_name} ({self.user.auth})"
 
-    def add_profile(self):
-        """A local profile: a name only. No PIN is kept on a station (Q1)."""
-        name = str(self.profile_new_name or "").strip()
-        try:
-            self.profiles.add_profile(name)
-        except profiles_module.ProfileError as refusal:
-            raise Refused(str(refusal))
-        self.profile_new_name = ""
-        self._profile_pick = name
-        return name
+    def sign_in(self, confirmed=False):
+        """The typed email and password -> that account's User, whose config
+        reaches every open model. A Phase 1 profile has no password yet: the
+        one typed now becomes its password, after a confirmation (the typed
+        text waits here for the re-run, never in the confirmation)."""
+        email = user_store_module.normalize_email(self.account_email)
+        if not email:
+            self._take_password()
+            self._refuse("Type your email and password, or press Open as guest.")
+        record = self.users.user(email)
+        if record is None:
+            self._take_password()
+            self._refuse(f"No account for {email} on this station. Press Create "
+                         "account… to make one, or Open as guest.")
+        if record["must_set_password"]:
+            if len(self._pending_password) < user_store_module.MIN_PASSWORD:
+                self._take_password()
+                self._refuse(f"{record['name']} has no password yet (a profile from "
+                             "before accounts). Type the password to keep, at least "
+                             f"{user_store_module.MIN_PASSWORD} characters, then "
+                             "Sign in.")
+            if not confirmed:
+                raise NeedsConfirm(
+                    f"{record['name']} ({email}) has no password yet: it was a "
+                    "profile before accounts. Keep the password you typed as its "
+                    "password and sign in?", "sign_in")
+            try:
+                self.users.set_password(email, self._take_password())
+            except AccountError as refusal:
+                self._refuse(str(refusal))
+        elif not self.users.verify(email, self._take_password()):
+            self._refuse("That email and password do not match an account on this "
+                         "station.")
+        self._become(self._user_for(email))
+        return self.account_status
 
-    def sign_in(self):
-        """Sign in as the picked profile (offline-unverified: no lab server
-        yet) and apply its effective preferences to every open model."""
-        pick = self._profile_pick
+    def create_account(self, confirmed=False):
+        """A new account from the typed email and password, then signed in.
+        Setup has no phases, so the second step is a confirmation; the
+        password waits here for it, never in the confirmation."""
         try:
-            if pick == profiles_module.STATION_DISPLAY:
-                self.profiles.sign_out()
-            else:
-                self.profiles.sign_in(pick)
-        except profiles_module.ProfileError as refusal:
-            raise Refused(str(refusal))
-        self._apply_profile_everywhere()
-        return self.profiles.status
+            email = user_store_module.check_email(self.account_email)
+            user_store_module.check_password(self._pending_password)
+        except AccountError as refusal:
+            self._take_password()
+            self._refuse(str(refusal))
+        if self.users.user(email) is not None:
+            self._take_password()
+            self._refuse(f"An account for {email} already exists. Press Sign in "
+                         "instead.")
+        if not confirmed:
+            raise NeedsConfirm(
+                f"Create an account for {email} on this station? The password is "
+                "kept here as a salted hash: nobody can read it back, and nothing "
+                "is sent anywhere.", "create_account")
+        try:
+            self.users.create(email, self._take_password())
+        except AccountError as refusal:
+            self._refuse(str(refusal))
+        events.info("Account Created", f"{email}.", source=self.NAME)
+        self._become(self._user_for(email))
+        return self.account_status
+
+    def open_as_guest(self):
+        """The station's defaults and nothing else. Signs out whoever is in."""
+        self._take_password()
+        if not self.user.is_guest:
+            self._become(User.guest())
+        return self.account_status
 
     def sign_out(self):
-        self.profiles.sign_out()
-        self._profile_pick = profiles_module.STATION_DISPLAY
-        self._apply_profile_everywhere()
-        return self.profiles.status
+        """Back to Guest: every model's user parameters rebuilt from its
+        Params with the station's defaults over them; nothing restarts."""
+        self._take_password()
+        if self.user.is_guest:
+            self._refuse("Nobody is signed in: the station is on its defaults.")
+        self._become(User.guest())
+        return self.account_status
 
-    def _apply_profile_everywhere(self):
-        for model in self.controller.models.values():
-            self._apply_profile(model)
+    def _user_for(self, email):
+        return User(store=self.users, email=email, params_of=self._params_of,
+                    on_sign_out=self.sign_out)
 
-    def _apply_profile(self, model):
-        """The effective model parameters (Q4 split) and who is working."""
-        apply = getattr(model, "apply_defaults", None)
-        name = getattr(model, "NAME", None)
-        if callable(apply) and name:
-            effective, _ = self.profiles.effective_model_params()
-            for param, reason in apply(effective.get(name, {})).items():
+    def _become(self, user):
+        """Switch the session: undo the previous user's config on every open
+        model (`User.revert`), load the new one's (`User.load_into`, which
+        stamps the operator), and keep the new user's sheet in the
+        Controller (a Guest has none)."""
+        with self._account_lock:
+            previous, self.user = self.user, user
+            models = self.controller.models if self.controller is not None else {}
+            if not previous.is_guest:
+                self._warn_not_applied(previous.revert(models, self.profiles))
+                events.info("Signed Out", f"{previous.user_name} ({previous.email}); "
+                            "the station's defaults are back.", source=self.NAME)
+            if not user.is_guest:
+                self.users.touch_sign_in(user.email)
+                events.info("Signed In", f"{user.user_name} ({user.email}).",
+                            source=self.NAME)
+            self._warn_not_applied(user.load_into(models, self.profiles))
+            self._show_account_page()
+
+    def _show_account_page(self):
+        """One `User` page while someone is signed in, none for a Guest. A
+        fresh model each time: one the Controller closed is latched and done."""
+        if self.controller is None:
+            return
+        with self._account_lock:
+            if User.NAME in self.controller.model_names:
+                self.controller.remove(User.NAME)
+            if self.user.is_guest:
+                return
+            self.user = self._user_for(self.user.email)
+            self.controller.add(User.NAME, self.user,
+                                {"model": User.NAME, "sim": False})
+
+    def _keep_account_page(self):
+        """After a build: the Controller's reset closed the signed-in user's
+        sheet with everything else; it comes back with the station."""
+        try:
+            self._show_account_page()
+        except Exception as exc:
+            events.warn("User Sheet Not Reopened", f"{self.user.user_name}'s sheet "
+                        "could not be reopened after the launch; sign in again to "
+                        "get it back.", source=self.NAME, exception=exc)
+
+    def _reopen_account_page(self):
+        """`Controller.reopen("User")`: the signed-in user's sheet again."""
+        if self.user.is_guest:
+            self._refuse("Nobody is signed in, so there is no User sheet to open. "
+                         "Sign in on the Setup page.")
+        self.user = self._user_for(self.user.email)
+        return self.user
+
+    def _apply_account(self, model):
+        """At build and reopen: the station's defaults, the signed-in user's
+        config and who is working, for one model."""
+        self._warn_not_applied(self.user.load_into(
+            {getattr(model, "NAME", None) or "": model}, self.profiles))
+
+    def _warn_not_applied(self, refused):
+        for name, problems in (refused or {}).items():
+            for param, reason in problems.items():
                 events.warn("Profile Value Not Applied", f"{name}.{param}: {reason}",
                             source=self.NAME)
-        user, auth = self.profiles.current_user, self.profiles.auth
-        if hasattr(model, "operator_id"):
-            model.operator_id, model.operator_auth = user, auth
-        if hasattr(model, "owner"):
-            model.owner, model.owner_auth = user, auth
 
     def _open_values(self, names):
+        """Every open model's stored Params named in `names`, as they are now
+        (`profile.current_params`, the inverse of `apply_defaults`)."""
         out = {}
         for model in self.controller.models.values():
-            params = getattr(model, "PARAMS", None) or {}
-            if not getattr(model, "NAME", None):
+            name = getattr(model, "NAME", None)
+            if not name or isinstance(model, User):
                 continue
-            values = {}
-            for name in sorted(names & set(params)):
-                found = getattr(type(model), name, None)
-                if isinstance(found, property) and found.fset is None:
-                    continue
-                value = getattr(model, name, None)
-                if value is None or (isinstance(value, str) and not value.strip()):
-                    continue
-                values[name] = value
+            values = profiles_module.current_params(model, names)
             if values:
-                out[model.NAME] = values
+                out[name] = values
         return out
-
-    def remember_settings(self):
-        """"Remember for me": the open models' user parameters (Q4) into the
-        signed-in profile. Station-only and brake fields are never taken."""
-        values = self._open_values(profiles_module.USER_PARAMS)
-        try:
-            self.profiles.remember(values)
-        except profiles_module.ProfileError as refusal:
-            raise Refused(str(refusal))
-        events.info("Settings Remembered", f"{self.profiles.current_user}: "
-                    f"{', '.join(values) or 'nothing open'}.", source=self.NAME)
-        return sorted(values)
 
     def save_station_settings(self, confirmed=False):
         """The station's defaults: user and station-only parameters of the
-        open models (never the brakes). Everyone at this station gets them."""
+        open models (never the brakes). Everyone at this station gets them;
+        a Guest gets nothing else."""
         if not confirmed:
             raise NeedsConfirm("Save the open models' settings as this station's "
                                "defaults? Everyone who signs in here starts from "
@@ -1366,23 +1485,25 @@ class Setup(PortProbe, Panel):
             raise Refused(str(refusal))
         return sorted(values)
 
-    def _profile_section(self):
-        """User-system section 2.4, first on the page. No PIN box in Phase 1:
-        nothing could check a PIN without the lab server, and none is ever
-        cached on a station (Q1); it arrives with the server."""
+    def _account_section(self):
+        """First on the page (user-system section 2.4). The Password entry is
+        a secret: `<redacted>` in the log, "" in `state`, masked by a renderer
+        that honours `secret`. "Remember current values as my defaults" is on
+        the signed-in user's own sheet (`model.user`)."""
         P = self.PARAMS
         return sch.section(
-            "Profile",
-            sch.dropdown("Profile", "profile_user", "set_profile_user",
-                         "profile_options"),
-            sch.button("Sign in", "sign_in", role="go"),
+            self.ACCOUNT_SECTION,
+            sch.entry("Email", "account_email", P["account_email"]),
+            secret(sch.entry("Password", "account_password", P["account_password"])),
+            sch.button("Sign in", "sign_in", role="go",
+                       inputs=("account_email", "account_password")),
+            sch.button("Open as guest", "open_as_guest", role="neutral"),
+            sch.button("Create account…", "create_account", role="neutral",
+                       inputs=("account_email", "account_password")),
             sch.button("Sign out", "sign_out", role="neutral"),
-            sch.readonly("Signed in", "profile_status", role="info"),
-            sch.button("Remember my settings", "remember_settings", role="neutral"),
+            sch.readonly("Signed in", "account_status", role="info"),
             sch.button("Save station settings", "save_station_settings",
                        role="neutral"),
-            sch.entry("New profile", "profile_new_name", P["profile_new_name"]),
-            sch.button("Add profile", "add_profile", inputs=("profile_new_name",)),
             layout="row",
         )
 
@@ -1390,6 +1511,8 @@ class Setup(PortProbe, Panel):
         """One config -> one Model. `Controller.factory`, so `reopen(name)`
         reconstructs a closed tab's model from the remembered config."""
         model_class = MODEL_TYPES.get(config.get("model"))
+        if model_class is None and config.get("model") == User.NAME:
+            return self._reopen_account_page()      # not registered: no Setup row
         if model_class is None:
             raise Refused(f"{config.get('model')!r} is not a known model")
         is_sim = bool(config.get("sim"))
@@ -1402,7 +1525,7 @@ class Setup(PortProbe, Panel):
                 value = SIM
             resources[resource] = value
         model = model_class(sim=is_sim, **resources)
-        self._apply_profile(model)
+        self._apply_account(model)
         return model
 
     def _check_identities(self, configs):
@@ -2206,7 +2329,7 @@ class Setup(PortProbe, Panel):
         runs, whether GitHub has something newer, and the one press that
         takes it. `sch.button` has no `enabled_by`, so Update now is gated by
         refusal (nothing to apply, a model running, a check under way)."""
-        sections = [self._profile_section(), sch.section(
+        sections = [self._account_section(), sch.section(
             "Update",
             sch.readonly("Station", "station_version"),
             sch.readonly("Updates", "update_status", role="info"),

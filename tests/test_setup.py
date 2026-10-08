@@ -162,7 +162,8 @@ def test_model_types_is_the_only_list_of_models(panel, fake_types):
     builds. Four copies of this list disagreed before RC-7."""
     assert panel.model_types == list(fake_types)
     titles = [section["title"] for section in panel.schema["sections"]]
-    assert titles == ["Profile", "Update", "Firmware", "Devices", *fake_types, "Launch"]
+    assert titles == [Setup.ACCOUNT_SECTION, "Update", "Firmware", "Devices", *fake_types,
+                      "Launch"]
 
 
 # -- the table (Addendum 2) ------------------------------------------------
@@ -546,8 +547,9 @@ def test_the_row_commands_are_named_after_the_model(panel, fake_types):
     contract: `set_<row>_port` / `set_<row>_gamepad`, one per row."""
     assert {e.get("command") for e in _elements(panel) if e["type"] == "dropdown"} == {
         "set_alpha_port", "set_alpha_gamepad",
-        "set_beta_port", "set_beta_gamepad", "set_screen_port",
-        "set_profile_user"}        # the Profile row (user-system Phase 1)
+        "set_beta_port", "set_beta_gamepad", "set_screen_port"}
+    # The account section (2026-10-07) has no dropdown: the Phase 1 profile
+    # picker became an Email and a Password entry.
 
 
 def test_auto_assign_points_each_row_at_the_port_that_answered(panel):
@@ -1051,8 +1053,9 @@ def checking(monkeypatch):
 
 
 def test_the_update_section_follows_the_profile_row_and_is_a_tier_one_row(panel):
-    """The Profile row is first (user-system section 2.4); Update next."""
-    assert panel.schema["sections"][0]["title"] == "Profile"
+    """The account section is first (user-system section 2.4; the Phase 1
+    Profile row became the accounts on 2026-10-07); Update next."""
+    assert panel.schema["sections"][0]["title"] == Setup.ACCOUNT_SECTION
     section = panel.schema["sections"][1]
     assert section["title"] == "Update"
     assert section["layout"] == "row" and section["tier"] == 1
@@ -1428,7 +1431,8 @@ def test_the_firmware_row_block_builds_the_brief_shape(panel):
 
 def test_the_firmware_row_is_second_right_after_update(panel):
     sections = panel.schema["sections"]
-    assert [s["title"] for s in sections[:4]] == ["Profile", "Update", "Firmware", "Devices"]
+    assert [s["title"] for s in sections[:4]] == [Setup.ACCOUNT_SECTION, "Update",
+                                                  "Firmware", "Devices"]
     assert sections[2] == panel._firmware_section()
 
 
@@ -2211,8 +2215,8 @@ def test_a_checkout_has_no_switch_to_stable(panel):
 def test_a_bundle_with_stable_beside_it_offers_the_switch(fake_types, stable):
     panel = switching(stable, StableFirmware(), [])
     titles = [s["title"] for s in panel.schema["sections"]]
-    # The Profile section leads the schema (user-system Phase 1).
-    assert titles[:5] == ["Profile", "Update", "Firmware", "Stable", "Devices"]
+    # The account section leads the schema (user-system section 2.4).
+    assert titles[:5] == [Setup.ACCOUNT_SECTION, "Update", "Firmware", "Stable", "Devices"]
     [button] = [e for e in panel.schema["sections"][3]["elements"]
                 if e["type"] == "button"]
     assert button["command"] == "switch_to_stable"
