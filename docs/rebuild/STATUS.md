@@ -32,7 +32,7 @@ the only frontend since 2026-10-07).
 | Screenshots | `handoff/shots/` (ignored, never tracked): `tk_*`, `qt_*` (polish pass), `web4_*` (console: drawer, launched, stopped), `web3_*` (agent's own rounds). The capture scripts were temporary and are gone; recreate from the procedure below. |
 | Tests | `tests/` (was `tests/station/`, flattened); wire captures in `tests/golden/`. |
 | Design data | `design.json`, `design.rules`, `carry.json`, `narrative.json` (and the ledger `progress.md`) were removed (history: tag pre-root-cleanup-2026-10-07). |
-| Logs at runtime | `~/transfer-stage-runs/logs/station-<timestamp>.log`, one per launch; every event with thread and traceback; `events.debug` is file-only. |
+| Logs at runtime | `~/transfer-stage-runs/logs/station-<timestamp>.log`, one per launch; every event with thread and traceback; `events.debug` is file-only. Beside it, `device_log.sqlite` (2026-10-08): every published event plus a once-a-second snapshot of every open model, local only, kept 14 days / 200 MB; see `docs/rebuild/DEVICE_LOG.md`. |
 | Run output | `~/transfer-stage-runs/<run_id>/` (CSV + `<run_id>_station_meta.json`). |
 
 ## How to run and verify
@@ -845,10 +845,12 @@ skill's counts (2290 / 212) are stale: today's base is 3269 / 255.
   worktree `../transfer-stage-unified-main`, never modified. Flash state per
   board in `~/transfer-stage-runs/flashed.json` (only a swap reflashes the
   stepper and chuck; the Teensy keeps this tree's sketch). Speed ceiling 3200;
-  Manual Speed live in manual. **Tier P (heater PID)**: P1 (live CSV + 
-  `tools/heater_plot.py`) is committed but NOT merged, on branch
-  `worktree-agent-a620f8f275b8607b4` (`b602f68`, worktree under
-  `.claude/worktrees/`); verify and merge. P2 stopped by the owner after
+  Manual Speed live in manual. **Tier P (heater PID)**: P1 (live CSV +
+  `tools/heater_plot.py`, branch `worktree-agent-a620f8f275b8607b4`,
+  `b602f68`) was merged on 2026-10-08 and reshaped by the owner's ruling of
+  that day: the CSV is gone; a trial's heater readings are in its store
+  (`trial_heater`, `RECORDING_A_TRIAL.md`) and everything else is in the
+  device log (`DEVICE_LOG.md`); `heater_plot.py` reads both. P2 stopped by the owner after
   trial 0 (no overnight heating): defaults overshoot 30 C to 34.75 C, rise
   ~40 s, heat keeps climbing ~40 s after the controller cuts; data and
   scripts in `~/transfer-stage-runs/heater/`. Resume in daytime only.

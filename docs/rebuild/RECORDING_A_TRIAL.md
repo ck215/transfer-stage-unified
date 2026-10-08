@@ -133,7 +133,9 @@ video, H.264 in a fragmented MP4 with a keyframe every second, so it plays
 after a kill), `frames.csv` (one row per written frame: `frame, t_monotonic,
 t_wall, marked`; row N is video frame N), `telemetry.csv` (`t, stream, value`:
 every model's public state, the RGB Analysis rows and the EventLog lines, on the
-recorder's monotonic clock) and `mark_full.png` (the display at the Mark). The
+recorder's monotonic clock), `heater.csv` (the Temperature Controller's
+readings while the trial was live, when one was open; see "The heater during a
+trial") and `mark_full.png` (the display at the Mark). The
 Transfer Map's table also keeps `video_path`, `video_index_path`,
 `video_frames` and `video_dropped` (the dropped count is the frames the recorder
 could not keep up with; the red-percent profile is never affected). The profile
@@ -145,6 +147,38 @@ recorder, 2026-09-28 to 2026-10-06), and trials before 2026-09-28 their `before.
 `mark.png` and `after.png`. The trials export carries every picture column plus the video
 columns, and a third export file lists the tips. An older database is upgraded
 the first time the station opens it and its trials are kept ("Database Upgraded").
+
+## The heater during a trial (2026-10-08)
+
+Owner ruling, 2026-10-08: the heater log is kept with the trial's data. While a
+trial is live, every reading the Temperature Controller reports is kept with that
+trial. "Live" runs from the moment the region lands and the trial's row exists
+(`live`, then `marked`) until **End recording**. Nothing is kept in the `region`
+step. Readings stop at End recording, and after a stop or an Abort. The readings
+are written with the profile, in the same store transaction, at **Finish** or
+**Abort** (an aborted trial keeps them too). They go to:
+
+- the store's `trial_heater` table, one row per reading, keyed by `trial_id`.
+  `t_s` uses the profile's clock (seconds since the trial's time zero). The
+  other columns are `wall_epoch_s`, `board_t_s` (the board's own timer),
+  `temp_c`, `setpoint_c` (the setpoint the board reports, ramped toward the
+  endpoint), and the settings of the last frame that reached the wire:
+  `endpoint_c`, `ramp_s_per_c`, `kp`, `ki`, `kd`, `offset_c` and `heater_on`.
+  `source` is the heater's name. The board reports no output duty, so there is
+  no output column. Deleting a trial deletes its rows. An older store gets the
+  table, empty, the first time it is written, and keeps its version number.
+- `heater.csv` in the trial's folder (same columns), written only when there are
+  readings;
+- the export: **Export heater readings** (under Data) writes
+  `transfer_map_<stamp>_heater.csv` with every trial's rows.
+
+With no Temperature Controller open, a trial records exactly as before: no rows,
+no `heater.csv`, no message. Keeping a reading never touches the heater's port
+and never waits on the store: the heater's reader thread does one list append
+per reading. One trial keeps at most 200 000 readings, more than a day at the
+board's rate. To plot one trial:
+`python3 tools/heater_plot.py --trial N --store <store>.sqlite`. Readings from
+outside any trial are in the station's device log (`DEVICE_LOG.md`).
 
 ## RGB Analysis samples settled frames (CAP-1, 2026-10-07)
 
