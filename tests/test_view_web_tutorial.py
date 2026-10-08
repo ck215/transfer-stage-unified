@@ -6,6 +6,8 @@ test_view_web_server.py) against a fake procedure with tutorial files
 served through request interception.
 TU-2: the two shipped tutorials, their anchors against the real schemas, and
 a walk of "Your first trial" on a real SIM Transfer Map.
+TU-3: one tutorial per hardware model, each walked on its real SIM page
+with every anchor found, the mode steps driven as the operator would.
 """
 import json
 import re
@@ -247,8 +249,9 @@ from controller.controller import Controller
 from devices.screen import Screen
 from devices.screen_recorder import ScreenRecorder
 from model.heater import Heater
-from model.probe import StepperProbe
+from model.probe import ChuckPositioner, DCProbe, ProbeMode, StepperProbe
 from model.rgb_analysis import RgbAnalysis
+from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from panel import Panel
@@ -305,6 +308,40 @@ def _synthetic():
     frame[:, x:x + 24, 2] = 210
     frame[:, :, 3] = 255
     return frame, t
+
+
+class _Pad:
+    """A gamepad that is plugged in but not chosen yet: no SDL, no claim,
+    never a real pad. Choosing it binds it; it reads neutral."""
+
+    status = "connected"
+    is_hardware = False
+
+    def __init__(self):
+        self.options = ["None", "Pad 0"]
+        self.log = []
+        self.is_bound = False
+        self.is_gate_open = True
+        self.name = None
+        self.levels = {}
+
+    def open(self):
+        pass
+
+    def close(self):
+        pass
+
+    def bind(self, name):
+        self.is_bound = name is not None
+        self.name = name
+        self.log.append(f"bound {name}")
+        return True
+
+    def set_gate(self, is_open):
+        self.is_gate_open = bool(is_open)
+
+    def drain_edges(self):
+        return {}
 
 
 class _Setup(Panel):
@@ -374,9 +411,26 @@ def test_the_index_lists_every_file_and_every_file_is_well_formed():
                 assert set(wait["state"]) == {"name", "key", "equals"}
 
 
-def test_the_shipped_tutorials_are_the_two_named():
+#: The device tutorials (2026-10-07, "a tutorial for each device"): one per
+#: hardware model, on its own page, in station order.
+DEVICE_TUTORIALS = {
+    "stepper-probe.json": ("Operating the Stepper Probe", "Stepper Probe"),
+    "dc-probe.json": ("Operating the DC Probe", "DC Probe"),
+    "chuck-positioner.json": ("Operating the Chuck Positioner", "Chuck Positioner"),
+    "temperature-controller.json": ("Operating the Temperature Controller",
+                                    "Temperature Controller"),
+    "rotator.json": ("Operating the Rotator", "Rotator"),
+}
+SHIPPED_TITLES = [title for title, _page in DEVICE_TUTORIALS.values()] + [
+    "Register a sample", "Your first trial"]
+PROBES = ("Stepper Probe", "DC Probe", "Chuck Positioner")
+
+
+def test_the_shipped_tutorials_are_the_ones_named():
     files = _files()
+    assert [t["title"] for t in files.values()] == SHIPPED_TITLES
     assert {t["title"]: t["requires"] for t in files.values()} == {
+        **{title: "any" for title, _page in DEVICE_TUTORIALS.values()},
         "Your first trial": "sim", "Register a sample": "any"}
     first = files["first-trial.json"]
     texts = [s["anchor"].get("text") for s in first["steps"]]
@@ -389,30 +443,111 @@ def test_the_shipped_tutorials_are_the_two_named():
         assert wanted in register
 
 
+def _device_models():
+    """One of each hardware model on SIM, unopened: their schemas are what
+    the device tutorials anchor to."""
+    return {"Stepper Probe": StepperProbe(port=None, gamepad=_Pad(), sim=True),
+            "DC Probe": DCProbe(port=None, gamepad=_Pad(), sim=True),
+            "Chuck Positioner": ChuckPositioner(port=None, gamepad=_Pad(), sim=True),
+            "Temperature Controller": Heater(port=None, sim=True),
+            "Rotator": Rotator(port=None, sim=True)}
+
+
+def _words(schema_dict):
+    """Every word a schema puts on a control: a caption, a toggle's two
+    faces and a section's disclosure."""
+    found = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key in ("text", "true_text", "false_text", "disclosure"):
+                if isinstance(node.get(key), str):
+                    found.add(node[key])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                walk(value)
+    walk(schema_dict)
+    return found
+
+
+def _drawn(text):
+    """A word folded the way the page draws it - sentence case (compared
+    without case), no trailing colon, no ellipsis - with and without a
+    trailing "(...)": a unit or a toggle's aside is drawn apart from it."""
+    plain = _norm(text).rstrip(":").strip().lower()
+    return {plain, re.sub(r"\s*\([^)]*\)\s*$", "", plain)}
+
+
 def test_every_anchor_text_is_in_the_real_schema_of_its_sim_model(sim_station):
     view, transfer, samples = sim_station
-    models = {"Transfer Map": transfer, "Sample Map": samples}
+    models = {"Transfer Map": transfer, "Sample Map": samples, **_device_models()}
     missing = []
     for name, t in _files().items():
         for step in t["steps"]:
             text = step["anchor"].get("text")
             if text is None:
                 continue
-            have = {_norm(x) for x in _texts(models[step["page"]].schema)}
-            if _norm(text) not in have:
+            schema = models[step["page"]].schema
+            if step["page"] in ("Transfer Map", "Sample Map"):
+                found = _norm(text) in {_norm(x) for x in _texts(schema)}
+            else:
+                # A device page's own name is its link in the sidebar.
+                have = set().union(*(_drawn(w) for w in _words(schema) | {step["page"]}))
+                found = bool(_drawn(text) & have)
+            if not found:
                 missing.append((name, step["page"], text))
             wait = (step["wait"] or {}).get("state")
             if wait:
-                assert wait["key"] == "phase"
-                assert wait["equals"] in models[wait["name"]].PHASES, wait
+                assert wait["name"] == step["page"], wait
+                if wait["key"] == "phase":
+                    assert wait["equals"] in models[wait["name"]].PHASES, wait
+                else:
+                    assert wait["key"] == "model_mode" and wait["name"] in PROBES, wait
+                    assert wait["equals"] in {m.value for m in ProbeMode} - {"fault"}, wait
     assert not missing, missing
 
 
 def test_the_ids_and_pages_a_tutorial_names_are_real(sim_station):
-    view, transfer, samples = sim_station
+    from controller.setup import MODEL_TYPES
+    pages = {name for name, cls in MODEL_TYPES.items() if not getattr(cls, "HOST", None)}
     for t in _files().values():
         for step in t["steps"]:
-            assert step["page"] in ("Overview", "Transfer Map", "Sample Map")
+            assert step["page"] in pages | {"Overview"}, step["page"]
+
+
+def test_every_hardware_model_has_its_own_tutorial():
+    """A model that owns a port has a tutorial that stays on its page,
+    starts at its sidebar link, shows the stop on the rail, and says how to
+    clear a stop and recover a silent board."""
+    from controller.setup import MODEL_TYPES
+    files = _files()
+    hardware = [name for name, cls in MODEL_TYPES.items() if getattr(cls, "NEEDS_PORT", False)]
+    assert hardware == [page for _title, page in DEVICE_TUTORIALS.values()]
+    for file, (title, page) in DEVICE_TUTORIALS.items():
+        t = files[file]
+        assert t["title"] == title and t["id"] == file[:-len(".json")]
+        assert {s["page"] for s in t["steps"]} == {page}
+        assert t["steps"][0]["anchor"] == {"text": page}, "it starts at its sidebar link"
+        assert {"selector": "#full-stop"} in [s["anchor"] for s in t["steps"]]
+        said = " ".join(s["say"] for s in t["steps"])
+        for words in ("Ctrl+.", "Hard reset", "Stop this model", "Clear"):
+            assert words in said, (file, words)
+
+
+@pytest.mark.parametrize("page", PROBES)
+def test_a_probe_tutorial_picks_a_controller_before_manual_mode(page):
+    """The owner's example: each control system, then choosing the
+    gamepad, then entering manual mode, then leaving it."""
+    file = next(f for f, (_t, p) in DEVICE_TUTORIALS.items() if p == page)
+    steps = _files()[file]["steps"]
+    anchors = [s["anchor"].get("text") for s in steps]
+    order = [anchors.index(a) for a in ("Enter autonomous mode", "Step", "Gamepad",
+                                        "Enter manual mode")]
+    assert order == sorted(order), anchors
+    modes = [((s["wait"] or {}).get("state") or {}).get("equals") for s in steps]
+    assert [m for m in modes if m] == ["autonomous", "disabled", "manual", "disabled"]
 
 
 @pytest.mark.xfail(reason="2026-10-07: the first-trial tutorial predates the sample pickers and the tip prompt; "
@@ -503,6 +638,155 @@ def test_the_tutorials_page_lists_the_shipped_files(proc_station, tmp_path):
         expanded: document.getElementById('tutorials-link').getAttribute('aria-expanded'),
       }));
     """, tmp_path)
-    assert out["titles"] == ["Your first trial", "Register a sample"], out
-    assert out["starts"].count("Start") == 2
+    assert out["titles"] == SHIPPED_TITLES, out
+    assert out["starts"].count("Start") == len(SHIPPED_TITLES)
     assert out["expanded"] == "true"
+
+
+# ---------------------------------------------------------------------- TU-3
+@pytest.fixture
+def device_station():
+    """Every hardware model on SIM, each probe with a pad that is plugged in
+    but not chosen: no real board and no real gamepad is touched."""
+    controller = Controller()
+    models = tuple(_device_models().items())
+    for name, model in models:
+        controller.add(name, model)
+    for _name, model in models:
+        model.open()
+    view = WebView(controller, _Setup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view
+    finally:
+        view.close()
+        for _name, model in reversed(models):
+            try:
+                model.close()
+            except Exception:
+                pass
+
+
+def _operator_plan(steps):
+    """What the operator does at each step of a device tutorial. The
+    tutorial never presses anything; this does, as the operator would: a
+    step waiting for a click is answered by pressing its control (or Next
+    when the control is greyed out, as on a SIM rotator), a step waiting
+    for a mode by entering that mode, and the Gamepad step by choosing
+    the pad."""
+    plan = []
+    for step in steps:
+        wait = step["wait"] or {}
+        if "state" in wait:
+            state = wait["state"]
+            plan.append({"api": [state["name"], "set_mode", {}, [state["equals"]]]})
+        elif step["anchor"].get("text") == "Gamepad":
+            plan.append({"api": [step["page"], "set_gamepad", {}, ["Pad 0"]], "next": True})
+        elif wait.get("click"):
+            plan.append({"click": step["anchor"]})
+        else:
+            plan.append({"next": True})
+    return plan
+
+
+#: Settings the operator types before the tutorial starts, so the steps
+#: that read a heating heater have one.
+_PREP = {"temperature-controller.json": [["Temperature Controller", "_commit",
+                                          {"setpoint": 40}, []]]}
+
+
+@needs_browser
+@pytest.mark.parametrize("file", list(DEVICE_TUTORIALS))
+def test_a_device_tutorial_walks_its_sim_page_and_every_anchor_resolves(
+        device_station, tmp_path, file):
+    """Real SIM models, a real server and headless Chrome: every step of
+    the tutorial finds its control on the page (the highlight ring is
+    drawn), the card stays in the window and off the stop, the mode steps
+    move on by themselves when the operator enters the mode, and Done
+    forgets the place."""
+    view = device_station
+    title, _page = DEVICE_TUTORIALS[file]
+    steps = _files()[file]["steps"]
+    out = _browse(view, r"""
+      const TITLE = %(title)s;
+      const PLAN = %(plan)s;
+      const PREP = %(prep)s;
+      await page.setViewport({ width: 1600, height: 900 });
+      const run = (name, command, inputs, args) => page.evaluate(async (n, c, i, a) => {
+        const post = async (body) => (await fetch('/api/run', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+        let r = await post({ name: n, command: c, inputs: i || {}, args: a || [] });
+        if (r.status === 'needs_confirm') r = await post({ name: n, command: r.command || c,
+          inputs: r.inputs || {}, args: [...(r.args || a || []), true] });
+        return r;
+      }, name, command, inputs, args);
+      const answers = [];
+      for (const p of PREP) answers.push(await run(...p));
+      await sleep(600);
+      await page.click('#tutorials-link');
+      await until(() => !document.getElementById('tutorial-panel').hidden);
+      await sleep(300);
+      await page.evaluate((t) => {
+        const row = Array.from(document.querySelectorAll('.tutorial-row'))
+          .find((r) => r.querySelector('.tutorial-row-title').textContent === t);
+        Array.from(row.querySelectorAll('button')).find((b) => b.textContent === 'Start').click();
+      }, TITLE);
+      const count = () => page.evaluate(() => {
+        const c = document.getElementById('tutorial-card');
+        return c && !c.hidden ? c.querySelector('.tutorial-count').textContent : null;
+      });
+      const at = async (want) => { const end = Date.now() + 6000;
+        while (Date.now() < end) { if ((await count()) === want) return true; await sleep(100); }
+        return false; };
+      // The operator presses the highlighted control: found the way the
+      // runtime finds it, pressed only when it is a live button.
+      const press = (spec) => page.evaluate((spec) => {
+        const norm = (t) => String(t || '').replace(/\s+/g, ' ')
+          .replace(/\s*(…|\.\.\.)\s*$/, '').trim();
+        const seen = (n) => n && n.isConnected && !n.closest('[hidden], .is-phase-off')
+          && n.checkVisibility({ visibilityProperty: true });
+        const ours = (n) => n.closest('#tutorial-card, #tutorial-panel');
+        let node = null;
+        if (spec.selector) node = document.querySelector(spec.selector);
+        else node = Array.from(document.querySelectorAll('button, [role="button"], a, summary'))
+          .find((n) => !ours(n) && norm(n.textContent) === norm(spec.text) && seen(n)) || null;
+        if (!node || !seen(node) || node.disabled || node.tagName !== 'BUTTON') return false;
+        node.click();
+        return true;
+      }, spec);
+      const steps = [];
+      for (let i = 0; i < PLAN.length; i++) {
+        const reached = await at('Step ' + (i + 1) + ' of ' + PLAN.length);
+        await sleep(450);
+        const shown = await page.evaluate(() => {
+          const c = document.getElementById('tutorial-card');
+          const r = document.querySelector('.tutorial-ring');
+          const box = (n) => { const b = n.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom]; };
+          return { ring: !r.hidden, card: box(c), stop: box(document.getElementById('full-stop')) };
+        });
+        const [l, t, rt, b] = shown.card;
+        const [sl, st, sr, sb] = shown.stop;
+        const fits = l >= 0 && t >= 0 && rt <= 1600 && b <= 900
+          && (rt <= sl || sr <= l || b <= st || sb <= t);
+        steps.push({ step: i + 1, reached, ring: shown.ring, fits });
+        if (!reached) break;
+        const act = PLAN[i];
+        if (act.api) answers.push(await run(...act.api));
+        if (act.click && !(await press(act.click))) await page.click('.tutorial-next');
+        if (act.next) await page.click('.tutorial-next');
+      }
+      const done = await until(() => document.getElementById('tutorial-card').hidden, 4000);
+      const saved = await page.evaluate((id) => localStorage.getItem('station.tutorial.' + id),
+                                        %(id)s);
+      return { steps, done, saved, answers };
+    """ % {"title": json.dumps(title), "plan": json.dumps(_operator_plan(steps)),
+           "prep": json.dumps(_PREP.get(file, [])), "id": json.dumps(file[:-len(".json")])},
+        tmp_path)
+    assert all(a.get("status") == "ok" for a in out["answers"]), out["answers"]
+    walked = out["steps"]
+    assert [s["step"] for s in walked] == list(range(1, len(steps) + 1)), walked
+    assert all(s["reached"] for s in walked), walked
+    unresolved = [(s["step"], steps[s["step"] - 1]["anchor"]) for s in walked if not s["ring"]]
+    assert not unresolved, f"anchors not found on the page: {unresolved}"
+    assert all(s["fits"] for s in walked), "a card left the window or covered the stop"
+    assert out["done"] is True and out["saved"] is None

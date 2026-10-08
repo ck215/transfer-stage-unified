@@ -1,1 +1,3 @@
-{"tutorials": ["first-trial.json", "register-sample.json"]}
+{"tutorials": ["stepper-probe.json", "dc-probe.json", "chuck-positioner.json",
+               "temperature-controller.json", "rotator.json",
+               "register-sample.json", "first-trial.json"]}

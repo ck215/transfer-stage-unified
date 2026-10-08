@@ -1,0 +1,139 @@
+{
+  "id": "stepper-probe",
+  "title": "Operating the Stepper Probe",
+  "requires": "any",
+  "steps": [
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Stepper Probe"},
+      "say": "The Stepper Probe is the three-axis probe on the stepper (TMC2209) board. After Launch in Setup it appears in the sidebar under its name; press the name to open this page.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "X"},
+      "say": "X, Y and Z are the board's step counts, reported about ten times a second. They count from when the link came up: a reconnect or a board reset starts them again at zero.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Autonomous speed"},
+      "say": "Autonomous speed is how fast a Step moves, as a percent of the board's 3200 steps/s ceiling; the steps/s figure with it is what is sent. It is locked while the probe is in a mode.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Manual speed"},
+      "say": "Manual speed is the gamepad's jog speed, on the same scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Configure Stepper Probe"},
+      "say": "The step sizes and the targets of a Step sit one level down. Press Configure Stepper Probe to open them.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "X step size"},
+      "say": "A step size multiplies every move on its axis: a Step travels target dist × step size, and one D-pad or bumper press moves one step size. These fields are locked while the probe is in a mode.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Target X dist"},
+      "say": "Target X, Y and Z dist are the move one Step makes, relative to where the probe is now, in step-size units. The sign picks the direction; 0 leaves that axis still.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Enter autonomous mode"},
+      "say": "Control system 1, autonomous: press Enter autonomous mode. It powers the motors but moves nothing; the probe then waits for Step.",
+      "wait": {"state": {"name": "Stepper Probe", "key": "model_mode", "equals": "autonomous"}}
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Step"},
+      "say": "Step sends one move to the targets at the autonomous speed (it enters autonomous mode by itself if needed). Let the stage settle before the next Step: one pressed while it still moves is refused.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Autonomous mode"},
+      "say": "Press Autonomous mode to leave it. Leaving any mode sends a zero-motion frame, then powers the motors down: there is no 'stop but hold' setting.",
+      "wait": {"state": {"name": "Stepper Probe", "key": "model_mode", "equals": "disabled"}}
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Gamepad"},
+      "say": "Control system 2, manual: a gamepad drives the probe. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Enter manual mode"},
+      "say": "Now press Enter manual mode. The motors power up and the station streams the pad to the board 50 times a second. Step is greyed out while in manual.",
+      "wait": {"state": {"name": "Stepper Probe", "key": "model_mode", "equals": "manual"}}
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Manual mode"},
+      "say": "Left stick: X and Y, smoothly, at the manual speed. Left trigger raises Z, right trigger lowers it. D-pad: one step on X (left, right) or Y (up, down) per press. Bumpers: one Z step per press.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Manual / gamepad"},
+      "say": "A mode times out: after 5 minutes with no motion and no gamepad input the probe powers down. In the last minute a countdown with Extend shows on the rail; Extend gives it another 5 minutes.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Manual mode"},
+      "say": "Press Manual mode to leave it: a zero frame, then the motors power down. Unplugging the pad, or choosing another pad or None in the list, also ends manual mode and powers down.",
+      "wait": {"state": {"name": "Stepper Probe", "key": "model_mode", "equals": "disabled"}}
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"selector": "#full-stop"},
+      "say": "The stop: the Stop disc on the rail, or Ctrl+. from anywhere on the page, stops every device at once and latches it. The probe leaves its mode, powers down, and its controls grey out.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"selector": "#full-stop"},
+      "say": "When every device is stopped the disc reads Clear; pressing it asks, then clears. Clearing restarts nothing: enter a mode again. Ctrl+. only ever stops.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Diagnostics"},
+      "say": "Open Diagnostics for this probe's own stop, its fault, how old the last position is, and the Gamepad log, which shows whether the pad is bound and reacting.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Stop this model"},
+      "say": "Stop this model latches only this probe. Pressed again (it then reads Stopped) it clears just this probe, after asking.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Fault reason"},
+      "say": "If a disable or a stop cannot be confirmed, the probe shows a fault: treat it as powered. Modes are refused until a stop is confirmed. A board silent for 1 s while in a mode is stopped by the station.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Position age (s)"},
+      "say": "A board that has stopped answering cannot be armed. Use Hard reset on its row in Setup, or cut its power and reconnect, then clear the stop. A lost cable reconnects by itself; enter the mode again after.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Manual / gamepad"},
+      "say": "Keep the station in its own browser window while the probe is in a mode: if no browser checks in for 15 s while a device is energized, the station stops every device.",
+      "wait": null
+    }
+  ]
+}
