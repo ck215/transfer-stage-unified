@@ -187,7 +187,9 @@ its `transfer_map/` (pictures, videos) and `exports/`, `sample_map.sqlite` with
 its `images/`. Each database is a consistent SQLite snapshot (online backup API),
 renamed into place, so it is never half written. The account menu shows "Last backup
 23:41 → <folder>" and has Back up now. A failure (drive not mounted, read-only)
-is one warning per streak.
+is one warning per streak. A backup folder under `~/QMDL_Drive` is used only
+while the drive is mounted, and a backup folder that is a store's own folder
+(or inside the folders it mirrors) is refused.
 
 **To restore:** quit the station; copy the backup folder's `*.sqlite` files and
 their folders (`transfer_map/`, `exports/`, `images/`) into an empty local folder
@@ -195,8 +197,12 @@ their folders (`transfer_map/`, `exports/`, `images/`) into an empty local folde
 hidden `.backup-manifest.json`. Start the station, sign in, and Open store on
 each map with the copied `.sqlite`. Trial rows name their pictures by absolute
 path, so restore to the SAME folder the store lived in when you can; elsewhere
-the trials are intact but their pictures must be re-pointed. To force a full
-re-copy, delete `.backup-manifest.json` in the backup folder.
+the trials are intact but their pictures must be re-pointed. To force a
+re-copy, quit the station, delete `.backup-manifest.json` in the backup folder,
+and start it again (a running station keeps the manifest in memory): every
+database is copied again, and every other file unless the backup already holds
+one of the same size and time. A file deleted from the backup folder while the
+manifest still lists it is not copied again until then.
 
 ## The force
 

@@ -1,8 +1,8 @@
 # Rebuild status — cold-resume document
 
-Last updated 2026-10-07, after the proposal round, the lab merge, the root
+Last updated 2026-10-08, after the proposal round, the lab merge, the root
 cleanup and the move to `~/GitHub` ("Round 2026-10-07" and "Round 2026-10-07
-(proposal)" below). Read this first; then `BRIEF.md` (the architecture contract and its addenda),
+(proposal)" below), and the night's feature merges ("Round 2026-10-08 (night)"). Read this first; then `BRIEF.md` (the architecture contract and its addenda),
 `DESIGN_BRIEF.md` (its predecessor `WEB_DESIGN_BRIEF.md` was removed (history: tag pre-root-cleanup-2026-10-07)), and
 `BUGFIX_PLAN.md` (the ranked defect list with a delegation route per item).
 Paths are `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/...` (the
@@ -259,9 +259,11 @@ what landed. The row-by-row closures are in `BUGFIX_PLAN.md`
 - **Speed dials are percent** over per-device ceilings (stepper 3200, chuck 600
   steps/s), steps/s as a secondary readout.
 - **User accounts**: `model/user_store.py` (scrypt passwords, `users.sqlite`),
-  `model/user.py` (the User model owns a config the Controller loads; Guest = the
-  station defaults), Setup's Account section; Phase 1 profiles migrated;
-  `STATION_PROFILES=0` hides it. The maps stamp `operator_auth`/`owner_auth` with
+  `model/user.py` (the User owns a config the Controller loads; Guest = the
+  station defaults; since 2026-10-08 a `Panel`, not a device `Model`, drawn as the
+  rail's account menu, see "Round 2026-10-08 (night)"), Setup's "Station defaults"
+  section and the sign-in screen; Phase 1 profiles migrated;
+  `STATION_PROFILES=0` hides them. The maps stamp `operator_auth`/`owner_auth` with
   `password` or `guest`. Reserved settings keys `layout`, `default_fields` and
   `sample_base` exist, nothing built on them.
 - **Tutorials**: `views/web/static/tutorial.js`, `tutorials/*.json` ("Your first
@@ -309,7 +311,7 @@ siblings while a round runs. The lab deploys by git today (a fresh `git clone --
 first installed release comes after v1.0.0.
 
 **Transfer Map store.** v8, the lab's, adopted; "Transfer Map part 2" is DONE by the lab
-merge, and the planned v9 (with a `.v8.bak` backup) is no longer needed. The Sample Map
+merge, and the planned v9 (with a `.v8.bak` backup) is no longer needed. The Sample DB
 store is v4.
 
 **Gates**: fast **4194**, golden **77**, a launch; known flakes are listed in the
@@ -327,6 +329,28 @@ final gate. Collected under `-m "not qt"`: 4211 (collect-only, 2026-10-07).
 - The lab PC's code must reach a branch before a release is installed there
   (`packaging/README.md`); the stale `rb-estimators` and `rb-rootclean` directories beside
   `mvc-refactor/` are leftovers, not worktrees.
+
+## Round 2026-10-08 (night)
+
+Merged into `main` between `619ba9e` and `129f76d` (fast merges; the
+architecture audit of what they left is `docs/rebuild/audit-architecture-2026-10-08.md`):
+friendly device names; per-device tutorials (five devices); auto-launch of
+connected devices, Hard reset per row (which since `25a41d3` also applies a
+port or gamepad changed after the launch), no add/remove, no Relaunch; the
+sign-in screen and full-screen Setup ("Settings" after the launch); the heater
+close watchdog (setpoint 0 read back before any close) and host-gone
+watchdog; the account menu (`model.user.User` is a `Panel`, not a device
+`Model`; Guest gets the tool controls only, no Transfer Map or Sample DB);
+tab-close quit (`/api/leave` plus a silence backstop), one live tab, a single
+station instance (`controller/single_instance.py`) and exclusive serial ports;
+the Sample DB rename, chips required, hierarchy pickers; per-user stores for
+both maps behind a `new_store` prompt (`model/store_choice.py`, the
+`StorePrompt` mixin; never inside the station's folder); the store backup to
+`~/QMDL_Drive` or a user's folder (`controller/backup.py`, on the account
+menu; an unmounted `~/QMDL_Drive` is unavailable); chuck runaway guards (NOT
+yet bench-validated); the step indicator and launch transition; "Overview"
+renamed "Dashboard" with reorderable tiles; picture previews (100x, then 50x,
+then lower; newest wins) on the Sample DB and the trial setup.
 
 ## Open items
 
