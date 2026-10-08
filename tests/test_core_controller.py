@@ -59,6 +59,86 @@ def test_adding_a_name_twice_is_refused_before_anything_opens(controller):
     assert second.start_calls == 0, "the duplicate opened a second handle"
 
 
+class _SlowOpen(FakeModel):
+    """A model whose open takes a while (a port handshake does)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.opening = threading.Event()
+        self.open_gate = threading.Event()
+
+    def _start_threads(self):
+        self.opening.set()
+        self.open_gate.wait(5)
+        super()._start_threads()
+
+
+def _add_in_thread(controller, name, model):
+    errors = []
+
+    def _add():
+        try:
+            controller.add(name, model)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_add, daemon=True)
+    thread.start()
+    return thread, errors
+
+
+def test_a_second_add_of_a_name_that_is_still_opening_is_refused(controller):
+    """Audit 2026-10-08 item 1: `add` checked the name, opened with the lock
+    released, then inserted. Two concurrent adds (the Web server runs Setup
+    commands concurrently) both opened, the second replaced the first in the
+    table, and the first kept its port and threads where no FULL STOP
+    reached them."""
+    first = _SlowOpen()
+    thread, errors = _add_in_thread(controller, "probe", first)
+    try:
+        assert first.opening.wait(2)
+        second = FakeModel()
+        with pytest.raises(ValueError):
+            controller.add("probe", second)
+        assert second.start_calls == 0, "the duplicate opened a second handle"
+    finally:
+        first.open_gate.set()
+        thread.join(5)
+    assert errors == []
+    assert controller.models == {"probe": first}
+
+
+def test_a_full_stop_during_an_open_latches_the_model_before_it_is_published(
+        controller):
+    """FULL STOP never waits behind an opening port, and a model whose open
+    was under way when it was pressed is stopped before anyone can use it."""
+    model = _SlowOpen()
+    thread, errors = _add_in_thread(controller, "probe", model)
+    try:
+        assert model.opening.wait(2)
+        started = time.monotonic()
+        controller.estop_all()
+        assert time.monotonic() - started < controller.ESTOP_ALL_BUDGET + 0.5, \
+            "FULL STOP waited behind an opening port"
+    finally:
+        model.open_gate.set()
+        thread.join(5)
+    assert errors == []
+    assert controller.model_names == ["probe"]
+    assert model.is_estopped, "a model opened across a FULL STOP came up unlatched"
+    assert "halt" in model.close_order
+
+
+def test_a_failed_open_frees_the_name(controller):
+    model = FakeModel()
+    model.start_error = OSError("handshake timed out")
+    with pytest.raises(OSError):
+        controller.add("probe", model)
+    again = FakeModel()
+    controller.add("probe", again)
+    assert controller.models == {"probe": again}
+
+
 def test_a_model_that_fails_to_open_is_closed_and_not_kept(controller):
     """One port must never be left half-open and unowned."""
     device = FakeDevice("a")

@@ -35,6 +35,11 @@ class Controller:
         #: Models `remove` is stopping and closing: off the table (no
         #: commands, no panel) but still reached by every stop.
         self._removing = {}
+        #: Names `add` has reserved while their model opens (lock released).
+        self._opening = {}
+        #: Bumped by every stop of the whole station; `add` compares it
+        #: across an open so a stop pressed meanwhile reaches the new model.
+        self._stop_count = 0
         self._subscribers = []
         self._closed = False
         self._closing_thread = None
@@ -47,23 +52,54 @@ class Controller:
 
     # -- construct / destruct on demand -----------------------------------
     def add(self, name, model, config=None):
-        """Register and open. A model that fails to open is closed and not kept."""
+        """Register and open. A model that fails to open is closed and not kept.
+
+        The name is reserved (`_opening`) under the lock before the model
+        opens, so a second add of the same name is refused instead of
+        opening a second handle and replacing the first in the table (audit
+        2026-10-08 item 1: the replaced model kept its port and threads
+        where no FULL STOP reached them). The open itself runs with the lock
+        released: FULL STOP never waits behind a port handshake. A FULL STOP
+        pressed while the model was opening is applied to it after the open
+        and before it is published (`_stop_count`)."""
         with self._lock:
             if name in self._models:
                 raise ValueError(f"{name} is already open")
             if name in self._removing:
                 raise ValueError(f"{name} is still closing")
+            if name in self._opening:
+                raise ValueError(f"{name} is already opening")
+            self._opening[name] = model
+            stops_seen = self._stop_count
+        published = False
         try:
-            model.open()
-        except Exception:
-            model.close()
-            raise
-        with self._lock:
-            others = dict(self._models)
-            self._models[name] = model
-            self._configs[name] = dict(config or {})
-            self._locks[name] = threading.Lock()
-            self._remembered.pop(name, None)
+            try:
+                model.open()
+            except Exception:
+                model.close()
+                raise
+            while True:
+                with self._lock:
+                    if self._stop_count == stops_seen:
+                        others = dict(self._models)
+                        del self._opening[name]
+                        self._models[name] = model
+                        self._configs[name] = dict(config or {})
+                        self._locks[name] = threading.Lock()
+                        self._remembered.pop(name, None)
+                        published = True
+                        break
+                    stops_seen = self._stop_count
+                # A FULL STOP ran while this model was opening and could not
+                # reach its port; stop it now, before anyone can use it.
+                events.debug("Stopped After Open", f"{name}: a FULL STOP ran "
+                             "while it was opening", source="Controller")
+                model.estop()
+        finally:
+            if not published:
+                with self._lock:
+                    if self._opening.get(name) is model:
+                        del self._opening[name]
         for other_name, other in others.items():
             other.on_model_added(name, model)
             model.on_model_added(other_name, other)
@@ -155,6 +191,7 @@ class Controller:
         with self._lock:
             models = dict(self._models)
             closing = dict(self._removing)   # `remove` closes these itself
+            self._stop_count += 1
             self._models.clear()
             self._configs.clear()
             self._locks.clear()
@@ -356,8 +393,11 @@ class Controller:
 
     def _stop_targets(self):
         """Everything a stop must reach: the open models, then the ones
-        `remove` is closing. A snapshot; never held across a stop."""
+        `remove` is closing. A snapshot; never held across a stop. A model
+        still opening is not in it (its port may not be open yet); the
+        count bump makes `add` stop it once its open returns."""
         with self._lock:
+            self._stop_count += 1
             models = dict(self._models)
             for name, model in self._removing.items():
                 models.setdefault(name, model)
