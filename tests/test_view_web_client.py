@@ -727,6 +727,16 @@ def test_a_long_option_is_elided_from_the_middle():
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
+def test_an_option_shows_its_friendly_label_whole_or_its_raw_value_elided():
+    assert _node_value("optionText('/dev/ttyACM1', 'Temperature Controller — ACM1')") \
+        == "Temperature Controller — ACM1"
+    assert _node_value("optionText('/dev/cu.usbmodem1234567890123', undefined)") \
+        == "/dev/cu.us…34567890123"
+    assert _node_value("optionText('COM3', 'COM3')") == "COM3"
+    assert _node_value("optionText('SIM', '')") == "SIM"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
 def test_trace_is_for_numbers_and_a_quiet_word_is_muted():
     """F24 (CRIT-6, HC-16)."""
     assert _node_value("readoutKind('0.000')") == "number"

@@ -44,6 +44,7 @@ import schema as sch
 from controller import flashing, user_config
 from controller.firmware import FirmwareCheck
 from controller.updater import Updater
+from devices import friendly_names
 from devices import gamepad as gamepad_module
 from devices import serial_port as serial_port_module
 from devices.serial_port import ConnectionState, SerialPort
@@ -290,6 +291,8 @@ class PortProbe:
                         "to try again.", source=self.NAME, exception=exc)
             return list(FALLBACK_PORTS)
 
+        # The USB ids behind each path, for the dropdown's labels only.
+        self._port_hwids = {name: hwid for name, hwid in entries}
         usable = []
         for name, hwid in entries:
             if "Bluetooth" in name or "Wireless" in name:
@@ -823,6 +826,22 @@ class Setup(PortProbe, Panel):
     def gamepad_options(self):
         with self._lock:
             return list(self._gamepads)
+
+    def option_labels(self, command, options):
+        """What the dropdown shows for each of `options` (the values one of
+        the `*_options` commands above returned), in the same order. The
+        values stay the raw port paths and gamepad ids; only the text the
+        operator reads is friendlier ("Stepper Probe — ACM0", "Logitech
+        F310"), falling back to the raw string for anything unknown."""
+        options = [str(o) for o in options]
+        if command == "gamepad_options":
+            return friendly_names.gamepad_labels(options)
+        with self._lock:
+            found = dict(self._found)
+            hwids = dict(getattr(self, "_port_hwids", {}))
+        return [o if o in (SIM, ON) else
+                friendly_names.port_label(o, found.get(o), hwids.get(o))
+                for o in options]
 
     # -- scanning ----------------------------------------------------------
     def start(self):

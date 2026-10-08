@@ -737,6 +737,15 @@ function elideMiddle(text, max) {
   return whole.slice(0, head) + '…' + whole.slice(whole.length - tail);
 }
 
+/** What one dropdown option shows: the station's friendly label when it
+ *  sent one ("Stepper Probe — ACM0", "Logitech F310"), whole, else the raw
+ *  value elided from the middle. The option's value is always the raw one. */
+function optionText(option, label) {
+  const raw = String(option === null || option === undefined ? '' : option);
+  if (typeof label === 'string' && label && label !== raw) return label;
+  return elideMiddle(raw, OPTION_CHARS);
+}
+
 /** Words that report an absence or an at-rest state. They are read, not
  *  watched, so they are muted - trace is for numbers and lit lamps only
  *  (F24, CRIT-6, HC-16). */
@@ -2646,6 +2655,8 @@ class PanelCard {
     }
     if (select.optionsTurn !== turn) return;
     const options = answer.options || [];
+    const labels = (Array.isArray(answer.labels)
+      && answer.labels.length === options.length) ? answer.labels : [];
     // What the model holds wins over what the box showed a moment ago.
     const held = element.model_attr ? this.values[element.model_attr] : undefined;
     const previous = (held === undefined || held === null) ? select.value : String(held);
@@ -2654,16 +2665,21 @@ class PanelCard {
     placeholder.value = '';
     placeholder.disabled = true;
     select.appendChild(placeholder);
-    for (const option of options) {
-      // Elided from the middle, whole name as the title: two ports that
+    options.forEach((option, index) => {
+      // A friendly label when the station sent one, else elided from the
+      // middle; the whole raw name is the title either way: two ports that
       // differ only in their serial suffix stay two different lines (F15).
-      const node = make('option', null, elideMiddle(String(option), OPTION_CHARS));
-      node.value = String(option);
-      node.title = String(option);
+      const raw = String(option);
+      const text = optionText(raw, labels[index]);
+      const node = make('option', null, text);
+      node.value = raw;
+      node.title = text === raw || text.indexOf('…') !== -1 ? raw
+        : text + ' (' + raw + ')';
       select.appendChild(node);
-    }
-    select.title = select.value;
+    });
     select.value = options.map(String).indexOf(previous) !== -1 ? previous : '';
+    const chosen = select.options[select.selectedIndex];
+    select.title = chosen && chosen.value ? chosen.title : '';
   }
 
   async download(element) {
