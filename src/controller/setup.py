@@ -33,6 +33,7 @@ it is cheap, then the custom firmware at 500000 and 115200), and the same
 Setup is the one place besides the models allowed to import
 `devices.*` and the model classes: it is the composition root.
 """
+import contextlib
 import os
 import re
 import subprocess
@@ -1840,7 +1841,8 @@ class Setup(PortProbe, Panel):
         elif not self.users.verify(email, self._take_password()):
             self._refuse("That email and password do not match an account on this "
                          "station.")
-        self._become(self._user_for(email))
+        with self._held_for_other_user(email):
+            self._become(self._user_for(email))
         self._chose_account()
         return self.account_status
 
@@ -1869,7 +1871,8 @@ class Setup(PortProbe, Panel):
         except AccountError as refusal:
             self._refuse(str(refusal))
         events.info("Account Created", f"{email}.", source=self.NAME)
-        self._become(self._user_for(email))
+        with self._held_for_other_user(email):
+            self._become(self._user_for(email))
         self._chose_account()
         return self.account_status
 
@@ -1877,8 +1880,8 @@ class Setup(PortProbe, Panel):
         """The station's defaults and nothing else. Signs out whoever is in."""
         self._take_password()
         if not self.user.is_guest:
-            self._refuse_guest_mid_trial()
-            self._become(self._user_for(None))
+            with self._held_for_guest():
+                self._become(self._user_for(None))
         self._chose_account()
         return self.account_status
 
@@ -1904,8 +1907,8 @@ class Setup(PortProbe, Panel):
         self._take_password()
         if self.user.is_guest:
             self._refuse("Nobody is signed in: the station is on its defaults.")
-        self._refuse_guest_mid_trial()
-        self._become(self._user_for(None))
+        with self._held_for_guest():
+            self._become(self._user_for(None))
         self._account_chosen = False
         return self.account_status
 
@@ -1915,8 +1918,8 @@ class Setup(PortProbe, Panel):
         a trial is open (a Guest has no Transfer Map)."""
         self._take_password()
         if not self.user.is_guest:
-            self._refuse_guest_mid_trial()
-            self._become(self._user_for(None))
+            with self._held_for_guest():
+                self._become(self._user_for(None))
         self._account_chosen = False
         return self.account_status
 
@@ -2025,29 +2028,72 @@ class Setup(PortProbe, Panel):
                 if getattr(model, "is_active", False)
                 or getattr(model, "is_arming", False)]
 
-    def _refuse_guest_mid_trial(self):
+    def _guest_refusal(self, busy):
+        self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
+                     "open. Finish or abort it first: a Guest has no Transfer "
+                     "Map or Sample DB, so they close when you switch.")
+
+    def _other_user_refusal(self, busy):
+        self._take_password()
+        self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
+                     f"open for {self.user.user_name}. Finish or abort it before "
+                     "someone else signs in: their stores replace this user's.")
+
+    @contextlib.contextmanager
+    def _held_for_switch(self, refuse):
+        """The busy check and the switch as one step (arch audit #13): each
+        signed-in-only model that can (`hold_arm`, the Transfer Map) checks
+        for an open or arming trial under its own lock and, when idle,
+        refuses Arm until the switch is over, so no Arm lands between the
+        check and the map's removal or store change. `refuse(busy)` raises
+        when one is busy. The holds are always released; no lock is held
+        across the switch, so a FULL STOP never waits on it."""
+        held, busy = [], []
+        try:
+            for name, model in self._open_signed_in_only().items():
+                hold = getattr(model, "hold_arm", None)
+                if callable(hold):
+                    if hold():
+                        held.append(model)
+                    else:
+                        busy.append(name)
+                elif getattr(model, "is_active", False) \
+                        or getattr(model, "is_arming", False):
+                    busy.append(name)
+            if busy:
+                refuse(busy)
+            yield
+        finally:
+            for model in held:
+                try:
+                    model.release_arm()
+                except Exception as exc:
+                    events.debug("Arm Not Released", repr(exc), source=self.NAME,
+                                 exception=exc)
+
+    def _held_for_guest(self):
         """Back to Guest takes the Transfer Map and the Sample Map away, so
-        not while one of them is busy (an armed trial, a recording)."""
+        not while one of them is busy (an armed trial, a recording), and no
+        Arm meanwhile."""
         if not PROFILES_ENABLED or self.user.is_guest:
-            return
-        busy = self._busy_signed_in_only()
-        if busy:
-            self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
-                         "open. Finish or abort it first: a Guest has no Transfer "
-                         "Map or Sample DB, so they close when you switch.")
+            return contextlib.nullcontext()
+        return self._held_for_switch(self._guest_refusal)
 
     def _refuse_other_user_mid_trial(self, email):
         """Signing in as someone else closes the previous user's stores
         (owner ruling 2026-10-08), so not while a trial is being recorded
-        into one of them."""
+        into one of them. The early check, before the password is read;
+        `_held_for_other_user` repeats it atomically around the switch."""
         if not PROFILES_ENABLED or self.user.is_guest or email == self.user.email:
             return
         busy = self._busy_signed_in_only()
         if busy:
-            self._take_password()
-            self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
-                         f"open for {self.user.user_name}. Finish or abort it before "
-                         "someone else signs in: their stores replace this user's.")
+            self._other_user_refusal(busy)
+
+    def _held_for_other_user(self, email):
+        if not PROFILES_ENABLED or self.user.is_guest or email == self.user.email:
+            return contextlib.nullcontext()
+        return self._held_for_switch(self._other_user_refusal)
 
     def _drop_signed_in_only(self):
         """A Guest's station: the signed-in-only models closed (stopped,

@@ -28,6 +28,7 @@ from events import events
 from model import profile as pf
 from model.user_store import UserStore
 from panel import Panel
+from result import Refused
 from param import Param
 from test_setup import RecordingController
 
@@ -270,6 +271,69 @@ def test_switching_to_guest_while_a_trial_is_being_armed_is_refused(setup, step)
     setattr(tmap, step, None)
     assert setup.run("switch_user").is_ok
     assert "Transfer Map" not in setup.controller.model_names
+
+
+def _armable(tmap, monkeypatch, tmp_path):
+    """The Transfer Map with everything Arm checks satisfied by stand-ins:
+    `arm_trial(confirmed=True)` reaches the `region` step (sets `_pending`)."""
+    class Red:
+        is_running = False
+    tmap._red = Red()
+    tmap.tip_id = "T1"
+    still = tmp_path / "still.png"
+    still.write_bytes(b"")
+    monkeypatch.setattr(tmap, "_need_store", lambda: None)
+    monkeypatch.setattr(tmap, "_where", lambda: ("S", "C", "F"))
+    monkeypatch.setattr(tmap, "_take_still", lambda: (still, (10, 10)))
+    monkeypatch.setattr(tmap, "_display_bounds", lambda: None)
+    monkeypatch.setattr(tmap, "_touch", lambda: None)
+
+
+@pytest.mark.parametrize("command", ["switch_user", "sign_out", "open_as_guest"])
+def test_an_arm_pressed_during_the_guest_switch_is_refused_not_lost(
+        setup, monkeypatch, tmp_path, command):
+    """Arch #13 / open issues 4: the busy check ran outside the map's lock,
+    so an Arm landing between the check and the map's removal was armed on a
+    map about to close (and saved as aborted). The switch now holds Arm off
+    from the check to the removal: an Arm in that window is refused, with a
+    sentence, and nothing is armed."""
+    create(setup)
+    setup.build(CONFIGS)
+    tmap = models(setup)["Transfer Map"]
+    _armable(tmap, monkeypatch, tmp_path)
+    seen = {}
+    become = setup._become
+
+    def arm_in_the_window(user):
+        try:
+            tmap.arm_trial(True)
+            seen["arm"] = None
+        except Refused as refusal:
+            seen["arm"] = refusal.reason
+        seen["pending"] = tmap._pending
+        return become(user)
+
+    monkeypatch.setattr(setup, "_become", arm_in_the_window)
+    assert setup.run(command).is_ok
+    assert seen["arm"] is not None, "an Arm during the switch must be refused"
+    assert "switch" in seen["arm"].lower(), seen["arm"]
+    assert seen["pending"] is None, "nothing armed on a map about to close"
+    assert setup.user.is_guest and "Transfer Map" not in setup.controller.model_names
+
+
+def test_a_refused_switch_lets_arm_through_again(setup, monkeypatch, tmp_path):
+    """The hold is released whatever happens: a switch refused for an open
+    trial elsewhere (the Sample DB, say) leaves the Transfer Map armable."""
+    create(setup)
+    setup.build(CONFIGS)
+    tmap = models(setup)["Transfer Map"]
+    _armable(tmap, monkeypatch, tmp_path)
+    monkeypatch.setattr(type(models(setup)["Sample DB"]), "is_active", True,
+                        raising=False)
+    assert setup.run("switch_user").is_refused
+    tmap.arm_trial(True)                  # not refused
+    assert tmap._pending is not None
+    tmap.abort_trial()
 
 
 # -- creating an account and signing in ----------------------------------------------------
