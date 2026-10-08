@@ -1756,6 +1756,8 @@ def sim_station():
         if row["needs_port"]:
             getattr(setup, f"set_{key}_port")(SIM)
     assert len(setup.launch()) == 8   # + the Transfer Map (Tier S) and the Sample Map
+    # Past the sign-in screen (2026-10-07) as Guest, as an operator would be.
+    assert setup.run("open_as_guest").is_ok
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open(), "the server did not bind an ephemeral port"
     try:

@@ -1018,8 +1018,14 @@ function renderEntry(panel, element) {
   // O14 (PM8-7): Return, or leaving the box, commits what it says - only if
   // it says something the station does not hold. Escape puts back what the
   // station holds.
+  // A secret (a password) never commits itself: the station never echoes
+  // it, so a commit on blur put "" back in the box and the next Sign in
+  // sent an empty password (2026-10-07). It keeps what was typed until a
+  // command that declares it runs (PanelCard.run clears it then).
+  const isSecret = Boolean(element.secret);
+  if (isSecret) input.autocomplete = 'current-password';
   const commit = () => {
-    if (input.disabled || !element.writable || input.value === served) return;
+    if (isSecret || input.disabled || !element.writable || input.value === served) return;
     panel.commit(element, input.value);
   };
   input.addEventListener('keydown', (event) => {
@@ -1040,7 +1046,8 @@ function renderEntry(panel, element) {
     // Typed and not committed (MOD-6): what travels with a command. Focus
     // alone is not an edit - a focused box is not refreshed, so its
     // unchanged text may be a value behind.
-    isEdited: () => input.value !== served,
+    // A secret travels only with a command that declares it.
+    isEdited: () => !isSecret && input.value !== served,
     readValue: () => input.value,
     /** A commit landed: what the box says is what the station holds. */
     accept: (value) => { served = String(value); },
@@ -1049,7 +1056,12 @@ function renderEntry(panel, element) {
       input.value = served;
       if (slider) slider.follow();
     },
+    /** A secret's typed text, gone once its command has run. */
+    clear: () => { input.value = ''; served = ''; },
     setText: (text) => {
+      // The station's "" for a secret is not a value to show: the box
+      // keeps what the operator typed.
+      if (isSecret) return;
       // An int box never shows "5.000", whatever the state formatted.
       const next = isInt ? intText(text)
         : ((text === null || text === undefined) ? '' : String(text));
@@ -2515,6 +2527,9 @@ class PanelCard {
         const again = (result.args || []).concat([true]);
         result = await this.call(result.command, result.inputs || {}, again);
       }
+      // The secrets this command declared have travelled: they go from
+      // their boxes now, whatever the answer (2026-10-07).
+      this.clearSecrets(element);
       if (result.status === 'ok') this.showRefused('');
       else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element);
       // R4: the station is going away on purpose; the page waits for the
@@ -2564,6 +2579,16 @@ class PanelCard {
 
   widgetFor(element) {
     return this.widgets.find((w) => w.element === element) || null;
+  }
+
+  /** Empty every secret entry `element` declares as an input. */
+  clearSecrets(element) {
+    const declared = (element && element.inputs) || [];
+    for (const widget of this.widgets) {
+      const entry = widget.element;
+      if (entry && entry.secret && widget.clear
+          && declared.indexOf(entry.model_attr) !== -1) widget.clear();
+    }
   }
 
   /** O10 (WDG8-4): the entry a refusal is about, read from its words - the
@@ -3212,6 +3237,13 @@ class PanelCard {
   }
 }
 
+/** The name of the signed-in user's sheet (`state.account.sheet` of Setup),
+ *  which is never a launched device. "User" when Setup does not say. */
+function accountSheet(setupState) {
+  const account = setupState && setupState.account;
+  return (account && account.sheet) || 'User';
+}
+
 /** The label on a confirmation's yes-button: the action, not "OK". */
 function confirmLabel(result) {
   const command = String((result && result.command) || '');
@@ -3337,7 +3369,30 @@ class Dashboard {
       scrim: document.getElementById('scrim'),
       setupLink: document.getElementById('setup-link'),
       quitLink: document.getElementById('quit-link'),
+      // The rail's other keys (not the stop, Setup or Quit): off while the
+      // sign-in screen is up.
+      railExtras: Array.from(document.querySelectorAll(
+        '.rail-foot .rail-control:not(#setup-link):not(#quit-link)')),
+      gate: document.getElementById('sign-in-gate'),
+      gateForm: document.getElementById('gate-form'),
+      gateEmail: document.getElementById('gate-email'),
+      gatePassword: document.getElementById('gate-password'),
+      gateError: document.getElementById('gate-error'),
+      gateCreate: document.getElementById('gate-create'),
+      gateGuest: document.getElementById('gate-guest'),
     };
+    //: The sign-in screen is up (Setup's `account.chosen` is false): only
+    //: it, the rail's stop and Quit are usable (2026-10-07).
+    this.isGated = false;
+    this.isGateBusy = false;
+    if (this.dom.gate) {
+      this.dom.gateForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        this.runGate('sign_in', true);
+      });
+      this.dom.gateCreate.addEventListener('click', () => this.runGate('create_account', true));
+      this.dom.gateGuest.addEventListener('click', () => this.runGate('open_as_guest', false));
+    }
     this.isLogCollapsed = true;
     this.dom.stop.addEventListener('click', () => this.toggleEstopAll());
     this.dom.modalOk.addEventListener('click', () => this.acknowledge(true));
@@ -3420,6 +3475,8 @@ class Dashboard {
   // readout groups arriving behind it - and the rail's Setup button, which
   // only exists while the drawer is shut, brings it back.
   setDrawerOpen(isOpen) {
+    // Setup comes after the sign-in screen, never beside it.
+    if (this.isGated) isOpen = false;
     const wasOpen = this.isDrawerOpen;
     const active = document.activeElement;
     const hadFocus = this.dom.drawer.contains(active);
@@ -3431,7 +3488,7 @@ class Dashboard {
     // The scrim dims what the drawer is covering. At boot it is covering an
     // empty rack, so there is nothing to dim and no scrim.
     this.dom.scrim.hidden = !(this.isDrawerOpen && this.cards.size > 0);
-    this.dom.setupLink.hidden = this.isDrawerOpen;
+    this.dom.setupLink.hidden = this.isDrawerOpen || this.isGated;
     this.dom.drawer.setAttribute('aria-hidden', this.isDrawerOpen ? 'false' : 'true');
     // While the drawer is open the rack behind it is inert, so Tab walks the
     // drawer, the tray and the rail - never a control under the scrim - and
@@ -3459,11 +3516,95 @@ class Dashboard {
     const covered = Boolean(top);
     const setInert = (node, flag) => { if (node && node.inert !== flag) node.inert = flag; };
     const gone = this.isShutDown;
-    setInert(this.dom.cards, covered || this.isDrawerOpen || gone);
-    setInert(this.dom.logPanel, covered || gone);
-    setInert(this.dom.drawer, covered || !this.isDrawerOpen || gone);
+    // The sign-in screen: everything but it and the rail's stop and Quit.
+    const gated = this.isGated;
+    setInert(this.dom.cards, covered || this.isDrawerOpen || gated || gone);
+    setInert(this.dom.logPanel, covered || gated || gone);
+    setInert(this.dom.drawer, covered || !this.isDrawerOpen || gated || gone);
+    setInert(this.dom.nav, gated);
+    setInert(this.dom.gate, covered || !gated || gone);
     for (const layer of overlays) setInert(layer, layer !== top);
-    for (const win of this.floating) setInert(win, covered || gone);
+    for (const win of this.floating) setInert(win, covered || gated || gone);
+  }
+
+  // -- the sign-in screen (2026-10-07) ----------------------------------------
+  //
+  // Sign-in screen, then Setup, then the station. Shown while Setup says no
+  // choice was made (`state.account.chosen`), so a reload with someone
+  // signed in, or after Guest, goes straight on. A Setup that says nothing
+  // about accounts (accounts off) has no gate.
+  applyAccount(setupState) {
+    if (!setupState) return;
+    const account = setupState.account;
+    this.setGated(Boolean(account && account.enabled !== false && account.chosen === false));
+  }
+
+  setGated(flag) {
+    const isGated = Boolean(flag) && Boolean(this.dom.gate);
+    if (isGated === this.isGated) return;
+    this.isGated = isGated;
+    this.dom.gate.hidden = !isGated;
+    document.body.classList.toggle('is-gated', isGated);
+    for (const key of this.dom.railExtras) key.disabled = isGated;
+    if (isGated) {
+      putText(this.dom.gateError, '');
+      this.setDrawerOpen(false);
+      this.dom.setupLink.hidden = true;
+      this.updateInert();
+      if (!this.confirmPending) this.dom.gateEmail.focus({ preventScroll: true });
+    } else {
+      this.dom.gatePassword.value = '';
+      this.updateInert();
+      // Setup next - unless the station is already running: its sheet.
+      this.setDrawerOpen(!this.isLaunched);
+      this.dom.setupLink.hidden = this.isDrawerOpen;
+    }
+  }
+
+  /** One of the screen's three choices, as Setup's command with the typed
+   *  email and password as its inputs. A confirmation (a new account, the
+   *  first sign-in of a migrated profile) is the page's own dialog; a
+   *  refusal is said on the screen. The password leaves the box once the
+   *  station has answered. */
+  async runGate(command, withFields) {
+    if (this.isGateBusy) return;
+    this.isGateBusy = true;
+    const buttons = [this.dom.gateCreate, this.dom.gateGuest,
+                     document.getElementById('gate-sign-in')];
+    for (const button of buttons) if (button) button.setAttribute('aria-busy', 'true');
+    const inputs = withFields ? { account_email: this.dom.gateEmail.value,
+                                  account_password: this.dom.gatePassword.value } : {};
+    let said = '';
+    try {
+      let result = await apiPost('/api/run', { name: SETUP_NAME, command, inputs, args: [] });
+      if (result.status === 'needs_confirm') {
+        if (await this.confirm(result.reason, confirmLabel(result))) {
+          result = await apiPost('/api/run', {
+            name: SETUP_NAME, command: result.command, inputs: result.inputs || {},
+            args: (result.args || []).concat([true]),
+          });
+        } else {
+          result = { status: 'cancelled' };
+        }
+      }
+      this.dom.gatePassword.value = '';
+      if (result.status !== 'ok' && result.status !== 'cancelled') {
+        said = result.reason || 'The station refused. Try again.';
+      }
+    } catch (err) {
+      said = 'The station did not answer (' + failureReason(err)
+        + '). Check that it is running, then try again.';
+    } finally {
+      this.isGateBusy = false;
+      for (const button of buttons) if (button) button.removeAttribute('aria-busy');
+    }
+    putText(this.dom.gateError, said);
+    if (said && this.isGated) {
+      const field = withFields && !this.dom.gateEmail.value ? this.dom.gateEmail
+        : (withFields ? this.dom.gatePassword : null);
+      if (field) field.focus({ preventScroll: true });
+    }
+    await this.refreshNow();
   }
 
   // -- in-page panels (G4) --------------------------------------------------
@@ -3949,6 +4090,9 @@ class Dashboard {
       } catch (err) { /* the next cycle retries */ }
     }
     this.collapseSetupOnLaunch(models, setupState);
+    // After the launch edge, so leaving the sign-in screen knows whether
+    // the station is running (then its sheet, else Setup).
+    this.applyAccount(setupState);
   }
 
   /** An empty rack says what to do next, and the drawer that does it is
@@ -3982,7 +4126,11 @@ class Dashboard {
    *  would slam the card shut 250 ms after every re-open. */
   collapseSetupOnLaunch(models, setupState) {
     if (!this.setupCard) return;
-    const hasModels = Object.keys(models || {}).length > 0;
+    // The signed-in user's sheet is a model in the Controller but not a
+    // launched device: signing in in Setup must not read as a launch and
+    // withdraw the drawer (2026-10-07).
+    const sheet = accountSheet(setupState);
+    const hasModels = Object.keys(models || {}).some((name) => name !== sheet);
     // No setup state and no models: the setup poll failed, which is not an
     // edge and must not be read as "stopped".
     if (!hasModels && !setupState) return;
@@ -4482,7 +4630,14 @@ class Dashboard {
       this.setupCard.node.classList.add('setup-card');
       this.dom.drawerBody.appendChild(this.setupCard.node);
       this.setupCard.refresh(setup.state);
-      this.setDrawerOpen(true);        // Setup is where a run begins
+      // The sign-in screen first, when no choice is made yet: Setup then
+      // waits behind it (setDrawerOpen refuses while it is up).
+      this.applyAccount(setup.state);
+      // A station already running (a reload) shows its sheet at once: the
+      // full-screen Setup no longer opens only to slide away on the first
+      // poll, under a press meant for it.
+      if (setup.state && setup.state.is_launched) this.isLaunched = true;
+      if (!this.isLaunched) this.setDrawerOpen(true);        // Setup is where a run begins
     } catch (err) { /* setup is optional once models are built */ }
   }
 

@@ -72,7 +72,9 @@ def test_setup_has_no_profile_row_or_sign_in_when_profiles_are_off(monkeypatch):
 
 def test_the_profile_row_returns_when_profiles_are_on(monkeypatch):
     titles, commands = _titles_and_commands(monkeypatch, True)
-    assert titles[0] == "Account" and "sign_in" in commands
+    # Updated (2026-10-07, the sign-in gate): signing in is on the sign-in
+    # screen before Setup; the section keeps the way back to it.
+    assert titles[0] == "Account" and "switch_user" in commands
 
 
 def test_a_model_is_not_given_an_operator_when_profiles_are_off(monkeypatch):

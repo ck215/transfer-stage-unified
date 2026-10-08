@@ -109,6 +109,33 @@
     <div id="drawer-body" class="drawer-body"></div>
   </aside>
 
+  <!-- The sign-in screen (2026-10-07): before Setup, until the operator
+       signs in, makes an account or proceeds as guest. Beside the rail like
+       every layer: the stop is never behind it. Setup's state says when it
+       shows (`account.chosen`). -->
+  <section id="sign-in-gate" class="gate" aria-labelledby="gate-title" hidden>
+    <div class="gate-body">
+      <h2 id="gate-title" class="gate-title">Sign in</h2>
+      <form id="gate-form" class="gate-form" novalidate>
+        <label class="gate-field"><span>Email</span>
+          <input id="gate-email" class="input" name="email" type="email"
+                 autocomplete="username" spellcheck="false" inputmode="email"></label>
+        <label class="gate-field"><span>Password</span>
+          <input id="gate-password" class="input" name="password" type="password"
+                 autocomplete="current-password"></label>
+        <p id="gate-error" class="gate-error" role="alert"></p>
+        <div class="gate-actions">
+          <button id="gate-sign-in" type="submit" class="button role-go">Sign in</button>
+          <button id="gate-create" type="button" class="button role-neutral">Create account…</button>
+        </div>
+      </form>
+      <div class="gate-guest">
+        <p class="gate-note">If you have not been trained on accounts for this equipment, proceed as guest for standard operation.</p>
+        <button id="gate-guest" type="button" class="button role-neutral">Proceed as guest</button>
+      </div>
+    </div>
+  </section>
+
   <!-- One line at the foot of the page: the latest warning or error, and
        the room to read the log when you ask for it. Normal is silence. -->
   <section id="log-panel" class="tray">

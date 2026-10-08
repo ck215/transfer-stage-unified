@@ -382,8 +382,13 @@ def test_the_setup_drawer_withdraws_when_the_first_model_appears():
     the instrument-console pass Setup is a left drawer rather than a card in
     the rack, so "minimised" is "slid out" - the same edge, the same rule."""
     collapse = _body(r"collapseSetupOnLaunch\(models, setupState\) \{(.*?)\n  \}")
-    assert "Object.keys(models || {}).length > 0" in collapse, (
+    # Updated (2026-10-07, the sign-in gate): a model appearing, but not the
+    # signed-in user's sheet - signing in in Setup withdrew the drawer and
+    # showed the User page, as if the station had launched.
+    assert "Object.keys(models || {}).some((name) => name !== sheet)" in collapse, (
         "the collapse is not driven by a model appearing in the state")
+    assert "const sheet = accountSheet(setupState);" in collapse, (
+        "the User sheet counts as a launched device")
     assert "setupState.is_launched" in collapse, (
         "the Setup panel's own is_launched must close it too - a launch "
         "that builds no model still leaves the wizard")
@@ -418,13 +423,22 @@ def test_the_setup_drawer_is_open_at_boot_and_reopens_from_the_rail():
     assert "if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false)" \
         in APP_JS, "Escape does not close the drawer"
     assert re.search(r"\.drawer\s*\{[^}]*position:\s*fixed", STYLES)
-    assert re.search(r"\.drawer\s*\{[^}]*width:\s*min\(5[0-9]0px, 100%\)", STYLES)
-    # The stop may never be under the drawer, its scrim or any overlay (F1).
+    # Updated (2026-10-07): Setup is full-screen - the whole page right of
+    # the rail, down to the tray - with its content in a bounded column.
+    assert re.search(r"\.drawer\s*\{[^}]*right:\s*0;", STYLES)
+    assert re.search(r"\.drawer\s*\{[^}]*--setup-max:\s*[0-9.]+rem", STYLES)
+    # The stop may never be under the drawer, its scrim, the sign-in screen
+    # or any overlay (F1).
     def z(selector):
         found = re.search(r"\n" + selector + r"\s*\{[^}]*z-index:\s*(\d+)", STYLES)
         assert found, f"{selector} has no z-index"
         return int(found.group(1))
-    assert z(r"\.rail") > max(z(r"\.drawer"), z(r"\.scrim"), z(r"\.overlay"), z(r"\.tray"))
+    assert z(r"\.rail") > max(z(r"\.drawer"), z(r"\.scrim"), z(r"\.overlay"), z(r"\.tray"),
+                              z(r"\.gate"))
+    assert z(r"\.drawer") < z(r"\.gate") < z(r"\.overlay"), (
+        "the sign-in screen is over Setup and under its own confirmation")
+    assert re.search(r"\.gate\s*\{[^}]*inset:\s*var\(--rail-top\) 0 0 var\(--rail-left\)",
+                     STYLES), "the sign-in screen covers the rail"
     # Updated (E): the rail is a column on the left, so the scrim starts
     # beside it (--rail-left) - or under it on a phone (--rail-top).
     assert re.search(r"\.scrim\s*\{[^}]*inset:\s*var\(--rail-top\) 0 var\(--tray-h\) "
