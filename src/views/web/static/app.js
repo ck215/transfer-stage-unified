@@ -1549,7 +1549,8 @@ function renderFileOpen(panel, element) {
       await panel.run(element, [saved]);
     }
   });
-  const button = make('button', 'button ' + roleClass(element.role), label);
+  // `file-open-key`: the key a prompt's Return presses from the path box.
+  const button = make('button', 'button file-open-key ' + roleClass(element.role), label);
   button.type = 'button';
   button.setAttribute('aria-label', nameFor(label, ownerOf(panel)));
   const load = () => {
@@ -3197,6 +3198,14 @@ class PanelCard {
       && !b.disabled && b.getClientRects().length) || null;
   }
 
+  /** The key of the `file_open` row `input` is the path box of (the row's
+   *  load key, not Choose file…), when it is live in `box`; else null. */
+  fileOpenKey(box, input) {
+    const row = input && input.classList.contains('path-input') && input.closest('.file-open');
+    const key = row && row.querySelector('button.file-open-key');
+    return key && box.contains(key) && !key.disabled && key.getClientRects().length ? key : null;
+  }
+
   /** The live key in `box` whose command declares `input`'s entry among its
    *  inputs, a go key before a neutral one; null when none does. */
   keyTaking(box, input) {
@@ -3226,7 +3235,11 @@ class PanelCard {
       // (the go key first): "Add sample" for Sample ID, "Add material" for
       // New material, "New store" for Name. Return used to find no "Add"
       // in those prompts and did nothing.
-      const add = this.dialogButton(box, 'add') || this.keyTaking(box, event.target);
+      // A photo path (a `file_open` row) is taken by its own key ("Add
+      // photo…"), never by the prompt's Add: Return there swallowed the
+      // row's own Return and found no key, so it did nothing.
+      const add = this.fileOpenKey(box, event.target)
+        || this.dialogButton(box, 'add') || this.keyTaking(box, event.target);
       if (add) add.click();
     } else if (event.key === 'Tab') {
       const live = Array.from(box.querySelectorAll('input, select, textarea, button'))
