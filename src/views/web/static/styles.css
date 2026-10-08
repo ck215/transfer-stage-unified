@@ -1490,7 +1490,9 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 /* -- the prompt dialog (W2-2) ------------------------------------------------ */
 /* A `new_` step: a scrim over this card only (the stop and the rail are
    outside the card), its sections centred in it. */
-.card.has-dialog { position: relative; min-height: 22rem; }
+/* At least the prompt's own height (app.js openDialog writes --dialog-need),
+   so its keys are never cut off below a short card. */
+.card.has-dialog { position: relative; min-height: max(22rem, var(--dialog-need, 0px)); }
 
 .card-dialog {
   position: absolute;
@@ -1519,6 +1521,10 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 }
 
 .dialog-box > .section { flex-direction: column; align-items: stretch; }
+/* A dropdown keeps its key's width in a prompt: stretched across the box,
+   the key wrapper drew its chevron at the far right, a hand's width from
+   the 10rem select it belongs to. */
+.dialog-box .select-key { align-self: flex-start; }
 .dialog-box > .section > .section-title {
   position: static;
   width: auto;
