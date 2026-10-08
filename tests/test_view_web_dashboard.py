@@ -638,13 +638,11 @@ def test_d_the_view_reads_host_from_state_never_a_class_name():
 @pytest.fixture
 def map_station(tmp_path, monkeypatch):
     """The real pair, Transfer Map and Red Percent, in SIM behind a real
-    Setup: ticking the Map ticks Red Percent (Setup._enable)."""
+    Setup: the Map needs no port, so it always launches, with its guest."""
     monkeypatch.setenv("STATION_MAP_DB", str(tmp_path / "db" / "map.sqlite"))
     from controller.setup import Setup
     controller = Controller()
     setup = Setup(controller)
-    key = next(k for k, row in setup._rows.items() if row["name"] == "Transfer Map")
-    getattr(setup, f"set_{key}_enabled")(True)
     launched = setup.launch()
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open()

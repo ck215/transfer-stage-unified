@@ -428,7 +428,8 @@ def test_a_scan_drops_a_selection_whose_port_is_gone(panel, monkeypatch):
                         lambda self, port, should_abort=None: None)
     panel.scan()
     _join(panel)
-    assert panel.stepper_probe_enabled is False and panel.stepper_probe_port == SIM
+    assert panel.stepper_probe_enabled is False
+    assert panel.stepper_probe_port == station_setup.NOT_CONNECTED
     assert "stepper_probe" not in panel._chosen
 
 
@@ -450,7 +451,7 @@ def test_a_completed_scan_assigns_what_it_identified_without_being_asked(
     assert panel.temperature_controller_port == "/dev/ttyUSB1"
     assert panel.stepper_probe_status == "detected: Stepper Probe"
     assert panel.smc100_rotator_enabled is False
-    assert panel.smc100_rotator_status == "off"
+    assert panel.smc100_rotator_status == "not connected"
 
 
 def test_a_cancelled_scan_assigns_nothing(panel, monkeypatch):
@@ -484,7 +485,6 @@ def test_a_scan_leaves_a_row_the_operator_set_by_hand_alone(panel, monkeypatch):
     monkeypatch.setattr(Setup, "identify",
                         lambda self, port, should_abort=None: answers[port])
     panel._ports = ["/dev/ttyUSB0"]
-    assert panel.run("set_stepper_probe_enabled", args=(True,)).is_ok
     assert panel.run("set_stepper_probe_port", args=(SIM,)).is_ok
     panel.scan()
     _join(panel)

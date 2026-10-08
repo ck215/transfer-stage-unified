@@ -304,6 +304,10 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                 confirmed=bool(body.get("confirmed")))
             return self._send_json(200, self._result_dict(result))
 
+        # No page control calls these two (owner 2026-10-07: devices are not
+        # added or removed after the launch; Setup's Hard reset recovers one).
+        # Kept for the browser tests, which drive a model's removal (what
+        # Close every model, a Relaunch and a sign-out do) through them.
         if route == "/api/close_model":
             name = body.get("name")
             closed = self.controller.remove(name)
