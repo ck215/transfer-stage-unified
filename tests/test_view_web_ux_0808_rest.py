@@ -476,3 +476,111 @@ def test_the_rail_dots_meet_3_to_1_and_an_error_differs_by_shape(two_window_stat
     for dot in idle + stopped:
         assert dot["contrast"] >= 3.0, dot
     assert {d["shape"] for d in idle}.isdisjoint({d["shape"] for d in stopped}), out
+
+
+# --------------------------------- phone width: the rows without a port
+class PortlessRowsSetup(RowsSetup):
+    """A device row and a Transfer Map row in the real Setup's shape: the
+    Transfer Map's On/SIM choice is captioned as the real Setup captions a
+    row with no port, then its Status."""
+
+    def __init__(self):
+        super().__init__()
+        self.map_port = "On"
+        self.map_status = "Sign in to use"
+
+    @property
+    def schema(self):
+        from controller.setup import Setup
+        base = super().schema
+        base["sections"].append(sch.section(
+            "Transfer Map",
+            sch.dropdown(Setup.PORTLESS_CAPTION, "map_port", "set_port",
+                         "device_options"),
+            sch.readonly("Status:", "map_status"),
+            layout="row"))
+        return base
+
+    def device_options(self):
+        return ["On", "SIM"]
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot.update({"is_launched": False,
+                         "rows": [{"key": "alpha", "name": "Stepper Probe",
+                                   "needs_port": True},
+                                  {"key": "map", "name": "Transfer Map",
+                                   "needs_port": False}]})
+        return snapshot
+
+
+@pytest.fixture
+def portless_station():
+    controller = Controller()
+    model = FakeProc()
+    controller.add("Fake Proc", model, {"kind": "Fake Proc"})
+    view = WebView(controller, PortlessRowsSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_a_portless_row_at_phone_width_reads_as_a_choice_not_a_port(
+        portless_station, tmp_path):
+    """At 390 px the Transfer Map and Sample DB rows read "Port [On ...]",
+    the On/SIM key stretched across the screen (a port named On). The
+    choice is captioned as what it is, its key is as wide as its words like
+    every other key, and the device row above keeps its whole-width Port."""
+    out = _browse(portless_station, _READY + r"""
+      await page.setViewport({ width: 390, height: 844 });
+      await sleep(500);
+      if (!(await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open')))) {
+        await page.evaluate(() => document.getElementById('setup-link').click());
+      }
+      await until(() => document.querySelectorAll('#drawer-body select').length >= 3);
+      await sleep(900);
+      return await page.evaluate(() => {
+        const row = Array.from(document.querySelectorAll('#drawer-body .section-row'))
+          .find((r) => r.dataset.section === 'Transfer Map');
+        const keyOf = (s) => {
+          const key = s.closest('.select-key') || s;
+          const b = key.getBoundingClientRect();
+          return { width: Math.round(b.width), height: Math.round(b.height) };
+        };
+        const select = row.querySelector('select');
+        const ctx = document.createElement('canvas').getContext('2d');
+        const style = getComputedStyle(select);
+        ctx.font = style.fontWeight + ' ' + style.fontSize + ' ' + style.fontFamily;
+        const words = Math.max(...Array.from(select.options).map((o) => ctx.measureText(o.text).width));
+        const label = select.closest('.cell').querySelector('.label');
+        const status = row.lastElementChild;
+        const device = Array.from(document.querySelectorAll('#drawer-body select'))
+          .find((s) => /^Port, Stepper/.test(s.getAttribute('aria-label') || ''));
+        const sb = status.getBoundingClientRect();
+        return { caption: label ? label.innerText.trim() : null,
+                 aria: select.getAttribute('aria-label'),
+                 key: keyOf(select), words: Math.round(words),
+                 status: { text: status.innerText,
+                           clipped: status.scrollWidth > status.clientWidth + 1,
+                           visible: sb.width > 0 && sb.height > 0 },
+                 device: keyOf(device),
+                 sideways: document.documentElement.scrollWidth - window.innerWidth,
+                 drawer: (() => { const d = document.getElementById('drawer-body');
+                                  return d.scrollWidth - d.clientWidth; })() };
+      });
+    """, tmp_path)
+    assert out["caption"] == "Run", out
+    assert out["aria"].startswith("Run"), out
+    # As wide as its longest choice plus the key's padding and chevron
+    # (the Take over key's allowance), not the screen's width (357 px).
+    assert out["key"]["width"] <= out["words"] + 80, out
+    assert out["key"]["height"] >= 36, out
+    assert out["status"]["visible"] and not out["status"]["clipped"], out
+    assert "Sign in to use" in out["status"]["text"], out
+    # The device row is unchanged: its Port still takes the line.
+    assert out["device"]["width"] >= 250, out
+    assert out["sideways"] <= 0 and out["drawer"] <= 0, out

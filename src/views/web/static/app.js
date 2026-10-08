@@ -5537,6 +5537,13 @@ class Dashboard {
     const byCommand = (command) => card.widgets.find(
       (w) => w.element && w.element.command === command);
     for (const row of (state.rows || [])) {
+      // A row with no port (the Transfer Map, the Sample DB): its On/SIM
+      // key is as wide as its words at phone width (styles.css), not a
+      // port's whole line.
+      const choice = card.widgets.find(
+        (w) => w.element && w.element.model_attr === row.key + '_port');
+      const block = choice && choice.node && choice.node.closest('.section-row');
+      if (block) block.classList.toggle('portless-row', row.needs_port === false);
       const widget = byCommand('hard_reset_' + row.key);
       const button = widget && widget.node && widget.node.querySelector('button');
       if (!button) continue;

@@ -240,6 +240,18 @@ def test_a_model_that_needs_no_port_still_has_one_dropdown(panel):
     assert panel.options("device_options") == [ON, SIM]
 
 
+def test_a_portless_rows_dropdown_is_not_captioned_port(panel):
+    """The Transfer Map's and Sample DB's On/SIM choice has no port behind
+    it: at phone width each control shows its own caption, and "Port On"
+    read as a port named On (a screen reader said "Port, Transfer Map").
+    A row with a port keeps "Port"."""
+    screen = next(s for s in panel.schema["sections"] if s["title"] == "Screen")
+    choice = next(e for e in screen["elements"] if e["type"] == "dropdown")
+    assert choice["text"] == Setup.PORTLESS_CAPTION == "Run"
+    alpha = next(s for s in panel.schema["sections"] if s["title"] == "Alpha")
+    assert alpha["elements"][0]["text"] == "Port"
+
+
 def test_the_header_row_offers_refresh_the_scan_status_and_cancel(panel):
     # F18 added "Cancel scan" (enabled only while scanning): a hung scan
     # could not be given up before.
