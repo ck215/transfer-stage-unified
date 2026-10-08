@@ -133,7 +133,7 @@ with no hardware that owns a local store, reads other models by duck type
   unit and axis grouping.
 - Refusal lines appear where they happened, and greyed controls carry their
   reason (`views.base.gate_reason`).
-- The Overview entry and the device page. The head opens the page.
+- The Dashboard entry and the device page. The head opens the page.
 - The stop disc, the per-model switch, the headline and the rail marks
   (latched, unconfirmed, faulted, energized). `stop_words` names the device.
 - Lost-link and stale marks, which come from `devices` and `age`.

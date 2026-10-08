@@ -514,7 +514,7 @@ def test_the_ids_and_pages_a_tutorial_names_are_real(sim_station):
     pages = {name for name, cls in MODEL_TYPES.items() if not getattr(cls, "HOST", None)}
     for t in _files().values():
         for step in t["steps"]:
-            assert step["page"] in pages | {"Overview"}, step["page"]
+            assert step["page"] in pages | {"Dashboard"}, step["page"]
 
 
 def test_every_hardware_model_has_its_own_tutorial():

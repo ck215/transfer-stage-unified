@@ -52,16 +52,20 @@ the same way inside the well.
 
 ## Two pages on the sheet (Tier K, 2026-09-26)
 
-- **Overview** — the rail's first item, shown at launch, after Setup
+- **Dashboard** (named "Overview" until the owner renamed it, 2026-10-08) — the rail's first item, shown at launch, after Setup
   launches, and whenever the shown device is closed. Every launched model
-  is a compact entry in the grid (three across, then two; one column under
-  1000 px): its tier-1 body only, no wells, no disclosures. The entry's
+  is a compact entry on a standard tile (owner 2026-10-08, replacing rows of
+  three): one grid column wide or two ("Wide"), a whole number of grid rows
+  tall; three columns, two under 1000 px, one under 760. The viewer
+  reorders tiles by dragging "Move" or with its arrow keys; the order and
+  the Wide tiles are kept per browser. Its tier-1 body only, no wells, no
+  disclosures. The entry's
   head is a press target ("Open" affordance at its right); a press opens
   the device.
 - **Device page** — one model alone, full width, its readings `focal`, its
   tier-2 and tier-3 disclosures at the foot of its body; their open state
   is remembered per model for the session. The rail highlights the shown
-  device; pressing Overview returns.
+  device; pressing Dashboard returns.
 - The rail (disc, "Stop: Ctrl+.", Setup, Quit), the latched headline
   "Every model is stopped." and the tray are identical on both pages.
 
@@ -78,11 +82,11 @@ rule and the words "Stop not confirmed. Treat as live."
 
 - **Rail** (left, 248 px; 200 px under 1000 px wide): title and "Simulation,
   no hardware attached" / nothing when connected; the stop disc with
-  "Stop: Ctrl+." under it; the page list: Overview first, then the models (the shown
+  "Stop: Ctrl+." under it; the page list: Dashboard first, then the models (the shown
   page highlighted; a press switches to it); Setup and Quit at the bottom.
 - **Sheet**: entries, not cards. An entry is a 2 px ink rule, the model
   name, then its tier-1 body; entries are separated by whitespace. On the device page the
-  shown model's readings are `focal`; on the Overview a probe's are `compact`, a
+  shown model's readings are `focal`; on the Dashboard a probe's are `compact`, a
   single-value model's `primary`, a change `secondary` (`theme.READING_SIZES`).
   Captions are `theme.CAPTION_SIZE`, axis letters inline ("Position, steps"
   once per probe, then X Y Z).
@@ -170,10 +174,10 @@ shows the step the operator is in and hides what the step does not need.
   it stands. The stop is never phased and stays reachable in every step.
 - **The region picker** draws on the model's still at full resolution, maps
   the drag to source pixels and outlines the held region.
-- **Dividers.** On the Overview each device sits inside an explicit hairline
+- **Dividers.** On the Dashboard each device sits inside an explicit hairline
   boundary in every reflow (three across, two, one column), not whitespace
   alone. This amends "entries are separated by whitespace" above for the
-  Overview.
+  Dashboard.
 - **Thumbnails.** Images reach the page through `GET /api/image` (a relative
   path under the output root).
 
@@ -204,7 +208,7 @@ shows the step the operator is in and hides what the step does not need.
   its details) and its Estimators plot at tier 1 on the trial page.
 - **Speed dials** read 0-100 % over each device's ceiling (stepper 3200,
   chuck 600 steps/s); the wire still carries steps/s.
-- **Dividers.** The Overview's hairline boundaries stand as above.
+- **Dividers.** The Dashboard's hairline boundaries stand as above.
 - **Accounts and tutorials.** Setup's Account section masks secret entries
   (`secret: True` on an entry, cleared after use). The Tutorials entry on the
   rail runs coach cards (`tutorial.js`, `tutorials/*.json`) that point at real

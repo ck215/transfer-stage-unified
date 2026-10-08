@@ -172,11 +172,17 @@
     return null;
   }
 
+  /** The rail's first page: "Dashboard" since 2026-10-08 (owner), "Overview"
+   *  before it - a tutorial written with either word still finds it. */
+  function isDashboard(name) {
+    return name === 'Dashboard' || name === 'Overview';
+  }
+
   function showPage(name) {
     const nav = document.getElementById('model-nav');
     if (!nav) return;
     let link = null;
-    if (name === 'Overview') link = nav.querySelector('.overview-link');
+    if (isDashboard(name)) link = nav.querySelector('.overview-link');
     else {
       for (const node of nav.querySelectorAll('.model-link[data-model]')) {
         if (node.dataset.model === name) { link = node; break; }
@@ -187,7 +193,7 @@
     // side window (owner 2026-10-07), and a step about Settings keeps it.
     const station = window.station;
     if (station && typeof station.showPage === 'function') {
-      station.showPage(name === 'Overview' ? null : name);
+      station.showPage(isDashboard(name) ? null : name);
     } else {
       link.click();
     }
@@ -288,7 +294,7 @@
     const away = document.getElementById('drawer-close');
     const aboutSetup = step.anchor && step.anchor.selector
       && drawer && drawer.querySelector(step.anchor.selector);
-    if (step.page !== 'Overview' && drawer && drawer.classList.contains('open')
+    if (!isDashboard(step.page) && drawer && drawer.classList.contains('open')
       && away && !aboutSetup) away.click();
     showPage(step.page);
     draw();

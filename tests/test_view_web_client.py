@@ -393,7 +393,14 @@ def test_the_setup_drawer_withdraws_when_the_first_model_appears():
     assert "setupState.is_launched" in collapse, (
         "the Setup panel's own is_launched must close it too - a launch "
         "that builds no model still leaves the wizard")
-    assert "this.setDrawerOpen(!isLaunched)" in collapse
+    # Updated (owner 2026-10-07): the launch side is one move, landOnSheet -
+    # Setup slides away, the entries settle, focus lands on the page - and it
+    # still closes the drawer; the stop side still opens it.
+    assert "if (isLaunched) this.landOnSheet();" in collapse
+    assert "else this.setDrawerOpen(true);" in collapse
+    land = _body(r"landOnSheet\(\) \{(.*?)\n  \}")
+    assert "this.setDrawerOpen(false);" in land
+    assert "this.dom.cards.focus(" in land
     assert "if (isLaunched === this.isLaunched) return;" in collapse, (
         "the collapse must be edge-triggered: a level-triggered version "
         "slams the drawer shut 250 ms after every re-open, and never opens "
@@ -510,21 +517,22 @@ def test_entries_sit_on_a_six_column_sheet_overview_and_device_page():
     assert re.search(r"\.card\.is-opened\s*\{\s*grid-column:\s*1 / -1;", STYLES)
     assert re.search(r"\.sheet\.is-device > \.card:not\(\.is-opened\)\s*\{\s*display:\s*none", STYLES)
     assert re.search(r"\.sheet\.is-overview \.card > \.tier-well\s*\{\s*display:\s*none", STYLES)
-    assert re.search(r"\.card\.span-2\s*\{\s*grid-column:\s*span 2", STYLES)
+    # Updated (owner 2026-10-08): K4's rows of three gave way to standard
+    # tiles - one grid column or two (Wide), whole grid rows tall - on the
+    # Dashboard; test_view_web_tiles.py drives them in a browser.
+    assert re.search(r"\.sheet\.is-overview\s*\{[^}]*grid-template-columns:\s*"
+                     r"repeat\(var\(--tile-cols\)", STYLES)
+    assert re.search(r"\.sheet\.is-overview\s*\{[^}]*grid-auto-rows:\s*var\(--tile-row\)", STYLES)
+    assert re.search(r"\.sheet\.is-overview > \.card\.is-wide\s*\{\s*grid-column:\s*"
+                     r"span var\(--tile-wide\)", STYLES)
     assert "@media (max-width: 62.5rem)" in STYLES
     layout = _body(r"\n  layoutSheet\(\) \{(.*?)\n  \}")
-    assert "sheetAcross(names.length, index)" in layout
+    assert "this.sizeTiles();" in layout
+    # The entries are moved only by a reorder (applyTileOrder), never by a
+    # trip between the two pages.
     assert "appendChild" not in layout and "insertBefore" not in layout
-    assert "isWideCard" not in APP_JS
-
-
-@pytest.mark.skipif(NODE is None, reason="node is not available in this environment")
-def test_the_overview_grid_is_rows_of_three_and_never_leaves_one_alone():
-    """K4: the Overview's rows, as entries per row, for one to eight models."""
-    rows = _node_value(
-        "[1,2,3,4,5,6,7,8].map((n) => Array.from({length: n}, (_, i) => sheetAcross(n, i)))")
-    assert rows == [[1], [2, 2], [3, 3, 3], [2, 2, 2, 2], [3, 3, 3, 2, 2],
-                    [3] * 6, [3, 3, 3, 2, 2, 2, 2], [3] * 6 + [2, 2]]
+    assert "applyTileOrder" not in layout
+    assert "isWideCard" not in APP_JS and "sheetAcross" not in APP_JS
 
 
 def test_a_rendered_figure_sits_on_the_surface_colour_and_is_bounded():

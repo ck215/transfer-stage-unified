@@ -141,6 +141,15 @@
        shows (`account.chosen`). -->
   <section id="sign-in-gate" class="gate" aria-labelledby="gate-title" hidden>
     <div class="gate-body">
+      <!-- Where the operator is on the way in: sign in, Setup, the station.
+           One list, moved by the client to the head of whichever screen is
+           up (the sign-in screen, then pre-launch Setup) and gone after the
+           launch (renderSteps). In the flow, never fixed: it covers nothing. -->
+      <ol id="steps" class="steps" aria-label="Getting started">
+        <li class="step" data-step="sign-in" aria-current="step">Sign in</li>
+        <li class="step" data-step="setup">Setup</li>
+        <li class="step" data-step="station">Dashboard</li>
+      </ol>
       <h2 id="gate-title" class="gate-title">Sign in</h2>
       <form id="gate-form" class="gate-form" novalidate>
         <label class="gate-field"><span>Email</span>
