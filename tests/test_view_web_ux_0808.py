@@ -40,6 +40,7 @@ class NamedAddProc(FakeProc):
             sch.section("New tip",
                         sch.entry("Name", "tip_name", self.PARAMS["tip_name"]),
                         sch.entry("Other", "other", self.PARAMS["other"]),
+                        sch.dropdown("Sample", "sample", "pick_sample", "sample_options"),
                         sch.button("Add other", "add_other", inputs=("other",)),
                         sch.button("Add tip", "add", role="go", inputs=("tip_name",)),
                         sch.button("Cancel", "cancel"),
@@ -129,3 +130,21 @@ def test_tutorials_take_focus_and_their_end_key_is_not_called_stop(named_station
     assert out["opened"] == "tutorial-panel", out
     assert out["closed"] == [True, "tutorials-link"], out
     assert out["end"] == "End tutorial", out
+
+
+@needs_browser
+def test_a_dropdown_in_a_prompt_keeps_its_chevron_on_its_key(named_station, tmp_path):
+    view, model = named_station
+    out = _browse(view, _READY + r"""
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(400);
+      %s
+      return await page.evaluate(() => {
+        const key = document.querySelector('.card-dialog .select-key');
+        const s = key.querySelector('select').getBoundingClientRect();
+        const g = key.querySelector('.glyph').getBoundingClientRect();
+        return { select: [s.left, s.right], glyph: [g.left, g.right] };
+      });
+    """ % _go("new_tip"), tmp_path)
+    assert out["select"][0] <= out["glyph"][0] and out["glyph"][1] <= out["select"][1] + 1, \
+        f"the chevron is drawn off its select: {out}"
