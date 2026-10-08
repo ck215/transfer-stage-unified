@@ -226,11 +226,8 @@ def _key_for(name):
     return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_") or "model"
 
 
-#: Owner 2026-10-06: the Sample DB and the user profiles (sign-in) are OFF
-#: until they are validated; the work is kept whole on the branch
-#: `feature/sample-map-profiles` and in this tree. Turn either on for a run
-#: with `STATION_SAMPLE_MAP=1` / `STATION_PROFILES=1`; to bring them back for
-#: good, delete these two lines' defaults and the guards that read them.
+#: Owner 2026-10-06 turned the Sample DB and the accounts OFF; both are ON
+#: again since 2026-10-07 (below), each with a switch that turns it off.
 # Merge of the lab's stage (2026-10-07): the Sample DB is ON by default
 # again: the approved proposal of 2026-10-07 picks every trial's sample,
 # chip and flake from it (the Transfer Map refuses Arm without them).
@@ -617,15 +614,16 @@ class Setup(PortProbe, Panel):
     IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
         "idle", "listing", "identifying", "done", "cancelled")
 
-    #: A3: the Trial store row's fields (the same Open/New the Transfer
-    #: Map's own Store section offers).
+    #: A3: the fields behind `open_map_store` / `new_map_store` (the
+    #: Transfer Map's Open/New, run on the open map or a stand-in). Not
+    #: drawn: Setup has no Trial store row; an operator chooses on the map's
+    #: own `new_store` prompt (`model.store_choice.StorePrompt`). The
+    #: backup folder is the account menu's (`model.user`).
     PARAMS = {p.name: p for p in (
         Param("map_store_path", "text", default="", label="Store file"),
         Param("map_store_dir", "text", default="", label="Folder for a new store"),
         Param("map_store_name", "text", default="transfer_map",
               label="New store name"),
-        # 2026-10-07 (B): the signed-in user's backup folder; blank = the
-        # default (`controller.backup.target`).
     )}
 
     def __init__(self, controller, updater=None, firmware=None, restart=None,
@@ -659,6 +657,8 @@ class Setup(PortProbe, Panel):
         self._rows = self._build_rows()
         self._schema = self._build_schema()
         self._lock = threading.RLock()
+        #: Held while a Hard reset closes and reopens its model (`_hard_reset`).
+        self._reset_lock = threading.Lock()
         self._scan_thread = None
         self._abort = threading.Event()
         self._ports = []
@@ -1323,6 +1323,22 @@ class Setup(PortProbe, Panel):
                             f"and disconnected from {where}, then opened and "
                             f"identified on {target}.{latched}")
             raise NeedsConfirm(question, f"hard_reset_{key}")
+        # One reset at a time (architecture audit 2026-10-08): Setup's
+        # commands are not serialised and `Controller.add` opens outside its
+        # lock, so two confirmed resets could both open the model and the
+        # second replace the first - an open port no stop could reach.
+        if not self._reset_lock.acquire(blocking=False):
+            self._refuse("A hard reset is already running; wait for it to "
+                         "finish, then press Hard reset again if needed.")
+        try:
+            return self._hard_reset_now(key, name, model, wanted, where,
+                                        target if wanted is not None else None)
+        finally:
+            self._reset_lock.release()
+
+    def _hard_reset_now(self, key, name, model, wanted, where, target):
+        """`_hard_reset` after the question, under `_reset_lock`."""
+        controller = self.controller
         if wanted is None:
             events.info("Hard Reset", f"{name} on {where}: closing, then opening "
                         "again.", source=self.NAME)
@@ -1563,7 +1579,7 @@ class Setup(PortProbe, Panel):
     #: The section's title: the station's defaults, the accounts' one
     #: station-wide control (the user's own are on the account menu).
     ACCOUNT_SECTION = "Station defaults"
-    #: Merged with the Trial store row's fields above (A3): a second plain
+    #: Merged with the Trial store fields above (A3): a second plain
     #: `PARAMS =` here would replace them.
     PARAMS = {**PARAMS,
               "account_email": Param("account_email", "text", default="",
@@ -2995,26 +3011,6 @@ class Setup(PortProbe, Panel):
                          f"{SampleMap.NAME} with a store chosen.")
         self.backup.request(job)
         return str(job.target.folder)
-
-    def _store_section(self):
-        """The Trial store row: where the Transfer Map's trials go, and the
-        same Open/New its own Store section offers (owner decision 4,
-        2026-09-30: the operator chooses; nothing is chosen for them).
-        Built, not yet in `_build_schema`: its place is just before Launch,
-        and the section list is pinned by `tests/test_setup_registry.py`,
-        outside this change's write set (handoff fix-dist-app A3)."""
-        P = self.PARAMS
-        return sch.section(
-            "Trial store",
-            sch.readonly("Store", "map_store_status", role="info"),
-            sch.entry("Store file", "map_store_path", P["map_store_path"]),
-            sch.button("Open store", "open_map_store", inputs=("map_store_path",)),
-            sch.entry("Folder for a new store", "map_store_dir", P["map_store_dir"]),
-            sch.entry("New store name", "map_store_name", P["map_store_name"]),
-            sch.button("New store", "new_map_store",
-                       inputs=("map_store_dir", "map_store_name")),
-            layout="row",
-        )
 
     # -- schema ------------------------------------------------------------
     def _build_rows(self):

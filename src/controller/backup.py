@@ -11,6 +11,10 @@ added) and at Quit, a copy goes to the signed-in user's backup folder:
     ~/QMDL_Drive/transfer-stage-dbs/<email>/   when ~/QMDL_Drive exists
     (none)                                     a Guest, or none of the above
 
+Any of these under `~/QMDL_Drive` is used only while the drive is mounted.
+A folder that is a store's own folder (or inside the folders it mirrors) is
+refused: the snapshot would be renamed over the live database.
+
 The folder mirrors each store's own folder: `<name>.sqlite` beside the
 folders the store keeps there (the Transfer Map's `<name>/` pictures and
 videos and `exports/`, the Sample DB's `images/`). A database is copied with
@@ -106,14 +110,38 @@ def target(email, setting=None, env=None, home=None):
     env = (env or "").strip()
     if env.lower() in OFF:
         return None
-    if setting:
-        return Target(Path(str(setting)).expanduser())
-    if env:
-        return Target(Path(env).expanduser() / user_folder(email))
     # The drive is looked at on the backup thread only (`Target.ready`): a
     # hung mount must never hold the caller.
     drive = (Path.home() if home is None else Path(home)) / DRIVE
+    if setting:
+        return _on_drive(Path(str(setting)).expanduser(), drive)
+    if env:
+        return _on_drive(Path(env).expanduser() / user_folder(email), drive)
     return Target(drive / DRIVE_FOLDER / user_folder(email), anchor=drive)
+
+
+def _on_drive(folder, drive):
+    """A folder someone set: anchored to the drive when it lies under
+    `~/QMDL_Drive` (architecture audit 2026-10-08: the default's mount check,
+    so an unmounted drive is never written into), else used as it is. A
+    lexical test only: nothing on the disk is touched here."""
+    under = folder == drive or drive in folder.parents
+    return Target(folder, anchor=drive if under else None)
+
+
+def _clash(folder, sources):
+    """The database whose own folder `folder` is, or whose mirrored folders
+    hold `folder`; None. Backing up there would rename the snapshot over
+    the live database or copy a folder into itself."""
+    here = Path(folder).resolve()
+    for db, folders in sources:
+        if here == Path(db).parent.resolve():
+            return db
+        for side in folders:
+            side = Path(side).resolve()
+            if here == side or side in here.parents:
+                return db
+    return None
 
 
 class Job:
@@ -216,6 +244,12 @@ class BackupService:
         """Do `job` now, on this thread. True when it all went."""
         deadline = time.monotonic() + self.RUN_BUDGET_S
         copied = []
+        clash = _clash(job.target.folder, job.sources)
+        if clash is not None:
+            self._failed(job, OSError(
+                f"the backup folder is a store's own folder ({Path(clash).parent}) "
+                "or inside it; choose another backup folder"))
+            return False
         try:
             folder = job.target.ready()
         except NoFolder as missing:
