@@ -5055,6 +5055,11 @@ def test_the_trial_setup_previews_the_picked_flakes_picture(tmp_path):
     assert model.preview_magnification_options == ["100x", "10x"]
     assert model.preview_key == "2:images/f100.png"
     assert model.preview_picture.startswith(b"\x89PNG")
+    # UX audit #19: the picture's alt text says what it is of.
+    assert model.state["values"]["preview_alt"] == "100x picture of flake F on chip 1, sample S"
+    preview = [e for e in sch.elements(model.schema) if e.get("type") == "image"
+               and e.get("data_command") == "preview_picture"]
+    assert preview[0]["alt_attr"] == "preview_alt"
     assert model.run("set_preview_magnification", None, ("10x",)).is_ok
     assert model.state["values"]["preview_key"] == "1:images/f10.png"
     assert model.run("set_preview_magnification", None, ("50x",)).is_refused

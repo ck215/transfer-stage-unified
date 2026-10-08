@@ -1660,6 +1660,12 @@ function renderImage(panel, element) {
     dataCommand: element.data_command,
     isBinary: true,
     setData: (url) => { picture.src = url; },
+    // UX audit #19: what the picture is of (schema `alt_attr`), written
+    // only when it changes; the label stays the alt until one is served.
+    setAlt: (text) => {
+      const alt = text ? String(text) : sentence(element.text || 'image');
+      if (picture.alt !== alt) picture.alt = alt;
+    },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
 }
@@ -2904,6 +2910,7 @@ class PanelCard {
       } else if (kind === 'image' && attr) {
         // A still (a picture preview, schema `model_attr`): fetched when its
         // key changes, never on every poll - the picture is a file, not a feed.
+        if (element.alt_attr && widget.setAlt) widget.setAlt(this.values[element.alt_attr]);
         const key = this.values[attr] === undefined ? '' : String(this.values[attr]);
         if (key !== widget.stillKey && this.wantsData(widget)) {
           widget.stillKey = key;

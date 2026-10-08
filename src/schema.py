@@ -306,20 +306,24 @@ def file_open(text, command, *, extensions=("csv",), role="neutral",
 
 
 def image(text, data_command, *, role="neutral", empty="No image yet.",
-          model_attr=None):
+          model_attr=None, alt_attr=None):
     """A picture the model supplies as PNG bytes through `data_command`;
     empty bytes mean "nothing to show" and a view draws `empty` as one
     caption line instead of a full-size pane (L15).
 
     `model_attr` makes it a still (a preview): the attribute is a key that
     changes exactly when the picture does, and a view fetches the picture
-    when the key changes instead of on every poll."""
+    when the key changes instead of on every poll. `alt_attr` names the
+    `state["values"]` entry holding the picture's alt text (what it is a
+    picture of, UX audit #19); without it the alt is the label."""
     element = {
         "type": "image", "text": text, "data_command": data_command,
         "empty": str(empty), "writable": False, "role": role,
     }
     if model_attr:
         element["model_attr"] = model_attr
+    if alt_attr:
+        element["alt_attr"] = alt_attr
     return element
 
 

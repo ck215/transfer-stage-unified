@@ -1540,6 +1540,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         # hierarchy), where a view reads every gate value.
         snapshot["values"]["has_sample_pick"] = self.has_sample_pick
         snapshot["values"]["has_chip_pick"] = self.has_chip_pick
+        snapshot["values"]["preview_alt"] = self.preview_alt
         return snapshot
 
     # -- the samples, on Red Percent's run thread ------------------------------
@@ -3359,6 +3360,12 @@ class TransferMap(store_choice.StorePrompt, Model):
         return self._preview_or_new().text(level, rows)
 
     @property
+    def preview_alt(self):
+        """The preview's alt text (UX audit #19)."""
+        _store, level, rows = self._preview_store_rows()
+        return self._preview_or_new().alt(level, rows)
+
+    @property
     def preview_picture(self):
         store, level, rows = self._preview_store_rows()
         return self._preview_or_new().png(store, level, rows)
@@ -3962,7 +3969,7 @@ class TransferMap(store_choice.StorePrompt, Model):
                 # The picked flake's picture (owner 2026-10-08): 100x, else
                 # 50x, else the next lower; read from the Sample DB's store.
                 sch.image("Picture", "preview_picture", model_attr="preview_key",
-                          empty=PicturePreview.NONE),
+                          empty=PicturePreview.NONE, alt_attr="preview_alt"),
                 sch.readonly("Shown", "preview_text"),
                 sch.dropdown("Show magnification", "preview_magnification",
                              "set_preview_magnification",

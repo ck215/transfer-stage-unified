@@ -2047,6 +2047,11 @@ class SampleMap(store_choice.StorePrompt, Model):
         return text
 
     @property
+    def preview_alt(self):
+        """The preview's alt text (UX audit #19)."""
+        return self._preview.alt(*self._preview_rows())
+
+    @property
     def preview_picture(self):
         return self._preview.png(self._store, *self._preview_rows())
 
@@ -2157,6 +2162,7 @@ class SampleMap(store_choice.StorePrompt, Model):
         # the Chip and Flake dropdowns from these, as the Panel refuses.
         snapshot["values"]["has_sample"] = self.has_sample
         snapshot["values"]["has_chip"] = self.has_chip
+        snapshot["values"]["preview_alt"] = self.preview_alt
         snapshot["store"] = {"path": str(self.db_path) if self._store_chosen else None,
                              "chosen": self._store_chosen}
         # UX audit 2026-10-08 #11: the titles name the current pick ("New
@@ -2272,7 +2278,7 @@ class SampleMap(store_choice.StorePrompt, Model):
                 # The preview (owner 2026-10-08): 100x, else 50x, else the
                 # next lower; the operator may look at another one.
                 sch.image("Picture", "preview_picture", model_attr="preview_key",
-                          empty=ss.PicturePreview.NONE),
+                          empty=ss.PicturePreview.NONE, alt_attr="preview_alt"),
                 sch.readonly("Shown", "preview_text"),
                 sch.dropdown("Show magnification", "preview_magnification",
                              "set_preview_magnification",

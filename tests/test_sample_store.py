@@ -796,6 +796,18 @@ def test_no_pictures_is_no_preview_and_a_choice_is_honoured_only_when_there():
         preview.choose(level, rows, "50x")
 
 
+def test_the_preview_alt_text_says_what_the_picture_is_of():
+    """UX audit #19: a preview's alt text names the magnification and the
+    flake, chip and sample; "No picture" when there is none."""
+    preview = ss.PicturePreview()
+    level = ("15jul26", "1", "3")
+    assert preview.alt(level, []) == "No picture"
+    rows = [dict(_pic(1, 100), sample_id="15jul26", chip_id="1", flake_id="3")]
+    assert preview.alt(level, rows) == "100x picture of flake 3 on chip 1, sample 15jul26"
+    rows = [dict(_pic(1, 50), sample_id="15jul26", chip_id=None, flake_id=None)]
+    assert preview.alt(("15jul26", None, None), rows) == "50x picture of sample 15jul26"
+
+
 def test_the_preview_reads_only_a_file_inside_the_store(tmp_path):
     import io
     from PIL import Image

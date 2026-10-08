@@ -1407,6 +1407,8 @@ def test_the_pictures_section_previews_the_100x_picture_and_can_switch(images, t
                and e.get("data_command") == "preview_picture"]
     assert preview and preview[0]["model_attr"] == "preview_key"
     assert "preview_key" in images.state["values"]
+    assert preview[0]["alt_attr"] == "preview_alt"
+    assert images.state["values"]["preview_alt"].startswith("10x picture of flake F1 on chip 2")
 
 
 # -- UX audit 2026-10-08 #18: no silent 10x ----------------------------------

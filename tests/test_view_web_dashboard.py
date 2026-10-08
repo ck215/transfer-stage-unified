@@ -1718,8 +1718,14 @@ class FakePreview(_Plain):
         return sch.schema(sch.section(
             "Pictures",
             sch.image("Picture", "preview_picture", model_attr="preview_key",
-                      empty="No picture"),
+                      empty="No picture", alt_attr="preview_alt"),
             sch.readonly("Shown", "preview_text")))
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["values"]["preview_alt"] = "100x picture of flake 3 on chip 1, sample 15jul26"
+        return snapshot
 
     @property
     def preview_key(self):
@@ -1759,7 +1765,8 @@ def test_a_picture_preview_renders_scaled_and_is_fetched_once_per_key(tmp_path):
             const box = img.getBoundingClientRect();
             const shown = document.querySelector('#cards [data-attr="preview_text"] .value');
             return { natural: img.naturalWidth, width: box.width, height: box.height,
-                     loading: img.loading, page: document.documentElement.scrollWidth,
+                     loading: img.loading, alt: img.alt,
+                     page: document.documentElement.scrollWidth,
                      view: document.documentElement.clientWidth,
                      word: shown ? shown.classList.contains('is-word') : null };
           });
@@ -1769,7 +1776,36 @@ def test_a_picture_preview_renders_scaled_and_is_fetched_once_per_key(tmp_path):
     assert drawn["natural"] == 1600, drawn
     assert 0 < drawn["width"] <= 390 and drawn["height"] <= 844 * 0.4 + 1, drawn
     assert drawn["loading"] == "lazy"
+    assert drawn["alt"] == "100x picture of flake 3 on chip 1, sample 15jul26", drawn
     assert drawn["page"] <= drawn["view"], "nothing spills past a phone"
     assert drawn["word"] is True, "a sentence opening with a count is words"
     # Fetched for its key, not once a poll (a handful of polls went by).
     assert model.fetched <= 2, model.fetched
+
+
+def test_no_picture_is_the_caption_and_never_a_broken_image(tmp_path):
+    """UX audit #19: with no picture the frame says "No picture"; the img
+    is hidden, so no broken-image icon (or its alt) is drawn."""
+    controller = Controller()
+    model = FakePreview(b"")
+    controller.add("Fake Preview", model, {"kind": "Fake Preview"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        drawn = _browse(view, _PHASE_READ.split("const drawn")[0] + r"""
+          await until(() => document.querySelector('#cards img.picture.is-preview'));
+          await until(() => {
+            const note = document.querySelector('#cards .plot-frame.is-preview .empty-note');
+            return note && !note.hidden;
+          });
+          return page.evaluate(() => {
+            const img = document.querySelector('#cards img.picture.is-preview');
+            const note = document.querySelector('#cards .plot-frame.is-preview .empty-note');
+            return { hidden: img.hidden, box: img.getBoundingClientRect().height,
+                     note: note.textContent };
+          });
+        """, tmp_path)
+    finally:
+        view.close()
+    assert drawn["hidden"] is True and drawn["box"] == 0, drawn
+    assert "No picture" in drawn["note"], drawn
