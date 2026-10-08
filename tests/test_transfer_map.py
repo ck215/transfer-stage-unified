@@ -4388,9 +4388,11 @@ def test_the_state_carries_the_step_text_in_every_step(station, step):
 def test_the_analysis_health_is_one_word_from_red_percents_counters(scripted):
     model, red, clock = scripted
     health = lambda: model.state["analysis_health"]   # noqa: E731
-    assert health() == "no region"                   # Red Percent has none
+    # Updated (UX audit 2026-10-08 #15): no warning before the step where a
+    # region is due ("! No region" lit the strip in Setup, step 1).
+    assert health() == ""                            # Red Percent has none
     model.on_model_removed("Red Percent")
-    assert health() == "no region"                   # nor a Red Percent
+    assert health() == ""                            # nor a Red Percent
     model.on_model_added("Red Percent", red)
     red.set_region(0, 0, 10, 10)
     assert health() == ""                            # setup: no run expected
@@ -4416,6 +4418,17 @@ def test_the_analysis_health_is_one_word_from_red_percents_counters(scripted):
     assert health() == "stalled"
     model.abort_trial()
     assert health() == ""
+
+
+def test_no_region_is_said_only_where_a_region_is_due(station):
+    """UX audit 2026-10-08 #15."""
+    model, red, *_ = station
+    red.region = None
+    assert model.phase == "setup" and model.state["analysis_health"] == ""
+    _to_step(model, "region")
+    assert model.phase == "region"
+    assert model.state["analysis_health"] == "no region"
+    model.abort_trial()
 
 
 # -- TR-5 (2026-10-07): the profile keeps the colour channels, by presence -----

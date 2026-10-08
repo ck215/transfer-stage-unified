@@ -3042,6 +3042,9 @@ class PanelCard {
         item.classList.toggle('is-current', at === lit);
         if (at === lit) item.setAttribute('aria-current', 'step');
         else item.removeAttribute('aria-current');
+        // UX audit 2026-10-08 #16: a prompt ("New flake") is a question,
+        // not a place in the procedure; it is drawn only while it is asked.
+        if (isPromptStep(item.dataset.step)) item.classList.toggle('is-phase-off', at !== lit);
       });
     }
     if (seen.text !== text) {
@@ -3049,6 +3052,19 @@ class PanelCard {
       putText(this.stepText, text);
       putAttr(this.stepText, 'title', text);
       if (this.stepText.hidden !== !text) this.stepText.hidden = !text;
+    }
+    // UX audit 2026-10-08 #15: an info readout that says the strip's
+    // sentence word for word (a model's "Next step") is not drawn a second
+    // time. It still counts as said (the why-not caption reads isPhaseOff).
+    for (const widget of this.widgets) {
+      const element = widget.element;
+      if (element.type !== 'readonly' || element.role !== 'info' || !widget.node) continue;
+      const value = this.values[element.model_attr];
+      const echo = Boolean(text) && value !== undefined && value !== null
+        && String(value).trim() === text.trim();
+      if (widget.node.classList.contains('is-echo') !== echo) {
+        widget.node.classList.toggle('is-echo', echo);
+      }
     }
     if (seen.health !== health) {
       seen.health = health;

@@ -189,3 +189,67 @@ def test_a_prompts_title_names_the_pick_made_after_the_page_loaded(titled_statio
     """, tmp_path)
     assert "A2" in out["title"] and "?" not in out["title"], out
     assert "A2" in (out["label"] or ""), out
+
+
+# ----------------------------------- #15 one sentence once; #16 prompt steps
+class EchoProc(FakeProc):
+    """A "Next step" readout that says what the strip says, like the
+    Transfer Map's."""
+
+    @property
+    def schema(self):
+        base = super().schema
+        base["sections"].insert(0, sch.section(
+            "Trial", sch.readonly("Next step", "next_words", role="info")))
+        return base
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["values"]["next_words"] = self.step_text
+        return snapshot
+
+
+@pytest.fixture
+def echo_station():
+    controller = Controller()
+    model = EchoProc()
+    controller.add("Fake Proc", model, {"kind": "Fake Proc"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, model
+    finally:
+        view.close()
+
+
+_SEEN = r"""() => {
+  const card = Array.from(document.querySelectorAll('#cards .card'))
+    .find((c) => c.querySelector('.proc-steps'));
+  const shown = (n) => Boolean(n && n.getClientRects().length);
+  return {
+    sentences: Array.from(card.querySelectorAll('*')).filter((n) => shown(n)
+      && n.children.length === 0 && n.textContent.trim() === 'Set a region.').length,
+    steps: Array.from(card.querySelectorAll('.proc-step')).filter(shown)
+      .map((n) => n.dataset.step),
+  };
+}"""
+
+
+@needs_browser
+def test_the_next_step_sentence_is_said_once_and_prompts_are_not_steps(echo_station, tmp_path):
+    view, _model = echo_station
+    out = _browse(view, _READY + r"""
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(600);
+      const before = await page.evaluate(%s);
+      await api('/api/run', { name: 'Fake Proc', command: 'go', inputs: {}, args: ['new_tip'] });
+      await until(() => Boolean(document.querySelector('.card-dialog')));
+      await sleep(600);
+      const asking = await page.evaluate(%s);
+      return { before, asking };
+    """ % (_SEEN, _SEEN), tmp_path)
+    assert out["before"]["sentences"] == 1, out
+    # The strip lists the procedure; a prompt shows only while it is asked.
+    assert out["before"]["steps"] == ["setup", "live"], out
+    assert "new_tip" in out["asking"]["steps"], out

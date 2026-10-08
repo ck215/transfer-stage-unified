@@ -157,6 +157,10 @@ button, select, input[type="range"] {
    control is greyed where it stands. */
 .is-phase-off { display: none !important; }
 
+/* A readout that repeats the procedure strip's sentence (UX audit
+   2026-10-08 #15): said once, in the strip. */
+.is-echo { display: none !important; }
+
 /* Read by a screen reader, not drawn. */
 .sr-only {
   position: absolute;

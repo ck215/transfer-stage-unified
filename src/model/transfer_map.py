@@ -2401,7 +2401,13 @@ class TransferMap(store_choice.StorePrompt, Model):
         state: "no region" (no Red Percent, or no capture region), "stalled"
         (a run that reads nothing, or no run while recording), "unsettled"
         (most reads rejected), "settled"; "" while no run is expected
-        (setup, the tip prompt, review)."""
+        (setup, the tip prompt, review).
+
+        UX audit 2026-10-08 #15: "no region" only from the step where a
+        region is due (Capture region, then the recording); in Setup, step
+        1, it was a warning about something the operator cannot do yet."""
+        if self.phase not in ("region", "live", "marked"):
+            return ""
         red = self._red
         if red is None or not getattr(red, "region", None):
             return "no region"
