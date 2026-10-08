@@ -2154,7 +2154,10 @@ class PanelCard {
       open.addEventListener('click', () => dashboard.showPage(name));
       // The Dashboard's tile keys (owner 2026-10-08): Wide (one tile or two
       // across, the same entry either way) and Move (drag, or the arrow
-      // keys). Above the head's stretched Open target; Dashboard only.
+      // keys). Dashboard only. Beside the head, never in it: the head's one
+      // button is Open, so nothing next to a stop this model did not
+      // confirm reads as its Dismiss (G6, I8). Before the head in the DOM,
+      // so Shift+Tab from Open still reaches Move, then Wide.
       const keys = make('span', 'tile-keys');
       const wide = make('button', 'button role-neutral tile-key tile-wide', 'Wide');
       wide.type = 'button';
@@ -2169,7 +2172,7 @@ class PanelCard {
       move.addEventListener('keydown', (event) => dashboard.moveByKey(name, event));
       move.addEventListener('pointerdown', (event) => dashboard.startTileDrag(name, event));
       keys.append(wide, move);
-      head.appendChild(keys);
+      this.node.appendChild(keys);
       this.wideKey = wide;
       this.moveKey = move;
       // UX audit 2026-10-08 #19: Wide, Move and Open were three Tab stops

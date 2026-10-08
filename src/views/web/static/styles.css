@@ -1015,8 +1015,17 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .sheet.is-overview > .card.is-wide { grid-column: span var(--tile-wide); }
 
-/* The tile keys - Wide and Move - sit in the head, above its stretched
-   Open target, and only on the Dashboard. */
+/* The tile keys - Wide and Move - sit beside the head, in the entry's
+   first row after it, never inside it (the head's one button is Open, and
+   its stretched target stops at the head), and only on the Dashboard. */
+.sheet.is-overview > .card:has(> .tile-keys) {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-4);
+}
+
+.sheet.is-overview > .card > .card-head { grid-column: 1; grid-row: 1; }
+.sheet.is-overview > .card > .tile-keys { grid-column: 2; grid-row: 1; }
+
 .tile-keys {
   position: relative;
   z-index: 1;
@@ -1137,7 +1146,7 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
   /* The name never shrinks under its longest word (UX audit 2026-10-07: at
      1366 px "Connection lost" was painted over "Stepper Probe"); in a
      narrow entry the state takes a line of its own under it (below). */
-  grid-template-columns: minmax(min-content, max-content) minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(min-content, max-content) minmax(0, 1fr) auto;
   align-items: center;
   column-gap: var(--space-4);
   min-height: var(--hit-panel);
@@ -1217,7 +1226,7 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 .sheet.is-overview > .card { container-type: inline-size; }
 
 @container (max-width: 32rem) {
-  .card-head { grid-template-columns: minmax(min-content, 1fr) auto auto; }
+  .card-head { grid-template-columns: minmax(min-content, 1fr) auto; }
   .card-side { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
   .card-side:empty { display: none; }
 }
