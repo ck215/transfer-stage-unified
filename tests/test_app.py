@@ -119,6 +119,21 @@ def test_a_retired_view_prints_one_message_and_exits_2(
         assert err.strip() == "The Tk/Qt view was retired on 2026-10-07; use --web."
 
 
+@pytest.mark.parametrize("entry", [app.main, app.main_web])
+def test_version_prints_the_one_version_string_and_exits_0(
+        fake_views, monkeypatch, capsys, entry):
+    """REL-1: `--version` prints `Updater.version()` (the string
+    `packaging/release.py version` prints) on stdout and starts nothing."""
+    from controller import updater
+    monkeypatch.setattr(app, "launch", lambda *a, **k: pytest.fail("launched"))
+    monkeypatch.setattr(app, "_swap_in_pending_update",
+                        lambda: pytest.fail("an update swap ran"))
+    monkeypatch.setattr(updater.Updater, "version", lambda self: "1.3.0.post3+gabc1234")
+    assert entry(["--version"]) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("1.3.0.post3+gabc1234\n", "")
+
+
 def test_the_view_table_has_exactly_one_entry():
     assert set(app.VIEWS) == {"web"}
     assert app.ALIASES == {}

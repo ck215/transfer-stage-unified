@@ -356,6 +356,9 @@ Examples:
     parser.add_argument("--sample-db", metavar="PATH",
                         help="the Sample Map's SQLite file (default: data/sample_map.sqlite "
                              "in this checkout; same as STATION_SAMPLE_DB)")
+    parser.add_argument("--version", action="store_true",
+                        help="print the station's version (the release tag, or "
+                             "what this checkout is past it) and exit")
 
     # parse_args, not parse_known_args: an unrecognized flag must be an error.
     # Under parse_known_args a typo like `--pyside6` was silently dropped and
@@ -363,6 +366,12 @@ Examples:
     # hardware-capable web server instead of the view the operator asked for
     # (MANAGER-14).
     args = parser.parse_args(argv)
+    if args.version:
+        # REL-1: the one version string (`packaging/release.py version`,
+        # the Setup page's Station row). Nothing else starts: no log file,
+        # no scan, no update swap.
+        sys.stdout.write(updater.Updater().version() + "\n")   # not print(): see test_architecture
+        return 0
     if args.view in RETIRED:
         sys.stderr.write(RETIRED_MESSAGE + "\n")      # not print(): see test_architecture
         sys.exit(2)

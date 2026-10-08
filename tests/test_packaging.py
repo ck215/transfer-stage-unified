@@ -266,7 +266,7 @@ def test_stamp_writes_version_and_release_json_beside_the_launchers(
     assert (info["owner"], info["repo"]) == ("lab", "station")
     # ... and the frozen Updater reads it
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    assert Updater(root=bundle).version() == "v1.3.0, 2026-09-28"
+    assert Updater(root=bundle).version() == "v1.3.0"
 
 
 @pytest.mark.parametrize("remote, repository", [
@@ -280,7 +280,8 @@ def test_the_repository_is_read_from_the_remote_when_ci_does_not_say(
 
 
 @pytest.mark.parametrize("tag, version", [
-    ("v1.3.0", "1.3.0"), ("1.2", "1.2"), ("v1.2.0-3-gabc1234", "1.2.0+3.gabc1234"),
+    ("v1.3.0", "1.3.0"), ("1.2", "1.2"), ("v1.2.0-3-gabc1234", "1.2.0.post3+gabc1234"),
+    ("1.2.0.post3+gabc1234", "1.2.0.post3+gabc1234"), ("0.0.0+abc1234", "0.0.0+abc1234"),
     ("main", None), ("", None)])
 def test_the_pyproject_version_follows_the_tag(release_tool, tmp_path, tag, version):
     source = open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8").read()
@@ -290,14 +291,14 @@ def test_the_pyproject_version_follows_the_tag(release_tool, tmp_path, tag, vers
     release_tool.patch_pyproject(str(copy), tag)
     with open(copy, "rb") as f:
         patched = tomllib.load(f)["project"]["version"]
-    assert patched == (version or "0.1.0")
+    assert patched == (version or "0.0.0")
     assert copy.read_text().count("\nversion = ") == 1
 
 
 def test_the_pyproject_in_git_is_not_the_version_source(pyproject):
     with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
         text = f.read()
-    assert pyproject["project"]["version"] == "0.1.0"
+    assert pyproject["project"]["version"] == "0.0.0"
     assert "release.py" in text and "tag" in text
 
 
@@ -342,16 +343,24 @@ def test_the_workflow_builds_on_a_tag_and_by_hand(workflow):
     assert "workflow_dispatch:" in workflow
 
 
-def test_the_workflow_names_the_four_runners_and_their_assets(workflow):
+def _matrix_runners(workflow):
+    found = re.search(r"^\s+runner:\s*\[([^\]]*)\]", workflow, re.M)
+    return [runner.strip() for runner in found.group(1).split(",")]
+
+
+def test_the_workflow_builds_one_runner_per_release_target(workflow, release_tool):
+    """REL-2: release.json is the one place that names the assets; the four
+    runners build exactly its targets, one each."""
     from controller import updater
-    import json
-    with open(os.path.join(PACKAGING, "release.json"), encoding="utf-8") as f:
-        info = json.load(f)
-    pairs = re.findall(r"runner:\s*(\S+)\s*\n\s*asset:\s*(\S+)", workflow)
-    assert dict(pairs) == {runner: updater.asset_name(info, *platform)
-                           for runner, platform in RUNNERS.items()}
-    # the build refuses to upload under a name the updater would not look for
-    assert "release.py asset-name" in workflow and "matrix.asset" in workflow
+    info = release_tool.template()
+    runners = _matrix_runners(workflow)
+    assert sorted(runners) == sorted(RUNNERS)
+    built = [updater.asset_name(info, *RUNNERS[runner]) for runner in runners]
+    assert sorted(built) == sorted(release_tool.assets())
+    assert len(set(built)) == len(built) == len(release_tool.assets()) == 4
+    # the build names its zip through release.json and refuses a stranger
+    assert "release.py asset-name" in workflow and "release.py assets" in workflow
+    assert "matrix.asset" not in workflow and "station-macos-arm64.zip" not in workflow
 
 
 def test_the_workflow_pins_python_313_from_setup_python_and_builds_the_spec(workflow):
@@ -876,6 +885,105 @@ def test_the_workflow_keeps_the_draft_then_publish_flow_and_the_checksums(workfl
     assert jobs == ["draft", "build", "publish"]
     assert "--draft" in workflow and "--draft=false --latest" in workflow
     assert "sha256sum station-*.zip" in workflow
+
+
+# -- REL-2: the pipeline publishes itself -------------------------------------
+
+def _jobs(workflow):
+    """{job: the text of its block}, from the `jobs:` mapping's two-space keys."""
+    body = workflow.split("\njobs:\n", 1)[1]
+    parts = re.split(r"^  ([\w-]+):\s*$", body, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def _job_key(block, key):
+    found = re.search(rf"^    {key}:\s*(.+)$", block, re.M)
+    return found.group(1).strip() if found else ""
+
+
+def _needs(block):
+    value = _job_key(block, "needs")
+    if value.startswith("["):
+        return [name.strip() for name in value.strip("[]").split(",") if name.strip()]
+    return [value] if value else []
+
+
+def test_the_workflow_top_level_is_only_keys_and_comments(workflow):
+    """No PyYAML needed. At 606c724 a header comment line had lost its `#`
+    (line 17), and GitHub cannot parse such a file at all: no tag would
+    ever have built."""
+    seen_key = False
+    for number, line in enumerate(workflow.splitlines(), 1):
+        assert "\t" not in line, number
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[0] != " ":
+            assert re.match(r"^[\w-]+:(\s|$)", line), (number, line)
+            seen_key = True
+        else:
+            assert seen_key, (number, line)
+
+
+def test_publish_needs_every_build_and_runs_to_say_why_it_did_not_publish(workflow):
+    jobs = _jobs(workflow)
+    assert list(jobs) == ["draft", "build", "publish"]
+    assert set(_needs(jobs["publish"])) == set(jobs) - {"publish"}
+    assert _needs(jobs["build"]) == ["draft"]
+    # it runs after a failed build (so the summary can say so), not after a cancel
+    condition = _job_key(jobs["publish"], "if")
+    assert "!cancelled()" in condition and "always()" not in condition
+    assert "github.ref_type == 'tag'" in condition
+    block = jobs["publish"]
+    for needle in ("needs.draft.result", "needs.build.result", "GITHUB_STEP_SUMMARY",
+                   "was NOT published", "stays a draft"):
+        assert needle in block, needle
+    order = [block.index(needle) for needle in (
+        '[ "$DRAFT" = success ]', '[ "$BUILDS" = success ]',
+        "release.py assets > expected.txt", "grep -vxF -f present.txt expected.txt",
+        "sha256sum station-*.zip", 'gh release upload "$TAG" SHA256SUMS',
+        'release.py notes "$TAG"', "--draft=false --latest")]
+    assert order == sorted(order)
+
+
+def test_the_notes_are_the_changelog_section_at_draft_and_at_publish(workflow):
+    jobs = _jobs(workflow)
+    for name in ("draft", "publish"):
+        assert 'python3 packaging/release.py notes "$TAG" > notes.md' in jobs[name], name
+        assert "--notes-file notes.md" in jobs[name], name
+        # the annotated tag's own message, for the fallback
+        assert 'git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"' in jobs[name], name
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in jobs["draft"]          # a release tag only
+
+
+def test_only_the_jobs_that_write_the_release_may_write(workflow):
+    head = workflow.split("\njobs:\n", 1)[0]
+    assert re.search(r"^permissions:\n  contents: read\n", head, re.M)
+    assert "contents: write" not in head
+    for name, block in _jobs(workflow).items():
+        writes = any(f"gh release {verb}" in block for verb in ("create", "upload", "edit"))
+        assert ("      contents: write" in block) == writes, name
+
+
+def test_the_workflow_parses_and_its_job_graph_holds():
+    """The same, through a YAML parser, where PyYAML is installed (it is not
+    a dependency of the station: see the handoff)."""
+    yaml = pytest.importorskip("yaml")
+    with open(WORKFLOW, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    on = data["on"] if "on" in data else data[True]      # YAML 1.1 reads `on` as true
+    assert on["push"]["tags"] == ["v*"] and "workflow_dispatch" in on
+    assert data["permissions"] == {"contents": "read"}
+    jobs = data["jobs"]
+    assert list(jobs) == ["draft", "build", "publish"]
+    needs = jobs["publish"]["needs"]
+    assert sorted([needs] if isinstance(needs, str) else needs) == ["build", "draft"]
+    assert jobs["build"]["needs"] == "draft"
+    assert sorted(jobs["build"]["strategy"]["matrix"]["runner"]) == sorted(RUNNERS)
+    for name, job in jobs.items():
+        assert job["permissions"] == {"contents": "write"}, name
+        for step in job["steps"]:
+            assert set(step) <= {"name", "id", "if", "uses", "with", "env", "run",
+                                 "shell"}, (name, step)
 
 
 def test_expressions_reach_scripts_only_through_env(workflow):
