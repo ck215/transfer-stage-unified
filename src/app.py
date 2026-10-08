@@ -30,6 +30,7 @@ import webbrowser
 
 from controller import single_instance, updater
 from controller.controller import Controller
+from controller.device_log import DeviceLog
 from events import events
 from controller.setup import Setup
 from views import theme
@@ -147,6 +148,7 @@ def restart_process(args=None, extra_args=(), delay=0.0):
             stream.flush()
         except Exception:
             pass
+    _close_device_log()
     events.close_file()
     # The new run waits for this PID's one-station lock instead of taking it
     # for a second station (Windows starts it before this one has exited).
@@ -195,6 +197,17 @@ def _swap_in_pending_update():
     return True
 
 
+#: The running device log (`_launch`), so a restart or an exit that never
+#: returns through `_launch` still writes its queue out (bounded).
+_device_log = None
+
+
+def _close_device_log():
+    log = _device_log
+    if log is not None:
+        log.close()
+
+
 def exit_process():
     """End the station now: Setup's Switch to stable has closed every model
     and started the stable app. `os._exit`, not `sys.exit`: it is called from
@@ -204,6 +217,7 @@ def exit_process():
             stream.flush()
         except Exception:
             pass
+    _close_device_log()
     events.close_file()
     os._exit(0)
 
@@ -273,6 +287,24 @@ def _launch(view_name, lock, port, open_browser, font_size):
     events.hook_exceptions()
     path = events.open_file()
     events.info("Log File", path, source="app")
+    # The device log (owner ruling 2026-10-08): every published event and a
+    # snapshot of every open model once a second, in one local SQLite file
+    # beside the text log. Closed after the view returns - by then its close
+    # has closed the Controller (every device first, then Setup's final
+    # backups) - and within its own budget (`device_log.CLOSE_BUDGET_S`).
+    global _device_log
+    device_log = _device_log = DeviceLog(controller)
+    device_log.start()
+    try:
+        return _open_view(view_name, lock, controller, port, open_browser,
+                          font_size)
+    finally:
+        device_log.close()
+
+
+def _open_view(view_name, lock, controller, port, open_browser, font_size):
+    """`_launch`'s view half: Setup, the view, the scan; returns once the
+    view has closed (the Web's `wait()` runs its `close()`)."""
     if lock.note:
         (events.debug if lock.held else events.warn)("Single Instance", lock.note,
                                                        source="app")

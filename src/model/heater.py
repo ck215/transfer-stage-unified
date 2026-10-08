@@ -24,6 +24,16 @@ silently loses its tail: that is refused too.
 The firmware has NO host watchdog. Whatever was last commanded persists for
 as long as the board has power, which is why a heater-off that cannot be
 confirmed is an `events.error`, not a shrug.
+
+Every reading is also one RECORD (`READING_FIELDS`, owner ruling
+2026-10-08, replacing the per-session CSV of P1): what the board reported
+(its timer, the temperature, its ramped setpoint) and the settings IN FORCE -
+those of the last frame that reached the wire, not what is typed in a box.
+`subscribe_readings(fn)` hands each record to `fn` on the reader's thread (the
+Transfer Map keeps an armed trial's records in its trial store) and
+`last_reading` is the latest (the station's device log samples it). The
+record never touches the port, writes no file, and a subscriber that raises
+never stops the reader.
 """
 import math
 import threading
@@ -128,6 +138,17 @@ class Heater(Model):
     #: out anyway, unchecked.
     CONNECT_CHECK_SECONDS = BOOT_GRACE_SEC + OFF_CONFIRM_SECONDS
 
+    #: One reading as a record (`subscribe_readings`, `last_reading`): the
+    #: clocks it was read on, what the board reported, then the fields of
+    #: the frame in force (None before any frame reached the wire) and
+    #: whether that frame heats (1/0; None with no frame). The board reports
+    #: no output duty, so there is none to record.
+    _IN_FORCE_COLUMNS = ("endpoint_c", "ramp_s_per_c", "kp", "ki", "kd",
+                         "offset_c")
+    READING_FIELDS = (("wall_epoch_s", "monotonic_s", "board_timer_s",
+                       "temperature_c", "setpoint_c") + _IN_FORCE_COLUMNS
+                      + ("heater_on",))
+
     def __init__(self, port=None, gamepad=None, sim=False, clock=time.monotonic):
         """was TemperatureSystem.__init__
 
@@ -172,6 +193,12 @@ class Heater(Model):
         # Has a frame ever had somewhere to go? Decides whether a failed
         # heater-off on the way out is news or a port that never opened.
         self._was_reachable = False
+        # `_in_force`: the fields of the last frame that reached the wire,
+        # None until one has. `_reading_subscribers` is replaced, never
+        # mutated, so the reader iterates it without a lock.
+        self._in_force = None
+        self._reading_subscribers = ()
+        self._last_reading = None
 
         # The reader waits on the base's `_threads_stop` (MOD-2): an Event,
         # not a bool, so a reader parked in a 2 s backoff leaves the moment
@@ -358,6 +385,7 @@ class Heater(Model):
             if is_written:
                 self._commanded_setpoint = setpoint or None
                 self._was_reachable = True
+                self._record_in_force(frame)
         events.debug("Settings Write",
                      f"written={is_written} in "
                      f"{(time.monotonic() - started) * 1000:.1f} ms", source=self.NAME)
@@ -508,6 +536,7 @@ class Heater(Model):
         if is_written:
             self._commanded_setpoint = None
             self._was_reachable = True
+            self._record_in_force(frame)
         return is_written
 
     # -- the read-back: the board's own word that the heater is off -----------
@@ -868,7 +897,8 @@ class Heater(Model):
                 return
         with self._write_lock:
             if self._commanded_setpoint is None:
-                self.port.write(self.RESET_FRAME)
+                if self.port.write(self.RESET_FRAME):
+                    self._record_in_force(self.RESET_FRAME)
                 events.debug("Reset Frame",
                              f"{self.RESET_FRAME.hex(' ')}  ({self.RESET_FRAME!r})",
                              source=self.NAME)
@@ -912,6 +942,61 @@ class Heater(Model):
             self._off_pending = None
             pending["landed"].set()
         self._touch()
+        self._publish_reading(seconds, temperature, setpoint)
         events.debug("Reading", f"t={seconds:g}s temp={temperature:.2f}C "
                      f"sp={setpoint:.2f}C", source=self.NAME, every=5.0)
         return setpoint
+
+    # -- the reading record (P1, reshaped 2026-10-08) -------------------------
+    @property
+    def last_reading(self):
+        """The latest reading's record (`READING_FIELDS`), or None before
+        the first. A dict nobody else holds: a reader may keep it."""
+        last = self._last_reading
+        return None if last is None else dict(last)
+
+    def subscribe_readings(self, fn):
+        """`fn(record)` for every reading from now on, on the reader's
+        thread. `fn` must return at once (append, enqueue): the reader waits
+        for it. Kept once however often it subscribes."""
+        with self._history_lock:
+            if fn not in self._reading_subscribers:
+                self._reading_subscribers = self._reading_subscribers + (fn,)
+
+    def unsubscribe_readings(self, fn):
+        with self._history_lock:
+            self._reading_subscribers = tuple(
+                f for f in self._reading_subscribers if f != fn)
+
+    def _record_in_force(self, frame):
+        """Remember the fields of a frame that reached the wire. Parsed back
+        from the bytes themselves, so the record says what the board was
+        sent."""
+        try:
+            fields = frame.decode("ascii").strip("<>").split(",")
+            self._in_force = dict(zip(self._IN_FORCE_COLUMNS,
+                                      (float(f) for f in fields)))
+        except (ValueError, UnicodeDecodeError):
+            self._in_force = None
+
+    def _publish_reading(self, seconds, temperature, setpoint):
+        """Build the reading's record and hand it to every subscriber. Never
+        raises: a subscriber that does is one debug line (rate-limited)."""
+        in_force = self._in_force
+        record = {"wall_epoch_s": time.time(), "monotonic_s": time.monotonic(),
+                  "board_timer_s": seconds, "temperature_c": temperature,
+                  "setpoint_c": setpoint}
+        if in_force:
+            record.update(in_force)
+            record["heater_on"] = int(bool(
+                in_force["endpoint_c"]
+                and in_force["kp"] + in_force["ki"] + in_force["kd"]))
+        else:
+            record.update(dict.fromkeys(self._IN_FORCE_COLUMNS + ("heater_on",)))
+        self._last_reading = record
+        for fn in self._reading_subscribers:
+            try:
+                fn(dict(record))
+            except Exception as exc:
+                events.debug("Reading Subscriber Failed", repr(exc),
+                             source=self.NAME, exception=exc, every=5.0)
