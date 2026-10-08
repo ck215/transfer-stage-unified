@@ -173,7 +173,8 @@ def test_a_slider_drag_writes_nothing_until_the_next_tick(manual):
 @pytest.mark.parametrize("cls", CLASSES, ids=lambda c: c.__name__)
 def test_the_schema_leaves_manual_speed_live_in_manual_only(cls):
     probe, _port, _pad = make_probe(cls)
-    man, auto = _entry(probe, "man_full_speed"), _entry(probe, "full_speed")
+    # 2026-10-07: the dials are percent entries; steps/s sit under them as secondaries.
+    man, auto = _entry(probe, "man_full_speed_pct"), _entry(probe, "full_speed_pct")
     assert man["disabled_when"] == ["autonomous"]
     assert sch.is_enabled(man, "manual")
     assert not sch.is_enabled(man, "autonomous")
@@ -230,7 +231,7 @@ def test_the_web_api_commits_manual_speed_while_manual():
         status, served = _get(view, "/api/schema?name=Stepper+Probe")
         assert status == 200
         man = next(e for e in sch.elements(served)
-                   if e.get("model_attr") == "man_full_speed")
+                   if e.get("model_attr") == "man_full_speed_pct")   # the dial, not its steps/s secondary
         assert man["disabled_when"] == ["autonomous"]
 
         _post(view, "/api/run", {"name": "Stepper Probe", "command": "set_mode",
@@ -282,10 +283,11 @@ def test_the_tk_entry_is_live_in_manual_and_commits(monkeypatch):
         assert view._widgets[id(auto)]["is_enabled"] is False
         assert widget_of(view, auto).cget("state") == "disabled"
 
-        view._widgets[id(man)]["var"].set("275")
+        # The dial is a percent since 2026-10-07: 9 % of 3200 = 288 steps/s.
+        view._widgets[id(man)]["var"].set("9")
         assert view._on_entry_commit(man).is_ok
-        assert probe._number("man_full_speed") == 275
-        assert _speed_of_next_frame(probe, port) == 275.0
+        assert probe._number("man_full_speed") == 288
+        assert _speed_of_next_frame(probe, port) == 288.0
     finally:
         view.close()
         probe._stop_threads()

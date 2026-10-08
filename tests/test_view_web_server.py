@@ -3893,13 +3893,18 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
                pinned: await page.evaluate(() => document.querySelector('.card.is-opened').classList.contains('is-pinned')) };
     """, tmp_path)
     before, after = out["before"], out["after"]
-    assert before["room"] > 100, f"nothing to scroll: {before}"
+    # The Speeds block is shorter since the percent dials (2026-10-07): the
+    # page scrolls about 90 px at this height, which is still a scroll.
+    assert before["room"] > 60, f"nothing to scroll: {before}"
     assert after["scroll"] > 0, after
     # Pinned: the head is still at the top of the view and the tier-1 body
-    # still right under it, while the page moved 400 px.
+    # sits flush under it (the pinned body's negative margin cancels the
+    # card's row gap; its top is the measured head height, `--pin-head`),
+    # while the details moved under them.
     assert -0.5 <= after["head"] <= before["head"] + 0.5, out
-    assert abs((after["body"] - after["head"]) - (before["body"] - before["head"])) < 1, out
-    assert after["well"] < before["well"] - 100, "the details did not scroll under it"
+    head_height = (before["body"] - before["head"]) - 12   # minus the card's row gap
+    assert abs((after["body"] - after["head"]) - head_height) < 1.5, out
+    assert after["well"] < before["well"] - 60, "the details did not scroll under it"
     assert out["pinned"], "the entry was not pinned"
 
 
