@@ -53,6 +53,10 @@ class Controller:
         self._deferred_signal = None
         self._hooked = False
         self.factory = None         # set by Setup: config -> Model
+        #: Set by Setup: `gate(name, command)` -> why this session may not
+        #: run it ("" to run), e.g. a Guest and the maps (architecture audit
+        #: 2026-10-08 item 11). Never asked for a stop.
+        self.command_gate = None
 
     # -- construct / destruct on demand -----------------------------------
     def add(self, name, model, config=None):
@@ -343,8 +347,24 @@ class Controller:
             return Result(Result.REFUSED, reason=f"{name} is not open")
         if command in ("toggle_estop", "estop"):   # a stop never queues
             return model.run(command, inputs, args)
+        refusal = self._gate(name, command)
+        if refusal:
+            events.info("Refused", refusal, source=name)
+            return Result(Result.REFUSED, reason=refusal)
         with lock:
             return model.run(command, inputs, args)
+
+    def _gate(self, name, command):
+        """`command_gate`'s answer; a gate that raises refuses (a stop never
+        reaches here)."""
+        gate = self.command_gate
+        if gate is None:
+            return ""
+        try:
+            return gate(name, command) or ""
+        except Exception as exc:
+            events.debug("Command Gate Failed", repr(exc), source=name)
+            return f"{name}: {command} could not be checked for this session ({exc})."
 
     def options(self, name, command):
         model = self._model_or_none(name)

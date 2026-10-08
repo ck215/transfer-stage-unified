@@ -502,8 +502,9 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                 return Result(Result.REFUSED, reason="This station has no account menu.")
             return user.run(command, inputs, args)
         # Owner 2026-10-07: a Guest's session has no Transfer Map or Sample
-        # Map. Setup does not launch them for a Guest; this refuses their
-        # commands too, whatever is open, so hiding is never the only guard.
+        # Map. Setup does not launch them for a Guest, and the Controller
+        # refuses their commands (Setup's `command_gate`, audit 2026-10-08
+        # item 11); this asks again, a second layer in the adapter.
         refusal_of = getattr(self.view.setup, "session_refusal", None)
         refusal = refusal_of(name, command) if callable(refusal_of) else ""
         if refusal:
