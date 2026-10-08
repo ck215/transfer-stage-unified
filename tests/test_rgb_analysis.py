@@ -1945,3 +1945,29 @@ def test_the_operator_sees_rgb_analysis_in_the_stop_and_the_events(
 def test_the_telemetry_stream_slug_is_rgb_analysis():
     from model import trial_telemetry
     assert trial_telemetry._slug(RgbAnalysis.NAME) == "rgb_analysis"
+
+
+# -- label_run (the Transfer Map names the run it records through) -----------------
+
+def test_label_run_renames_the_active_run_until_something_is_saved(tmp_path):
+    model = RgbAnalysis(screen=fake_screen())
+    model.output_root = tmp_path
+    model.open()
+    try:
+        assert model.label_run("trial001") is None          # no run yet
+        model.set_region(0, 0, 10, 10)
+        model.start_run(confirmed=True)
+        assert model.run_id.startswith("run_")
+        token = model.run_token
+        assert model.label_run("trial001_tip-T7", {"consumable_id": "T7"}) == "trial001_tip-T7"
+        assert model.run_token is token and model.run_id == "trial001_tip-T7"
+        assert model.run_dir == tmp_path / "trial001_tip-T7"
+        assert token.annotations["consumable_id"] == "T7"
+        assert model.label_run("") == "trial001_tip-T7"     # blank: no change
+        model._saved_rows = 1                               # rows are on disk
+        assert model.label_run("other") is None
+        assert model.run_id == "trial001_tip-T7"
+        model.end_run()
+        assert model.label_run("later") is None
+    finally:
+        model.close()

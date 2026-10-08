@@ -2661,6 +2661,122 @@ def test_e_the_slider_and_the_entry_follow_each_other_and_the_command_gets_the_v
     assert slider.value() == 1000 and entry.text() == "4000"
 
 
+class TipPanel(Panel):
+    """The trial sheet's shape around its tip: a text entry and a key that
+    reads it (`inputs`), beside a numeric entry with no slider."""
+
+    NAME = "Tips"
+    PARAMS = {"tip_id": Param("tip_id", "text", default="", label="Tip ID"),
+              "tilt": Param("tilt", "float", default=0.0, decimals=1,
+                            label="Tilt")}
+
+    def __init__(self):
+        super().__init__()
+        self.tip_id = "Tip1"
+        self.created = []
+
+    @property
+    def schema(self):
+        P = self.PARAMS
+        return sch.schema(sch.section(
+            "Trial",
+            sch.entry("Tip ID", "tip_id", P["tip_id"]),
+            sch.button("New tip", "new_tip", inputs=("tip_id",)),
+            sch.entry("Tilt for this trial", "tilt", P["tilt"])))
+
+    def new_tip(self):
+        if not self.tip_id.strip():
+            raise Refused("Type the new tip's ID first.")
+        self.created.append(self.tip_id)
+        return self.tip_id
+
+
+@pytest.fixture
+def tips(qapp):
+    panel = TipPanel()
+    built = qt.QtPanelView(FakeController(panel), "Tips")
+    yield built, panel
+    built.close()
+
+
+def test_a_text_entry_commits_on_return_or_focus_out_so_the_refresh_keeps_it(tips):
+    """Bench 2026-09-28: "I can't empty the field to then type a new value"
+    and New tip answered "already on record" with an ID the operator had
+    replaced. Only a slider's release committed in Qt; a plain box was
+    written back by the refresh once focus left it. Now Return, or leaving
+    the box, commits what it says (O14, as Tk and the Web do), an emptied
+    box stays empty, and the next refresh agrees with it."""
+    view, panel = tips
+    element = element_named(view, "tip_id")
+    entry = view._widget_for(element)
+    view._refresh()
+    assert entry.text() == "Tip1"
+    entry.setText("")
+    entry.editingFinished.emit()              # Return, or focus leaving
+    assert panel.tip_id == ""
+    view._refresh()                           # the box is not written back
+    assert entry.text() == ""
+    entry.setText("Tip2")
+    entry.editingFinished.emit()
+    assert panel.tip_id == "Tip2"
+    view._refresh()
+    assert entry.text() == "Tip2"
+    view._run(next(e for e in view._elements if e.get("command") == "new_tip"))
+    assert panel.created == ["Tip2"]
+
+
+def test_an_unchanged_box_commits_nothing_when_focus_merely_passes(tips):
+    """A Tab through the sheet, or a dialog taking focus, is not an edit."""
+    view, panel = tips
+    view._refresh()
+    before = len(view.controller.runs)
+    view._widget_for(element_named(view, "tip_id")).editingFinished.emit()
+    view._widget_for(element_named(view, "tilt")).editingFinished.emit()
+    assert view.controller.runs[before:] == []
+
+
+def test_a_refused_commit_is_shown_and_the_refresh_restores_the_held_value(tips):
+    view, panel = tips
+    element = element_named(view, "tilt")
+    entry = view._widget_for(element)
+    view._refresh()
+    entry.setText("")                         # a float must not be blank
+    entry.editingFinished.emit()
+    assert panel.tilt == 0.0
+    assert "Tilt is empty" in view._refusal_for(element).text()
+    view._refresh()
+    assert entry.text() == "0.0"
+
+
+def test_e_a_value_typed_into_a_sliders_box_persists_when_focus_leaves(tiered):
+    """Bench 2026-09-28: "persistence of field typing is also a problem on
+    the sliders". Only the slider's release committed; a value typed into
+    its box was written back by the refresh once focus left. Return, or
+    leaving the box, commits it now, and the slider and the box agree with
+    the model after the next refresh."""
+    view, panel = tiered
+    element = element_named(view, "speed")
+    entry = view._widget_for(element)
+    slider = view._sliders[id(element)]
+    view._refresh()
+    assert entry.text() == "400" and panel.speed == 400
+    entry.setText("730")
+    entry.editingFinished.emit()              # Return, or focus leaving
+    assert panel.speed == 730
+    view._refresh()
+    assert entry.text() == "730" and slider.value() == 730
+    entry.setText("4000")                     # past the slider, within the Param
+    entry.editingFinished.emit()
+    assert panel.speed == 4000
+    view._refresh()
+    assert entry.text() == "4000" and slider.value() == 1000
+    entry.setText("0")                        # below the Param's minimum
+    entry.editingFinished.emit()
+    assert panel.speed == 4000                # refused, not applied
+    view._refresh()
+    assert entry.text() == "4000" and "Manual Speed" in view._refusal_for(element).text()
+
+
 def test_e_a_drag_is_not_snapped_back_by_the_refresh(tiered, monkeypatch):
     view, panel = tiered
     element = element_named(view, "speed")

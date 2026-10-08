@@ -778,6 +778,8 @@ def test_tilt_is_none_until_a_rotator_reads_or_the_operator_types_one(red):
     model.typed_tilt = "17"
     assert model._read_tilt() == (17.0, "typed")
     model.on_model_added("Rotator 2", FakeRotator(30.0))
+    assert model.tilt_now == 17.0          # typed, so the reading waits (the lab)
+    model.typed_tilt = ""
     assert model.tilt_now == 30.0
 
 
@@ -1361,9 +1363,8 @@ def test_the_map_rows_carry_the_tilt_and_the_force_class(station, private_db):
     model, red, *_ = station
     trial = _record(model, red)
     [row] = model._map_rows()
-    assert row["tilt"] == 22.5 and row["force_class"] is None
-    with sqlite3.connect(private_db) as db:       # a bench file has the column
-        db.execute("ALTER TABLE trials ADD COLUMN force_class TEXT")
+    assert row["tilt"] == 22.5
+    with sqlite3.connect(private_db) as db:       # the lab's v8 column
         db.execute("UPDATE trials SET force_class='High' WHERE id=?", (trial,))
     [row] = model._map_rows()
     assert row["force_class"] == "High" and row["tilt"] == 22.5
@@ -1773,7 +1774,8 @@ def test_arm_asks_to_frame_the_sample_before_anything_is_written(idle_station):
     assert result.needs_confirm, result
     # 2026-10-07: Continue takes the stage still; the region comes next.
     # TM-3: without a tilt the prompt says nothing of one (never demanded).
-    assert result.reason == ("Frame the sample now. Continue takes the "
+    assert result.reason == (TransferMap.VACUUM + "\n\n"
+                             "Frame the sample now. Continue takes the "
                              "picture of the stage for trial 1 on tip T7, "
                              "300 steps/s (Stepper Probe), cut 1 on 4oct26 · "
                              "2 · F3; you then pick the capture region on "
@@ -1971,8 +1973,9 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     assert [e.get("model_attr") or e.get("source_command") or e.get("command")
             for e in diagnostics["elements"]] == [
         "last_trial_numbers", "width_gradient", "video_encoder",
-        "video_status", "trial_samples", "trials_log", "tips_log",
-        "delete_trial"]
+        "video_status", "trial_samples", "force_position_text",
+        "rebuild_force", "open_finalizer", "finalize_queue", "finalize_media",
+        "finalize_save", "trials_log", "tips_log", "delete_trial"]
 
 
 # -- full pictures: the whole screen at Arm and at Finish (2026-09-28) ----------
@@ -2196,8 +2199,21 @@ V6_COLUMNS = ("sample_id", "flake_uid", "operator_id", "operator_auth",
               "trench_depth_nm", "trench_depth_sigma_nm",
               "width_optical_um", "width_optical_sigma_um",
               "width_optical_method")
+#: Version 7 (the lab's, bench 2026-09-28 and 2026-10-04): the sample's chip,
+#: flake and cut IDs, and the invalid flag.
+V7_COLUMNS = ("chip_id", "flake_id", "cut_id", "invalid")
+#: Version 8 (the lab's, owner 2026-10-06): the tip-shade force columns.
+V8_COLUMNS = ("contact_lowered", "force_position", "force_class", "shade_baseline",
+              "shade_peak", "shade_mark")
 #: TR-5 (2026-10-07): the profile's colour channels, added by presence.
 CHANNELS = tm_module.PROFILE_CHANNELS
+#: ... and the shade of each row's frame (the lab's merge, 2026-10-07).
+PROFILE_ADDED = tm_module.PROFILE_ADDED
+#: The capture region and the display it was picked on, stored when the
+#: region lands (2026-10-07): what a rebuild crops from the full display.
+REGION_COLUMNS = ("region_left", "region_top", "region_width", "region_height",
+                  "display_left", "display_top", "display_width",
+                  "display_height")
 
 
 def _version(path):
@@ -2210,8 +2226,8 @@ def _columns(path):
         return [r[1] for r in db.execute("PRAGMA table_info(trials)")]
 
 
-def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS,
-                      version=1):
+def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS
+                      + V7_COLUMNS + V8_COLUMNS, version=1):
     """A database as an earlier round wrote it: the version-1 trials table
     (no whole-screen columns; with `version=2` and `drop=V3_COLUMNS +
     V5_COLUMNS`, the version-2 table; with `version=4` and
@@ -2220,7 +2236,9 @@ def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUM
     table before version 3, one measured trial on tip T7 with a profile,
     `user_version = version`."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    columns = [(n, k) for n, k in tm_module.TRIAL_COLUMNS if n not in drop]
+    # The region columns are 2026-10-07's: no earlier file has them.
+    columns = [(n, k) for n, k in tm_module.TRIAL_COLUMNS
+               if n not in drop and n not in REGION_COLUMNS]
     db = sqlite3.connect(path)
     db.execute("CREATE TABLE trials (" + ", ".join(f"{n} {k}" for n, k in columns)
                + ")")
@@ -2253,12 +2271,12 @@ def _tables(path):
 
 def test_a_fresh_database_is_version_three_with_the_picture_columns_and_tips(
         private_db):
-    assert tm_module.SCHEMA_VERSION == 6
+    assert tm_module.SCHEMA_VERSION == 8
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 6
-    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 8
+    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
     assert "tips" in _tables(private_db)
 
 
@@ -2273,8 +2291,8 @@ def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 6
-        assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 8
+        assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]   # untouched
@@ -2321,19 +2339,19 @@ def test_the_first_write_migrates_too(private_db):
     store.insert({"tip_id": "T8", "status": "recorded",
                   "before_full_path": "/x.png", "mark_path": "/m.png",
                   "video_path": "/v.mp4"})
-    assert _version(private_db) == 6
+    assert _version(private_db) == 8
     assert [r["tip_id"] for r in store.trials()] == ["T7", "T8"]
 
 
 def test_a_half_done_upgrade_finishes(private_db):
     """A version-1 file that already has some of the new columns (an upgrade
     cut short between the ALTERs) gets the rest and the current version."""
-    _version_one_file(private_db, drop=("after_full_path",) + V3_COLUMNS
+    _version_one_file(private_db, drop=V7_COLUMNS + V8_COLUMNS + ("after_full_path",) + V3_COLUMNS
                       + V5_COLUMNS + V6_COLUMNS[3:])
     assert _version(private_db) == 1
     assert tm_module.TrialStore(private_db).ensure() is False
-    assert _version(private_db) == 6
-    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 8
+    assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
 
 
 def test_a_version_three_database_is_left_alone(private_db):
@@ -2348,7 +2366,7 @@ def test_a_version_three_database_is_left_alone(private_db):
     with sqlite3.connect(private_db) as db:
         assert db.execute("SELECT sql FROM sqlite_master ORDER BY name"
                           ).fetchall() == schema
-    assert _version(private_db) == 6
+    assert _version(private_db) == 8
     assert not _titled("Database Upgraded", since)
 
 
@@ -2356,7 +2374,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
     """M1/M2: the owner's bench file is version 2 and holds trials. It gains
     the Mark columns and a tip record per tip its trials name; every trial
     and profile row is kept."""
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS,
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS,
                       version=2)
     before = _rows(private_db, "SELECT * FROM trials")
     assert _version(private_db) == 2 and "tips" not in _tables(private_db)
@@ -2367,8 +2385,8 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 6
-        assert set(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 8
+        assert set(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
@@ -2383,8 +2401,9 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
         # TR-5 (2026-10-07): the profile gains its colour channels too.
-        assert (", ".join(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + CHANNELS)
-                + ", tips (version 6)"
+        assert (", ".join(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS
+                          + V8_COLUMNS + REGION_COLUMNS + PROFILE_ADDED)
+                + ", tips (version 8)"
                 in upgraded[0].message), upgraded[0].message
         model.tip_id = "T7"
         assert model.tip_status == "in use since trial 1"
@@ -2395,7 +2414,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
 
 
 def test_a_migrated_version_two_database_records_a_marked_trial(red, private_db):
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS, version=2)
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=2)
     model = TransferMap()
     model.open()
     model.on_model_added("Red Percent", red)
@@ -2417,7 +2436,7 @@ def test_a_migrated_version_two_database_records_a_marked_trial(red, private_db)
 
 
 def test_a_version_two_file_with_a_broken_tip_backfills_it(private_db):
-    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS, version=2)
+    _version_one_file(private_db, drop=V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=2)
     with sqlite3.connect(private_db) as db:
         db.execute("INSERT INTO trials (tip_id, broke, status) VALUES "
                    "('T7', 1, 'recorded'), ('T7', 1, 'recorded'), "
@@ -2590,6 +2609,7 @@ def test_arming_on_a_broken_tip_asks_once(station):
     assert result.needs_confirm
     # (2026-10-07: Continue takes the stage still; the region comes next)
     assert result.reason == (
+        TransferMap.VACUUM + "\n\n"
         f"Tip T7 broke on trial {broke}. Arm on it anyway?\n\nFrame the sample "
         "now. Continue takes the picture of the stage for trial "
         f"{broke + 1} on tip T7 at 22.5 deg (Rotator), 300 steps/s (Stepper "
@@ -2607,7 +2627,8 @@ def test_arming_on_a_retired_tip_asks_once(station):
     assert _confirmed(model, "retire_tip") == "T7"
     result = model.run("arm_trial")
     assert result.needs_confirm
-    assert result.reason.startswith("Tip T7 is retired. Arm on it anyway?\n\n"
+    assert result.reason.startswith(TransferMap.VACUUM + "\n\n"
+                                    "Tip T7 is retired. Arm on it anyway?\n\n"
                                     "Frame the sample now.")
     again = model.run(result.command, result.inputs, (*result.args, True))
     assert again.is_ok and model.phase == "region"
@@ -3284,7 +3305,7 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
     """The owner's bench file after the tips round is version 4 and holds
     trials: it gains the four video columns, keeps every trial, profile row
     and tip, and records a trial with its video."""
-    _version_one_file(private_db, drop=V5_COLUMNS + V6_COLUMNS, version=4)
+    _version_one_file(private_db, drop=V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=4)
     before = _rows(private_db, "SELECT * FROM trials")
     tips_before = _rows(private_db, "SELECT * FROM tips")
     assert _version(private_db) == 4
@@ -3298,8 +3319,8 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
     _give_flake(model)
     _wire(model)
     try:
-        assert _version(private_db) == 6
-        assert set(V5_COLUMNS + V6_COLUMNS) <= set(_columns(private_db))
+        assert _version(private_db) == 8
+        assert set(V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
@@ -3310,8 +3331,10 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
         assert [t["model"] for t in tips] == ["TAP300"]       # owner ruling
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS + CHANNELS)
-                + ", tips.model (version 6)"
+        assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS + V7_COLUMNS
+                                       + V8_COLUMNS + REGION_COLUMNS
+                                       + PROFILE_ADDED)
+                + ", tips.model (version 8)"
                 in upgraded[0].message), \
             upgraded[0].message
         assert model.video_status == "No video for this trial."
@@ -3336,8 +3359,10 @@ def _spy_start(monkeypatch, model, red, fail=None):
     real = red.start_run
 
     def spy(*args, **kwargs):
+        # V8, and the lab's tip shade (2026-10-07 merge): the rows and the
+        # region's frames are both the trial's before the run starts.
         seen.append((model._on_sample in red._subscribers,
-                     red._frame_subscribers == ()))     # TM-4: no frame hook
+                     model._on_frame in red._frame_subscribers))
         if fail is not None:
             raise fail
         return real(*args, **kwargs)
@@ -3399,8 +3424,8 @@ def test_a_fresh_database_is_version_six_with_an_identity(private_db):
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 6
-    assert set(V6_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 8
+    assert set(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
     meta = dict(_rows_raw(private_db, "SELECT key, value FROM meta"))
     assert set(meta) == {"map_db_uuid", "created_at"}
     import uuid
@@ -3415,7 +3440,7 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
     """The owner's bench file is version 5 and holds trials: it gains the
     v6 columns (NULL = not measured, nothing backfilled) and a store id, and
     keeps every trial, profile row and tip."""
-    _version_one_file(private_db, drop=V6_COLUMNS, version=5)
+    _version_one_file(private_db, drop=V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=5)
     before = _rows(private_db, "SELECT * FROM trials")
     assert "meta" not in _tables(private_db)
     events.forget("Database Upgraded")
@@ -3426,17 +3451,20 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
     model.tip_id = "T7"
     _give_flake(model)
     try:
-        assert _version(private_db) == 6
+        assert _version(private_db) == 8
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
-        assert all(after[0][c] is None for c in V6_COLUMNS)
+        assert all(after[0][c] is None for c in V6_COLUMNS + V7_COLUMNS + V8_COLUMNS
+                   if c != "invalid")
+        assert after[0]["invalid"] == 0                  # valid unless flagged
         assert len(_rows(private_db, "SELECT * FROM profile")) == 5
         assert "map_db_uuid" in tm_module.TrialStore(private_db).meta()
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
-        assert ("now has " + ", ".join(V6_COLUMNS + CHANNELS)
-                + ", tips.model (version 6)"
+        assert ("now has " + ", ".join(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS
+                                       + REGION_COLUMNS + PROFILE_ADDED)
+                + ", tips.model (version 8)"
                 in upgraded[0].message), upgraded[0].message
         trial = _record(model, red)
         row = _row(private_db, trial)
@@ -3839,21 +3867,22 @@ def test_set_trial_sample_backfills_an_old_trial(station, tmp_path, private_db):
     assert element["inputs"] == ["afm_trial_id"]
 
 
-def test_a_version_six_file_gains_the_flake_columns_and_keeps_its_version(
+def test_a_version_six_file_gains_the_flake_columns_and_is_version_eight(
         private_db):
-    _version_one_file(private_db, drop=("chip_id", "flake_id", "cut_id"),
-                      version=6)
+    """A repo v6 file gains the lab's v7/v8 columns by presence (chip_id,
+    flake_id, cut_id among them, cut_id TEXT) and is numbered 8."""
+    _version_one_file(private_db, drop=V7_COLUMNS + V8_COLUMNS, version=6)
     events.forget("Database Upgraded")
     since = events.latest_id
     model = TransferMap()
     model.open()
     model.close()
     columns = _columns(private_db)
-    assert {"chip_id", "flake_id", "cut_id"} <= set(columns)
-    assert _version(private_db) == 6
+    assert set(V7_COLUMNS + V8_COLUMNS) <= set(columns)
+    assert _version(private_db) == 8
     assert "cut_id TEXT" in _schema_sql(private_db, "trials")
     upgraded = _titled("Database Upgraded", since)
-    assert len(upgraded) == 1 and "chip_id, flake_id, cut_id" in upgraded[0].message
+    assert len(upgraded) == 1 and "chip_id, flake_id, cut_id, invalid" in upgraded[0].message
     assert len(_rows(private_db, "SELECT * FROM trials")) == 1
 
 
@@ -3868,13 +3897,17 @@ def test_a_bench_v8_file_gains_nothing_it_has_and_keeps_version_eight(
     model.tip_id = "T7"
     _give_flake(model, flake=("7/27/26", "2", "13"))
     try:
-        assert _schema_sql(private_db, "trials") == trials_sql   # untouched
+        # Every column it has keeps its declaration; it gains only the
+        # region columns it lacks (2026-10-07), at the end.
+        assert _schema_sql(private_db, "trials").startswith(trials_sql[:-1])
+        assert _columns(private_db)[-len(REGION_COLUMNS):] == list(REGION_COLUMNS)
         assert _version(private_db) == 8
-        # TR-5: the profile gains the colour channels it lacks, nothing else.
+        # TR-5: the profile gains the colour channels and the shade it lacks.
         with sqlite3.connect(private_db) as db:
             profile = [r[1] for r in db.execute("PRAGMA table_info(profile)")]
-        assert profile == ["trial_id", "t_s", "red", "z", "x", "y", *CHANNELS]
-        assert _rows(private_db, "SELECT * FROM trials") == before
+        assert profile == ["trial_id", "t_s", "red", "z", "x", "y", *PROFILE_ADDED]
+        assert [{k: r[k] for k in before[0]}
+                for r in _rows(private_db, "SELECT * FROM trials")] == before
         assert model.cut_next == 2                     # the bench's cut 1 counts
         trial = _record(model, red)
         row = _row(private_db, trial)
@@ -3970,24 +4003,38 @@ def _rows_at(model, red, clock, reds, start, step=0.1):
     return start + len(reds) * step
 
 
-def test_the_force_estimate_is_blank_then_a_class_on_a_scripted_profile(scripted):
+def _green(value, size=(8, 12)):
+    """A region frame whose right half's green is `value` (RGB)."""
+    import numpy
+    rgb = numpy.zeros((*size, 3), numpy.uint8)
+    rgb[..., 0], rgb[..., 1] = 200, value
+    return rgb
+
+
+def _frames_at(model, values, start, step=1 / 15):
+    """Hand frames to the trial's shade, as its worker does, from `start`
+    s after Arm."""
+    for i, value in enumerate(values):
+        model._shade_frame(model._trial, start + i * step, _green(value))
+    return start + len(values) * step
+
+
+def test_the_force_estimate_reads_the_tip_shade(scripted):
+    """Owner ruling 2026-10-07: the tip's shade is THE force (the lab's
+    `tip_shade`): its status words, and the position once known; the red
+    extrema are never shown as force."""
     model, red, clock = scripted
     estimate = lambda: model.state["values"]["force_estimate"]   # noqa: E731
     assert estimate() == ""                          # setup: no trial
     _arm(model)
-    assert estimate() == ""                          # live, no rows yet
-    s = _rows_at(model, red, clock, [10.0] * 11, 0.0)      # the first second
-    assert estimate() == ""                          # no baseline yet
-    s = _rows_at(model, red, clock, [10.0], s)
-    assert estimate() == "Low · 0.00"
-    s = _rows_at(model, red, clock, [20.0] * 5, s)          # the approach
-    assert estimate() == "Low · 0.00"
-    s = _rows_at(model, red, clock, [18.0] * 5, s)
-    assert estimate() == "Low · 0.10"
-    s = _rows_at(model, red, clock, [16.0] * 5, s)
-    assert estimate() == "Medium · 0.20"
-    s = _rows_at(model, red, clock, [14.0] * 5, s)
-    assert estimate() == "High · 0.30"
+    assert estimate() == "No contact"                # the tracker, from Arm
+    _rows_at(model, red, clock, [10.0] * 12 + [20.0] * 5 + [14.0] * 5, 0.0)
+    assert estimate() == "No contact"                # rows are not the force
+    tracker = model._trial.shade
+    tracker.status, tracker.position = "Medium", 0.4321
+    assert estimate() == "Medium force · 0.43"
+    tracker.status, tracker.position = "Contact", 0.04
+    assert estimate() == "Contact · 0.04"
     element = _element(model, "force_estimate")
     assert (element["type"], element["text"], element.get("rail")) == (
         "readonly", "Force estimate", True)
@@ -3995,12 +4042,37 @@ def test_the_force_estimate_is_blank_then_a_class_on_a_scripted_profile(scripted
     assert estimate() == ""                          # the review step
 
 
+def test_the_force_estimate_walks_the_shade_and_finish_stores_it(scripted,
+                                                                 private_db):
+    model, red, clock = scripted
+    trial = _arm(model)
+    s = _frames_at(model, [150.0] * 30, 0.0)        # the baseline
+    assert model.force_estimate == "No contact"
+    words = []
+    for value in [150.0 + 5 * i for i in range(1, 16)] + [225.0] * 10 \
+            + [225.0 - 5 * i for i in range(1, 16)] + [150.0] * 20:
+        s = _frames_at(model, [value], s)
+        word = model.force_estimate.split(" · ")[0]
+        if not words or words[-1] != word:
+            words.append(word)
+    assert words[0] == "No contact" and words[-1] == "High force"
+    assert "Contact" in words and "Medium force" in words
+    model._trial.operator_t = s                      # the Mark, back at the baseline
+    _frames_at(model, [150.0] * 2, s)                # the frame at the Mark freezes it
+    model.end_recording()
+    _confirmed(model, "finish_trial", {"note": ""})
+    row = _row(private_db, trial)
+    assert row["shade_baseline"] == pytest.approx(150.0)
+    assert row["force_class"] == "High"
+    assert row["force_position"] >= 0.67 and row["shade_peak"] > 200
+    assert row["shade_mark"] == pytest.approx(150.0)
+
+
 def test_the_force_estimate_says_unsettled_while_frames_are_rejected(scripted):
     model, red, clock = scripted
     estimate = lambda: model.state["values"]["force_estimate"]   # noqa: E731
     _arm(model)
-    s = _rows_at(model, red, clock, [10.0] * 12, 0.0)
-    assert estimate() == "Low · 0.00"                # a window opens
+    assert estimate() == "No contact"                # a window opens
     clock.now += tm_module.HEALTH_WINDOW_S
     red.frames_accepted += 2
     red.rejected_unsettled += 9
@@ -4009,66 +4081,52 @@ def test_the_force_estimate_says_unsettled_while_frames_are_rejected(scripted):
     clock.now += tm_module.HEALTH_WINDOW_S
     red.frames_accepted += 12
     red.rejected_stale += 1
-    assert estimate() == "Low · 0.00"                # settled again
-    # A row the analysis cannot use (a black grab) moves nothing.
-    s = _rows_at(model, red, clock, [20.0] * 5, s)
-    s = _rows_at(model, red, clock, [18.0] * 5, s)
-    assert estimate() == "Low · 0.10"
-    s = _rows_at(model, red, clock, [0.0], s)
-    assert estimate() == "Low · 0.10" and model._trial.live.settled is False
-    _rows_at(model, red, clock, [18.0], s)
-    assert estimate() == "Low · 0.10" and model._trial.live.settled is True
+    assert estimate() == "No contact"                # settled again
     model.abort_trial()
 
 
-def test_the_estimate_moves_on_rows_never_on_a_poll(scripted, monkeypatch):
+def test_the_estimate_moves_on_frames_never_on_a_poll(scripted, monkeypatch):
     model, red, clock = scripted
     calls = []
-    original = tm_module.analysis.LiveForce.add
+    original = tm_module.tip_shade.ShadeTracker.update
 
     def counted(self, *args, **kwargs):
         calls.append(threading.current_thread().name)
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(tm_module.analysis.LiveForce, "add", counted)
-    monkeypatch.setattr(tm_module.analysis, "live_force",
-                        lambda *a: pytest.fail("a poll computed the estimate"))
+    monkeypatch.setattr(tm_module.tip_shade.ShadeTracker, "update", counted)
     _arm(model)
     for _ in range(50):                              # a view polling
         model.state
         model.force_estimate
     assert calls == []
-    monkeypatch.undo()
-    calls.clear()
-    monkeypatch.setattr(tm_module, "time", clock)
-    monkeypatch.setattr(tm_module.analysis.LiveForce, "add", counted)
-    _rows_at(model, red, clock, [10.0] * 3, 0.0)
-    assert len(calls) == 3                           # one per row
+    _frames_at(model, [150.0] * 3, 0.0)
+    assert len(calls) == 3                           # one per frame
     for _ in range(20):
         model.state
     assert len(calls) == 3
     model.abort_trial()
 
 
-def test_the_estimate_is_fed_on_red_percents_run_thread(station, monkeypatch):
-    """With the real Red Percent: every update runs on its run thread, none
-    on the thread that reads the state (a view's)."""
+def test_the_shade_is_measured_on_the_trials_worker(station, monkeypatch):
+    """With the real RGB analysis: every accepted frame is queued on its run
+    thread and measured on the trial's shade worker, never on the run
+    thread nor on the thread that reads the state (a view's)."""
     model, red, *_ = station
     threads = []
-    original = tm_module.analysis.LiveForce.add
+    original = tm_module.tip_shade.right_half_median_green
 
-    def spy(self, *args, **kwargs):
-        threads.append(threading.current_thread())
-        return original(self, *args, **kwargs)
+    def spy(rgb):
+        threads.append(threading.current_thread().name)
+        return original(rgb)
 
-    monkeypatch.setattr(tm_module.analysis.LiveForce, "add", spy)
+    monkeypatch.setattr(tm_module.tip_shade, "right_half_median_green", spy)
     _arm(model)
-    assert _wait_for(lambda: len(model._trial.samples) >= 5)
+    assert _wait_for(lambda: len(threads) >= 5, timeout=5.0)
     for _ in range(20):
         model.state
     model.abort_trial()
-    assert threads and threading.main_thread() not in threads
-    assert len(threads) >= 5
+    assert set(threads) == {"transfer-map-shade"}
 
 
 def test_the_video_reads_recording_or_stopped_and_the_counts_are_diagnostics(
@@ -4230,7 +4288,7 @@ def test_the_real_rgb_analysis_rows_fill_the_channels(station, private_db):
 
 
 def test_an_older_profile_gains_the_channels_and_keeps_its_rows(private_db):
-    _version_one_file(private_db, drop=V6_COLUMNS, version=5)
+    _version_one_file(private_db, drop=V6_COLUMNS + V7_COLUMNS + V8_COLUMNS, version=5)
     before = _rows(private_db, "SELECT * FROM profile")
     model = TransferMap()
     model.open()
@@ -4289,10 +4347,13 @@ def test_the_bench_files_six_tips_are_labelled_tap300_and_nothing_else_moves(
     tips = _rows(path, "SELECT * FROM tips ORDER BY rowid")
     assert [t["model"] for t in tips] == ["TAP300"] * 6
     assert [{k: t[k] for k in tips_before[0]} for t in tips] == tips_before
-    assert _rows(path, "SELECT * FROM trials ORDER BY id") == trials_before
+    assert [{k: r[k] for k in trials_before[0]} for r in
+            _rows(path, "SELECT * FROM trials ORDER BY id")] == trials_before
     assert _rows_raw(path, "SELECT trial_id, t_s, red, z, x, y FROM profile "
                            "ORDER BY rowid") == profile_before
-    assert _schema_sql(path, "trials") == trials_sql
+    # Every column it had keeps its declaration; only the region columns
+    # (2026-10-07) are new.
+    assert _schema_sql(path, "trials").startswith(trials_sql[:-1])
     assert _version(path) == 8
     assert _rows(path, "SELECT name FROM tip_models") == [{"name": "TAP300"}]
     [labelled] = _titled("Tip Models", since)
@@ -4308,7 +4369,7 @@ def test_the_bench_files_six_tips_are_labelled_tap300_and_nothing_else_moves(
 
 
 def test_a_version_six_file_gains_the_model_column_labelled_once(private_db, red):
-    _version_one_file(private_db, drop=(), version=6)
+    _version_one_file(private_db, drop=V7_COLUMNS + V8_COLUMNS, version=6)
     events.forget("Tip Models")
     since = events.latest_id
     model = TransferMap()
@@ -4390,3 +4451,292 @@ def test_set_tip_model_corrects_a_label_and_the_rows_carry_it(station):
     element = _element(model, "set_tip_model")
     section = next(s for s in model.schema["sections"] if element in s["elements"])
     assert (section["title"], section["tier"]) == ("Tip", 2)
+
+
+# -- the lab's stage (f55de75), merged 2026-10-07 ---------------------------------
+# Kept from the lab: the typed tilt wins, every Arm asks about the vacuum, the
+# invalid flag, the run named after the trial, store v8 (numbered ahead is
+# completed), and the tip-shade force (`model.tip_shade`, THE force model:
+# owner ruling 2026-10-07) fed per accepted region frame. Superseded here: the
+# typed sample/chip/flake/cut entries (the pickers) and the region video's
+# label band (the full-display recorder).
+
+def test_a_typed_tilt_wins_over_the_rotator_reading(station):
+    """The lab, bench 2026-09-28: the Rotator read 0.0 on two trials tilted
+    by hand to 6.5 and 7 deg, and the typed tilt was ignored. Typed wins;
+    blank the entry and the rotator is the source again; Arm names which."""
+    model, red, rotator, _ = station
+    rotator.position_deg = 0.0
+    model.typed_tilt = "6.5"
+    assert model._read_tilt() == (6.5, "typed") and model.tilt_now == 6.5
+    asked = model.run("arm_trial", {"typed_tilt": "7"})
+    assert asked.needs_confirm and " at 7 deg (typed)," in asked.reason
+    trial = _arm(model)
+    row = model._store.trial(trial)
+    assert row["tilt_deg"] == 7.0 and row["tilt_source"] == "typed"
+    _finish(model)
+    model.typed_tilt = ""
+    assert model._read_tilt() == (0.0, "Rotator")
+
+
+def test_every_arm_asks_that_the_sample_vacuum_is_on(station):
+    """The lab, bench 2026-10-04: two trials were cut with the sample vacuum
+    off. The station cannot sense it, so every Arm asks, first, in the one
+    prompt it already raises; a broken tip's question stays."""
+    model, red, *_ = station
+    model.tip_id = "T7"
+    vacuum = TransferMap.VACUUM
+    assert vacuum == "Is the sample vacuum ON? Check it now."
+    for _ in range(2):                            # every Arm, not the first
+        result = model.run("arm_trial")
+        assert result.needs_confirm and result.command == "arm_trial"
+        assert result.reason.startswith(vacuum + "\n\nFrame the sample now.")
+        assert result.reason.count(vacuum) == 1
+        assert model.phase == "setup"
+        _record(model, red)
+    model.mark_broke(True)
+    reason = model.run("arm_trial").reason
+    assert reason.startswith(vacuum + "\n\nTip T7 broke on trial ")
+    assert reason.index("Arm on it anyway?") < reason.index("Frame the sample now.")
+
+
+def test_mark_trial_invalid_drops_it_from_the_map_and_keeps_it_on_record(
+        station):
+    model, red, *_ = station
+    trial_id = _record(model, red)
+    assert trial_id in [r["id"] for r in model._map_rows()]
+    assert model.run("set_trial_invalid", {"afm_trial_id": trial_id},
+                     args=(True,)).is_ok
+    assert model._store.trial(trial_id)["invalid"] == 1
+    assert trial_id not in [r["id"] for r in model._map_rows()]
+    assert "invalid" in [line for line in model.trials_log
+                         if line.lstrip().startswith(str(trial_id))][0]
+    assert model.run("rebuild_force").value == {}         # never analysed
+    assert model.run("set_trial_invalid", {"afm_trial_id": trial_id},
+                     args=(False,)).is_ok
+    assert model._store.trial(trial_id)["invalid"] == 0
+    assert trial_id in [r["id"] for r in model._map_rows()]
+    assert model.run("set_trial_invalid", {"afm_trial_id": 999},
+                     args=(True,)).is_refused
+    with open(model.export_csv(), newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["invalid"] for r in rows if r["id"] == str(trial_id)] == ["0"]
+
+
+def test_a_version_seven_database_gains_the_invalid_flag_all_valid(private_db):
+    _version_one_file(private_db, drop=("invalid",) + V8_COLUMNS, version=7)
+    assert "invalid" not in _columns(private_db)
+    model = TransferMap()
+    model.open()
+    try:
+        assert _version(private_db) == 8
+        after = _rows(private_db, "SELECT * FROM trials")
+        assert len(after) == 1 and after[0]["invalid"] == 0
+        assert [r["id"] for r in model._map_rows()] == [1]
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("ahead", [7, 8, 9])
+def test_a_file_numbered_ahead_but_missing_columns_is_completed(private_db, ahead):
+    """The lab: the version number must not hide missing columns. Its
+    trials, profile and tips are kept, and it gets an identity."""
+    _version_one_file(private_db, drop=V6_COLUMNS, version=ahead)
+    before = _rows(private_db, "SELECT * FROM trials")
+    assert tm_module.TrialStore(private_db).ensure() is False
+    assert _version(private_db) == max(ahead, tm_module.SCHEMA_VERSION)
+    assert set(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
+    after = _rows(private_db, "SELECT * FROM trials")
+    assert {k: after[0][k] for k in before[0]} == before[0]
+    assert len(_rows(private_db, "SELECT * FROM profile")) == 5
+    assert "map_db_uuid" in tm_module.TrialStore(private_db).meta()
+
+
+def test_the_invalid_flag_survives_a_completing_migration(private_db):
+    _version_one_file(private_db, drop=V6_COLUMNS, version=8)
+    with sqlite3.connect(private_db) as db:
+        db.execute("UPDATE trials SET invalid = 1")
+    tm_module.TrialStore(private_db).ensure()
+    assert _rows(private_db, "SELECT invalid FROM trials")[0]["invalid"] == 1
+
+
+def test_arm_names_the_run_after_the_trial(idle_station):
+    """The lab, bench 2026-09-28 ("the runs no longer have labels"): the run
+    the trial records through is named after it, its picks included."""
+    model, red = idle_station
+    trial = _arm(model)
+    assert red.is_running
+    assert red.run_id == f"trial{trial:03d}_tip-tip-A_sample-4oct26_chip-2_flake-F3_cut-1"
+    assert red.run_dir.name == red.run_id
+    token = red.run_token
+    assert token.annotations["consumable_id"] == "tip-A"
+    assert token.annotations["specimen_id"] == "sample 4oct26 chip 2 flake F3"
+    assert token.annotations["note"] == f"trial {trial}  sample 4oct26  chip 2  flake F3  cut 1"
+    model.run("abort_trial")
+
+
+def test_run_label_is_folder_safe():
+    label = TransferMap.run_label(TransferMap, 12, "9/27/26 Tip1", "", "chip A/B",
+                                  "", "cut #4")
+    assert label == "trial012_tip-9-27-26-Tip1_chip-chip-A-B_cut-cut-4"
+    assert "/" not in label and " " not in label
+
+
+def test_import_keeps_the_ids(tmp_path, private_db):
+    path = tmp_path / "in.csv"
+    path.write_text("tip_id,sample_id,chip_id,flake_id,cut_id,tilt_deg,speed_steps_s\n"
+                    "T9,S9,C7,F1,2,10,300\n")
+    model = TransferMap()
+    model.open()
+    try:
+        assert model.run("import_csv", args=(str(path),)).is_ok
+        row = model._store.trials()[-1]
+        assert (row["sample_id"], row["chip_id"], row["flake_id"],
+                row["cut_id"]) == ("S9", "C7", "F1", "2")
+        assert "sample S9  chip C7  flake F1  cut 2" in model.trials_log[-1]
+    finally:
+        model.close()
+
+
+def test_the_trials_log_names_the_ids_the_force_class_and_invalid(station):
+    model, red, *_ = station
+    trial = _record(model, red)
+    model._store.update(trial, {"force_class": "High", "invalid": 1})
+    [line] = model.trials_log
+    assert "sample 4oct26  chip 2  flake F3  cut 1" in line
+    assert "  force High" in line and "  invalid" in line
+
+
+def test_the_region_and_its_display_are_stored_when_the_region_lands(station,
+                                                                     private_db):
+    """What a rebuild crops from the full-display video (owner ruling
+    2026-10-07): the region as landed, desktop coordinates, and the
+    display's place on the desktop."""
+    model, red, *_ = station
+    model.monitor = {"left": 100, "top": 50, "width": 48, "height": 32}
+    _arm_only(model)
+    assert model.run("set_region", None, (105, 60, 20, 15)).is_ok
+    row = _row(private_db, model._trial.id)
+    assert [row[c] for c in REGION_COLUMNS] == [105, 60, 20, 15, 100, 50, 48, 32]
+    model.abort_trial()
+
+
+def test_each_profile_row_keeps_the_shade_of_its_frame(scripted, private_db):
+    """A row and the accepted frame it was measured on share the analysis's
+    time: the row stores that frame's shade; a row with no frame, NULL."""
+    model, red, clock = scripted
+    trial = _arm(model)
+    armed = model._trial.armed
+    for i, green in enumerate((150, 160, 170)):
+        clock.now = armed + 0.1 * (i + 1)
+        model._on_frame(10.0 + i, _green(green))
+        red.row(10.0 + i, 12.0 + i)
+    red.row(20.0, 20.0)                              # no frame of its own
+    assert _wait_for(lambda: len(model._trial.shade_at) == 3)
+    model.end_recording()
+    _confirmed(model, "finish_trial", {"note": ""})
+    shades = [r["shade"] for r in _rows(private_db, "SELECT shade FROM profile "
+                                        "WHERE trial_id=? ORDER BY rowid", trial)]
+    assert shades == [150.0, 160.0, 170.0, None]
+
+
+def _display_footage(folder, values, region_px, size=(120, 200), hz=15,
+                     armed=1000.0):
+    """A full display recorded as `frames/frame_N.jpg` and its `frames.csv`
+    (the full-display recorder's sidecar), the tip in `region_px` (y0, y1,
+    x0, x1) with its right half's green set per frame, the rest dark; and
+    a `telemetry.csv` with the trial's time zero."""
+    import numpy
+    from PIL import Image
+    frames = folder / "frames"
+    frames.mkdir(parents=True)
+    y0, y1, x0, x1 = region_px
+    with open(folder / "frames.csv", "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["frame", "t_monotonic", "t_wall", "marked"])
+        for i, value in enumerate(values):
+            rgb = numpy.zeros((*size, 3), numpy.uint8)
+            tip = rgb[y0:y1, x0:x1]
+            tip[..., 0], tip[..., 1], tip[..., 2] = 215, 150, 32
+            tip[:, (x1 - x0) // 2:, 1] = int(round(value))
+            Image.fromarray(rgb).save(frames / f"frame_{i + 1:06d}.jpg", quality=95)
+            writer.writerow([i + 1, f"{armed + i / hz:.6f}", "", 0])
+    with open(folder / "telemetry.csv", "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["t", "stream", "value"])
+        writer.writerow([f"{armed:.6f}", "transfer_map.armed", 1])
+    return str(frames), str(folder / "frames.csv")
+
+
+def _shade_series(n=330, base=150.0, peak=1.5, hz=15):
+    import numpy
+    t = numpy.arange(n) / hz
+    out = numpy.full(n, base)
+    up = (t >= 4) & (t < 7)
+    out[up] = base + (peak - 1) * base * (1 - numpy.cos(numpy.pi * (t[up] - 4) / 3)) / 2
+    down = t >= 7
+    f = numpy.clip((t[down] - 7) / 12, 0, 1)
+    out[down] = base + (peak - 1) * base * (1 + numpy.cos(numpy.pi * f)) / 2
+    return out
+
+
+def test_rebuild_force_crops_the_region_out_of_the_full_display(tmp_path):
+    """Owner ruling 2026-10-07: the video is the whole display, so the
+    rebuild crops the stored region (desktop coordinates, the display's
+    place, its pixels per point) out of every frame, with no label band.
+    Uncropped, the dark display around the tip would read a shade of 0."""
+    model = TransferMap(db_path=tmp_path / "map.sqlite")
+    model.open()
+    try:
+        trial = model._store.insert({
+            "status": "recorded", "origin": "recorded", "tip_id": "T",
+            "mark_operator_t": 11.0, "region_left": 140, "region_top": 70,
+            "region_width": 40, "region_height": 24, "display_left": 100,
+            "display_top": 50, "display_width": 100, "display_height": 60})
+        folder = model.pictures_root / str(trial)
+        # 200 x 120 pixels for a 100 x 60 point display: the region is
+        # x 80..160, y 40..88 in pixels.
+        footage, index = _display_footage(folder, _shade_series(), (40, 88, 80, 160))
+        model._store.update(trial, {"video_path": footage, "video_index_path": index})
+        result = model.run("rebuild_force", None, (trial,))
+        assert result.is_ok and set(result.value) == {trial}, result
+        row = model._store.trial(trial)
+        assert row["shade_baseline"] == pytest.approx(150.0, abs=2.0)
+        assert row["force_class"] in ("Low", "Medium", "High")
+        assert row["shade_peak"] > 200
+    finally:
+        model.close()
+
+
+def test_rebuild_force_reads_the_stored_shade_when_the_video_is_gone(tmp_path):
+    model = TransferMap(db_path=tmp_path / "map.sqlite")
+    model.open()
+    try:
+        trial = model._store.insert({"status": "recorded", "origin": "recorded",
+                                     "tip_id": "T", "mark_operator_t": 11.0})
+        folder = model.pictures_root / str(trial)
+        folder.mkdir(parents=True)
+        with open(folder / "telemetry.csv", "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["t", "stream", "value"])
+            writer.writerow(["500.000000", "transfer_map.armed", trial])
+            for i, value in enumerate(_shade_series()):
+                writer.writerow([f"{500 + i / 15:.6f}", "transfer_map.shade",
+                                 round(float(value), 2)])
+        assert set(model.run("rebuild_force").value) == {trial}
+        stored = model._store.trial(trial)
+        assert stored["shade_baseline"] == pytest.approx(150.0)
+        assert stored["force_class"] in ("Low", "Medium", "High")
+        # The profile's shade column serves when there is no telemetry.
+        (folder / "telemetry.csv").unlink()
+        other = model._store.insert({"status": "recorded", "origin": "recorded",
+                                     "tip_id": "T", "mark_operator_t": 11.0})
+        model._store.update(other, {}, [(i / 15, 1.0, None, None, None,
+                                         None, None, None, None, None, float(v))
+                                        for i, v in enumerate(_shade_series())])
+        assert set(model.run("rebuild_force", None, (other,)).value) == {other}
+        assert model._store.trial(other)["force_class"] == stored["force_class"]
+        gone = model.run("rebuild_force", None, (trial,))
+        assert gone.is_ok and gone.value == {}       # nothing left to read
+    finally:
+        model.close()

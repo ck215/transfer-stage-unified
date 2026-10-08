@@ -329,6 +329,9 @@ class _Context:
         _mask, self.t, red, self.z = _settled(profile, factor)
         self.red = median5(red)
         marks = dict(marks or {})
+        #: The tip-shade position on the peak (`model/tip_shade.py`), taken
+        #: from the trial's own stored column, not from the red trace.
+        self.shade_position = marks.get("shade_position")
         self.operator_t = marks.get("operator_t")
         found = detect(profile, self.operator_t, factor) or {}
         self.baseline = (marks["baseline"] if marks.get("baseline") is not None
@@ -410,9 +413,18 @@ def z_past_peak(c):
     return float(abs(b - a))
 
 
+def shade_position(c):
+    """Where the tip's shade stood on its peak at the Mark: 0 at the peak, 1
+    back down at its baseline (owner 2026-10-06; `model/tip_shade.py`). Read
+    from the stored column; None with no contact before the Mark."""
+    return c.shade_position
+
+
 #: name -> function(context). Open: the owner adds definitions by adding a
-#: line here; every figure and export follows.
+#: line here; every figure and export follows. `shade_position` is first
+#: because the map's default is the first (owner 2026-10-06).
 FORCE_DEFINITIONS = {
+    "shade_position": shade_position,
     "shadow_vs_baseline": shadow_vs_baseline,
     "shadow_vs_peak": shadow_vs_peak,
     "at_operator_mark": at_operator_mark,
@@ -442,11 +454,13 @@ def force_indices(profile, marks=None, definitions=None,
     return out
 
 
-# -- the live estimate (approved proposal 2026-10-07) ----------------------
-# The trial sheet's "Force estimate": `shadow_vs_peak` taken incrementally,
-# one Red Percent row at a time, on the live profile from the moment its
-# baseline exists. The mask and the definitions above are unchanged; this
-# only applies them to a profile still being recorded.
+# -- the live extrema (approved proposal 2026-10-07) ------------------------
+# `shadow_vs_peak` taken incrementally, one row at a time, on a profile
+# still being recorded, from the moment its baseline exists. The mask and
+# the definitions above are unchanged; this only applies them live. Owner
+# ruling 2026-10-07 (with the lab's merge): the tip's shade
+# (`model.tip_shade`) is THE force model and the sheet's Force estimate;
+# these extrema are an analysis factor only, never shown as force.
 
 #: The live classes, low to high.
 FORCE_CLASSES = ("Low", "Medium", "High")

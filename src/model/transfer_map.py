@@ -47,12 +47,21 @@ the Sample Map's public `db_path`), Arm refuses without all three, and the
 trial row names them with the cut's number on that flake (`cut_id`, 1 +
 the trials already on it). The picks stay for the next trial.
 
-**Force** has no sensor. It is approximated from the red-percent trace of
-the lowering (`model.transfer_map_analysis`): several definitions, computed
-from the stored raw profile whenever a figure or an export asks, never
-stored in its place. While recording, the sheet's **Force estimate** is
-`shadow_vs_peak` taken incrementally (`analysis.LiveForce`), updated on Red
-Percent's row thread at the row rate; a state read only reads it.
+**Force** has no sensor. THE force model is the tip's SHADE (the lab's
+`model.tip_shade`, owner ruling 2026-10-07): each accepted frame of the
+capture region (the analysis's `subscribe_frames`) is measured on the
+trial's shade worker (the median green of the region's right half) into a
+`ShadeTracker`; the sheet's **Force estimate** reads it ("Medium force ·
+0.43"), the Mark freezes it, and Finish stores its six columns
+(`force_position`, `force_class`, `contact_lowered`, `shade_baseline`,
+`shade_peak`, `shade_mark`); `shade_position` is the map's default force
+definition, read from that column, and `rebuild_force` recomputes it from
+the footage (cropping the stored region out of the full display) or from
+the shade stored per frame. The red-percent extrema
+(`model.transfer_map_analysis`) are an analysis factor beside it, computed
+from the stored raw profile when a figure or an export asks, never shown
+as force. A trial marked `invalid` (the lab's flag) stays on record and in
+the export, off the map and out of every analysis.
 
 **It moves nothing.** No port, no gamepad, no device. `_halt_hardware`
 disarms the trial in memory and returns at once; the video and the
@@ -76,19 +85,24 @@ the choice and skip the question. Pictures sit beside the file in
 model creates nothing (the contract test builds every registered class).
 
 Live sources are duck-typed from `on_model_added`, never a class name: tilt
-from a model with `position_deg` (the Rotator), else the operator's typed
-"Tilt without a rotator" (blank = no tilt, never a default 0); speed and Z from a model with
+typed for the trial (it wins, the lab's bench fix), else from a model with
+`position_deg` (the Rotator) (blank = no tilt, never a default 0); speed and Z from a model with
 `position`, `position_time` and `mode_name` (a probe: `live_speed` if it has
 one, else the manual or autonomous speed for the mode it is in); samples
-from a model with `subscribe` and `grab_frame` (Red Percent); the
-telemetry reads every model met there.
+from a model with `subscribe` and `grab_frame` (RGB analysis), and its
+region frames through `subscribe_frames` when it has it; the Sample Map's
+store from the model named "Sample Map"; the telemetry reads every model
+met there.
 """
 import csv
 import json
 import math
 import os
+import queue
+import re
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -98,7 +112,10 @@ import schema as sch
 from devices import video
 from devices.screen_recorder import ScreenRecorder
 from events import events
+from model import finalize
 from model import plot_data
+from model import shade_offline
+from model import tip_shade
 from model import transfer_map_analysis as analysis
 from model.base import Model
 from model.sample_store import SampleStore
@@ -176,11 +193,31 @@ TRIAL_COLUMNS = (
     # the AFM width: only it makes a trial `measured`.
     ("width_optical_um", "REAL"), ("width_optical_sigma_um", "REAL"),
     ("width_optical_method", "TEXT"),
-    # The chip and flake the cut was made on, and the cut's number on that
-    # flake (approved proposal 2026-10-07). The bench's v8 store already has
-    # all three with these exact types (its CREATE TABLE: cut_id is TEXT);
-    # a file without them gains them by presence, whatever its version.
+    # 7 (the lab's store, bench 2026-09-28 and 2026-10-04): the chip and
+    # flake the cut was made on and the cut's number on that flake (picked
+    # on the setup step since the approved proposal of 2026-10-07: cut_id
+    # is TEXT, as the lab's list has it), and the invalid flag ("vacuum was
+    # off, data is invalid"): kept on record and in the export, left off the
+    # map and out of every analysis.
     ("chip_id", "TEXT"), ("flake_id", "TEXT"), ("cut_id", "TEXT"),
+    ("invalid", "INTEGER NOT NULL DEFAULT 0"),
+    # 8 (owner 2026-10-06, `model/tip_shade.py`): the force from the tip's
+    # shade. `contact_lowered`: steps lowered since the first frame, at
+    # contact. `force_position`: 0 at the shade's peak, 1 back at its
+    # baseline, at the Mark; `force_class` its word (Contact, Low, Medium,
+    # High). NULL = no contact before the Mark, or no frames.
+    ("contact_lowered", "REAL"), ("force_position", "REAL"),
+    ("force_class", "TEXT"), ("shade_baseline", "REAL"),
+    ("shade_peak", "REAL"), ("shade_mark", "REAL"),
+    # The capture region the analysis measured, in desktop coordinates, and
+    # the display the full-display video shows (its place on the desktop),
+    # stored when the region lands (2026-10-07, with the lab's merge): what
+    # `rebuild_force` crops the region from in each frame of `screen.mp4`.
+    # NULL for trials recorded before; added by presence.
+    ("region_left", "INTEGER"), ("region_top", "INTEGER"),
+    ("region_width", "INTEGER"), ("region_height", "INTEGER"),
+    ("display_left", "INTEGER"), ("display_top", "INTEGER"),
+    ("display_width", "INTEGER"), ("display_height", "INTEGER"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 #: The colour channels Red Percent's rows carry beside `red` (its RGB
@@ -188,9 +225,15 @@ _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 #: blue fractions. Kept per profile row when the row has them (NULL
 #: otherwise, and for every row recorded before them); added BY PRESENCE.
 PROFILE_CHANNELS = ("r_mean", "g_mean", "b_mean", "green", "blue")
-PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y") + PROFILE_CHANNELS
-#: One stored profile row: (t_s, red, z, x, y, *PROFILE_CHANNELS).
-_PROFILE_WIDTH = 5 + len(PROFILE_CHANNELS)
+#: The tip's shade (`model.tip_shade`, owner 2026-10-06) of the accepted
+#: frame the row was measured on: what an offline rebuild reads when the
+#: video is gone (with `telemetry.csv`'s `transfer_map.shade`, every frame's).
+PROFILE_SHADE = "shade"
+#: The profile columns added after the first store, by presence.
+PROFILE_ADDED = PROFILE_CHANNELS + (PROFILE_SHADE,)
+PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y") + PROFILE_ADDED
+#: One stored profile row: (t_s, red, z, x, y, *PROFILE_ADDED).
+_PROFILE_WIDTH = 5 + len(PROFILE_ADDED)
 _PROFILE_INSERT = ("INSERT INTO profile (" + ", ".join(PROFILE_COLUMNS)
                    + ") VALUES (" + ", ".join("?" for _ in PROFILE_COLUMNS) + ")")
 #: The tips table (version 3): one record per tip, created on demand (the
@@ -224,9 +267,13 @@ DEFAULT_TIP_MODEL = "TAP300"
 #: a tip record for every tip its trials name and its identity, the first
 #: time it is opened or written, and keeps every trial it holds. Columns are
 #: added BY PRESENCE at every version (2026-10-07): a file at this version
-#: or newer (the lab's v7/v8) gains the columns it lacks and keeps its
-#: version; nothing it has is touched.
-SCHEMA_VERSION = 6
+#: or newer gains the columns it lacks and keeps its version; nothing it has
+#: is touched. 7 (the lab's): `chip_id`, `flake_id`, `cut_id`, `invalid`.
+#: 8 (the lab's, adopted with its merge 2026-10-07): the tip-shade force
+#: columns (`contact_lowered`, `force_position`, `force_class`,
+#: `shade_baseline`, `shade_peak`, `shade_mark`). The version is never
+#: lowered; a file numbered ahead of its columns is completed.
+SCHEMA_VERSION = 8
 #: How an optical width was measured (Q19, owner 2026-10-04: pixels on the
 #: capture-region picture at the Sample Map's um_per_px, the default).
 WIDTH_OPTICAL_METHODS = ("capture_px", "reticle", "vendor_tool", "estimate")
@@ -236,7 +283,7 @@ _CREATE = (
     + ", ".join(name + " " + kind for name, kind in TRIAL_COLUMNS) + ")",
     "CREATE TABLE IF NOT EXISTS profile (trial_id INTEGER NOT NULL "
     "REFERENCES trials(id), t_s REAL NOT NULL, red REAL, z REAL, x REAL, "
-    "y REAL, " + ", ".join(f"{name} REAL" for name in PROFILE_CHANNELS) + ")",
+    "y REAL, " + ", ".join(f"{name} REAL" for name in PROFILE_ADDED) + ")",
     "CREATE INDEX IF NOT EXISTS profile_trial ON profile(trial_id)",
     "CREATE TABLE IF NOT EXISTS tips ("
     + ", ".join(name + " " + kind for name, kind in TIP_COLUMNS) + ")",
@@ -270,6 +317,10 @@ STAGE_MONITOR = 1
 #: Where a stage still waits, under the pictures folder, until its trial
 #: has a number (or is disarmed, which deletes it).
 STAGING = ".stage"
+#: Region frames waiting for the trial's shade worker (about two seconds at
+#: the source rate); a frame arriving when it is full is dropped and
+#: counted, never waited for (the analysis loop's rate is the measurement's).
+SHADE_QUEUE = 2 * VIDEO_FPS
 #: `analysis_health` compares Red Percent's counters over windows of at
 #: least this many seconds (a window closes at the first read after it).
 HEALTH_WINDOW_S = 1.0
@@ -414,7 +465,7 @@ class TrialStore:
                 db.execute(f"ALTER TABLE trials ADD COLUMN {name} {kind}")
                 added.append(name)
         have = {row[1] for row in db.execute("PRAGMA table_info(profile)")}
-        for name in PROFILE_CHANNELS:
+        for name in PROFILE_ADDED:
             if name not in have:
                 db.execute(f"ALTER TABLE profile ADD COLUMN {name} REAL")
                 added.append(name)
@@ -430,8 +481,9 @@ class TrialStore:
             # Once, as the column arrives: every tip catalogued so far is a
             # TAP300 (owner ruling 2026-10-07).
             self._label_tips(db)
-        if version >= SCHEMA_VERSION:
-            return None if fresh or not added else added
+        if version >= SCHEMA_VERSION and not added:
+            # Current or newer, and nothing missing: left alone.
+            return None
         if version < 3 and not fresh:
             # The tips table is new in 3 (`_CREATE` made it empty): one
             # record per tip the file's trials already name, catalogued
@@ -439,13 +491,13 @@ class TrialStore:
             db.execute(_BACKFILL_TIPS)
             self._label_tips(db)
             added.append("tips")
-        if version < 6:
-            # The store's identity (for the lab server's trial links): new
-            # in 6, written once and never changed.
-            db.executemany("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
-                           [("map_db_uuid", str(uuid.uuid4())),
-                            ("created_at", _now())])
-        db.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
+        # The store's identity (for the lab server's trial links): new in 6,
+        # written once and never changed (OR IGNORE keeps an existing one,
+        # and a file numbered ahead of its columns gets one too).
+        db.executemany("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
+                       [("map_db_uuid", str(uuid.uuid4())),
+                        ("created_at", _now())])
+        db.execute(f"PRAGMA user_version = {max(int(version), SCHEMA_VERSION)}")
         return None if fresh else added
 
     def _label_tips(self, db):
@@ -772,9 +824,21 @@ class _Trial:
         self.review = None
         #: (sample_id, chip_id, flake_id) the cut is on (`_Pending.where`).
         self.where = (None, None, None)
-        #: The Force estimate, fed one row at a time on Red Percent's run
-        #: thread (`_on_sample`), read by the state.
-        self.live = analysis.LiveForce()
+        #: The tip's shade (owner 2026-10-06, `model.tip_shade`): THE force
+        #: model, the Force estimate's only source; fed one accepted region
+        #: frame at a time, in order, by the trial's shade worker.
+        self.shade = tip_shade.ShadeTracker()
+        #: The analysis's frame time (its run's t_s) -> that frame's shade:
+        #: a row and the frame it was measured on share the time, so the
+        #: profile row gets its frame's shade at Finish.
+        self.shade_at = {}
+        self.shade_queue = queue.Queue(maxsize=SHADE_QUEUE)
+        #: Set when nothing more is fed: the worker drains the queue, leaves.
+        self.shade_done = threading.Event()
+        self.shade_worker = None
+        self.shade_dropped = 0
+        #: (monotonic t, shade) per frame, for the telemetry sidecar.
+        self.shades = []
 
 
 class TransferMap(Model):
@@ -1153,6 +1217,7 @@ class TransferMap(Model):
         trial = self._claim(timeout=0.05)
         if trial is not None:
             self._release_red()
+            trial.shade_done.set()         # its worker drains and leaves
             self._end_own_run(trial)
             # The video and the telemetry are stopped by the writer below,
             # never on the stop's thread (their stops are bounded, not free).
@@ -1228,11 +1293,21 @@ class TransferMap(Model):
         if red is not None:
             try:
                 red.unsubscribe(self._on_sample)
+                frames = getattr(red, "unsubscribe_frames", None)
+                if callable(frames):
+                    frames(self._on_frame)
             except Exception as exc:
                 events.debug("Unsubscribe Failed", repr(exc), source=self.NAME)
 
     def _read_tilt(self):
-        """(degrees, source name) or (None, None)."""
+        """(degrees, source name) or (None, None). A typed tilt wins over a
+        rotator's reading (the lab, bench 2026-09-28: the Rotator read 0.0
+        on two trials tilted by hand to 6.5 and 7 deg, and the typed value
+        was ignored). Blank the entry and the first rotator that reads is
+        the source again."""
+        typed = _number(self.typed_tilt)
+        if typed is not None:
+            return typed, "typed"
         for name, model in self._tilts.items():
             try:
                 value = model.position_deg
@@ -1240,9 +1315,6 @@ class TransferMap(Model):
                 continue
             if value is not None:
                 return float(value), name
-        typed = _number(self.typed_tilt)
-        if typed is not None:
-            return typed, "typed"
         return None, None
 
     def _probe(self):
@@ -1352,6 +1424,9 @@ class TransferMap(Model):
         return {"image": png, **bounds} if png and bounds else png
 
     #: What `next_step` says in each step after `setup`.
+    #: Every Arm's first question (the lab, bench 2026-10-04).
+    VACUUM = "Is the sample vacuum ON? Check it now."
+
     STEP_WORDS = {
         "new_tip": "Type the new tip's ID, then press Add tip",
         "region": "Drag the capture region on the picture of the stage",
@@ -1422,15 +1497,9 @@ class TransferMap(Model):
             y = py if y is None else y
             z = pz if z is None else z
         t = time.monotonic() - trial.armed
-        trial.samples.append((t, red, z, x, y, *channels))
-        # The Force estimate moves here, at the row rate, on this thread;
-        # never on a poll (TR-3).
-        try:
-            trial.live.add(t, red, frozen=trial.operator_t is not None,
-                           row=carrier)
-        except Exception as exc:
-            events.debug("Estimate Failed", repr(exc), source=self.NAME,
-                         every=5.0)
+        # The last element is the analysis's own time for the row: the key
+        # of its frame's shade (`_profile_rows`), never stored as such.
+        trial.samples.append((t, red, z, x, y, *channels, t_s))
 
     # -- the guided trial --------------------------------------------------
     def arm_trial(self, confirmed=False):
@@ -1474,7 +1543,7 @@ class TransferMap(Model):
             # prompt (M2): one question, one Continue.
             # TM-3: a tilt is collected when there is one, never demanded.
             tilt_now, tilt_from = self._read_tilt()
-            tilt_words = (f" at {tilt_now:g} deg" + (f" ({tilt_from})" if tilt_from != "typed" else "")
+            tilt_words = (f" at {tilt_now:g} deg ({tilt_from})"
                           if tilt_now is not None else "")
             speed_now, speed_from = self._read_speed()
             speed_words = (f", {speed_now:g} steps/s"
@@ -1486,8 +1555,13 @@ class TransferMap(Model):
                       f"{' · '.join(where)}; you then pick the capture region "
                       "on it, and the recording starts.")
             doubt = self._tip_doubt(tip)
-            raise NeedsConfirm(doubt + "\n\n" + prompt if doubt else prompt,
-                               "arm_trial",
+            if doubt:
+                prompt = doubt + "\n\n" + prompt
+            # The lab, bench 2026-10-04: trials were cut with the sample
+            # vacuum off. The station cannot sense it, so every Arm asks,
+            # first, in this same prompt: still one question, one Continue.
+            prompt = self.VACUUM + "\n\n" + prompt
+            raise NeedsConfirm(prompt, "arm_trial",
                                inputs={"typed_tilt": self.typed_tilt or "",
                                        "typed_speed": self.typed_speed or ""})
         still, size = self._take_still()
@@ -1576,6 +1650,7 @@ class TransferMap(Model):
         red.set_region(*region)                  # Red Percent's own checks
         tip = pending.tip
         arming = _Trial(None, None, None, tip)
+        self._start_shade(arming)
         self._arming = arming
         started = False
         trial_id = None
@@ -1604,6 +1679,14 @@ class TransferMap(Model):
                 "sample_id": sample, "chip_id": chip, "flake_id": flake,
                 # TEXT, as the bench's v8 column is.
                 "cut_id": None if cut is None else str(cut)})
+            # The run this trial records through is the map's own: its
+            # folder says which trial, tip, sample, chip, flake and cut.
+            self._name_run(red, trial_id, tip, sample, chip, flake,
+                           None if cut is None else str(cut))
+            # What an offline rebuild crops the region from (the full-
+            # display video): the region as landed and the display's place.
+            self._store.update(trial_id, self._region_fields(
+                getattr(red, "region", None) or region, pending.bounds))
             created = self._store.use_tip(tip, trial_id, _now())
             with self._lock:
                 if self.is_estopped:
@@ -1617,6 +1700,7 @@ class TransferMap(Model):
                 self._trial, self._pending, self._arming = arming, None, None
         except BaseException:
             self._arming = None
+            arming.shade_done.set()
             self._release_red()
             if started:
                 red.end_run()                    # ours: undo it
@@ -1651,10 +1735,141 @@ class TransferMap(Model):
             self._warn_no_full(trial.id, "Arm", "context")
 
     def _subscribe_red(self, red):
-        """Rows for the profile. Idempotent (Red Percent keeps each callable
-        once). The video is the display's own (TM-4), not Red Percent's
-        frames."""
+        """Rows for the profile, and the region's settled frames for the
+        tip's shade (owner 2026-10-06) when the analysis offers them.
+        Idempotent (it keeps each callable once). The video is the
+        display's own (TM-4), not these frames."""
         red.subscribe(self._on_sample)
+        frames = getattr(red, "subscribe_frames", None)
+        if callable(frames):
+            frames(self._on_frame)
+
+    # -- the tip's shade (owner 2026-10-06, merged 2026-10-07) -------------------
+    def _on_frame(self, t_s, frame, red=None):
+        """One ACCEPTED (settled) region frame, on the analysis's run thread
+        (`subscribe_frames`): handed to the trial's shade worker with its
+        times, never measured here (the loop's rate is the measurement's).
+        A full queue drops the frame and counts it."""
+        trial = self._trial or self._arming
+        if trial is None or trial.closed or trial.ended:
+            return
+        try:
+            trial.shade_queue.put_nowait((time.monotonic(), t_s, frame))
+        except queue.Full:
+            trial.shade_dropped += 1
+
+    def _start_shade(self, trial):
+        worker = threading.Thread(target=self._shade_loop, args=(trial,),
+                                  daemon=True, name="transfer-map-shade")
+        trial.shade_worker = worker
+        worker.start()
+
+    def _stop_shade(self, trial):
+        """Nothing more is fed; wait (bounded) for the worker to read what
+        is queued, so Finish stores the shade of every frame. Never on the
+        stop's thread (`_halt_hardware` only sets the flag)."""
+        trial.shade_done.set()
+        worker = trial.shade_worker
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(self.THREAD_JOIN_TIMEOUT)
+
+    def _shade_loop(self, trial):
+        queued = trial.shade_queue
+        while True:
+            try:
+                when, run_t, frame = queued.get(timeout=0.05)
+            except queue.Empty:
+                if trial.shade_done.is_set():
+                    return
+                continue
+            self._shade_frame(trial, when - trial.armed, frame, run_t)
+
+    def _shade_frame(self, trial, t, frame, run_t=None):
+        """The lab's per-frame wiring (its picture thread's `_write_frame`,
+        here the shade worker's): the frame as RGB, its shade
+        (`tip_shade.right_half_median_green`), `tracker.update(t, shade, z)`
+        with `t` seconds since Arm and the probe's Z, and `tracker.mark()`
+        on the first frame at or after the Mark. The shade is kept for the
+        telemetry and, by the frame's analysis time, for its profile row."""
+        try:
+            shade = tip_shade.right_half_median_green(video.to_rgb(frame))
+        except Exception as exc:
+            events.debug("Shade Failed", repr(exc), source=self.NAME, every=5.0)
+            return
+        if shade is None:
+            return
+        trial.shade.update(t, shade, self._probe_axes()[2])
+        trial.shades.append((trial.armed + t, round(shade, 2)))
+        if run_t is not None:
+            trial.shade_at[run_t] = shade
+        mark = trial.operator_t
+        if mark is not None and t >= mark:
+            trial.shade.mark()
+
+    @staticmethod
+    def _profile_rows(trial):
+        """The trial's samples as stored profile rows: (t_s, red, z, x, y,
+        the five channels, the shade of the frame the row was measured on,
+        or None)."""
+        rows = []
+        for sample in list(trial.samples):
+            head, key = tuple(sample[:10]), (sample[10] if len(sample) > 10
+                                             else None)
+            head += (None,) * (10 - len(head))
+            rows.append(head + (trial.shade_at.get(key),))
+        return rows
+
+    # -- the run's name (the lab, bench 2026-09-28) ------------------------------
+    @staticmethod
+    def _id_words(sample, chip, flake, cut, tip=None, trial_id=None):
+        """`trial 12  tip T7  sample 7/27/26  chip 2  flake 13  cut 3`: the
+        fields given, two spaces apart; "" if none."""
+        parts = []
+        if trial_id is not None:
+            parts.append(f"trial {trial_id}")
+        for word, value in (("tip", tip), ("sample", sample), ("chip", chip),
+                            ("flake", flake), ("cut", cut)):
+            if value:
+                parts.append(f"{word} {value}")
+        return "  ".join(parts)
+
+    @staticmethod
+    def _slug(value):
+        """A folder-safe piece of a run name: letters, digits, `.` and `-`;
+        anything else (a `/` in "9/27/26 Tip1", a space) becomes `-`."""
+        return re.sub(r"[^A-Za-z0-9.-]+", "-", str(value or "")).strip("-")
+
+    def run_label(self, trial_id, tip, sample, chip, flake, cut):
+        """The analysis run's name for a trial, so its folder under the
+        runs root sorts and reads: `trial012_tip-T7_sample-7-27-26_chip-2_
+        flake-13_cut-3`, blank fields left out."""
+        parts = [f"trial{int(trial_id):03d}"]
+        for word, value in (("tip", tip), ("sample", sample), ("chip", chip),
+                            ("flake", flake), ("cut", cut)):
+            piece = self._slug(value)
+            if piece:
+                parts.append(f"{word}-{piece}")
+        return "_".join(parts)
+
+    def _name_run(self, red, trial_id, tip, sample, chip, flake, cut):
+        """Name the run the trial records through (`label_run`), when the
+        analysis can: never fails the trial."""
+        label_run = getattr(red, "label_run", None)
+        if not callable(label_run):
+            return None
+        try:
+            return label_run(
+                self.run_label(trial_id, tip, sample, chip, flake, cut),
+                {"specimen_id": " ".join(p for p in (
+                    f"sample {sample}" if sample else "",
+                    f"chip {chip}" if chip else "",
+                    f"flake {flake}" if flake else "") if p),
+                 "consumable_id": tip,
+                 "note": self._id_words(sample, chip, flake, cut,
+                                        trial_id=trial_id)})
+        except Exception as exc:
+            events.debug("Run Label Failed", repr(exc), source=self.NAME)
+            return None
 
     def mark_force(self):
         """The `live` -> `marked` step: the Mark's time, Z and speed, stamped
@@ -1789,11 +2004,14 @@ class TransferMap(Model):
         `transfer_map.armed` (time zero of the profile's t_s, value the
         trial id) and one `transfer_map.mark` per Mark."""
         rows = list(trial.telemetry_rows or ())
-        if trial.telemetry is None and not trial.marks:
+        if trial.telemetry is None and not trial.marks and not trial.shades:
             return
         rows.append((trial.armed, "transfer_map.armed", trial.id))
         rows += [(t, "transfer_map.mark", round(t - trial.armed, 6))
                  for t in trial.marks]
+        # The tip's shade per region frame (owner 2026-10-06): the record a
+        # later re-estimate reads.
+        rows += [(t, "transfer_map.shade", shade) for t, shade in trial.shades]
         rows.sort(key=lambda row: row[0])
         folder = self._folder_of(trial, store)
         folder.mkdir(parents=True, exist_ok=True)
@@ -1866,6 +2084,7 @@ class TransferMap(Model):
             return
         trial.ended = True
         self._release_red()
+        self._stop_shade(trial)
         self._end_own_run(trial)
         self._stop_capture(trial)
 
@@ -1884,7 +2103,7 @@ class TransferMap(Model):
         if trial is None:
             raise Refused("No trial is armed.")          # the stop took it
         self._end_recording(trial)
-        samples = list(trial.samples)
+        samples = self._profile_rows(trial)
         profile = {"t": [s[0] for s in samples], "red": [s[1] for s in samples]}
         found = analysis.detect(profile, trial.operator_t) or {}
         fields = {
@@ -1898,6 +2117,10 @@ class TransferMap(Model):
             "mark_auto_min_t": found.get("min_t"),
             "red_min": found.get("red_min"), "red_max": found.get("red_max"),
             "red_baseline": found.get("baseline"), "broke": int(trial.broke)}
+        # The lab's tip-shade force (owner 2026-10-06): the frame at the
+        # Mark decides it; all NULL with no contact before the Mark, or no
+        # frames (`tip_shade.columns`).
+        fields.update(tip_shade.columns(trial.shade))
         self._store.update(trial.id, fields, samples)
         self._store.use_tip(trial.tip, trial.id, _now())
         self._indices.pop(trial.id, None)
@@ -1933,6 +2156,7 @@ class TransferMap(Model):
         if trial is None:
             raise Refused("No trial is armed.")
         self._release_red()
+        trial.shade_done.set()
         self._end_own_run(trial)
         self._save_aborted(trial)
         return trial.id
@@ -1963,7 +2187,8 @@ class TransferMap(Model):
         store = store if store is not None else self._store
         try:
             self._stop_capture(trial, store)
-            samples = list(trial.samples)
+            self._stop_shade(trial)        # on the writer, never the stop's
+            samples = self._profile_rows(trial)
             store.update(trial.id, {
                 "status": "aborted", "mark_operator_t": trial.operator_t,
                 "z_contact": trial.z_mark, "broke": int(trial.broke)}, samples)
@@ -2041,22 +2266,56 @@ class TransferMap(Model):
     # -- the trial row's readouts (approved proposal 2026-10-07) ---------------
     @property
     def force_estimate(self):
-        """The trial row's Force estimate: "" (blank) outside a recording
-        and until the baseline exists; "Unsettled" while the analysis is
-        rejecting frames (Red Percent's settle-gate counters,
-        `analysis_health`); else "<Class> · <value>" of `shadow_vs_peak` on
-        the live profile (a row the mask refuses moves nothing). Reads what
-        `_on_sample` computed: no analysis on a poll."""
+        """The trial row's Force estimate, from the tip's SHADE (owner
+        ruling 2026-10-07: the lab's estimator, `model.tip_shade`, is THE
+        force model; the red extrema are an analysis factor, never shown as
+        force): `tip_shade.status_text(status)` and, once known, the
+        position on the shade's peak (0 at the peak, 1 back at its
+        baseline): "No contact", "Contact · 0.04", "Medium force · 0.43".
+        "" (blank) outside a recording; "Unsettled" while the analysis is
+        rejecting frames (the settle gate's counters, `analysis_health`).
+        Reads what the shade worker computed: no analysis on a poll."""
         trial = self._trial
         if trial is None or trial.ended:
             return ""
-        live = trial.live
         if self.analysis_health == "unsettled":
             return "Unsettled"
-        value, klass = live.estimate
-        if live.baseline is None or value is None:
+        tracker = trial.shade
+        words = tip_shade.status_text(tracker.status)
+        position = tracker.position
+        return words if position is None else f"{words} · {position:.2f}"
+
+    @staticmethod
+    def _region_fields(region, bounds):
+        """The trial row's region and display columns from a region (a dict
+        with left, top, width, height, or a 4-tuple) and the display's
+        bounds (`_Pending.bounds`, or None)."""
+        if isinstance(region, (tuple, list)):
+            region = dict(zip(("left", "top", "width", "height"), region))
+        fields = {}
+        for name in ("left", "top", "width", "height"):
+            for prefix, source in (("region", region), ("display", bounds)):
+                try:
+                    value = (source or {}).get(name)
+                    fields[f"{prefix}_{name}"] = (None if value is None
+                                                  else int(value))
+                except (TypeError, ValueError, AttributeError):
+                    fields[f"{prefix}_{name}"] = None
+        return fields
+
+    @property
+    def force_position_text(self):
+        """Diagnostics (the lab's): where the shade is on its peak (0 at the
+        peak, 1 back at its baseline) and the numbers behind it."""
+        trial = self._trial
+        if trial is None or trial.shade.position is None:
             return ""
-        return f"{klass} · {value:.2f}"
+        tracker = trial.shade
+        words = f"{tracker.position:.2f} of the way down from the peak"
+        numbers = (tracker.peak, tracker.shade, tracker.baseline)
+        if any(n is None for n in numbers):
+            return words
+        return words + " (peak {:.0f}, now {:.0f}, baseline {:.0f})".format(*numbers)
 
     @property
     def analysis_health(self):
@@ -2471,6 +2730,303 @@ class TransferMap(Model):
         events.info("Tilt Set", f"Trial {trial_id}: tilt set to {tilt:g} deg.",
                     source=self.NAME)
         return trial_id
+
+    def set_trial_invalid(self, invalid=True):
+        """Mark a recorded trial invalid (or valid again), the lab's flag:
+        an invalid trial stays on record and in the export, off the map and
+        out of every analysis (`_map_rows`, `rebuild_force`)."""
+        self._need_store()
+        trial_id = int(self.afm_trial_id or 0)
+        if trial_id <= 0:
+            raise Refused("Type the trial number under AFM measurement, Trial.")
+        row = self._store.trial(trial_id)
+        if row is None:
+            raise Refused(f"No trial {trial_id} in the database.")
+        if row["status"] == "armed":
+            raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
+        flag = bool(invalid) and str(invalid).lower() not in ("false", "0")
+        self._store.update(trial_id, {"invalid": int(flag)})
+        self._indices.pop(trial_id, None)
+        self._changed()
+        events.info("Trial Invalid" if flag else "Trial Valid",
+                    f"Trial {trial_id} is " + ("invalid: it stays on record, "
+                    "off the map." if flag else "valid again: it is back on "
+                    "the map."), source=self.NAME)
+        return trial_id
+
+    # -- the tip-shade force, again from the footage (the lab, 2026-10-06) -------
+    #: The full-display recorder's frame index (`devices.screen_recorder`).
+    DISPLAY_INDEX = "frames.csv"
+
+    def _footage_of(self, row):
+        """(video path, index path) of a recorded trial's footage: what its
+        row names, else where the map kept them; None for what is not on
+        disk. The index is the region recorder's `video_index.csv` (trials
+        recorded before 2026-10-07: the region with a label band) or the
+        full-display recorder's `frames.csv` (since: the whole display)."""
+        folder = self.pictures_root / str(row["id"])
+
+        def found(stored, *fallbacks):
+            for candidate in ([stored] if stored else []) + list(fallbacks):
+                if candidate and Path(candidate).exists():
+                    return str(candidate)
+            return None
+        index = found(row.get("video_index_path"), folder / "video_index.csv",
+                      folder / self.DISPLAY_INDEX)
+        video_path = found(row.get("video_path"), folder / "trial.mp4",
+                           folder / "frames", folder / "screen.mp4")
+        return video_path, index
+
+    def _rebuilt_shade(self, row):
+        """The six tip-shade columns of one recorded trial, rebuilt by the
+        lab's `shade_offline.estimate_from_footage` (unchanged) from, in
+        order: its REGION video (the lab's case: the label band stripped by
+        `image_top`); its FULL-DISPLAY video, the stored capture region
+        cropped out of every frame (no band to strip), each frame's shade
+        handed to the lab's reader as a stored `shade` column; else the
+        shade stored per frame (`telemetry.csv`'s `transfer_map.shade`,
+        else the profile's `shade`). None when there is nothing to read."""
+        mark_t = row.get("mark_operator_t")
+        footage, index = self._footage_of(row)
+        if index is not None and Path(index).name != self.DISPLAY_INDEX:
+            return shade_offline.estimate_from_footage(footage, index, mark_t)
+        series = None
+        if index is not None and footage is not None and Path(footage).exists():
+            series = self._display_shades(row, footage, index, mark_t)
+        if not series:
+            series = self._stored_shades(row)
+        if not series:
+            return None
+        z_at = self._z_lookup(row["id"])
+        with tempfile.TemporaryDirectory(prefix="shade-") as folder:
+            path = Path(folder) / "shade_index.csv"
+            with open(path, "w", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(("t_s", "z", "shade"))
+                for t, shade in series:
+                    writer.writerow((round(t, 4), z_at(t), round(shade, 2)))
+            return shade_offline.estimate_from_footage(None, path, mark_t)
+
+    def _armed_at(self, folder):
+        """The trial's time zero on the monotonic clock (`telemetry.csv`'s
+        `transfer_map.armed`), or None."""
+        path = folder / TELEMETRY_NAME
+        if not path.is_file():
+            return None
+        with open(path, newline="") as handle:
+            for line in csv.DictReader(handle):
+                if line.get("stream") == "transfer_map.armed":
+                    return _number(line.get("t"))
+        return None
+
+    @staticmethod
+    def _crop_box(row, frame_shape):
+        """(y0, y1, x0, x1) of the stored capture region in a full-display
+        frame: desktop coordinates, less the display's place, scaled by the
+        frame's pixels per display point (a Retina display records twice
+        its points). None without a stored region."""
+        region = [row.get(f"region_{k}") for k in ("left", "top", "width", "height")]
+        if any(v is None for v in region):
+            return None
+        left, top, width, height = (float(v) for v in region)
+        height_px, width_px = frame_shape[:2]
+        display = [row.get(f"display_{k}") for k in ("left", "top", "width", "height")]
+        if all(v is not None for v in display) and display[2] and display[3]:
+            sx, sy = width_px / float(display[2]), height_px / float(display[3])
+            left, top = left - float(display[0]), top - float(display[1])
+        else:
+            sx = sy = 1.0                 # the still's pixels are the desktop's
+        x0 = max(0, int(round(left * sx)))
+        y0 = max(0, int(round(top * sy)))
+        x1 = min(width_px, int(round((left + width) * sx)))
+        y1 = min(height_px, int(round((top + height) * sy)))
+        return (y0, y1, x0, x1) if x1 > x0 and y1 > y0 else None
+
+    def _display_shades(self, row, footage, index, mark_t):
+        """[(t since Arm, shade)] from a full-display video: each frame's
+        capture region, cropped, through `tip_shade.right_half_median_green`
+        (no label band: `image_top` is not applied); frames after the first
+        at or past the Mark are not decoded. None without a stored region."""
+        with open(index, newline="") as handle:
+            times = [_number(line.get("t_monotonic"))
+                     for line in csv.DictReader(handle)]
+        if not times or times[0] is None:
+            return None
+        zero = self._armed_at(Path(index).parent) or times[0]
+        series, box = [], None
+        frames = video.read_frames(footage)
+        try:
+            for i, frame in enumerate(frames):
+                if i >= len(times) or times[i] is None:
+                    break
+                if box is None:
+                    box = self._crop_box(row, frame.shape)
+                    if box is None:
+                        return None
+                y0, y1, x0, x1 = box
+                shade = tip_shade.right_half_median_green(frame[y0:y1, x0:x1])
+                if shade is None:
+                    continue
+                t = times[i] - zero
+                series.append((t, shade))
+                if mark_t is not None and t >= mark_t:
+                    break
+        finally:
+            close = getattr(frames, "close", None)
+            if callable(close):
+                close()
+        return series
+
+    def _stored_shades(self, row):
+        """[(t since Arm, shade)] the trial stored while recording: every
+        frame's (`telemetry.csv`, `transfer_map.shade`), else its profile
+        rows' (`shade`); [] for none."""
+        folder = self.pictures_root / str(row["id"])
+        path = folder / TELEMETRY_NAME
+        zero = self._armed_at(folder)
+        if zero is not None:
+            with open(path, newline="") as handle:
+                series = [(_number(line["t"]) - zero, _number(line["value"]))
+                          for line in csv.DictReader(handle)
+                          if line.get("stream") == "transfer_map.shade"]
+            series = [(t, s) for t, s in series if s is not None]
+            if series:
+                return series
+        rows = self._store.read("SELECT t_s, shade FROM profile WHERE "
+                                "trial_id = ? AND shade IS NOT NULL ORDER BY "
+                                "t_s, rowid", (row["id"],))
+        return [(r["t_s"], r["shade"]) for r in rows]
+
+    def _z_lookup(self, trial_id):
+        """t (s since Arm) -> the profile's Z at or before it (None without
+        one): the Z `contact_lowered` is read from."""
+        import bisect
+        profile = self._store.profile(trial_id)
+        pairs = [(t, z) for t, z in zip(profile["t"], profile.get("z") or ())
+                 if z is not None]
+        times = [t for t, _z in pairs]
+
+        def z_at(t):
+            i = bisect.bisect_right(times, t) - 1
+            return pairs[i][1] if i >= 0 else (pairs[0][1] if pairs else None)
+        return z_at
+
+    def rebuild_force(self, trial_id=0):
+        """Recompute the tip-shade force columns of recorded trials from
+        their footage or their stored shade (`_rebuilt_shade`). With no
+        trial, every valid recorded trial (not invalid, not aborted, not
+        imported); with one, that trial whatever its flags. Returns `{trial:
+        columns}` for what was rebuilt; a trial with nothing to read is
+        skipped and said so."""
+        self._need_store()
+        trial_id = int(trial_id or 0)
+        rows = self._store.trials()
+        if trial_id:
+            rows = [r for r in rows if r["id"] == trial_id]
+            if not rows:
+                raise Refused(f"No trial {trial_id} in the database.")
+        else:
+            rows = [r for r in rows if r["status"] in ("recorded", "measured")
+                    and r.get("origin") == "recorded" and not r.get("invalid")]
+        rebuilt = {}
+        for row in rows:
+            try:
+                fields = self._rebuilt_shade(row)
+            except (OSError, RuntimeError, ValueError, KeyError) as exc:
+                events.warn("Footage Not Read", f"Trial {row['id']}: {exc}",
+                            source=self.NAME, exception=exc)
+                continue
+            if fields is None:
+                events.warn("No Footage", f"Trial {row['id']} has no video "
+                            "or stored shade on disk; its force was not "
+                            "rebuilt.", source=self.NAME)
+                continue
+            self._store.update(row["id"], fields)
+            self._indices.pop(row["id"], None)
+            rebuilt[row["id"]] = fields
+        if rebuilt:
+            self._changed()
+        events.info("Force Rebuilt", f"{len(rebuilt)} trial(s) rebuilt from "
+                    "their footage: " + (", ".join(
+                        f"{i} {f['force_class'] or 'no force'}"
+                        for i, f in rebuilt.items()) or "none") + ".",
+                    source=self.NAME)
+        return rebuilt
+
+    # -- the data finalizer (the lab, owner 2026-10-06) --------------------------
+    # One trial at a time, sample by sample, a form for the AFM and optical
+    # estimates beside its pictures. Post-AFM data entry, not the review of
+    # the procedure (that is the `finish` step). The window was the retired
+    # Qt view's; the commands stay declared `internal` (no view draws them)
+    # so a later view can open the same walk; rules in `model/finalize.py`.
+    def open_finalizer(self):
+        """The word a view with a finalizer window acts on."""
+        return "open:finalizer"
+
+    def finalize_queue(self, only_missing=False):
+        """The trials to walk, in sample order (`finalize.queue`)."""
+        return finalize.queue(self._store.trials(),
+                              only_missing=bool(only_missing))
+
+    def finalize_media(self, trial_id):
+        """What the window shows beside the form: the stills (PNG bytes, b""
+        when there is none) and where the video is. `video_kind` is "file"
+        (an MP4), "frames" (a folder of JPEGs, `frame_paths` in order) or
+        "none"."""
+        row = self._store.trial(int(trial_id or 0))
+        if row is None:
+            raise Refused(f"No trial {trial_id} in the database.")
+        folder = self.pictures_root / str(row["id"])
+
+        def still(name):
+            try:
+                path = folder / f"{name}.png"
+                return path.read_bytes() if path.is_file() else b""
+            except OSError:
+                return b""
+        media = {"id": row["id"], "first_frame": still("first_frame"),
+                 "mark_frame": still("mark_frame"),
+                 "before_full": still("before_full"),
+                 "video_path": "", "video_kind": "none", "frame_paths": [],
+                 "frames": row.get("video_frames") or 0,
+                 "row": dict(row)}
+        stored = row.get("video_path")
+        if stored:
+            path = Path(stored)
+            if path.is_file():
+                media["video_path"], media["video_kind"] = str(path), "file"
+            elif path.is_dir():
+                media["video_path"], media["video_kind"] = str(path), "frames"
+                media["frame_paths"] = sorted(str(p) for p in path.glob("*.jpg"))
+        return media
+
+    def finalize_save(self, trial_id, fields):
+        """Write the estimates typed for one trial: AFM, optical, both, or
+        none (nothing typed writes nothing). All or nothing: one bad box
+        refuses the whole save. An AFM width makes the trial `measured`, an
+        optical one never does, as in `attach_afm` / `attach_optical`."""
+        trial_id = int(trial_id or 0)
+        row = self._store.trial(trial_id)
+        if row is None:
+            raise Refused(f"No trial {trial_id} in the database.")
+        if row["status"] == "armed":
+            raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
+        try:
+            updates = finalize.parse_fields(fields or {}, WIDTH_OPTICAL_METHODS,
+                                            current=row)
+        except ValueError as exc:
+            raise Refused(str(exc)) from None
+        if updates:
+            if "width_optical_um" in updates and not row.get("width_optical_method") \
+                    and "width_optical_method" not in updates:
+                updates["width_optical_method"] = "estimate"      # typed by eye
+            updates["status"] = finalize.status_after(row, updates)
+            self._store.update(trial_id, updates)
+            self._changed()
+            events.info("Trial Finalized", f"Trial {trial_id}: "
+                        f"{', '.join(k for k in updates if k != 'status')} saved.",
+                        source=self.NAME)
+        return {"id": trial_id, "missing": finalize.missing(self._store.trial(trial_id))}
 
     def set_trial_speed(self):
         """Correct a recorded trial's intended speed from the sheet."""
@@ -2927,7 +3483,9 @@ class TransferMap(Model):
                 "operator_t": row.get("mark_operator_t"),
                 "auto_max_t": row.get("mark_auto_max_t"),
                 "auto_min_t": row.get("mark_auto_min_t"),
-                "baseline": row.get("red_baseline")})
+                "baseline": row.get("red_baseline"),
+                # The lab's: the shade's place on its peak, stored at Finish.
+                "shade_position": row.get("force_position")})
         self._indices[row["id"]] = out
         return out
 
@@ -2935,7 +3493,8 @@ class TransferMap(Model):
         rows = []
         models = {t["tip_id"]: t.get("model") for t in self._store.tips()}
         for row in self._store.trials():
-            if row["status"] in ("armed", "aborted"):
+            # The lab's invalid flag: kept on record, never analysed.
+            if row["status"] in ("armed", "aborted") or row.get("invalid"):
                 continue
             width, sigma, source = analysis.pick_width(row)
             # TM-3: the tilt rides along (never drawn); `force_class` is the
@@ -3124,9 +3683,14 @@ class TransferMap(Model):
             measured = row["speed_measured_steps_s"]
             if measured is not None:
                 speed += f" (cut measured {measured:g})"
+            ids = self._id_words(row.get("sample_id"), row.get("chip_id"),
+                                 row.get("flake_id"), row.get("cut_id"))
             lines.append(f"{row['id']:>4}  {row['status']:<8} "
-                         f"{row['tip_id'] or '-'}  {tilt}  {speed}  {width}"
+                         f"{row['tip_id'] or '-'}  {ids + '  ' if ids else ''}"
+                         f"{tilt}  {speed}  {width}"
+                         f"{'  force ' + row['force_class'] if row.get('force_class') else ''}"
                          f"{'  broke' if row['broke'] else ''}"
+                         f"{'  invalid' if row.get('invalid') else ''}"
                          f"{'  ' + row['note'] if row['note'] else ''}")
         return lines
 
@@ -3387,6 +3951,12 @@ class TransferMap(Model):
                            inputs=("afm_trial_id", "typed_tilt")),
                 sch.button("Set speed for trial", "set_trial_speed",
                            inputs=("afm_trial_id", "typed_speed")),
+                # The lab's (bench 2026-10-04: "vacuum was off, data is
+                # invalid"): on record and in the export, off the map.
+                sch.button("Mark trial invalid", "set_trial_invalid",
+                           inputs=("afm_trial_id",), args=(True,)),
+                sch.button("Mark trial valid", "set_trial_invalid",
+                           inputs=("afm_trial_id",), args=(False,)),
                 tier=2, disclosure=configure,
             ),
             sch.section(
@@ -3427,6 +3997,20 @@ class TransferMap(Model):
                 # The trial row's counts (2026-10-07: off the sheet).
                 sch.readonly("Video", "video_status"),
                 sch.readonly("Samples", "trial_samples"),
+                sch.readonly("Shade position", "force_position_text"),
+                # The lab's commands no view draws (2026-10-06): the tip-shade
+                # force rebuilt from region footage, and the data finalizer's
+                # walk (its window was the retired Qt view's).
+                {"type": "internal", "command": "rebuild_force",
+                 "writable": False, "role": "neutral"},
+                {"type": "internal", "command": "open_finalizer",
+                 "writable": False, "role": "neutral"},
+                {"type": "internal", "command": "finalize_queue",
+                 "writable": False, "role": "neutral"},
+                {"type": "internal", "command": "finalize_media",
+                 "writable": False, "role": "neutral"},
+                {"type": "internal", "command": "finalize_save",
+                 "writable": False, "role": "neutral"},
                 sch.log_stream("Trials", "trials_log"),
                 sch.log_stream("Tips", "tips_log"),
                 sch.button("Delete trial", "delete_trial", inputs=("trial_pick",),

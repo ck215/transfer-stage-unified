@@ -11,6 +11,8 @@ import sqlite3
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("profiles_on", "sample_map_on")   # the held features, on
+
 import schema as sch
 from controller.setup import Setup
 from events import events
