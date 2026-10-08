@@ -17,27 +17,21 @@
     },
     {
       "page": "DC Probe",
+      "anchor": {"text": "Target X dist"},
+      "say": "Control system 1 is the Autonomous group. A Step moves each axis by its target dist × its step size, from where it is now; the DC board drives X, then Y, then Z. 0 leaves an axis still.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
       "anchor": {"text": "Autonomous speed"},
       "say": "Autonomous speed is how fast a Step moves, as a percent of the 3200 steps/s ceiling; the steps/s figure with it is what is sent. It is locked while the probe is in a mode.",
       "wait": null
     },
     {
       "page": "DC Probe",
-      "anchor": {"text": "Manual speed"},
-      "say": "Manual speed is the gamepad's jog speed, on the same scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
-      "wait": null
-    },
-    {
-      "page": "DC Probe",
       "anchor": {"text": "Configure DC Probe"},
-      "say": "The step sizes, the targets of a Step and the two brake fields sit one level down. Press Configure DC Probe to open them.",
+      "say": "The step sizes and the two brake fields sit one level down. Press Configure DC Probe to open them.",
       "wait": {"click": true}
-    },
-    {
-      "page": "DC Probe",
-      "anchor": {"text": "Target X dist"},
-      "say": "A Step moves each axis by its target dist × its step size, relative to where it is now. The DC board drives the axes one at a time: X, then Y, then Z. 0 leaves an axis still.",
-      "wait": null
     },
     {
       "page": "DC Probe",
@@ -48,7 +42,7 @@
     {
       "page": "DC Probe",
       "anchor": {"text": "Enter autonomous mode"},
-      "say": "Control system 1, autonomous: press Enter autonomous mode. Nothing moves yet; the probe waits for Step.",
+      "say": "Now press Enter autonomous mode. Nothing moves yet; the probe waits for Step.",
       "wait": {"state": {"name": "DC Probe", "key": "model_mode", "equals": "autonomous"}}
     },
     {
@@ -66,7 +60,13 @@
     {
       "page": "DC Probe",
       "anchor": {"text": "Gamepad"},
-      "say": "Control system 2, manual: a gamepad drives the probe. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "say": "Control system 2 is the Manual group: a gamepad drives the probe. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Manual speed"},
+      "say": "Manual speed is the gamepad's jog speed, on the autonomous speed's scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
       "wait": null
     },
     {

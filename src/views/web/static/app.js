@@ -2181,8 +2181,12 @@ class PanelCard {
         const head = tableHead(sections, columns);
         if (head) this.body.appendChild(head);
       }
+      // A `group` section is a named group of controls (a probe's
+      // Autonomous and Manual, owner 2026-10-07): its title is drawn even
+      // in tier 1, where a section's title is otherwise unseen.
       const block = make('div', 'section' + (isRow ? ' section-row' : '')
-                         + (spans ? ' section-span' : ''));
+                         + (spans ? ' section-span' : '')
+                         + (!isRow && section.layout === 'group' ? ' section-group' : ''));
       // An untitled row claims no name column (the rule views/qt.py settled
       // on); a titled one's caption is the row's name. A well does not open
       // onto a heading that repeats its own disclosure ("Diagnostics" under
@@ -3832,7 +3836,12 @@ class Dashboard {
     const rail = document.querySelector('.rail');
     if (!rail) return;
     const box = rail.getBoundingClientRect();
-    const isColumn = box.height > box.width;
+    // Which shape the stylesheet gave it, not which side is longer: on a
+    // phone the bar grows taller than it is wide once alert lines and the
+    // page list wrap in it, and was then taken for a column - every layer,
+    // Setup and the tray among them, moved one screen width to the right
+    // (UX audit 2026-10-07).
+    const isColumn = getComputedStyle(rail).flexDirection === 'column';
     const left = (isColumn ? Math.round(box.width) : 0) + 'px';
     const top = (isColumn ? 0 : Math.round(box.height)) + 'px';
     if (root.getPropertyValue('--rail-left') !== left) root.setProperty('--rail-left', left);

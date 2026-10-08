@@ -1035,13 +1035,21 @@ def test_add_sample_refusals_each_one_sentence_and_nothing_is_stored(images, tmp
     assert "sample ID" in str(add(""))                       # empty ID
     assert "material" in str(add("N1"))                      # no material yet
     images.run("set_new_material", None, ("hBN",))
-    assert "photo" in str(add("N1"))                         # no photo yet
     images.run("stage_photo", None, (photo,))
     assert "already" in str(add("4OCT26"))                   # repeats (any case)
     assert not images.run("stage_photo", None, (str(tmp_path / "nope.png"),)).is_ok
     assert [s["sample_id"] for s in images._store.samples()] == ["4oct26", "7/27/26"]
     assert images.phase == "new_sample"                      # a refusal stays in the prompt
     assert not list(images._store.directory.glob("images/N1*"))
+
+
+def test_a_sample_needs_no_photo(images):
+    """Owner 2026-10-07: samples and chips may have no photo; flakes need one."""
+    images.run("begin_new_sample")
+    images.run("set_new_material", None, ("hBN",))
+    result = images.run("create_sample", {"new_sample_id": "NOPHOTO1"})
+    assert result.is_ok, result
+    assert images.phase == "browse" and images.sample_id == "NOPHOTO1"
 
 
 def test_add_sample_inserts_copies_photos_selects_and_returns_to_browse(images, tmp_path):

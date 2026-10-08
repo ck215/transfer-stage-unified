@@ -1093,6 +1093,8 @@ class Setup(PortProbe, Panel):
                                 f"ready - {detected} device(s) detected")
         events.debug("Scan", f"{self.scan_status}; {len(targets)} port(s) in "
                      f"{time.monotonic() - started:.1f} s", source=self.NAME)
+        self._scan_settled = True
+        self._deliver_startup_offer()
 
     def _refuse(self, reason):
         """Every refusal reaches the log file, even when `build()` was called
@@ -1539,7 +1541,7 @@ class Setup(PortProbe, Panel):
             self._refuse("That email and password do not match an account on this "
                          "station.")
         self._become(self._user_for(email))
-        self._account_chosen = True
+        self._chose_account()
         return self.account_status
 
     def create_account(self, confirmed=False):
@@ -1567,7 +1569,7 @@ class Setup(PortProbe, Panel):
             self._refuse(str(refusal))
         events.info("Account Created", f"{email}.", source=self.NAME)
         self._become(self._user_for(email))
-        self._account_chosen = True
+        self._chose_account()
         return self.account_status
 
     def open_as_guest(self):
@@ -1576,8 +1578,23 @@ class Setup(PortProbe, Panel):
         if not self.user.is_guest:
             self._refuse_guest_mid_trial()
             self._become(self._user_for(None))
-        self._account_chosen = True
+        self._chose_account()
         return self.account_status
+
+    def _chose_account(self):
+        """The sign-in screen is answered: Setup is next, so its device table
+        is scanned afresh (owner 2026-10-07). The startup scan ran while the
+        screen was up, possibly while another program still held the ports.
+        Only when the station has scanned before (a running app, not a test
+        that never started one), is not launched and is not scanning now."""
+        self._account_chosen = True
+        if getattr(self, "_scan_thread", None) is None or self._is_launched \
+                or self.is_scanning:
+            return
+        try:
+            self.scan()
+        except Refused as refusal:
+            events.debug("Scan", f"after sign-in: {refusal.reason}", source=self.NAME)
 
     def sign_out(self):
         """Back to Guest: every model's user parameters rebuilt from its
@@ -2162,6 +2179,10 @@ class Setup(PortProbe, Panel):
         # A2 (OP-4): the startup check's offer waits for a view to listen.
         self._startup_offer = None      # the startup check's answer, not yet offered
         self._startup_offered = False
+        #: A scan has finished at least once: the startup offer names only
+        #: the boards it found (owner 2026-10-07: no Flash now for a board
+        #: that is switched off or unplugged).
+        self._scan_settled = False
         self._startup_listening = False
         self._offer_on_read = False
         self.firmware_progress = ""
@@ -2283,6 +2304,11 @@ class Setup(PortProbe, Panel):
             if not self._startup_listening or self._startup_offer is None \
                     or self._startup_offered:
                 return
+            # A scan that is still running holds the offer until it knows
+            # which boards are plugged in; it offers when it finishes.
+            if getattr(self, "_scan_thread", None) is not None \
+                    and not self._scan_settled:
+                return
             result, self._startup_offered = self._startup_offer, True
         self._offer_flash(result)
 
@@ -2293,7 +2319,12 @@ class Setup(PortProbe, Panel):
         the dialog having been the question. Once per board set per run;
         Later leaves the row's key. Nothing is offered that the key would
         refuse for want of the tool (the Boards line says "by hand")."""
-        result = result or {}
+        result = dict(result or {})
+        if self._scan_settled:
+            with self._lock:
+                connected = {name for name in self._found.values() if name}
+            for key in ("to_flash", "stale", "never"):
+                result[key] = [b for b in (result.get(key) or []) if b in connected]
         boards = list(result.get("to_flash") or [])
         if not boards or result.get("missing_tools"):
             return

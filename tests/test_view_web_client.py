@@ -858,9 +858,15 @@ def test_consecutive_commands_are_one_action_group():
     # artboards), wrapping when it must.
     assert re.search(r"\n\.actions\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap",
                      STYLES), "the commands of a group are not one line"
-    assert re.search(r"\.drawer \.section-span > \.actions:last-child\s*\{[^}]*"
-                     r"flex:\s*1 0 100%", STYLES), (
-        "Setup's Launch row crowds its summary and four commands onto one line")
+    # Updated (UX audit 2026-10-07): the `.actions:last-child` rule never
+    # matched the Launch row (its L3 notes come after its keys); it matched
+    # Account's keys and sent them to a line of their own. Every Setup
+    # section line now ends in its keys at the right edge, and the Launch
+    # row's note ("Nothing to launch yet") takes the line under its keys.
+    assert re.search(r"\.drawer \.section-span > \.actions\s*\{[^}]*margin-left:\s*auto",
+                     STYLES), "a Setup section's keys are not at its right edge"
+    assert re.search(r"\n\.gate-note\s*\{[^}]*flex:\s*1 0 100%", STYLES), (
+        "Setup's Launch row crowds its note and its commands onto one line")
 
 
 def test_a_detached_log_is_a_button_and_is_polled_only_while_open():

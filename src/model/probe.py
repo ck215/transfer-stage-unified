@@ -1256,10 +1256,21 @@ class Probe(GamepadInput, IdleInterlock, Model):
         gamepad_choice, gamepad_log = self._gamepad_elements()
         # Tiers (owner ruling 2026-09-25, canvas row E): position and speed
         # are what an operator adjusts every session, so they are always
-        # drawn; step sizes, targets and brakes sit one disclosure away;
+        # drawn; step sizes and brakes sit one disclosure away (the targets
+        # moved up into the Autonomous group, 2026-10-07, below);
         # velocity, position age, the gamepad log and the per-model stop
         # are diagnostics. The gamepad CHOICE is tier 1 (owner, 2026-09-26,
         # Tier K): it is picked every session, right before Manual mode.
+        #
+        # The two control systems are two groups (owner, 2026-10-07: "a
+        # division for autonomous and manual controls"): Autonomous holds
+        # the Step's targets, its speed, its mode and Step; Manual holds the
+        # gamepad, the jog speed and its mode. `layout="group"` draws each
+        # one's title as a visible heading in the Web view (a tier-1 title
+        # is otherwise for a screen reader only). The step sizes serve both
+        # systems (a Step's distance and a D-pad press), so they stay in
+        # Configure. Only the grouping moved: every element, gate and
+        # command is the one it was.
         return sch.schema(
             sch.section(
                 "Position",
@@ -1268,7 +1279,10 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 sch.readonly("Z:", "position_z", rail=True, unit="steps"),
             ),
             sch.section(
-                "Speeds",
+                "Autonomous",
+                *[sch.entry(P[name].label + ":", name, P[name],
+                            disabled_when=_MOTION_GATE)
+                  for name in self.TARGET_PARAMS],
                 # A slider beside the entry, never instead of it: the entry
                 # keeps the precision. The slider's travel is a display range;
                 # the Param still validates what is typed.
@@ -1277,14 +1291,6 @@ class Probe(GamepadInput, IdleInterlock, Model):
                           slider=self.SPEED_SLIDER),
                 sch.readonly("steps/s", "full_speed", secondary=True,
                              unit="steps/s"),
-                sch.entry(P["man_full_speed_pct"].label + ":", "man_full_speed_pct",
-                          P["man_full_speed_pct"], disabled_when=_MANUAL_SPEED_GATE,
-                          slider=self.SPEED_SLIDER),
-                sch.readonly("steps/s", "man_full_speed", secondary=True,
-                             unit="steps/s"),
-            ),
-            sch.section(
-                "System Control",
                 # Per-device "System Power" and "Full Stop" toggles stay
                 # removed: enable/disable is reachable through the mode
                 # toggles, and the dashboard's global FULL STOP already
@@ -1292,7 +1298,6 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # F11: greyed out while latched. A latched probe is never in
                 # AUTO or MANUAL (the halt leaves both), so the toggle's "off"
                 # direction is not what this takes away.
-                gamepad_choice,
                 # Round 8 (IMP8-2, Tk CCR 1): a probe whose disable FAILED is
                 # in FAULT with its motors possibly powered; the toggles are
                 # greyed from the schema in every view, and the stop is the
@@ -1301,11 +1306,6 @@ class Probe(GamepadInput, IdleInterlock, Model):
                            "Autonomous mode (press to stop)",
                            "Enter Autonomous Mode",
                            on_args=[ProbeMode.AUTO.value],
-                           off_args=[ProbeMode.DISABLED.value],
-                           disabled_when=("latched", "fault")),
-                sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
-                           "Manual mode (press to stop)", "Enter Manual Mode",
-                           on_args=[ProbeMode.MANUAL.value],
                            off_args=[ProbeMode.DISABLED.value],
                            disabled_when=("latched", "fault")),
                 # D-5: the distances and the speed travel with the command and
@@ -1317,11 +1317,27 @@ class Probe(GamepadInput, IdleInterlock, Model):
                            inputs=("x_dist", "y_dist", "z_dist", "full_speed_pct"),
                            role="go", disabled_when=("manual", "latched",
                                                      "fault")),
+                layout="group",
+            ),
+            sch.section(
+                "Manual",
+                gamepad_choice,
+                sch.entry(P["man_full_speed_pct"].label + ":", "man_full_speed_pct",
+                          P["man_full_speed_pct"], disabled_when=_MANUAL_SPEED_GATE,
+                          slider=self.SPEED_SLIDER),
+                sch.readonly("steps/s", "man_full_speed", secondary=True,
+                             unit="steps/s"),
+                sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
+                           "Manual mode (press to stop)", "Enter Manual Mode",
+                           on_args=[ProbeMode.MANUAL.value],
+                           off_args=[ProbeMode.DISABLED.value],
+                           disabled_when=("latched", "fault")),
                 # Declared so `run("extend_idle")` passes the allow-list; it
                 # renders nothing. The views draw the countdown and its
                 # Extend from `idle_remaining` in state (Tier N).
                 {"type": "internal", "command": "extend_idle", "writable": False,
                  "role": "neutral"},
+                layout="group",
             ),
             sch.section(
                 "Configuration",
@@ -1344,11 +1360,13 @@ class Probe(GamepadInput, IdleInterlock, Model):
         )
 
     #: Every editable field, in the order the D-5 command set travels.
-    #: DCProbe adds two. The two speeds are tier 1 (with a slider); the rest
-    #: are the tier-2 Configuration.
+    #: DCProbe adds two. The two speeds (with a slider) and the Step's
+    #: targets are tier 1, in their control system's group; the rest are the
+    #: tier-2 Configuration.
     ENTRY_PARAMS = ("x_step", "y_step", "z_step", "x_dist", "y_dist", "z_dist",
                     "full_speed_pct", "man_full_speed_pct")
     SPEED_PARAMS = ("full_speed_pct", "man_full_speed_pct")
+    TARGET_PARAMS = ("x_dist", "y_dist", "z_dist")
     #: The slider's travel: the whole dial, percent.
     SPEED_SLIDER = (0, 100)
 
@@ -1390,7 +1408,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
 
     @property
     def CONFIG_PARAMS(self):
-        return tuple(n for n in self.ENTRY_PARAMS if n not in self.SPEED_PARAMS)
+        return tuple(n for n in self.ENTRY_PARAMS
+                     if n not in self.SPEED_PARAMS + self.TARGET_PARAMS)
 
     @property
     def state(self):
