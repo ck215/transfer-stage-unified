@@ -701,8 +701,9 @@ class Setup(PortProbe, Panel):
     @property
     def mode_name(self):
         """`scanning` gates Launch; `launched` retires it (owner 2026-10-07:
-        no relaunch - a device is recovered with its row's Hard reset, and
-        changing devices needs a station Restart). The dropdowns are gated by neither: the operator may point a
+        no relaunch - a device is recovered, or moved to a changed port
+        (2026-10-08), with its row's Hard reset; adding a device needs a
+        station Restart). The dropdowns are gated by neither: the operator may point a
         row at a port while the scan is still walking the rest of them, and
         that choice then wins over auto-assign."""
         if self.is_scanning:
@@ -796,6 +797,9 @@ class Setup(PortProbe, Panel):
                 # A board that answered after the launch: its port, until a
                 # restart lets it launch.
                 "seen_after_launch": seen.get(key),
+                # A Port or Gamepad changed after the launch, waiting for
+                # the row's Hard reset (owner ruling 2026-10-08).
+                "pending_reset": self._pending_config(key) is not None,
                 "options_command": row["options_command"],
             })
         snapshot.update({
@@ -878,40 +882,47 @@ class Setup(PortProbe, Panel):
                 if getattr(hosted_class, "HOST", None) == row["name"]:
                     configs.append({"model": hosted_name, "port": None,
                                     "gamepad": None, "sim": bool(is_sim)})
-            if not row["needs_port"]:
-                port = None         # the screen monitor: on, or simulated
-            elif is_sim:
-                port = SIM
-            else:
-                port = choice
-            gamepad = getattr(self, f"{key}_gamepad") if row["needs_gamepad"] else "None"
-            config = {
-                "model": row["name"],
-                "port": port,
-                "gamepad": None if gamepad in ("None", "", None) else gamepad,
-                # Derived from the one dropdown, never carried through as its
-                # own input: `mode` was an input the web wizard sent and the
-                # desktop ones did not, so two launchers produced different
-                # configs for one system.
-                "sim": bool(is_sim),
-            }
-            # Every resource under its own name as well, so the config is
-            # `{"model", ...resources, "sim"}` whatever the class calls them.
-            # For the six built-ins these are `port` / `gamepad` themselves.
-            if row["port_resource"] not in (None, "port"):
-                config[row["port_resource"]] = port
-            for field, kind, _, resource in row["columns"]:
-                if field == "gamepad":
-                    if resource != "gamepad":
-                        config[resource] = config["gamepad"]
-                    continue
-                value = getattr(self, f"{key}_{field}")
-                if kind == "port":
-                    config[resource] = SIM if is_sim else value
-                else:
-                    config[resource] = None if value in ("None", "", None) else value
-            configs.append(config)
+            configs.append(self._row_config(key, row))
         return configs
+
+    def _row_config(self, key, row):
+        """The build config of one row as its dropdowns stand now (its
+        hosted models are `_all_configs`' business)."""
+        choice = getattr(self, f"{key}_port")
+        is_sim = choice == SIM
+        if not row["needs_port"]:
+            port = None         # the screen monitor: on, or simulated
+        elif is_sim:
+            port = SIM
+        else:
+            port = choice
+        gamepad = getattr(self, f"{key}_gamepad") if row["needs_gamepad"] else "None"
+        config = {
+            "model": row["name"],
+            "port": port,
+            "gamepad": None if gamepad in ("None", "", None) else gamepad,
+            # Derived from the one dropdown, never carried through as its
+            # own input: `mode` was an input the web wizard sent and the
+            # desktop ones did not, so two launchers produced different
+            # configs for one system.
+            "sim": bool(is_sim),
+        }
+        # Every resource under its own name as well, so the config is
+        # `{"model", ...resources, "sim"}` whatever the class calls them.
+        # For the six built-ins these are `port` / `gamepad` themselves.
+        if row["port_resource"] not in (None, "port"):
+            config[row["port_resource"]] = port
+        for field, kind, _, resource in row["columns"]:
+            if field == "gamepad":
+                if resource != "gamepad":
+                    config[resource] = config["gamepad"]
+                continue
+            value = getattr(self, f"{key}_{field}")
+            if kind == "port":
+                config[resource] = SIM if is_sim else value
+            else:
+                config[resource] = None if value in ("None", "", None) else value
+        return config
 
     # -- options (one list per row shape) ----------------------------------
     def port_options(self):
@@ -1246,12 +1257,20 @@ class Setup(PortProbe, Panel):
     def _hard_reset(self, key, confirmed=False):
         """Hard reset one launched device (owner 2026-10-07). Reached
         through `hard_reset_<row>`. Its model is stopped and closed (the
-        Controller's own remove: estop, then the port is closed), then built
-        again from the config it was launched with and opened on the same
-        port: opening the port pulses DTR, which resets the board, and the
+        Controller's own remove: estop, then close - the heater's off is
+        read back before its port lets go), then built again and opened:
+        opening the port pulses DTR, which resets the board, and the
         identity handshake runs again. Refused while the model is energized
         or running; asked first. A reset that did not come back can be
-        pressed again: the config is remembered."""
+        pressed again: the config is remembered.
+
+        Owner ruling 2026-10-08: the no-relaunch rule only keeps devices
+        from being enabled or disabled outside Settings; it never meant a
+        device could not be restarted. A row whose Port (or Gamepad) was
+        changed after the launch is rebuilt on the NEW choice here - the old
+        port is closed first, the new one opened after - with no station
+        Restart. The new choice is checked as Launch checks it: not held by
+        another running model, and answered as this model (or SIM)."""
         if key not in self._rows:
             self._refuse(f"{key} is not a configurable model")
         name = self._rows[key]["name"]
@@ -1264,32 +1283,102 @@ class Setup(PortProbe, Panel):
                                   or getattr(model, "is_active", False)):
             self._refuse(f"{name} is energized. Stop it and put it out of its "
                          "mode first, then hard reset.")
-        config = controller.config(name)
-        where = ("its simulator" if config.get("sim")
-                 else f"{config.get('port') or 'its port'}")
+        launched = controller.config(name)
+        wanted = self._pending_config(key)
+        where = self._where(launched)
+        if wanted is not None:
+            self._check_new_choice(key, name, wanted)
+            target = self._where(wanted)
         if not confirmed:
             latched = (" It is stopped now; the reset clears that."
                        if getattr(model, "is_estopped", False) else "")
-            raise NeedsConfirm(
-                f"Hard reset {name}? It is stopped and disconnected, its board "
-                f"is reset, and it is opened again on {where}.{latched}",
-                f"hard_reset_{key}")
-        events.info("Hard Reset", f"{name} on {where}: closing, then opening "
-                    "again.", source=self.NAME)
+            if wanted is None:
+                question = (f"Hard reset {name}? It is stopped and disconnected, "
+                            f"its board is reset, and it is opened again on "
+                            f"{where}.{latched}")
+            else:
+                question = (f"Hard reset {name} onto {target}? It is stopped "
+                            f"and disconnected from {where}, then opened and "
+                            f"identified on {target}.{latched}")
+            raise NeedsConfirm(question, f"hard_reset_{key}")
+        if wanted is None:
+            events.info("Hard Reset", f"{name} on {where}: closing, then opening "
+                        "again.", source=self.NAME)
+        else:
+            events.info("Hard Reset", f"{name}: closing on {where}, then opening "
+                        f"on {target}.", source=self.NAME)
         if model is not None:
+            # The stop path, then the old port closes: `remove` is estop,
+            # then close, before anything is built on the new choice.
             controller.remove(name)
         try:
-            controller.reopen(name)
+            if wanted is None:
+                controller.reopen(name)
+            else:
+                controller.add(name, self.model_from_config(wanted), wanted)
         except Refused:
+            self._refresh_rows()
             raise
         except Exception as exc:
             events.debug("Hard Reset Failed", f"{name}: {exc!r}", source=self.NAME,
                          exception=exc)
             self._refresh_rows()
-            self._refuse(f"{name} did not come back on {where}. Check its cable, "
-                         "then press Hard reset again or restart the station.")
+            self._refuse(f"{name} did not come back on "
+                         f"{target if wanted is not None else where}. Check its "
+                         "cable, then press Hard reset again or restart the "
+                         "station.")
         self._refresh_rows()
         return name
+
+    @staticmethod
+    def _where(config):
+        return ("its simulator" if config.get("sim")
+                else f"{config.get('port') or 'its port'}")
+
+    def _pending_config(self, key):
+        """The config this launched row's choices would build, when it is
+        not the one its model runs with (a Port or Gamepad changed after the
+        launch, owner ruling 2026-10-08); None when nothing is pending,
+        before the launch, or for a row that did not launch."""
+        if not self._is_launched or self.controller is None:
+            return None
+        row = self._rows[key]
+        name = row["name"]
+        controller = self.controller
+        config_of = getattr(controller, "config", None)
+        if not callable(config_of) or not row["needs_port"]:
+            return None
+        if name not in self._running_names() and \
+                name not in list(getattr(controller, "closed_names", ()) or ()):
+            return None
+        launched = config_of(name) or {}
+        if not launched:
+            return None
+        wanted = self._row_config(key, row)
+        if all(launched.get(k) == v for k, v in wanted.items()):
+            return None
+        return wanted
+
+    def _check_new_choice(self, key, name, wanted):
+        """A changed row is held to what Launch holds a row to."""
+        if getattr(self, f"{key}_port") == NOT_CONNECTED:
+            self._refuse(f"Choose {name}'s port (or SIM) before the hard reset.")
+        others = []
+        for other in self._running_names():
+            if other == name:
+                continue
+            try:
+                others.append(self.controller.config(other) or {})
+            except Exception:
+                continue
+        self.validate([c for c in others if c.get("model")] + [wanted])
+        self._check_identities([wanted])
+        if not wanted.get("sim"):
+            with self._lock:
+                answered = self._found.get(wanted.get("port"))
+            if answered != name:
+                self._refuse(f"{name} has not answered on {wanted.get('port')}. "
+                             "Press Refresh to scan it, or choose another port.")
 
     def _running_names(self):
         return list(getattr(self.controller, "model_names", None) or ())
@@ -1365,9 +1454,9 @@ class Setup(PortProbe, Panel):
         a device is recovered with its row's Hard reset, and changing the
         devices needs a station Restart - so a second Launch is refused."""
         if self._is_launched:
-            self._refuse("The station is already launched. Recover a device "
-                         "with its row's Hard reset; to change devices, "
-                         "Restart the station.")
+            self._refuse("The station is already launched. Recover a device, "
+                         "or move it to another port, with its row's Hard "
+                         "reset; to add a device, Restart the station.")
         if self.is_flashing:
             # A board mid-upload is not a board to open: its port is the
             # uploader's, and its firmware is neither the old nor the new.
@@ -3016,6 +3105,9 @@ class Setup(PortProbe, Panel):
             seen = self._seen.get(key)
         if seen:
             return f"seen on {seen}: restart to launch"
+        if self._pending_config(key) is not None:
+            # Owner ruling 2026-10-08: the row's Hard reset applies it.
+            return "changed: hard reset to apply"
         choice = getattr(self, f"{key}_port")
         if self.guest_locked and is_signed_in_only(row["name"]):
             return "sign in to use"

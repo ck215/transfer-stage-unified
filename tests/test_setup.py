@@ -717,6 +717,7 @@ def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
                      "detected": None,
                      "needs_port": True, "needs_gamepad": True,
                      "is_chosen": False, "seen_after_launch": None,
+                     "pending_reset": False,
                      "options_command": "port_options"}
     assert state["values"]["scan_status"] == "not scanned yet"
     assert state["scan"]["elapsed"] is None and state["scan"]["port"] is None
@@ -1071,6 +1072,136 @@ def test_a_hard_reset_that_did_not_come_back_says_so_and_can_be_pressed_again(
     fake_types["Alpha"].FAIL_ON_OPEN = False
     assert panel.run("hard_reset_alpha", args=(True,)).is_ok
     assert "Alpha" in panel.controller.model_names
+
+
+# -- a changed port applies through Hard reset (owner ruling 2026-10-08) -----
+# The no-relaunch rule only keeps devices from being enabled or disabled
+# outside Settings; it never meant a device could not be restarted. A row's
+# Port (or Gamepad) changed after the launch is applied by that row's Hard
+# reset: the stop path first, the old port closed, the model built and opened
+# on the new port, re-identified. No station Restart.
+
+def _record_order(monkeypatch, model_class, log):
+    """Every construction, open, estop and close of `model_class`, in order,
+    with the port it was on."""
+    init, open_, estop, close = (model_class.__init__, model_class.open,
+                                 model_class.estop, model_class.close)
+
+    def rec_init(self, port=None, gamepad=None, sim=False):
+        log.append(("build", port, gamepad))
+        init(self, port=port, gamepad=gamepad, sim=sim)
+
+    def rec(name, original):
+        def method(self):
+            log.append((name, self.port))
+            return original(self)
+        return method
+    monkeypatch.setattr(model_class, "__init__", rec_init)
+    monkeypatch.setattr(model_class, "open", rec("open", open_))
+    monkeypatch.setattr(model_class, "estop", rec("estop", estop))
+    monkeypatch.setattr(model_class, "close", rec("close", close))
+
+
+def test_a_port_changed_after_the_launch_waits_for_hard_reset(panel):
+    old = _launch_alpha_on(panel)
+    offer(panel, "/dev/ttyUSB1")
+    panel._found["/dev/ttyUSB1"] = "Alpha"
+    select(panel, "alpha", "port", "/dev/ttyUSB1")
+    assert panel.controller._model("Alpha") is old and old.closed == 0, \
+        "a dropdown never restarts a device by itself"
+    row = next(r for r in panel.state["rows"] if r["key"] == "alpha")
+    assert row["pending_reset"] is True
+    assert "hard reset to apply" in panel.alpha_status.lower()
+    # A row whose choice matches what runs has nothing pending.
+    beta = next(r for r in panel.state["rows"] if r["key"] == "beta")
+    assert beta["pending_reset"] is False
+
+
+def test_hard_reset_applies_a_changed_port_stop_path_first(
+        panel, fake_types, monkeypatch):
+    log = []
+    _launch_alpha_on(panel)
+    _record_order(monkeypatch, fake_types["Alpha"], log)
+    offer(panel, "/dev/ttyUSB1")
+    panel._found["/dev/ttyUSB1"] = "Alpha"
+    select(panel, "alpha", "port", "/dev/ttyUSB1")
+    asked = panel.run("hard_reset_alpha")
+    assert asked.needs_confirm
+    assert "/dev/ttyUSB0" in asked.reason and "/dev/ttyUSB1" in asked.reason
+    assert log == [], "nothing was touched by the question"
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    # The stop path ran on the old port, then the old port closed, and only
+    # then was the model built and opened on the new one.
+    assert log == [("estop", "/dev/ttyUSB0"), ("close", "/dev/ttyUSB0"),
+                   ("build", "/dev/ttyUSB1", None), ("open", "/dev/ttyUSB1")]
+    assert panel.controller.config("Alpha")["port"] == "/dev/ttyUSB1"
+    assert panel.controller._model("Alpha").port == "/dev/ttyUSB1"
+    assert panel.is_launched, "no station Restart"
+    row = next(r for r in panel.state["rows"] if r["key"] == "alpha")
+    assert row["pending_reset"] is False
+    assert panel.alpha_status == "detected: Alpha"
+
+
+def test_hard_reset_applies_a_changed_gamepad(panel, monkeypatch):
+    _launch_alpha_on(panel)
+    monkeypatch.setattr(panel, "_gamepads", ["None", "Pad 1"])
+    select(panel, "alpha", "gamepad", "Pad 1")
+    assert next(r for r in panel.state["rows"]
+                if r["key"] == "alpha")["pending_reset"] is True
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert panel.controller.config("Alpha")["gamepad"] == "Pad 1"
+    assert panel.controller._model("Alpha").gamepad == "Pad 1"
+
+
+def test_hard_reset_onto_a_port_that_answered_as_another_model_is_refused(panel):
+    old = _launch_alpha_on(panel)
+    offer(panel, "/dev/ttyUSB1")
+    panel._found["/dev/ttyUSB1"] = "Beta"
+    select(panel, "alpha", "port", "/dev/ttyUSB1")
+    result = panel.run("hard_reset_alpha", args=(True,))
+    assert result.is_refused and "answered as Beta" in result.reason
+    assert panel.controller._model("Alpha") is old and old.closed == 0
+
+
+def test_hard_reset_onto_a_port_another_running_model_holds_is_refused(panel):
+    offer(panel, "/dev/ttyUSB0")
+    offer(panel, "/dev/ttyUSB1")
+    panel._found.update({"/dev/ttyUSB0": "Alpha", "/dev/ttyUSB1": "Beta"})
+    select(panel, "alpha", "port", "/dev/ttyUSB0")
+    select(panel, "beta", "port", "/dev/ttyUSB1")
+    assert panel.run("launch").is_ok
+    old = panel.controller._model("Alpha")
+    panel._found["/dev/ttyUSB1"] = None     # say the handshake missed it
+    select(panel, "alpha", "port", "/dev/ttyUSB1")
+    result = panel.run("hard_reset_alpha", args=(True,))
+    assert result.is_refused and "already assigned to Beta" in result.reason
+    assert panel.controller._model("Alpha") is old and old.closed == 0
+
+
+def test_hard_reset_to_a_new_port_that_fails_can_be_pressed_again(
+        panel, fake_types):
+    _launch_alpha_on(panel)
+    offer(panel, "/dev/ttyUSB1")
+    panel._found["/dev/ttyUSB1"] = "Alpha"
+    select(panel, "alpha", "port", "/dev/ttyUSB1")
+    fake_types["Alpha"].FAIL_ON_OPEN = True
+    result = panel.run("hard_reset_alpha", args=(True,))
+    assert result.is_refused and "/dev/ttyUSB1" in result.reason
+    assert "Alpha" not in panel.controller.model_names
+    fake_types["Alpha"].FAIL_ON_OPEN = False
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert panel.controller._model("Alpha").port == "/dev/ttyUSB1"
+
+
+def test_a_port_chosen_before_the_launch_is_not_pending(panel):
+    """Pre-launch behaviour is unchanged: a choice is what Launch builds."""
+    offer(panel, "/dev/ttyUSB0")
+    panel._found["/dev/ttyUSB0"] = "Alpha"
+    select(panel, "alpha", "port", "/dev/ttyUSB0")
+    row = next(r for r in panel.state["rows"] if r["key"] == "alpha")
+    assert row["pending_reset"] is False
+    assert panel.alpha_status == "detected: Alpha"
+    assert panel.run("hard_reset_alpha", args=(True,)).is_refused
 
 
 def _scan_with(panel, monkeypatch, answers):
