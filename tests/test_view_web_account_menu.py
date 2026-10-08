@@ -240,7 +240,7 @@ def test_a_guests_menu_says_guest_and_goes_to_the_sign_in_screen(station, tmp_pa
       return { before, words, after: await shown() };
     """, tmp_path)
     assert out["before"]["accountText"] == "Guest"
-    assert not [n for n in out["before"]["nav"] if n in ("Transfer Map", "Sample Map")]
+    assert not [n for n in out["before"]["nav"] if n in ("Transfer Map", "Sample DB")]
     assert "Guest" in out["words"] and "Change password" not in out["words"]
     assert out["after"]["gate"] and not out["after"]["account"]
 

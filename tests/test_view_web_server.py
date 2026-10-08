@@ -1766,7 +1766,7 @@ def sim_station():
     for key, row in setup._rows.items():
         if row["needs_port"]:
             getattr(setup, f"set_{key}_port")(SIM)
-    assert len(setup.launch()) == 8   # + the Transfer Map (Tier S) and the Sample Map
+    assert len(setup.launch()) == 8   # + the Transfer Map (Tier S) and the Sample DB
     # Past the sign-in screen (2026-10-07) as Guest, as an operator would be.
     assert setup.run("open_as_guest").is_ok
     view = WebView(controller, setup, port=0, open_browser=False)
@@ -2674,7 +2674,7 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     assert out["device"]["shown"] == ["Rotator"], out
     after = out["after"]
     assert after["current"] == ["Overview"] and "Rotator" not in after["nav"], after
-    # Eight models (Tier S, the Sample Map), one closed; Red Percent is on
+    # Eight models (Tier S, the Sample DB), one closed; Red Percent is on
     # the Map's entry (D).
     assert len(after["shown"]) == 6 and after["wells"] == 0, after
 
@@ -4083,7 +4083,7 @@ def test_o16_under_640_the_chord_hint_and_every_stop_mark_stay_visible(sim_stati
       });
     """, tmp_path)
     assert out["hint"], out
-    # Eight models (Tier S, the Sample Map), seven links: Red Percent's stop
+    # Eight models (Tier S, the Sample DB), seven links: Red Percent's stop
     # is folded into the Transfer Map's link (D, 2026-09-28).
     assert len(out["marks"]) == 7 and all(out["marks"]), out
     assert not out["sideways"], out

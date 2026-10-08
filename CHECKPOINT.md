@@ -55,7 +55,7 @@ long form). Delete this file in the commit that closes the last item below.
 3. **Re-analysis of the 40 recorded trials:** `dev/reanalyse_trials.py <db>`
    writes a report; the owner reviews it before anyone passes `--write`
    (it backs up first and touches only red extrema). Never the Drive originals.
-4. **`file_open` carries no `inputs`.** The Sample Map sets instrument and
+4. **`file_open` carries no `inputs`.** The Sample DB sets instrument and
    magnification as Params before "Add photo"; a prompt on the file dialog
    itself would be cleaner. Cosmetic-functional, low.
 
@@ -65,8 +65,6 @@ long form). Delete this file in the commit that closes the last item below.
   fails under full-suite load on macOS and passes alone (a timeout, not a
   wrong answer). Widen its budget or isolate it.
 - `src/model/rgb_analysis.py` ~L1983 comment names the deleted `views/picking.py`.
-- `tutorials/register-sample.json` says the sample photo is optional; the
-  store requires at least one at sample and flake level.
 
 ## Process reminders
 

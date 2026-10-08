@@ -1335,7 +1335,7 @@ def test_grab_frame_is_none_without_a_region_or_a_frame(monitor):
 
 
 # -- the one-shot grabs settle too (2026-10-07): Arm's capture check, the
-# whole-screen still and the Sample Map's photos take no mid-repaint read ---
+# whole-screen still and the Sample DB's photos take no mid-repaint read ---
 
 class _Flicker:
     """The first `unsettled` reads each show a different picture (a repaint

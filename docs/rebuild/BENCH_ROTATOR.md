@@ -1,4 +1,4 @@
-# Bench validation: the Rotator turns the chip, the Sample Map follows it
+# Bench validation: the Rotator turns the chip, the Sample DB follows it
 
 Written 2026-10-05 for the first bench run of `mvc-refactor` with the
 rotator-frame merge. **Owner only; never delegated.** It asks for bench
@@ -8,9 +8,9 @@ What changed (owner ruling 2026-10-04): the SMC100 Rotator spins the chip
 in-plane about a centre c. A registration records the Rotator's angle phi0;
 at phi the station places the chip as p = c + R(s(phi - phi0))(p_reg - c),
 with c and the sense s found by a **calibration** (one feature marked at
-three angles). Nothing in the Sample Map moves the Rotator or the stage.
+three angles). Nothing in the Sample DB moves the Rotator or the stage.
 Code: `src/model/sample_frame.py` (`rotation_centre`, `RotatedFrame`),
-`src/model/sample_map.py` (Configure Sample Map > Rotator).
+`src/model/sample_map.py` (Configure Sample DB > Rotator).
 
 ## 0. Before anything moves: back up, then update
 
@@ -36,7 +36,7 @@ folder, note `git rev-parse HEAD`, then `update.bat`.
 - [ ] First launch: the Transfer Map store upgrades itself to version 6
       ("Database Upgraded ... Its trials are kept."). Additive; the trial count is unchanged.
 
-## 1. Bench facts the Sample Map asks for (`BenchFactMissing`)
+## 1. Bench facts the Sample DB asks for (`BenchFactMissing`)
 
 The stepper's um per count is known (0.625). The chuck's and the DC
 probe's are not: marking with them is refused until typed.
@@ -44,18 +44,18 @@ probe's are not: marking with them is refused until typed.
 - [ ] Which axes put the chip under the objective (Chuck Positioner, or a probe)? ________
 - [ ] um per count of those axes (move 1000 counts against a stage micrometer slide): X ______ Y ______
       Same screw on X and Y? ______ (the turn is computed in counts and assumes X = Y)
-- [ ] Typed under Sample Map > Configure Sample Map > Locating axes > um per count > **Set um per count**.
+- [ ] Typed under Sample DB > Configure Sample DB > Locating axes > um per count > **Set um per count**.
       The lead writes the measured value into `sample_frame.UM_PER_COUNT` afterwards.
 
 ## 2. One Rotator calibration run
 
 1. On Setup, tick the Rotator (real port; there is no Rotator simulator), the
    locating axes (real ports: a SIM probe sends no positions, so its marks
-   are refused as stale) and the **Sample Map** row (no port), then Launch.
+   are refused as stale) and the **Sample DB** row (no port), then Launch.
    Press **Home** on the Rotator page. Its Motion state must read `Ready`, not
-   `Not referenced - run Home`; until then the Sample Map's marks are greyed out
+   `Not referenced - run Home`; until then the Sample DB's marks are greyed out
    with "Rotator angle unknown: home or reconnect it".
-2. Sample Map: type the Sample ID, **Save sample**, pick the Locating axes.
+2. Sample DB: type the Sample ID, **Save sample**, pick the Locating axes.
 3. Put the crosshair on one sharp feature (a flake edge, a scratch) that is
    **not corner A** and is well away from where the chip turns.
 4. Rotator to -15 deg (Configure Rotator > Target > **Move To**), re-centre the
@@ -72,7 +72,7 @@ probe's are not: marking with them is refused until typed.
       with "These marks are not a turn about one centre ... spins the chip rather
       than tilting it". Spin? ______
 
-## 3. The Sample Map follows a turn
+## 3. The Sample DB follows a turn
 
 1. Rotator at 0. Mark corners **A** and **B** (and **D**). The Frame line reads
    `Registered (...); Rotator 0.000 deg at the marks`.

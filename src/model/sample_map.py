@@ -1,4 +1,4 @@
-"""The Sample Map: microscope-image storage keyed to the Transfer Map's sample_id.
+"""The Sample DB: microscope-image storage keyed to the Transfer Map's sample_id.
 
 **Since 2026-10-07 (owner ruling) the sheet stores pictures of samples**
 (`sample_images`, `model.sample_store`), keyed by the same free-text
@@ -16,8 +16,12 @@ sheet is a short procedure (`PHASES`): "browse" holds three cascading
 dropdowns (sample, its chips, that chip's flakes), the pictures and the
 trials of the picked level; "new_sample", "new_chip" and "new_flake" are the
 prompts, each drawing only its own section. A flake needs at least one
-photo; a sample and a chip may have none (owner 2026-10-07). The Panel refuses a command whose
-control the current step hides.
+photo; a sample and a chip may have none (owner 2026-10-07: "Flakes require
+images, samples and chips do NOT"). Browsing is three tiers (`TIERS`, the
+published `phase`): the Chip dropdown is greyed until a sample is chosen and
+the Flake dropdown until a chip is, and only the current tier offers its
+New button (Clear sample / Clear chip go back up). The Panel refuses a
+command whose control the current step hides.
 
 Where on the chip each flake is (proposal-flake-coordinates.md).
 
@@ -100,7 +104,7 @@ def _number(value):
 
 
 class SampleMap(Model):
-    NAME = "Sample Map"
+    NAME = "Sample DB"
     IDENTITY = None
     NEEDS_PORT = False
     NEEDS_GAMEPAD = False
@@ -113,8 +117,15 @@ class SampleMap(Model):
     #: Shown newest first in the image log and the trial listing.
     LOG_LIMIT = 200
     TRANSFER_MAP = "Transfer Map"
-    #: The sheet's steps (see the module docstring).
-    PHASES = ("browse", "new_sample", "new_chip", "new_flake")
+    #: The sheet's steps (see the module docstring). Browsing is three tiers
+    #: (owner 2026-10-07): "sample" until a sample is chosen, "chip" until a
+    #: chip is, then "flake"; only the current tier offers its New button.
+    TIERS = ("sample", "chip", "flake")
+    #: The photo rule (owner 2026-10-07): "Flakes require images, samples
+    #: and chips do NOT." Checked when the New prompt adds the record; a
+    #: record already stored loads whatever pictures it has.
+    PHOTO_REQUIRED = {"sample": False, "chip": False, "flake": True}
+    PHASES = TIERS + ("new_sample", "new_chip", "new_flake")
     #: What a dropdown shows between a sample's label and its material.
     SEP = " \u00b7 "
 
@@ -225,7 +236,7 @@ class SampleMap(Model):
         try:
             self._store.ensure()
         except Exception as exc:
-            events.error("Database Not Ready", f"The Sample Map database could "
+            events.error("Database Not Ready", f"The Sample DB could "
                          f"not be created at {self.db_path}. Check that the folder "
                          "can be written, or start with --sample-db PATH.",
                          source=self.NAME, exception=exc)
@@ -1302,7 +1313,36 @@ class SampleMap(Model):
 
     @property
     def phase(self):
-        return self._phase
+        """A prompt's own step, else the browsing tier the picks put the
+        sheet in: "sample" (nothing chosen), "chip" (a sample), "flake" (a
+        chip)."""
+        if self._phase != "browse":
+            return self._phase
+        _sample, chip, _flake = self._picked()
+        return "flake" if chip else ("chip" if _sample else "sample")
+
+    @property
+    def has_sample(self):
+        """A sample is chosen: the Chip dropdown is live (`enabled_by`)."""
+        return self._picked()[0] is not None
+
+    @property
+    def has_chip(self):
+        """A chip is chosen: the Flake dropdown is live (`enabled_by`)."""
+        return self._picked()[1] is not None
+
+    def clear_sample(self):
+        """Back to the sample tier: the sample, chip and flake picks are
+        cleared, and New sample is offered again."""
+        self.sample_id = ""
+        self._chip = self._flake_id = None
+        self._touch()
+
+    def clear_chip(self):
+        """Back to the chip tier: the chip and flake picks are cleared, and
+        New chip is offered again."""
+        self._chip = self._flake_id = None
+        self._touch()
 
     def _go(self, phase):
         self._phase = phase
@@ -1423,8 +1463,8 @@ class SampleMap(Model):
         if not sample:
             raise Refused("Pick the sample the chip belongs to first.")
         if self._store.sample(sample) is None:
-            raise Refused(f"Sample {sample} is not in the sample list yet: add "
-                          "it with New sample first.")
+            raise Refused(f"Sample {sample} is not in the sample list yet: "
+                          "press Clear sample, then add it with New sample.")
         self._clear_prompt()
         self._go("new_chip")
 
@@ -1493,6 +1533,12 @@ class SampleMap(Model):
     @property
     def staged_text(self):
         if not self._staged:
+            level = self._phase[4:] if self._phase.startswith("new_") else ""
+            if level in self.PHOTO_REQUIRED:
+                # A required choice (the sample, the chip, the flake) is not
+                # the same as a required photo: only a flake needs one.
+                need = "required" if self.PHOTO_REQUIRED[level] else "optional"
+                return f"No photo chosen yet (photo {need} for a {level})"
             return "No photo chosen yet"
         return f"{len(self._staged)} photo(s): " + ", ".join(
             Path(p).name for p in self._staged)
@@ -1535,7 +1581,7 @@ class SampleMap(Model):
             raise Refused(f"Sample {sample} is already in the store.")
         if not self._new_material:
             raise Refused("Pick the material first.")
-        self._check_staged("sample", False)
+        self._check_staged("sample", self.PHOTO_REQUIRED["sample"])
         try:
             self._store.add_sample(sample, self._new_material, self.new_sample_note)
         except ss.StoreRefused as refusal:
@@ -1554,7 +1600,7 @@ class SampleMap(Model):
             raise Refused("Type the chip ID first.")
         if any(c.lower() == chip.lower() for c in self.chip_options):
             raise Refused(f"Chip {chip} is already on sample {sample}.")
-        self._check_staged("chip", False)
+        self._check_staged("chip", self.PHOTO_REQUIRED["chip"])
         try:
             self._store.add_chip(sample, chip, self.new_chip_note)
         except ss.StoreRefused as refusal:
@@ -1573,7 +1619,7 @@ class SampleMap(Model):
             raise Refused("Type the flake ID first.")
         if any(f.lower() == flake.lower() for f in self.flake_id_options):
             raise Refused(f"Flake {flake} is already on chip {chip} of {sample}.")
-        self._check_staged("flake", True)
+        self._check_staged("flake", self.PHOTO_REQUIRED["flake"])
         try:
             self._store.add_flake(sample, chip, flake, self.new_flake_note)
         except ss.StoreRefused as refusal:
@@ -1712,6 +1758,10 @@ class SampleMap(Model):
     def state(self):
         snapshot = super().state
         snapshot["registered"] = self.mode_name == "registered"
+        # The pickers' `enabled_by` booleans (the hierarchy): a view greys
+        # the Chip and Flake dropdowns from these, as the Panel refuses.
+        snapshot["values"]["has_sample"] = self.has_sample
+        snapshot["values"]["has_chip"] = self.has_chip
         return snapshot
 
     # -- data -----------------------------------------------------------------------
@@ -1727,7 +1777,7 @@ class SampleMap(Model):
         path = folder / f"sample_map_{stamp}.json"
         document = self._store.export_document(self._station_name(), self._version())
         path.write_text(json.dumps(document, indent=1))
-        events.info("Sample Map Exported", f"{path}", source=self.NAME)
+        events.info("Sample DB Exported", f"{path}", source=self.NAME)
         return str(path)
 
     def export_csv(self):
@@ -1746,7 +1796,7 @@ class SampleMap(Model):
         except ss.StoreRefused as refusal:
             raise Refused(str(refusal))
         self._touch()
-        events.info("Sample Map Imported", f"{Path(path).name}: {counts['added']} "
+        events.info("Sample DB Imported", f"{Path(path).name}: {counts['added']} "
                     f"added, {counts['updated']} updated, {counts['kept']} kept.",
                     source=self.NAME)
         return counts
@@ -1774,24 +1824,39 @@ class SampleMap(Model):
         flake-coordinate sections are `_dormant_schema`: out of the allow-list,
         so a view cannot call them."""
         P = self.PARAMS
-        configure = "Configure Sample Map"
+        configure = "Configure Sample DB"
         sample, chip, _flake = self._picked()
         where = self._level_text()
-        browse = ("browse",)
-        photo = [sch.file_open("Add photo\u2026", "stage_photo",
-                               extensions=self.IMAGE_EXTENSIONS),
-                 sch.readonly("Photos", "staged_text"),
-                 sch.button("Clear photos", "clear_photos")]
+        browse = self.TIERS
+
+        def photo(level):
+            # The path box's hint says what the file is and the photo rule.
+            need = "required" if self.PHOTO_REQUIRED[level] else "optional"
+            return [sch.file_open("Add photo\u2026", "stage_photo",
+                                  extensions=self.IMAGE_EXTENSIONS,
+                                  placeholder="Path to a saved microscope image "
+                                              f"(photo {need})"),
+                    sch.readonly("Photos", "staged_text"),
+                    sch.button("Clear photos", "clear_photos")]
+
         return sch.schema(
+            # The hierarchy (owner 2026-10-07): sample, then chip, then
+            # flake. A child dropdown is greyed with no options until its
+            # parent is chosen; only the current tier's New button is drawn.
             sch.section(
                 "Sample",
                 sch.dropdown("Sample", "sample_pick", "select_sample", "sample_options"),
-                sch.button("New sample\u2026", "begin_new_sample"),
-                sch.dropdown("Chip", "chip_pick", "select_chip", "chip_options"),
-                sch.button("New chip\u2026", "begin_new_chip"),
+                sch.phased(sch.button("New sample\u2026", "begin_new_sample"), "sample"),
+                sch.phased(sch.button("Clear sample", "clear_sample"), "chip", "flake"),
+                sch.dropdown("Chip", "chip_pick", "select_chip", "chip_options",
+                             enabled_by="has_sample",
+                             enabled_by_reason="Choose a sample first"),
+                sch.phased(sch.button("New chip\u2026", "begin_new_chip"), "chip"),
+                sch.phased(sch.button("Clear chip", "clear_chip"), "flake"),
                 sch.dropdown("Flake", "flake_id_pick", "select_flake_id",
-                             "flake_id_options"),
-                sch.button("New flake\u2026", "begin_new_flake"),
+                             "flake_id_options", enabled_by="has_chip",
+                             enabled_by_reason="Choose a chip first"),
+                sch.phased(sch.button("New flake\u2026", "begin_new_flake"), "flake"),
                 phases=browse,
             ),
             sch.section(
@@ -1823,8 +1888,8 @@ class SampleMap(Model):
             ),
             sch.section(
                 "Data",
-                sch.file_save("Export sample map", "export_json", extensions=("json",)),
-                sch.file_open("Import sample map", "import_json", extensions=("json",)),
+                sch.file_save("Export sample DB", "export_json", extensions=("json",)),
+                sch.file_open("Import sample DB", "import_json", extensions=("json",)),
                 tier=2, disclosure=configure, phases=browse,
             ),
             sch.section(
@@ -1841,7 +1906,7 @@ class SampleMap(Model):
                 sch.button("Add material", "add_new_material",
                            inputs=("new_material_name",)),
                 sch.entry("Note", "new_sample_note", P["new_sample_note"]),
-                *photo,
+                *photo("sample"),
                 sch.button("Add sample", "create_sample", role="go",
                            inputs=("new_sample_id", "new_sample_note")),
                 sch.button("Cancel", "cancel_new"),
@@ -1851,7 +1916,7 @@ class SampleMap(Model):
                 f"New chip on {sample or '?'}",
                 sch.entry("Chip ID", "new_chip_id", P["new_chip_id"]),
                 sch.entry("Note", "new_chip_note", P["new_chip_note"]),
-                *photo,
+                *photo("chip"),
                 sch.button("Add chip", "create_chip", role="go",
                            inputs=("new_chip_id", "new_chip_note")),
                 sch.button("Cancel", "cancel_new"),
@@ -1861,7 +1926,7 @@ class SampleMap(Model):
                 f"New flake on {sample or '?'}{self.SEP}{chip or '?'}",
                 sch.entry("Flake ID", "new_flake_id", P["new_flake_id"]),
                 sch.entry("Note", "new_flake_note", P["new_flake_note"]),
-                *photo,
+                *photo("flake"),
                 sch.button("Add flake", "create_flake", role="go",
                            inputs=("new_flake_id", "new_flake_note")),
                 sch.button("Cancel", "cancel_new"),
@@ -1875,7 +1940,7 @@ class SampleMap(Model):
         """The flake-coordinate sheet as it was (dormant 2026-10-07: flake-
         coordinate homing retired for now); the dormant tests run on it."""
         P = self.PARAMS
-        configure = "Configure Sample Map"
+        configure = "Configure Sample DB"
         needs_source = ("no_source", "rotator_unknown")
         needs_frame = ("no_source", "unregistered", "rotator_unknown")
         return sch.schema(

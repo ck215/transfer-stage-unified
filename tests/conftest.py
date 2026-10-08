@@ -252,7 +252,7 @@ def _transfer_map_db_in_tmp(monkeypatch, tmp_path):
     store. Every test's store lives under its own tmp_path instead. A test
     that sets `STATION_MAP_DB` itself still wins: it runs after this."""
     monkeypatch.setenv("STATION_MAP_DB", str(tmp_path / "map" / "transfer_map.sqlite"))
-    # The Sample Map's store likewise (flake-coords, 2026-10-04).
+    # The Sample DB's store likewise (flake-coords, 2026-10-04).
     monkeypatch.setenv("STATION_SAMPLE_DB", str(tmp_path / "map" / "sample_map.sqlite"))
     # And the profiles (user-system Phase 1): never the operator's real ones.
     monkeypatch.setenv("STATION_PROFILES_DIR", str(tmp_path / "profiles"))
@@ -291,7 +291,7 @@ def profiles_on(monkeypatch):
 
 @pytest.fixture
 def sample_map_on(monkeypatch):
-    """The Sample Map is off by default (owner 2026-10-06; branch
+    """The Sample DB is off by default (owner 2026-10-06; branch
     `feature/sample-map-profiles`). A test that builds one through Setup asks
     for it registered, in a private copy of the registry."""
     from controller import setup as station_setup

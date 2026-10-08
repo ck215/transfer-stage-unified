@@ -29,7 +29,7 @@ PARAMS = {
     "Temperature Controller": {"p_term": Param("p_term", "float", default=1.0, minimum=0),
                                "setpoint": Param("setpoint", "float", default=25.0)},
     "Red Percent": {"red_min": Param("red_min", "int", default=150, minimum=0, maximum=255)},
-    "Sample Map": {"um_per_count": Param("um_per_count", "text", default="")},
+    "Sample DB": {"um_per_count": Param("um_per_count", "text", default="")},
     "Rotator": {"step_deg": Param("step_deg", "float", default=1.0, minimum=0.01)},
 }
 
@@ -96,11 +96,26 @@ def test_a_station_document_takes_station_and_user_params_but_never_the_brakes()
     clean, problems = pf.validate_model_params("station", {
         "Stepper Probe": {"man_full_speed": 250, "brake_distance": 5},
         "Temperature Controller": {"p_term": 2.0},
-        "Sample Map": {"um_per_count": "0.4"}}, params_of)
+        "Sample DB": {"um_per_count": "0.4"}}, params_of)
     assert clean == {"Stepper Probe": {"man_full_speed": 250},
                      "Temperature Controller": {"p_term": 2.0},
-                     "Sample Map": {"um_per_count": "0.4"}}
+                     "Sample DB": {"um_per_count": "0.4"}}
     assert any("brake_distance" in p for p in problems)
+
+
+def test_the_sample_maps_old_name_is_read_as_the_sample_db():
+    """Owner 2026-10-07: "Sample Map" is shown as "Sample DB". A document
+    (station.json, users.sqlite preferences) saved under the old name keeps
+    working, written back under the new one; with both, the new one wins
+    whatever order the document lists them in."""
+    assert pf.RENAMED_MODELS["Sample Map"] == "Sample DB"
+    clean, problems = pf.validate_model_params("station", {
+        "Sample Map": {"um_per_count": "0.4"}}, params_of)
+    assert (clean, problems) == ({"Sample DB": {"um_per_count": "0.4"}}, [])
+    for body in ({"Sample DB": {"um_per_count": "0.9"}, "Sample Map": {"um_per_count": "0.4"}},
+                 {"Sample Map": {"um_per_count": "0.4"}, "Sample DB": {"um_per_count": "0.9"}}):
+        clean, _ = pf.validate_model_params("station", body, params_of)
+        assert clean == {"Sample DB": {"um_per_count": "0.9"}}
 
 
 def test_a_value_out_of_its_params_bounds_is_dropped_and_named():

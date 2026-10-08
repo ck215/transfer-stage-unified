@@ -938,7 +938,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
     @property
     def position_epoch(self):
         """How many times the link has come up since construction: positions
-        from different epochs are not comparable (the Sample Map invalidates
+        from different epochs are not comparable (the Sample DB invalidates
         a registration when it changes)."""
         return self._position_epoch
 

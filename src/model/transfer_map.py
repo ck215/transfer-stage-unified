@@ -41,9 +41,9 @@ are all TAP300 and are labelled so once, at the migration that adds the
 column; a tip made later gets the model the operator picks, or none.
 
 **The cut is traced to its flake** (approved proposal, 2026-10-07): the
-setup step picks the Sample, Chip and Flake from the Sample Map's store
+setup step picks the Sample, Chip and Flake from the Sample DB's store
 (read-only, `model.sample_store.SampleStore.open_readonly`, found through
-the Sample Map's public `db_path`), Arm refuses without all three, and the
+the Sample DB's public `db_path`), Arm refuses without all three, and the
 trial row names them with the cut's number on that flake (`cut_id`, 1 +
 the trials already on it). The picks stay for the next trial.
 
@@ -90,8 +90,8 @@ typed for the trial (it wins, the lab's bench fix), else from a model with
 `position`, `position_time` and `mode_name` (a probe: `live_speed` if it has
 one, else the manual or autonomous speed for the mode it is in); samples
 from a model with `subscribe` and `grab_frame` (RGB analysis), and its
-region frames through `subscribe_frames` when it has it; the Sample Map's
-store from the model named "Sample Map"; the telemetry reads every model
+region frames through `subscribe_frames` when it has it; the Sample DB's
+store from the model named "Sample DB"; the telemetry reads every model
 met there.
 """
 import csv
@@ -275,7 +275,7 @@ DEFAULT_TIP_MODEL = "TAP300"
 #: lowered; a file numbered ahead of its columns is completed.
 SCHEMA_VERSION = 8
 #: How an optical width was measured (Q19, owner 2026-10-04: pixels on the
-#: capture-region picture at the Sample Map's um_per_px, the default).
+#: capture-region picture at the Sample DB's um_per_px, the default).
 WIDTH_OPTICAL_METHODS = ("capture_px", "reticle", "vendor_tool", "estimate")
 
 _CREATE = (
@@ -699,7 +699,7 @@ class TrialStore:
 
     def count_for_flake(self, sample_id, chip_id, flake_id, before=None):
         """Stored trials on this flake (every status), the IDs compared
-        trimmed and case-insensitively as the Sample Map compares them; with
+        trimmed and case-insensitively as the Sample DB compares them; with
         `before`, only those numbered below it. 0 for a file without the
         columns (a read never migrates)."""
         sql = ("SELECT COUNT(*) AS n FROM trials WHERE "
@@ -931,10 +931,10 @@ class TransferMap(Model):
         self.sim = sim
         #: `(path) -> store` with `samples()`, `chips(sample_id)`,
         #: `flakes(sample_id, chip_id)`; None means `_open_samples` (the
-        #: Sample Map's store, read-only). A test injects a fake.
+        #: Sample DB's store, read-only). A test injects a fake.
         self._sample_store_factory = sample_store_factory
-        #: The Sample Map's store file (its public `db_path`), from
-        #: `on_model_added`; None while no Sample Map is open.
+        #: The Sample DB's store file (its public `db_path`), from
+        #: `on_model_added`; None while no Sample DB is open.
         self._sample_db = None
         #: The setup step's picks: the sample, chip and flake the next cut
         #: is on. Kept from trial to trial (the next starts on the last
@@ -1241,12 +1241,12 @@ class TransferMap(Model):
 
     # -- the live sources --------------------------------------------------
     #: The model whose store holds the samples, chips and flakes.
-    SAMPLE_MAP = "Sample Map"
+    SAMPLE_MAP = "Sample DB"
 
     def on_model_added(self, name, model):
-        # The Sample Map's store, read-only, for the setup pickers: its
+        # The Sample DB's store, read-only, for the setup pickers: its
         # public `db_path`, never a private attribute (the mirror of how the
-        # Sample Map finds this map's store).
+        # Sample DB finds this map's store).
         if name == self.SAMPLE_MAP and model is not self:
             path = getattr(model, "db_path", None)
             if path:
@@ -1471,6 +1471,10 @@ class TransferMap(Model):
         # key; this page declares nothing for it.)
         snapshot["step_text"] = self.next_step
         snapshot["analysis_health"] = self.analysis_health
+        # The pickers' `enabled_by` booleans (the sample > chip > flake
+        # hierarchy), where a view reads every gate value.
+        snapshot["values"]["has_sample_pick"] = self.has_sample_pick
+        snapshot["values"]["has_chip_pick"] = self.has_chip_pick
         return snapshot
 
     # -- the samples, on Red Percent's run thread ------------------------------
@@ -1528,8 +1532,9 @@ class TransferMap(Model):
             if not self.sample_options:
                 raise Refused(self.SAMPLE_FIRST + ", then pick it here "
                               "(Sample, Chip, Flake).")
-            raise Refused("Pick the sample, chip and flake before arming, so "
-                          "the cut can be traced to its flake.")
+            raise Refused(self.missing_tier(where) + ": pick the sample, chip "
+                          "and flake before arming, so the cut can be traced "
+                          "to its flake.")
         if getattr(red, "is_running", False):
             # The trial's run starts on the region picked after Arm; a run
             # already going measures some other region, and Red Percent
@@ -3150,16 +3155,16 @@ class TransferMap(Model):
         return last["id"] if last else None
 
     # -- the sample, chip and flake (approved proposal 2026-10-07) -------------
-    #: The setup step's Next step and Arm's refusal while the Sample Map
-    #: offers no sample (no Sample Map open, no store, or an empty one).
-    SAMPLE_FIRST = "Add a sample on the Sample Map first"
+    #: The setup step's Next step and Arm's refusal while the Sample DB
+    #: offers no sample (no Sample DB open, no store, or an empty one).
+    SAMPLE_FIRST = "Add a sample in the Sample DB first"
     PICK_FLAKE = "Pick the sample, chip and flake"
 
     def _where(self):
         return (self._sample, self._chip, self._flake)
 
     def _samples_store(self):
-        """The Sample Map's store, read-only, or None (no Sample Map open,
+        """The Sample DB's store, read-only, or None (no Sample DB open,
         or no store at its path). Opened per read: the file may appear,
         move or go while the station runs."""
         path = self._sample_db
@@ -3204,6 +3209,16 @@ class TransferMap(Model):
                 for r in self._sample_rows("flakes", self._sample, self._chip)]
 
     @property
+    def has_sample_pick(self):
+        """A sample is chosen: the Chip dropdown is live (`enabled_by`)."""
+        return bool(self._sample)
+
+    @property
+    def has_chip_pick(self):
+        """A chip is chosen: the Flake dropdown is live (`enabled_by`)."""
+        return bool(self._sample and self._chip)
+
+    @property
     def sample_pick(self):
         return self._sample or ""
 
@@ -3218,7 +3233,7 @@ class TransferMap(Model):
     @staticmethod
     def _match(label, options):
         """The option `label` names: itself, else the one equal to it
-        trimmed and case-insensitively (the Sample Map's rule); None."""
+        trimmed and case-insensitively (the Sample DB's rule); None."""
         if label in options:
             return label
         wanted = str(label or "").strip().lower()
@@ -3232,7 +3247,7 @@ class TransferMap(Model):
             raise Refused(self.SAMPLE_FIRST + ".")
         found = self._match(label, options)
         if found is None:
-            raise Refused(f"{label!r} is not a sample on the Sample Map.")
+            raise Refused(f"{label!r} is not a sample in the Sample DB.")
         if found != self._sample:
             self._sample, self._chip, self._flake = found, None, None
         self._touch()
@@ -3242,11 +3257,11 @@ class TransferMap(Model):
         """The Chip dropdown (the sample's chips). A different chip clears
         the flake."""
         if not self._sample:
-            raise Refused("Pick the sample first.")
+            raise Refused(self.missing_tier(("", "", "")) + ".")
         found = self._match(label, self.chip_options)
         if found is None:
             raise Refused(f"{label!r} is not a chip of sample {self._sample}. "
-                          "Add it on the Sample Map first.")
+                          "Add it in the Sample DB first.")
         if found != self._chip:
             self._chip, self._flake = found, None
         self._touch()
@@ -3255,14 +3270,27 @@ class TransferMap(Model):
     def pick_flake(self, label):
         """The Flake dropdown (the chip's flakes)."""
         if not (self._sample and self._chip):
-            raise Refused("Pick the sample and the chip first.")
+            raise Refused(self.missing_tier((self._sample, "", "")) + ".")
         found = self._match(label, self.flake_options)
         if found is None:
             raise Refused(f"{label!r} is not a flake of chip {self._chip}. "
-                          "Add it on the Sample Map first.")
+                          "Add it in the Sample DB first.")
         self._flake = found
         self._touch()
         return found
+
+    @staticmethod
+    def missing_tier(where):
+        """The sentence for the first tier `where` (sample, chip, flake)
+        lacks, in the hierarchy's order: a chip is a required choice (only
+        its photo is optional), so a flake given without one is refused at
+        the chip."""
+        sample, chip, _flake = (str(v or "").strip() for v in where)
+        if not sample:
+            return "Choose a sample first"
+        if not chip:
+            return "Choose a chip first: a flake always belongs to a chip"
+        return "Choose a flake first"
 
     @property
     def cut_next(self):
@@ -3288,8 +3316,10 @@ class TransferMap(Model):
         where = tuple(str(v or "").strip() for v in (
             given if any(v is not None for v in given) else self._where()))
         if not all(where):
-            raise Refused("Pick the sample, chip and flake on the trial's "
-                          "setup, then press Set sample for trial.")
+            # Sample -> chip -> flake: a flake never stands without its chip.
+            raise Refused(self.missing_tier(where) + ": pick the sample, chip "
+                          "and flake on the trial's setup, then press Set "
+                          "sample for trial.")
         row = self._store.trial(number)
         if row is None:
             raise Refused(f"No trial {number} in the database.")
@@ -3788,13 +3818,19 @@ class TransferMap(Model):
                 sch.dropdown("Tip", "tip_pick", "pick_tip", "tip_options"),
                 sch.button("New tip…", "new_tip"),
                 sch.readonly("Tip status", "tip_status"),
-                # The cut's flake, from the Sample Map's store (cascading:
-                # a new sample clears the chip and the flake).
+                # The cut's flake, from the Sample DB's store (cascading:
+                # a new sample clears the chip and the flake, a new chip the
+                # flake). The hierarchy (owner 2026-10-07): Chip is greyed
+                # with no options until a sample is chosen, Flake until a
+                # chip is.
                 sch.dropdown("Sample", "sample_pick", "pick_sample",
                              "sample_options"),
-                sch.dropdown("Chip", "chip_pick", "pick_chip", "chip_options"),
+                sch.dropdown("Chip", "chip_pick", "pick_chip", "chip_options",
+                             enabled_by="has_sample_pick",
+                             enabled_by_reason="Choose a sample first"),
                 sch.dropdown("Flake", "flake_pick", "pick_flake",
-                             "flake_options"),
+                             "flake_options", enabled_by="has_chip_pick",
+                             enabled_by_reason="Choose a chip first"),
                 sch.readonly("Cut", "cut_next"),
                 # Bench 2026-09-28: the tilt varies between trials of one
                 # tip and was buried two tiers down; it is asked here, per
@@ -3811,7 +3847,7 @@ class TransferMap(Model):
             # new_tip: the New tip prompt. Add tip refuses an empty or a
             # known ID and stays; Add tip or Cancel returns to setup.
             # The model is required (owner, 2026-10-07); a model not on the
-            # list is added the way the Sample Map adds a material.
+            # list is added the way the Sample DB adds a material.
             sch.section(
                 "New tip",
                 sch.entry("Tip ID", "new_tip_id", P["new_tip_id"]),
@@ -4022,7 +4058,7 @@ class TransferMap(Model):
 
 
 def _open_samples(path):
-    """The Sample Map's store at `path`, read-only (never created, migrated
+    """The Sample DB's store at `path`, read-only (never created, migrated
     or written); raises when there is no file there."""
     return SampleStore.open_readonly(path)
 

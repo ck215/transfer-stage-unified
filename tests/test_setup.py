@@ -160,7 +160,7 @@ def test_model_types_is_every_model_class_keyed_by_its_name():
     assert list(MODEL_TYPES) == ["Stepper Probe", "DC Probe",
                                  "Chuck Positioner", "Temperature Controller",
                                  "Rotator", "RGB Analysis", "Transfer Map",   # Tier S; RG-3
-                                 *(["Sample Map"] if station_setup.SAMPLE_MAP_ENABLED else [])]
+                                 *(["Sample DB"] if station_setup.SAMPLE_MAP_ENABLED else [])]
     assert len(set(MODEL_TYPES.values())) == 7 + station_setup.SAMPLE_MAP_ENABLED
 
 

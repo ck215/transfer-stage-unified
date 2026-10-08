@@ -224,12 +224,12 @@ def _key_for(name):
     return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_") or "model"
 
 
-#: Owner 2026-10-06: the Sample Map and the user profiles (sign-in) are OFF
+#: Owner 2026-10-06: the Sample DB and the user profiles (sign-in) are OFF
 #: until they are validated; the work is kept whole on the branch
 #: `feature/sample-map-profiles` and in this tree. Turn either on for a run
 #: with `STATION_SAMPLE_MAP=1` / `STATION_PROFILES=1`; to bring them back for
 #: good, delete these two lines' defaults and the guards that read them.
-# Merge of the lab's stage (2026-10-07): the Sample Map is ON by default
+# Merge of the lab's stage (2026-10-07): the Sample DB is ON by default
 # again: the approved proposal of 2026-10-07 picks every trial's sample,
 # chip and flake from it (the Transfer Map refuses Arm without them).
 # `STATION_SAMPLE_MAP=0` turns it off. An owner call, flagged to the lead.
@@ -239,7 +239,7 @@ SAMPLE_MAP_ENABLED = os.environ.get("STATION_SAMPLE_MAP") != "0"
 # until someone signs in. `STATION_PROFILES=0` hides the section.
 PROFILES_ENABLED = os.environ.get("STATION_PROFILES") != "0"
 
-# The built-ins, in today's display order. The Sample Map (flake-coords,
+# The built-ins, in today's display order. The Sample DB (flake-coords,
 # 2026-10-04) follows the Transfer Map: its own page, no port.
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
                   RgbAnalysis, TransferMap,
@@ -1750,7 +1750,7 @@ class Setup(PortProbe, Panel):
         if busy:
             self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
                          "open. Finish or abort it first: a Guest has no Transfer "
-                         "Map or Sample Map, so they close when you switch.")
+                         "Map or Sample DB, so they close when you switch.")
 
     def _drop_signed_in_only(self):
         """A Guest's station: the signed-in-only models closed (stopped,

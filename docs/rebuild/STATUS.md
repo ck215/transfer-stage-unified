@@ -243,12 +243,18 @@ what landed. The row-by-row closures are in `BUGFIX_PLAN.md`
   `green blue r_mean g_mean b_mean shade`, `dev/reanalyse_trials.py --factor`.
 - **Tips have a model** (`tip_models`, seeded TAP300; existing tips backfilled TAP300);
   "New tip..." is a prompt phase (`new_tip`) with Tip ID and Model; `set_tip_model`.
-- **Every trial names its sample, chip and flake**, picked from the Sample Map's store
-  read-only; Arm refuses without all three; the cut number is derived. Every Arm asks
+- **Every trial names its sample, chip and flake**, picked from the Sample DB's store
+  read-only; Arm refuses without all three (a flake never without its chip); the
+  pickers are a hierarchy (Chip greyed until a sample is chosen, Flake until a chip
+  is: `enabled_by` + `enabled_by_reason`); the cut number is derived. Every Arm asks
   the vacuum question first (the station cannot sense it).
-- **The Sample Map is a sample > chip > flake store** with photos at every level
-  (a four-phase sheet: browse, new_sample, new_chip, new_flake; store v4; materials
-  seeded hBN, graphite, MoS2; a sample and a flake need a photo). It is ON by default
+- **The Sample DB (formerly the Sample Map; renamed 2026-10-07, internal module
+  `sample_map.py` kept; `profile.RENAMED_MODELS` reads the old name from station and
+  user preferences) is a sample > chip > flake store** with photos at every level
+  (browsing is three tiers, `sample`, `chip`, `flake`, each offering only its own
+  New button, then the prompts new_sample, new_chip, new_flake; store v4; materials
+  seeded hBN, graphite, MoS2). Photo rule (owner 2026-10-07): a flake needs a photo,
+  a sample and a chip do not; a chip itself is always required for a flake. It is ON by default
   again (`STATION_SAMPLE_MAP=0` turns it off).
 - **Speed dials are percent** over per-device ceilings (stepper 3200, chuck 600
   steps/s), steps/s as a secondary readout.
@@ -312,9 +318,7 @@ Map's rated-later flake, the transfer-map mark timing flake). The lead fills the
 final gate. Collected under `-m "not qt"`: 4211 (collect-only, 2026-10-07).
 
 **Open**:
-- The first-trial tutorial walk re-anchored to the pickers (xfail until then); the
-  "Register a sample" tutorial's step text still calls the photo optional while the
-  Sample Map requires one for a sample and a flake.
+- The first-trial tutorial walk re-anchored to the pickers (xfail until then).
 - The Web finalizer (the data finalizer exists only in the frozen Qt view).
 - Per-user layout, default fields and sample bases (reserved settings keys only).
 - Phase 4 bench items (the owner's): the list under "Bench-only" in "Round 2026-10-07"

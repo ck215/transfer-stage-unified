@@ -401,7 +401,7 @@ Examples:
                         help="the Transfer Map's SQLite file, overriding the store the "
                              "operator chose (same as STATION_MAP_DB)")
     parser.add_argument("--sample-db", metavar="PATH",
-                        help="the Sample Map's SQLite file (default: data/sample_map.sqlite "
+                        help="the Sample DB's SQLite file (default: data/sample_map.sqlite "
                              "in this checkout; same as STATION_SAMPLE_DB)")
     parser.add_argument("--version", action="store_true",
                         help="print the station's version (the release tag, or "

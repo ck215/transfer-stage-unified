@@ -29,10 +29,10 @@ Three tables, `PRAGMA user_version` 1:
   preferences (a sample-ID prefix, the default figure, an export folder),
   handed to each model by `User.load_into` through an optional duck-typed
   hook, so a model without the hook is untouched.
-  `sample_base` - which Sample Map store this person works in: a path the
-  Sample Map opens on sign-in (as `TransferMap.choices` keeps the station's
+  `sample_base` - which Sample DB store this person works in: a path the
+  Sample DB opens on sign-in (as `TransferMap.choices` keeps the station's
   trial store), or one shared store filtered by the `owner` column the
-  Sample Map already writes; which of the two is the owner's call.
+  Sample DB already writes; which of the two is the owner's call.
 
 **Passwords** (supersedes Q1 of 2026-10-04, "no credential on a station", by
 the owner's request of 2026-10-07): `hashlib.scrypt` with a 16-byte salt per

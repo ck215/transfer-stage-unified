@@ -18,7 +18,7 @@
     {
       "page": "Chuck Positioner",
       "anchor": {"text": "X"},
-      "say": "The Sample Map can use these counts as its locating axes. Because they restart with the link, positions taken before a reconnect no longer line up with the stage.",
+      "say": "The Sample DB can use these counts as its locating axes. Because they restart with the link, positions taken before a reconnect no longer line up with the stage.",
       "wait": null
     },
     {

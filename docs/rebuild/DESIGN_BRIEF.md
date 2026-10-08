@@ -187,7 +187,7 @@ shows the step the operator is in and hides what the step does not need.
   A phase whose name starts `new_` is a prompt, not a numbered step: the strip
   does not number it.
 - **Prompt phases are a card dialog.** A `new_` step (the Transfer Map's
-  `new_tip`; the Sample Map's `new_sample`, `new_chip`, `new_flake`) is asked
+  `new_tip`; the Sample DB's `new_sample`, `new_chip`, `new_flake`) is asked
   as a dialog over the model's card: a scrim over the card (never the stop,
   never the rail), the step's sections centred in it with their widgets
   moved, not copied, focus on the first entry, Escape is Cancel and Return in

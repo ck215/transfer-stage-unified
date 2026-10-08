@@ -26,14 +26,17 @@ How this file is kept:
   the time of every frame (`frames.csv`), every device's readings on one
   clock (`telemetry.csv`) and a full-resolution still at Arm and at Mark.
   Record everything, trim in analysis.
-- **Samples, chips and flakes.** The Sample Map holds a sample's chips and
+- **Samples, chips and flakes.** The Sample DB holds a sample's chips and
   each chip's flakes, with materials (hBN, graphite, MoS2 to start) and
-  photos at every level; a sample and a flake need a photo. Pick a sample,
-  then one of its chips, then a flake; each list follows the one before it,
-  and each level asks only for what it needs.
+  photos at every level; a flake needs a photo, a sample and a chip do not
+  (the chip itself is always required: a flake belongs to a chip). Pick a
+  sample, then one of its chips, then a flake: the Chip list is greyed until
+  a sample is chosen and the Flake list until a chip is, and only the
+  current level offers its New button (Clear sample / Clear chip go back).
+  The photo box's hint reads "Path to a saved microscope image".
 - **Every trial names its sample, chip and flake.** The trial's setup row
-  has Sample, Chip and Flake dropdowns that read the Sample Map; Arm will not
-  start without all three, and the cut number follows from the flake.
+  has Sample, Chip and Flake dropdowns that read the Sample DB, greyed in
+  the same order; Arm will not start without all three, and the cut number follows from the flake.
 - **Tips have a model.** "New tip..." opens a small prompt for the tip's ID
   and its model (TAP300 to start; add others there); existing tips were
   marked TAP300. The Tip dropdown shows each tip's model and trial count.
@@ -69,6 +72,9 @@ How this file is kept:
 
 ### Changed
 
+- **The Sample Map is now called the Sample DB** everywhere it is shown.
+  Settings saved under the old name still apply.
+
 - **Swap to the original app.** `dev/swap_branch.sh legacy` flashes the boards and runs the lab's original Tk app from a `legacy-app` folder beside this one (made on first use); `station` swaps back.
 - **A trial is a procedure.** The Transfer Map walks through setup, region,
   live, marked and finish, shown as a step strip with the next step in words
@@ -89,7 +95,7 @@ How this file is kept:
   per second in small type underneath.
 - **Red Percent is now RGB Analysis.** The red numbers are unchanged; its
   details section is "RGB analysis details".
-- **The Sample Map is on by default again.** It is where a trial's sample is
+- **The Sample DB is on by default again.** It is where a trial's sample is
   picked from (`STATION_SAMPLE_MAP=0` turns it off).
 - **The browser is the only window.** The station runs in the Web view
   alone; there is one launcher, `station-web`. `--tk` and `--qt` say the old

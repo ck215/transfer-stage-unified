@@ -47,11 +47,11 @@ Stepper Probe, DC Probe and Chuck Positioner (`probe.py`), Temperature Controlle
 `RgbAnalysis`, formerly Red Percent; hosted on the Transfer Map's page, no Setup
 row of its own), Transfer Map (`transfer_map.py`, store v8; with
 `transfer_map_analysis.py`, `tip_shade.py`, `trial_telemetry.py`, `finalize.py`,
-`shade_offline.py`), Sample Map (`sample_map.py`, `sample_store.py`, store v4; on by default, `STATION_SAMPLE_MAP=0` turns it off),
+`shade_offline.py`), Sample DB (formerly Sample Map; `sample_map.py`, `sample_store.py`, store v4; on by default, `STATION_SAMPLE_MAP=0` turns it off),
 User (`user.py`, with `user_store.py`: scrypt-hashed accounts in `users.sqlite`;
 Guest = the station defaults). Also `estimators.py` (the estimator bank),
 `plot_data.py`, `profile.py` (Phase 1 profiles), `idle.py`, `gamepad_input.py`.
-The Sample Map is a four-phase sheet (browse, new_sample, new_chip, new_flake);
+The Sample DB is a six-phase sheet (the browsing tiers sample, chip, flake; the prompts new_sample, new_chip, new_flake);
 the Transfer Map's phases are setup, new_tip, region, live, marked, finish.
 
 Firmware (`firmware/`) is untouched by the rebuild, but it is **not** the
@@ -130,9 +130,9 @@ and read the exit code unpiped; a pipeline's exit code is `tail`'s.
 - **The force is read from the tip's shade** (owner, 2026-10-07: the lab's baseline
   comparison beats the red extrema); the red-trace extrema remain a secondary
   analysis `factor=`. The estimator bank compares candidates; the model is chosen on footage.
-- **The Sample Map is a sample > chip > flake store with photos at every level**
+- **The Sample DB is a sample > chip > flake store with photos at every level** (only a flake requires one)
   (flake-coordinate homing is dormant); the map figures are speed x force class, tilt collected never drawn.
-- Transfer Map store: v8 (the lab's, adopted); Sample Map store v4. A store v9 is no longer planned.
+- Transfer Map store: v8 (the lab's, adopted); Sample DB store v4. A store v9 is no longer planned.
 - Speed dials are percent over per-device ceilings (stepper 3200, chuck 600 steps/s).
 - Accounts: Guest = the station defaults; `STATION_PROFILES=0` hides Setup's Account section.
 - Firmware untouched; every byte on the wire identical to the old app's, pinned by `tests/golden/`.

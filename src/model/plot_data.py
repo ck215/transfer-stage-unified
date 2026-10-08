@@ -826,7 +826,7 @@ def _colorbar(figure, drawn, axes, label, pad=0.05):
     return bar
 
 
-# -- the Sample Map's figure (flake-coords section 2, Phase 1) ---------------
+# -- the Sample DB's figure (flake-coords section 2, Phase 1) ---------------
 #
 # The chip in its own frame (um): the marked corners, the rectangle the
 # derived width and height describe, the flakes (the selected one marked and
@@ -834,7 +834,7 @@ def _colorbar(figure, drawn, axes, label, pad=0.05):
 # then one renderer, as the Transfer Map's figures are.
 
 def sample_map_request(corners, flakes, crosshair, size_um):
-    """What the Sample Map's figure draws, or why it cannot. `corners` maps
+    """What the Sample DB's figure draws, or why it cannot. `corners` maps
     a label to its sample-frame point (um); `flakes` are dicts with
     `label`, `x`, `y` (None when not placed), `selected`, `extent`;
     `crosshair` is the stage now in the sample frame, or None; `size_um`
@@ -858,7 +858,7 @@ def sample_map_request(corners, flakes, crosshair, size_um):
 
 
 def render_sample_figure(request, size=None, dpi=None):
-    """PNG bytes of the Sample Map's figure, drawn once for all three views."""
+    """PNG bytes of the Sample DB's figure, drawn once for all three views."""
     if request["kind"] == "message":
         return _draw(request, size=size, dpi=dpi)
     from matplotlib.figure import Figure

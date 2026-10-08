@@ -153,7 +153,7 @@ retired Tk and Qt views ignore the key and draw everything.
 - `PHASES = ("setup", "new_tip", "region", "live", "marked", "finish")` (the Transfer Map's) on the class: the
   step names, in order. Empty (the default) means no procedure. A name that
   starts `new_` is a **prompt phase**: a sub-step that asks for a few entries
-  (the Transfer Map's `new_tip`, the Sample Map's `new_sample`, `new_chip`,
+  (the Transfer Map's `new_tip`, the Sample DB's `new_sample`, `new_chip`,
   `new_flake`), entered from and left back to the main procedure; the Web draws
   it as a card dialog and does not number it in the strip.
 - `phase` property: the current step, one of `PHASES`, or `""` at rest. It is
@@ -199,7 +199,7 @@ in at least one step, and a model without a procedure hides nothing.
 `model.user.User` is a non-hardware model that owns the signed-in account's
 config; Guest is a User with no account row, so every model gets the station's
 defaults. The records the maps write are stamped with the operator: the
-Transfer Map's `operator_id` / `operator_auth` and the Sample Map's `owner` /
+Transfer Map's `operator_id` / `operator_auth` and the Sample DB's `owner` /
 `owner_auth` carry the account's email and the word `password`, or `guest` and
 `guest` for a Guest (a map built without Setup says `station`).
 Passwords are `SECRET_INPUTS` (masked in the client, redacted in the log, never

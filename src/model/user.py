@@ -17,7 +17,7 @@ It OWNS one account's config, kept in the accounts file (`model.user_store`):
 - `remember(model_name, values)` writes it, Q4 deciding what a user may keep
   (`profile.validate_model_params`, scope "user");
 - `operator()` is `(operator_id, operator_auth)`, what the Transfer Map
-  (`operator_id`, `operator_auth`) and the Sample Map (`owner`,
+  (`operator_id`, `operator_auth`) and the Sample DB (`owner`,
   `owner_auth`) stamp on what they record: the email and "password" for a
   signed-in user, "guest" and "guest" for a Guest.
 
@@ -193,8 +193,11 @@ class User(Panel):
         config = self.config()
         if not config:
             return "Nothing remembered yet." if not self.is_guest else ""
+        named = {}
+        for name, values in config.items():     # an old model name as it is now
+            named.setdefault(pf.RENAMED_MODELS.get(name, name), set()).update(values)
         return "; ".join(f"{name}: {', '.join(sorted(values))}"
-                         for name, values in sorted(config.items()))
+                         for name, values in sorted(named.items()))
 
     # -- applying it -----------------------------------------------------------------
     def load_into(self, models, profiles):

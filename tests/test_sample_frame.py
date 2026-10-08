@@ -1,4 +1,4 @@
-"""The Sample Map's frame math (flake-coords Phase 0, section 3).
+"""The Sample DB's frame math (flake-coords Phase 0, section 3).
 
 Pure functions on synthetic corners: the rigid frame from A and B, the
 handedness from D, the degenerate refusals in the operator's words, the

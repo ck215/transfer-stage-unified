@@ -549,7 +549,7 @@ def test_mixed_figures_render():
         assert png[:8] == b"\x89PNG\r\n\x1a\n", kind
 
 
-# -- the Sample Map's figure (flake-coords Phase 1, section 2) ------------------
+# -- the Sample DB's figure (flake-coords Phase 1, section 2) ------------------
 
 def test_the_sample_request_carries_corners_flakes_and_the_crosshair():
     request = plot_data.sample_map_request(

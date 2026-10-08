@@ -34,7 +34,7 @@ from test_setup import RecordingController
 
 CONFIGS = [{"model": "Stepper Probe", "port": "SIM", "gamepad": "None", "sim": True},
            {"model": "Transfer Map", "port": "On", "sim": False},
-           {"model": "Sample Map", "port": "On", "sim": False}]
+           {"model": "Sample DB", "port": "On", "sim": False}]
 PASSWORD = "correct-horse-4821"
 EMAIL = "ian@uci.edu"
 
@@ -182,18 +182,18 @@ def test_a_guest_launch_has_no_transfer_map_or_sample_map(setup):
     setup.build(CONFIGS)
     assert setup.controller.model_names == ["Stepper Probe"]
     assert not [c for c in setup.configs if c["model"] in (
-        "Transfer Map", "Sample Map", "RGB Analysis")], setup.configs
+        "Transfer Map", "Sample DB", "RGB Analysis")], setup.configs
     statuses = {row["name"]: row["status"] for row in setup.state["rows"]}
-    assert statuses["Transfer Map"] == statuses["Sample Map"] == "sign in to use"
+    assert statuses["Transfer Map"] == statuses["Sample DB"] == "sign in to use"
     assert set(setup.state["account"]["signed_in_only"]) >= {
-        "Transfer Map", "Sample Map", "RGB Analysis"}
+        "Transfer Map", "Sample DB", "RGB Analysis"}
 
 
 def test_a_guest_cannot_build_or_reopen_a_map(setup):
     with pytest.raises(Exception, match="signed-in users"):
         setup.model_from_config({"model": "Transfer Map", "port": None, "sim": False})
-    assert "signed-in users" in setup.session_refusal("Sample Map", "save_sample")
-    assert setup.session_refusal("Sample Map", "toggle_estop") == "", "a stop is never refused"
+    assert "signed-in users" in setup.session_refusal("Sample DB", "save_sample")
+    assert setup.session_refusal("Sample DB", "toggle_estop") == "", "a stop is never refused"
     assert setup.session_refusal("Stepper Probe", "set_mode") == ""
     create(setup)
     assert setup.session_refusal("Transfer Map", "arm") == ""
@@ -203,7 +203,7 @@ def test_signing_in_adds_the_maps_to_a_running_station_and_guest_removes_them(se
     setup.build(CONFIGS)
     probe = models(setup)["Stepper Probe"]
     create(setup)
-    assert {"Transfer Map", "Sample Map"} <= set(setup.controller.model_names)
+    assert {"Transfer Map", "Sample DB"} <= set(setup.controller.model_names)
     assert models(setup)["Stepper Probe"] is probe, "nothing restarted"
     tmap = models(setup)["Transfer Map"]
     assert (tmap.operator_id, tmap.operator_auth) == (EMAIL, "password")
@@ -327,7 +327,7 @@ def test_sign_out_rebuilds_the_station_defaults_without_a_restart(setup):
     assert (int(probe.x_step), int(probe.man_full_speed)) == (
         int(probe.PARAMS["x_step"].default), 250)
     assert setup.controller.calls[len(calls):] == [
-        "remove:Transfer Map", "remove:Sample Map"], "nothing but the maps closed"
+        "remove:Transfer Map", "remove:Sample DB"], "nothing but the maps closed"
 
 
 def test_switching_users_reverts_the_first_users_values(setup):
@@ -343,7 +343,7 @@ def test_switching_users_reverts_the_first_users_values(setup):
 def test_built_models_carry_the_operator_and_how_it_was_established(setup):
     setup.build(CONFIGS)            # a Guest's: the maps come with the sign-in
     create(setup)
-    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample Map"]
+    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample DB"]
     assert (tmap.operator_id, tmap.operator_auth) == (EMAIL, "password")
     assert (smap.owner, smap.owner_auth) == (EMAIL, "password")
     # Reason: the live sheet has no Sample ID entry (the sample is picked), so
@@ -369,7 +369,7 @@ def test_launch_while_signed_in_has_no_user_model(setup):
     create(setup)
     UserStore().remember(EMAIL, "Stepper Probe", {"x_step": 9})
     built = setup.build(CONFIGS)
-    assert built == ["Stepper Probe", "Transfer Map", "Sample Map"]
+    assert built == ["Stepper Probe", "Transfer Map", "Sample DB"]
     assert "User" not in setup.controller.model_names
     assert setup.user.email == EMAIL
     assert int(models(setup)["Stepper Probe"].x_step) == 9
@@ -398,7 +398,7 @@ def test_remember_current_values_on_the_sheet_keeps_only_user_params(setup):
     kept = UserStore().preferences(EMAIL)
     assert kept["Stepper Probe"]["x_step"] == 7
     assert "slow_speed" not in kept["Stepper Probe"]
-    assert "RGB Analysis" not in kept and "Sample Map" not in kept
+    assert "RGB Analysis" not in kept and "Sample DB" not in kept
 
 
 def test_there_is_no_user_page_to_close_or_reopen(setup):
@@ -415,12 +415,12 @@ def test_there_is_no_user_page_to_close_or_reopen(setup):
 def test_save_station_settings_asks_and_keeps_the_brakes_out(setup, root):
     create(setup)                   # the Sample Map is a signed-in user's
     setup.build(CONFIGS)
-    smap = models(setup)["Sample Map"]
+    smap = models(setup)["Sample DB"]
     smap.um_per_count = "0.4"
     assert setup.run("save_station_settings").needs_confirm
     assert setup.run("save_station_settings", None, (True,)).is_ok
     saved = json.loads((root / "station.json").read_text())
-    assert saved["model_params"]["Sample Map"] == {"um_per_count": "0.4"}
+    assert saved["model_params"]["Sample DB"] == {"um_per_count": "0.4"}
     assert "slow_speed" not in saved["model_params"].get("Stepper Probe", {})
 
 
