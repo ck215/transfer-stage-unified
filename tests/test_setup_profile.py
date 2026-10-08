@@ -91,24 +91,74 @@ def models(panel):
 
 # -- the section --------------------------------------------------------------------------
 
-def test_the_account_section_comes_first_with_email_password_and_four_commands(setup):
+def test_the_account_section_comes_first_with_who_is_in_switch_user_and_save(setup):
+    """Decluttered (2026-10-07, the sign-in gate): signing in, making an
+    account and choosing Guest happen on the sign-in screen before Setup, so
+    the section says who is in, goes back to that screen, and saves the
+    station's defaults - nothing else."""
     assert setup.schema["sections"][0]["title"] == Setup.ACCOUNT_SECTION == "Account"
     elements = _section(setup)["elements"]
-    by_attr = {e.get("model_attr"): e for e in elements if e.get("model_attr")}
-    assert by_attr["account_email"]["type"] == "entry"
-    password = by_attr["account_password"]
-    assert password["type"] == "entry" and password.get("secret") is True
+    assert [(e["type"], e.get("command") or e.get("model_attr")) for e in elements] == [
+        ("readonly", "account_status"), ("button", "switch_user"),
+        ("button", "save_station_settings")]
+    assert [e["text"] for e in elements if e["type"] == "button"] == [
+        "Switch user", "Save station settings"]
     assert "account_password" in Setup.SECRET_INPUTS
-    commands = {e.get("command"): e for e in elements if e.get("command")}
-    assert {"sign_in", "open_as_guest", "create_account", "sign_out",
-            "save_station_settings"} <= set(commands)
-    assert commands["sign_in"]["inputs"] == ["account_email", "account_password"]
-    assert commands["create_account"]["inputs"] == ["account_email", "account_password"]
-    assert commands["create_account"]["text"] == "Create account…"
-    assert by_attr["account_status"]["type"] == "readonly"
-    assert not [e for e in elements if e["type"] == "dropdown"], "no profile picker"
     for gone in ("set_profile_user", "add_profile", "remember_settings"):
-        assert gone not in commands
+        assert gone not in {e.get("command") for e in elements}
+
+
+def test_the_gate_commands_are_setups_although_no_control_shows_them(setup):
+    """The sign-in screen sends `sign_in` / `create_account` /
+    `open_as_guest` / `sign_out` with the typed email and password as the
+    command's inputs; Setup still allows exactly those, and nothing else
+    that its schema does not show."""
+    shown = {e.get("command") for e in sch.elements(setup.schema)}
+    assert not (Setup.GATE_COMMANDS & shown), "the gate's commands are off the page"
+    asked = setup.run("create_account", {"account_email": EMAIL,
+                                         "account_password": PASSWORD})
+    assert asked.needs_confirm, asked.reason
+    assert setup.run(asked.command, asked.inputs, (*asked.args, True)).is_ok
+    assert setup.run("sign_out").is_ok
+    assert sign_in(setup).is_ok and not setup.user.is_guest
+    assert setup.run("open_as_guest").is_ok and setup.user.is_guest
+    assert setup.run("not_a_command").is_refused
+    refused = setup.run("sign_in", {"account_email": EMAIL, "station_version": "x"})
+    assert refused.is_refused and "station_version" in refused.reason
+
+
+def test_the_session_is_unchosen_until_sign_in_create_or_guest(setup):
+    """The gate's flag: False at start, True after any of the three choices,
+    False again after Sign out or Switch user; published in `state`."""
+    def chosen():
+        state = setup.state
+        assert state["account_chosen"] is state["account"]["chosen"]
+        return state["account_chosen"]
+
+    assert chosen() is False and setup.account["signed_in"] is False
+    assert setup.state["account"]["sheet"] == "User"
+    assert setup.run("open_as_guest").is_ok and chosen() is True
+    assert setup.run("switch_user").is_ok and chosen() is False
+    create(setup)
+    assert chosen() is True and setup.state["account"]["signed_in"] is True
+    assert setup.state["account"]["email"] == EMAIL
+    assert setup.run("switch_user").is_ok
+    assert chosen() is False and setup.user.is_guest, "Switch user signs out"
+    assert "User" not in setup.controller.model_names
+    assert "User" not in setup.controller.closed_names, "a Guest is offered a sheet to reopen"
+    assert sign_in(setup).is_ok and chosen() is True
+    assert setup.run("sign_out").is_ok and chosen() is False
+    assert sign_in(setup, password="wrong-password-1").is_refused
+    assert chosen() is False, "a refused sign-in chooses nothing"
+
+
+def test_with_accounts_off_there_is_nothing_to_choose(root, monkeypatch):
+    from controller import setup as station_setup
+    monkeypatch.setattr(station_setup, "PROFILES_ENABLED", False)
+    panel = Setup(RecordingController())
+    assert panel.state["account_chosen"] is True
+    assert panel.state["account"]["enabled"] is False
+    assert panel.run("sign_in", {"account_email": EMAIL}).is_refused
 
 
 def test_a_new_station_is_a_guest_and_launching_as_guest_changes_nothing(setup):
@@ -180,7 +230,7 @@ def test_the_password_never_reaches_the_log_events_state_or_a_result(setup, hear
     for secret in (PASSWORD, "a-wrong-guess-99"):
         assert secret not in said
     assert "<redacted>" in said
-    assert setup.state["values"]["account_password"] == ""
+    assert setup.state["values"].get("account_password", "") == ""
     assert setup._pending_password == "", "a typed password does not linger"
 
 
@@ -415,3 +465,80 @@ def test_a_secret_input_never_reaches_the_log(tmp_path):
         events.debug = original
     assert seen and all("4821" not in m for m in seen), seen
     assert any("<redacted>" in m for m in seen)
+
+
+# -- the per-account trial store (2026-10-07) ---------------------------------------------------
+
+@pytest.fixture
+def stores(tmp_path, monkeypatch):
+    """No STATION_MAP_DB, a private choices file, a tmp install root, and
+    two stores on disk: the station's and the user's."""
+    from controller import user_config
+    from model import transfer_map as tm_module
+    from model.transfer_map import TrialStore
+    monkeypatch.delenv("STATION_MAP_DB", raising=False)
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
+    user_config.forget()
+    install = tmp_path / "install"
+    install.mkdir()
+    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    station, mine = tmp_path / "station.sqlite", tmp_path / "mine.sqlite"
+    TrialStore(station).ensure()
+    TrialStore(mine).ensure()
+    user_config.write("map_store", str(station))
+    yield station, mine
+    user_config.forget()
+
+
+def test_a_signed_in_users_store_is_theirs_and_the_station_keeps_its_own(setup, stores):
+    from controller import user_config
+    station, mine = stores
+    create(setup)
+    setup.map_store_path = str(mine)
+    assert setup.open_map_store() == str(mine)
+    assert UserStore().setting(EMAIL, "map_store") == str(mine)
+    assert user_config.read("map_store") == str(station), "a Guest keeps the station's"
+    assert setup.map_store_status == str(mine)
+    setup.run("sign_out")
+    assert setup.map_store_status == str(station)
+
+
+def test_the_maps_own_open_store_remembers_for_the_signed_in_user(setup, stores):
+    from controller import user_config
+    station, mine = stores
+    setup.build(CONFIGS)
+    tmap = models(setup)["Transfer Map"]
+    assert tmap.db_path == station
+    create(setup)
+    result = setup.controller.run("Transfer Map", "open_store", {"store_path": str(mine)})
+    assert result.is_ok, result.reason
+    assert UserStore().setting(EMAIL, "map_store") == str(mine)
+    assert user_config.read("map_store") == str(station)
+
+
+def test_signing_in_opens_the_users_store_and_guest_gets_the_stations_back(setup, stores):
+    station, mine = stores
+    create(setup)
+    UserStore().put_setting(EMAIL, "map_store", str(mine))
+    setup.run("sign_out")
+    setup.build(CONFIGS)
+    tmap = models(setup)["Transfer Map"]
+    assert tmap.db_path == station, "a Guest records in the station's store"
+    assert sign_in(setup).is_ok
+    assert tmap.db_path == mine, "signing in moves the open map onto the user's store"
+    assert setup.run("switch_user").is_ok
+    assert tmap.db_path == station
+    assert sign_in(setup).is_ok
+    setup.build(CONFIGS)
+    assert models(setup)["Transfer Map"].db_path == mine, "a launch while signed in too"
+
+
+def test_a_users_missing_store_is_a_warning_not_a_failed_sign_in(setup, stores, heard):
+    station, mine = stores
+    create(setup)
+    UserStore().put_setting(EMAIL, "map_store", str(mine.parent / "gone.sqlite"))
+    setup.run("sign_out")
+    setup.build(CONFIGS)
+    assert sign_in(setup).is_ok
+    assert models(setup)["Transfer Map"].db_path == station
+    assert any("Trial Store Missing" in line for line in heard())

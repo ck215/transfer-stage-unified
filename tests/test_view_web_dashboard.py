@@ -646,6 +646,8 @@ def map_station(tmp_path, monkeypatch):
     key = next(k for k, row in setup._rows.items() if row["name"] == "Transfer Map")
     getattr(setup, f"set_{key}_enabled")(True)
     launched = setup.launch()
+    # Past the sign-in screen (2026-10-07) as Guest, as an operator would be.
+    assert setup.run("open_as_guest").is_ok
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open()
     try:

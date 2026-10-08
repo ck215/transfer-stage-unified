@@ -2449,15 +2449,20 @@ label.row-title[for] { cursor: pointer; }
 /* -- the Setup drawer ---------------------------------------------------- */
 /* Open at boot, because Setup is where a run begins; beside the rail, never
    over it; stopping at the tray. It withdraws on launch and the rail's
-   Setup button brings it back. */
+   Setup button brings it back. Full-screen (2026-10-07): the whole page
+   right of the rail, its content in one centred column of at most
+   --setup-max, so the device table's dropdowns have room. */
 .drawer {
+  --setup-max: 72rem;
+  --setup-pad: max(var(--space-8), calc((100% - var(--setup-max)) / 2));
   position: fixed;
   top: var(--rail-top);
   left: var(--rail-left);
+  right: 0;
   bottom: var(--tray-h);
   z-index: 8;
-  width: min(560px, 100%);
-  max-width: calc(100vw - var(--rail-left));
+  width: auto;
+  max-width: none;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -2477,7 +2482,7 @@ label.row-title[for] { cursor: pointer; }
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  padding: var(--space-8) var(--space-8) var(--space-4);
+  padding: var(--space-8) var(--setup-pad) var(--space-4);
 }
 
 .drawer-title { font-size: var(--t-headline); line-height: 1.1; margin-right: auto; }
@@ -2486,15 +2491,17 @@ label.row-title[for] { cursor: pointer; }
   flex: 1 1 auto;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 0 var(--space-8) var(--space-7);
+  padding: 0 var(--setup-pad) var(--space-7);
 }
 
-/* Inside 560 px the table's columns give: name, Launch box (as narrow as
-   the box, G3), port, gamepad, status. `build()` writes the track list
-   inline, so this is the only way to reach it. */
+/* The table's columns: name, Launch box (as narrow as the box, G3), port,
+   gamepad, status. Full-screen, the two dropdowns get room for a whole
+   port name (they read "/dev" and "Non" in the old 560 px column).
+   `build()` writes the track list inline, so this is the only way to
+   reach it. */
 .drawer .card-body.table {
   grid-template-columns:
-    minmax(0, max-content) max-content minmax(4.5rem, 1fr) minmax(4.5rem, 1fr)
+    minmax(0, max-content) max-content minmax(9rem, 1fr) minmax(9rem, 1fr)
     minmax(0, max-content)
     !important;
   column-gap: var(--space-3);
@@ -2700,6 +2707,63 @@ label.row-title[for] { cursor: pointer; }
 }
 
 .overlay[hidden] { display: none; }
+
+/* -- the sign-in screen (2026-10-07) --------------------------------------- */
+/* Before Setup: the whole page beside the rail (never over it, so the stop
+   stays in reach), opaque, under the page's own dialogs (a confirmation
+   opens over it). */
+.gate {
+  position: fixed;
+  inset: var(--rail-top) 0 0 var(--rail-left);
+  z-index: 9;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-8) var(--space-5);
+  background: var(--bg);
+}
+
+.gate[hidden] { display: none; }
+
+/* The rail's Setup button goes while Setup or the sign-in screen is up
+   (`.ghost` sets a display, which beat the attribute). */
+.rail-foot .rail-control[hidden] { display: none; }
+
+.gate-body {
+  width: 100%;
+  max-width: 28rem;
+  margin-top: clamp(0px, 8vh, 6rem);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+}
+
+.gate-title { font-size: var(--t-headline); line-height: 1.1; }
+
+.gate-form { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.gate-field { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--t-sm); font-weight: 600; }
+
+.gate-field .input { width: 100%; font-size: var(--t-md); }
+
+.gate-error { min-height: 1.4em; font-size: var(--t-sm); color: var(--error-ink); }
+
+.gate-error:empty { min-height: 0; }
+
+.gate-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+
+.gate-guest {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding-top: var(--space-6);
+  border-top: var(--rule-strong-px) solid var(--rule-strong);
+}
+
+.gate-note { font-size: var(--t-md); max-width: 36ch; }
 
 .dialog {
   max-width: 34rem;

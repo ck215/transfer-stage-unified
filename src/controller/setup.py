@@ -57,7 +57,7 @@ from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
-from model.user import User, secret
+from model.user import User
 from model.user_store import AccountError, UserStore
 from panel import Panel
 from param import Param
@@ -731,6 +731,10 @@ class Setup(PortProbe, Panel):
         snapshot.update({
             "is_scanning": is_scanning,
             "is_launched": self._is_launched,
+            # The sign-in gate (2026-10-07): the Web view shows its sign-in
+            # screen while `account_chosen` is False.
+            "account_chosen": self._account_chosen,
+            "account": self.account,
             "scan": {"phase": self.scan_phase, "status": self.scan_status,
                      "progress": self.scan_progress, "is_scanning": is_scanning,
                      "ports": ports, "found": found,
@@ -1275,6 +1279,14 @@ class Setup(PortProbe, Panel):
     #: The typed password never reaches the log: `Panel.run` writes
     #: `<redacted>` for it (user-system section 6.1).
     SECRET_INPUTS = frozenset({"account_password"})
+    #: The sign-in screen's commands and fields (2026-10-07, the sign-in
+    #: gate). The Web view draws that screen itself, beside the rail and in
+    #: front of everything but the stop, so they are no longer controls of the
+    #: Account section; they stay commands of Setup, allowed by name here
+    #: (`_allows`, `_apply_inputs`) exactly as the schema allowed them before.
+    GATE_COMMANDS = frozenset({"sign_in", "create_account", "open_as_guest",
+                               "sign_out"})
+    GATE_INPUTS = ("account_email", "account_password")
 
     def _init_accounts(self):
         """The station scope, the accounts file with the Phase 1 profiles
@@ -1287,6 +1299,11 @@ class Setup(PortProbe, Panel):
         self.users = UserStore(user_store_module.default_path())
         self.user = User.guest()
         self._account_lock = threading.RLock()
+        # The sign-in gate: nobody has chosen how this session works yet.
+        # With accounts off there is nothing to choose.
+        self._account_chosen = not PROFILES_ENABLED
+        #: The Transfer Map's store choice, per session (`_SessionChoices`).
+        self._map_choices = _SessionChoices(self)
         try:
             migrated = self.users.migrate_profiles(self.profiles.source)
         except Exception as exc:
@@ -1333,12 +1350,12 @@ class Setup(PortProbe, Panel):
         email = user_store_module.normalize_email(self.account_email)
         if not email:
             self._take_password()
-            self._refuse("Type your email and password, or press Open as guest.")
+            self._refuse("Type your email and password, or press Proceed as guest.")
         record = self.users.user(email)
         if record is None:
             self._take_password()
             self._refuse(f"No account for {email} on this station. Press Create "
-                         "account… to make one, or Open as guest.")
+                         "account… to make one, or Proceed as guest.")
         if record["must_set_password"]:
             if len(self._pending_password) < user_store_module.MIN_PASSWORD:
                 self._take_password()
@@ -1359,6 +1376,7 @@ class Setup(PortProbe, Panel):
             self._refuse("That email and password do not match an account on this "
                          "station.")
         self._become(self._user_for(email))
+        self._account_chosen = True
         return self.account_status
 
     def create_account(self, confirmed=False):
@@ -1386,6 +1404,7 @@ class Setup(PortProbe, Panel):
             self._refuse(str(refusal))
         events.info("Account Created", f"{email}.", source=self.NAME)
         self._become(self._user_for(email))
+        self._account_chosen = True
         return self.account_status
 
     def open_as_guest(self):
@@ -1393,16 +1412,70 @@ class Setup(PortProbe, Panel):
         self._take_password()
         if not self.user.is_guest:
             self._become(User.guest())
+        self._account_chosen = True
         return self.account_status
 
     def sign_out(self):
         """Back to Guest: every model's user parameters rebuilt from its
-        Params with the station's defaults over them; nothing restarts."""
+        Params with the station's defaults over them; nothing restarts. The
+        session is open again: the Web view shows its sign-in screen."""
         self._take_password()
         if self.user.is_guest:
             self._refuse("Nobody is signed in: the station is on its defaults.")
         self._become(User.guest())
+        self._account_chosen = False
         return self.account_status
+
+    def switch_user(self):
+        """Switch user: back to the sign-in screen. A signed-in user is signed
+        out (as `sign_out`); a Guest just chooses again. Never refused."""
+        self._take_password()
+        if not self.user.is_guest:
+            self._become(User.guest())
+        self._account_chosen = False
+        return self.account_status
+
+    @property
+    def account_chosen(self):
+        """True once the operator signed in, made an account or chose Guest
+        on the sign-in screen; False at start and after Sign out or Switch
+        user. Always True with accounts off. `state["account"]["chosen"]`."""
+        return self._account_chosen
+
+    @property
+    def account(self):
+        """The session, for a view's sign-in screen: whether a choice was
+        made, who is in, and the name of the signed-in user's sheet (a model
+        in the Controller that is not a launched device)."""
+        return {"enabled": bool(PROFILES_ENABLED),
+                "chosen": self._account_chosen,
+                "signed_in": not self.user.is_guest,
+                "email": "" if self.user.is_guest else self.user.email,
+                "status": self.account_status,
+                "sheet": User.NAME}
+
+    def _allows(self, command, args=()):
+        """The sign-in screen's commands are Setup's though no control of the
+        page shows them (`GATE_COMMANDS`)."""
+        if PROFILES_ENABLED and command in self.GATE_COMMANDS:
+            return
+        super()._allows(command, args)
+
+    def _apply_inputs(self, inputs):
+        """`Panel._apply_inputs`, plus the sign-in screen's two fields
+        (`GATE_INPUTS`), parsed by their Params, all or nothing."""
+        inputs = dict(inputs or {})
+        gate = {}
+        if PROFILES_ENABLED:
+            for name in self.GATE_INPUTS:
+                if name in inputs:
+                    ok, value = self.PARAMS[name].parse(inputs.pop(name))
+                    if not ok:
+                        raise Refused(value)
+                    gate[name] = value
+        super()._apply_inputs(inputs)
+        for name, value in gate.items():
+            setattr(self, name, value)
 
     def _user_for(self, email):
         return User(store=self.users, email=email, params_of=self._params_of,
@@ -1426,6 +1499,7 @@ class Setup(PortProbe, Panel):
                             source=self.NAME)
             self._warn_not_applied(user.load_into(models, self.profiles))
             self._show_account_page()
+            self._follow_store(previous)
 
     def _show_account_page(self):
         """One `User` page while someone is signed in, none for a Guest. A
@@ -1436,6 +1510,12 @@ class Setup(PortProbe, Panel):
             if User.NAME in self.controller.model_names:
                 self.controller.remove(User.NAME)
             if self.user.is_guest:
+                # A Guest has no sheet to reopen: the rail's Reopen list
+                # does not offer one (it would only be refused).
+                remembered = getattr(self.controller, "_remembered", None)
+                if isinstance(remembered, dict):
+                    with getattr(self.controller, "_lock", threading.RLock()):
+                        remembered.pop(User.NAME, None)
                 return
             self.user = self._user_for(self.user.email)
             self.controller.add(User.NAME, self.user,
@@ -1455,7 +1535,7 @@ class Setup(PortProbe, Panel):
         """`Controller.reopen("User")`: the signed-in user's sheet again."""
         if self.user.is_guest:
             self._refuse("Nobody is signed in, so there is no User sheet to open. "
-                         "Sign in on the Setup page.")
+                         "Sign in on the sign-in screen (Setup, Switch user).")
         self.user = self._user_for(self.user.email)
         return self.user
 
@@ -1467,6 +1547,10 @@ class Setup(PortProbe, Panel):
             return
         self._warn_not_applied(self.user.load_into(
             {getattr(model, "NAME", None) or "": model}, self.profiles))
+        if isinstance(model, TransferMap):
+            model.choices = self._map_choices
+            if not self.user.is_guest:
+                self._open_users_store(model)
 
     def _warn_not_applied(self, refused):
         for name, problems in (refused or {}).items():
@@ -1505,22 +1589,16 @@ class Setup(PortProbe, Panel):
         return sorted(values)
 
     def _account_section(self):
-        """First on the page (user-system section 2.4). The Password entry is
-        a secret: `<redacted>` in the log, "" in `state`, masked by a renderer
-        that honours `secret`. "Remember current values as my defaults" is on
-        the signed-in user's own sheet (`model.user`)."""
-        P = self.PARAMS
+        """First on the page (user-system section 2.4): who is in, the way
+        back to the sign-in screen, and the station's defaults. Signing in,
+        making an account and choosing Guest happen on the sign-in screen
+        before Setup (2026-10-07, the gate; `GATE_COMMANDS`). "Remember
+        current values as my defaults" is on the signed-in user's own sheet
+        (`model.user`)."""
         return sch.section(
             self.ACCOUNT_SECTION,
-            sch.entry("Email", "account_email", P["account_email"]),
-            secret(sch.entry("Password", "account_password", P["account_password"])),
-            sch.button("Sign in", "sign_in", role="go",
-                       inputs=("account_email", "account_password")),
-            sch.button("Open as guest", "open_as_guest", role="neutral"),
-            sch.button("Create account…", "create_account", role="neutral",
-                       inputs=("account_email", "account_password")),
-            sch.button("Sign out", "sign_out", role="neutral"),
             sch.readonly("Signed in", "account_status", role="info"),
+            sch.button("Switch user", "switch_user", role="neutral"),
             sch.button("Save station settings", "save_station_settings",
                        role="neutral"),
             layout="row",
@@ -2271,20 +2349,89 @@ class Setup(PortProbe, Panel):
         model = self._transfer_map()
         if model is not None:
             return model.store_status
-        return TransferMap.describe_store(TransferMap.default_db_path())
+        if os.environ.get("STATION_MAP_DB"):
+            return TransferMap.describe_store(TransferMap.default_db_path())
+        chosen = self._map_choices.read("map_store")
+        return TransferMap.describe_store(Path(chosen) if chosen else None)
+
+    def _map_target(self):
+        """The open map, or a stand-in that only validates and remembers;
+        either remembers through this session (`_SessionChoices`)."""
+        target = self._transfer_map() or TransferMap()
+        if PROFILES_ENABLED:
+            target.choices = self._map_choices
+        return target
 
     def open_map_store(self):
         """Open store, from Setup: the Transfer Map's own command, on the
         open map (which then records there) or on a stand-in that only
-        validates and remembers the choice."""
-        target = self._transfer_map() or TransferMap()
+        validates and remembers the choice - in the signed-in user's
+        settings, or the station's for a Guest."""
+        target = self._map_target()
         target.store_path = self.map_store_path
         return target.open_store()
 
     def new_map_store(self):
-        target = self._transfer_map() or TransferMap()
+        target = self._map_target()
         target.store_dir, target.store_name = self.map_store_dir, self.map_store_name
         return target.new_store()
+
+    def _follow_store(self, previous):
+        """After a sign-in or sign-out, the open map records where the new
+        session's store is: the signed-in user's remembered store, or - back
+        to Guest from a user - the station's remembered one."""
+        if not PROFILES_ENABLED:
+            return
+        model = self._transfer_map()
+        if model is None:
+            return
+        model.choices = self._map_choices
+        if not self.user.is_guest:
+            self._open_users_store(model)
+        elif not previous.is_guest and not os.environ.get("STATION_MAP_DB"):
+            station = user_config.read("map_store")
+            if station:
+                self._open_store_on(model, station, "The station's")
+
+    def _open_users_store(self, model):
+        """The signed-in user's remembered store (`UserStore` setting
+        `map_store`) becomes `model`'s, when it is still there. `--map-db`
+        (STATION_MAP_DB) wins over it, as over the station's choice."""
+        if os.environ.get("STATION_MAP_DB"):
+            return
+        try:
+            path = self.users.setting(self.user.email, "map_store")
+        except Exception as exc:
+            events.warn("Trial Store Not Read", f"{self.user.user_name}'s trial store "
+                        "could not be read from the accounts file; trials go where "
+                        "the Transfer Map says.", source=self.NAME, exception=exc)
+            return
+        if not path:
+            return
+        if not Path(path).is_file():
+            events.warn("Trial Store Missing", f"{self.user.user_name}'s trial store "
+                        f"{path} is not there any more. Trials go where the Transfer "
+                        "Map says; open or make a store there.", source=self.NAME)
+            return
+        self._open_store_on(model, path, f"{self.user.user_name}'s")
+
+    def _open_store_on(self, model, path, whose):
+        """Open `path` on `model` the way Open store does; a refusal is a
+        warning, never a failed sign-in."""
+        current = getattr(model, "db_path", None)
+        if (current is not None and getattr(model, "has_store", False)
+                and Path(current) == Path(path).expanduser().resolve()):
+            return
+        model.store_path = str(path)
+        try:
+            model.open_store()
+        except Refused as refusal:
+            events.warn("Trial Store Not Opened", f"{whose} trial store {path} was "
+                        f"not opened: {refusal.reason}", source=self.NAME)
+        except Exception as exc:
+            events.warn("Trial Store Not Opened", f"{whose} trial store {path} was "
+                        "not opened; the details are in the log file.",
+                        source=self.NAME, exception=exc)
 
     def _store_section(self):
         """The Trial store row: where the Transfer Map's trials go, and the
@@ -2547,6 +2694,42 @@ def _resource_value(config, model_class, resource):
         if group and group[0] == resource:
             return config.get(kind)
     return None
+
+
+class _SessionChoices:
+    """`TransferMap.choices` for one Setup's session (2026-10-07, the
+    per-account trial store): a signed-in user's store choice is kept in
+    their settings (`UserStore.put_setting(email, "map_store", path)`) and
+    read from there; a Guest reads and writes the station's choices file
+    (`controller.user_config`), so a Guest keeps the station's store."""
+
+    def __init__(self, setup):
+        self._setup = setup
+
+    def _email(self):
+        user = self._setup.user
+        return None if user.is_guest else user.email
+
+    def read(self, key, default=None):
+        email = self._email()
+        if email:
+            try:
+                value = self._setup.users.setting(email, key)
+            except Exception:
+                value = None
+            if value:
+                return value
+        return user_config.read(key, default)
+
+    def write(self, key, value):
+        email = self._email()
+        if not email:
+            return user_config.write(key, value)
+        try:
+            return self._setup.users.put_setting(email, key, value)
+        except Exception as exc:
+            # The map says "Store Not Remembered" for an OSError.
+            raise OSError(str(exc)) from exc
 
 
 class _Selector:
