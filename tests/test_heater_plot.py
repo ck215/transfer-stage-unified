@@ -1,9 +1,18 @@
-"""P1 (Tier P): `tools/heater_plot.py` renders a heater reading log.
+"""P1, reshaped 2026-10-08: `tools/heater_plot.py` renders heater readings.
 
 The tool lives outside `src/` on purpose: matplotlib is a display library,
-and nothing in the app imports it. It reads the CSV by its header, so it
-needs nothing from the model, and it must cope with the file being written
-while it reads (a half-written last line).
+and nothing in the app imports it. Since the owner's ruling of 2026-10-08
+the heater writes no CSV of its own; the tool reads the readings where they
+are kept now:
+
+- a trial's `trial_heater` rows in its Transfer Map store
+  (`--trial N --store PATH`), or its `heater.csv` / the export's heater file;
+- the station's device log (`--log PATH --from/--to`; default: the data
+  root's `logs/device_log.sqlite`, the last two hours), the heater's
+  `reading.*` keys of the Temperature Controller;
+- a CSV by its header (the merged branch's logs still plot).
+
+It must cope with a source being written while it reads.
 """
 import csv
 import importlib.util
@@ -111,21 +120,146 @@ def test_an_empty_log_still_renders(tool, tmp_path):
     assert out.exists()
 
 
-def test_the_default_log_is_the_newest_under_the_data_root(
-        tool, tmp_path, monkeypatch):
-    monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path))
-    folder = tmp_path / "heater"
-    folder.mkdir()
-    old, new = folder / "heater-20260926-100000.csv", folder / "heater-20260926-110000.csv"
-    _write(old, [])
-    _write(new, [])
-    import os
-    os.utime(old, (1, 1))
-    assert tool.newest_log() == new
-
-
 def test_the_cli_writes_the_png_beside_the_csv(tool, tmp_path):
     path = tmp_path / "heater-1.csv"
     _write(path, _step_response())
     assert tool.main([str(path)]) == 0
     assert (tmp_path / "heater-1.png").exists()
+
+
+# -- the trial store and the device log (2026-10-08) ------------------------------
+
+import sqlite3  # noqa: E402
+import time  # noqa: E402
+
+from controller import device_log as dl  # noqa: E402
+from model import transfer_map as tm  # noqa: E402
+from model.heater import Heater  # noqa: E402
+
+from test_heater_fakes import FakePort  # noqa: E402
+
+
+def _store_with_trial(path, readings, *, endpoint=30.0):
+    """A trial store with one trial and its heater rows. -> trial id."""
+    store = tm.TrialStore(path)
+    trial = store.insert({"status": "recorded", "tip_id": "T1"})
+    store.update(trial, {}, heater=[
+        (t, 1e9 + t, t, temperature, setpoint, endpoint, 10.0, 2.0, 0.5, 0.1,
+         0.0, 1, "Temperature Controller")
+        for t, temperature, setpoint in readings])
+    other = store.insert({"status": "recorded", "tip_id": "T1"})
+    store.update(other, {}, heater=[(0.0, 1e9, 0.0, 99.0, 99.0, 99.0, 1, 1, 1,
+                                     1, 0, 1, "Temperature Controller")])
+    return trial
+
+
+def test_it_reads_a_trials_heater_rows_from_its_store(tool, tmp_path):
+    path = tmp_path / "map.sqlite"
+    trial = _store_with_trial(path, _step_response())
+    rows = tool.load_trial(path, trial)
+    assert len(rows) == 1200
+    assert rows[0]["temperature_c"] == 22.0 and rows[0]["endpoint_c"] == 30.0
+    stats = tool.analyse(rows)
+    assert stats["overshoot_c"] == pytest.approx(1.2, abs=0.01)
+    assert tool.load_trial(path, trial + 50) == []
+
+
+def test_it_reads_a_trials_heater_csv_by_its_header(tool, tmp_path):
+    path = tmp_path / "heater.csv"
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(tm.HEATER_COLUMNS)
+        for t, temperature in ((0.0, 22.0), (0.6, 22.5)):
+            writer.writerow([3, t, 1e9 + t, t, temperature, 25.0, 30.0, 10, 2,
+                             0.5, 0.1, 0, 1, "Temperature Controller"])
+    rows = tool.load(path)
+    assert [(r["elapsed_s"], r["temperature_c"]) for r in rows] == [
+        (0.0, 22.0), (0.6, 22.5)]
+    assert rows[0]["endpoint_c"] == 30.0
+
+
+def _device_log_with_heater(path, temperatures, start=1_000_000.0):
+    """A device log the station's own way: a real Heater's readings,
+    sampled once a second by the DeviceLog. -> the sample times."""
+    heater = Heater(port=FakePort())
+    clock = [start]
+
+    class Station:
+        models = {"Temperature Controller": heater}
+
+    log = dl.DeviceLog(Station(), path, clock=lambda: clock[0], sample_hz=0)
+    assert log.start()
+    times = []
+    try:
+        heater.setpoint, heater.ramp_rate = 30.0, 10.0
+        heater.apply_settings()
+        for i, temperature in enumerate(temperatures):
+            heater._parse_line(f"{i:.1f},{temperature:.2f},{min(30, 22 + i):.2f}")
+            log.sample_once()
+            times.append(clock[0])
+            clock[0] += 1.0
+    finally:
+        assert log.close()
+        heater._stop_threads()
+    return times
+
+
+def test_it_reads_the_heater_from_the_device_log(tool, tmp_path):
+    path = tmp_path / "device_log.sqlite"
+    times = _device_log_with_heater(path, [22.0, 22.0, 23.5, 25.0])
+    rows = tool.load_log(path)
+    assert [r["temperature_c"] for r in rows] == [22.0, 22.0, 23.5, 25.0]
+    assert [r["elapsed_s"] for r in rows] == [0.0, 1.0, 2.0, 3.0]
+    # A key written only when it changed is carried forward.
+    assert [r["setpoint_c"] for r in rows] == [22.0, 23.0, 24.0, 25.0]
+    assert all(r["endpoint_c"] == 30.0 and r["heater_on"] == 1 for r in rows)
+    assert rows[0]["wall_epoch_s"] == times[0]
+
+
+def test_the_device_log_window_is_from_to(tool, tmp_path):
+    path = tmp_path / "device_log.sqlite"
+    times = _device_log_with_heater(path, [20.0, 21.0, 22.0, 23.0, 24.0])
+    rows = tool.load_log(path, start=times[1], end=times[3])
+    assert [r["temperature_c"] for r in rows] == [21.0, 22.0, 23.0]
+    # The endpoint was last written before the window: still known.
+    assert rows[0]["endpoint_c"] == 30.0
+
+
+def test_a_time_is_read_as_iso_or_seconds(tool):
+    assert tool.parse_time("1000000.5") == 1000000.5
+    stamp = tool.parse_time("2026-10-08T12:30:00")
+    assert time.localtime(stamp)[:6] == (2026, 10, 8, 12, 30, 0)
+
+
+def test_the_cli_plots_a_trial(tool, tmp_path):
+    path = tmp_path / "map.sqlite"
+    trial = _store_with_trial(path, _step_response())
+    out = tmp_path / "trial.png"
+    assert tool.main(["--trial", str(trial), "--store", str(path),
+                      "-o", str(out)]) == 0
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_the_cli_plots_a_window_of_the_device_log(tool, tmp_path, capsys):
+    path = tmp_path / "device_log.sqlite"
+    times = _device_log_with_heater(path, [20.0, 21.0, 22.0])
+    out = tmp_path / "log.png"
+    assert tool.main(["--log", str(path), "--from", str(times[0]),
+                      "--to", str(times[-1]), "-o", str(out)]) == 0
+    assert out.exists()
+    assert tool.main(["--log", str(path), "--from", str(times[0]),
+                      "--stats"]) == 0
+    assert '"readings": 3' in capsys.readouterr().out
+
+
+def test_the_default_source_is_the_device_log_under_the_data_root(
+        tool, tmp_path, monkeypatch):
+    monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path))
+    assert tool.default_log() == tmp_path / "logs" / "device_log.sqlite"
+    assert tool.main(["--stats"]) == 1          # no log there yet: says so
+
+
+def test_a_missing_trial_or_store_is_one_message_not_a_traceback(
+        tool, tmp_path, capsys):
+    assert tool.main(["--trial", "3", "--store", str(tmp_path / "no.sqlite")]) == 1
+    assert "no.sqlite" in capsys.readouterr().err
