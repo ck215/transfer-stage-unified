@@ -2931,6 +2931,10 @@ label.row-title[for] { cursor: pointer; }
 
 .gate-title { font-size: var(--t-headline); line-height: 1.1; }
 
+/* "Take over here" is as wide as its words, like every other key; the
+   column stretched it across the notice (UX audit 2026-10-08 #19). */
+.elsewhere-gate #take-over { align-self: flex-start; }
+
 .gate-form { display: flex; flex-direction: column; gap: var(--space-4); }
 
 .gate-field { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--t-sm); font-weight: 600; }
@@ -3244,6 +3248,13 @@ label.row-title[for] { cursor: pointer; }
      squeezed beside them it broke one letter per line. */
   .drawer .section-span > .cell.stat,
   .drawer .section-span > .cell.stat:has(> .value.role-info) { flex: 1 1 100%; }
+  /* A device block at phone width (UX audit 2026-10-08 #19): Port and
+     Gamepad each take a line, so a port reads whole ("Stepper Probe —
+     ACM90" was cut to "Stepper"); Hard reset moves after the Status line it
+     acts on, beside it, not between Port and Gamepad. */
+  .drawer .section-row:not(.section-span):not(.table-head) > .cell { flex: 1 0 100%; }
+  .drawer .section-row:not(.section-span) > .cell:last-child { order: 1; flex: 1 1 10rem; }
+  .drawer .section-row:not(.section-span) > .cell.hard-reset-cell { order: 2; flex: 0 0 auto; margin-left: auto; }
   .tray-head, .tray-log { padding-left: var(--space-5); padding-right: var(--space-5); }
 }
 

@@ -180,3 +180,153 @@ def test_a_prompts_folder_entry_runs_the_box_and_shows_a_whole_path(folder_stati
     assert wide["input"] >= wide["inner"] - 2, out
     assert phone["input"] >= phone["inner"] - 2, out
     assert phone["sideways"] <= 0, out
+
+
+# ------------------------------------------------ #19 phone-width leftovers
+LONG_PORT = "Stepper Probe — ACM90"
+
+
+class RowsSetup(FakeSetup):
+    """A launched Settings row in the real Setup's shape: Port, Hard reset,
+    Gamepad, Status."""
+
+    def __init__(self):
+        super().__init__()
+        self.ports = ["SIM", LONG_PORT]
+        self.alpha_port = LONG_PORT
+        self.alpha_gamepad = "None"
+        self.alpha_status = "Detected: Stepper Probe"
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Devices", sch.button("Refresh", "scan")),
+            sch.section(
+                "Stepper Probe",
+                sch.dropdown("Port", "alpha_port", "set_port", "port_options"),
+                sch.button("Hard reset", "hard_reset_alpha"),
+                sch.dropdown("Gamepad", "alpha_gamepad", "set_port", "pad_options"),
+                sch.readonly("Status", "alpha_status"),
+                layout="row"))
+
+    def pad_options(self):
+        return ["None"]
+
+    def hard_reset_alpha(self):
+        return None
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot.update({"is_launched": True,
+                         "rows": [{"key": "alpha", "name": "Stepper Probe"}]})
+        return snapshot
+
+
+@pytest.fixture
+def rows_station():
+    controller = Controller()
+    model = FakeProc()
+    controller.add("Fake Proc", model, {"kind": "Fake Proc"})
+    view = WebView(controller, RowsSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view
+    finally:
+        view.close()
+
+
+#: Each Port and Gamepad key in the drawer: its width, and whether the
+#: choice it shows fits in it (the text measured in the select's own font).
+_KEYS = r"""() => {
+  const ctx = document.createElement('canvas').getContext('2d');
+  return Array.from(document.querySelectorAll('#drawer-body select'))
+    .filter((s) => s.getClientRects().length)
+    .map((s) => {
+      const style = getComputedStyle(s);
+      ctx.font = style.fontWeight + ' ' + style.fontSize + ' ' + style.fontFamily;
+      const text = (s.options[s.selectedIndex] || {}).text || '';
+      const room = s.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const key = s.closest('.select-key') || s;
+      return { name: s.getAttribute('aria-label'), text, fits: ctx.measureText(text).width <= room + 1,
+               height: Math.round(key.getBoundingClientRect().height) };
+    });
+}"""
+
+
+@needs_browser
+def test_a_settings_row_at_phone_width_shows_its_whole_port(rows_station, tmp_path):
+    """At 390 px the Port key shared its line with Hard reset and its
+    caption and showed "Stepper Probe — AC" (or "Stepper")."""
+    out = _browse(rows_station, _READY + r"""
+      await page.setViewport({ width: 390, height: 844 });
+      await sleep(500);
+      if (!(await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open')))) {
+        await page.evaluate(() => document.getElementById('setup-link').click());
+      }
+      await until(() => document.querySelectorAll('#drawer-body select').length >= 2);
+      await sleep(900);
+      return { keys: await page.evaluate(%s),
+               reset: await page.evaluate(() => {
+                 const b = Array.from(document.querySelectorAll('#drawer-body button'))
+                   .find((x) => /hard reset/i.test(x.textContent) && x.getClientRects().length);
+                 return b ? Math.round(b.getBoundingClientRect().height) : null; }),
+               sideways: await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+               drawer: await page.evaluate(() => { const d = document.getElementById('drawer-body');
+                                                   return d.scrollWidth - d.clientWidth; }) };
+    """ % _KEYS, tmp_path)
+    port = [k for k in out["keys"] if k["name"] and k["name"].startswith("Port")]
+    assert port and port[0]["text"] == LONG_PORT, out
+    assert port[0]["fits"], out
+    assert all(k["height"] >= 36 for k in out["keys"]), out
+    assert out["reset"] is not None and out["reset"] >= 36, out
+    assert out["sideways"] <= 0 and out["drawer"] <= 0, out
+
+
+@pytest.fixture
+def two_window_station():
+    controller = Controller()
+    model = FakeProc()
+    controller.add("Fake Proc", model, {"kind": "Fake Proc"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_the_take_over_key_is_as_wide_as_its_words(two_window_station, tmp_path):
+    """The notice's "Take over here" was stretched across the notice (450 px
+    on a desktop, the screen's width on a phone); every other key is as
+    wide as its words. And on a phone the Stop is above, not "on the left"."""
+    out = _browse(two_window_station, r"""
+      await sleep(2500);
+      const second = await browser.newPage();
+      const read = () => second.evaluate(() => {
+        const gate = document.getElementById('elsewhere-gate');
+        const key = document.getElementById('take-over');
+        if (!gate || gate.hidden || !key) return null;
+        const r = key.getBoundingClientRect();
+        const ink = document.createRange();
+        ink.selectNodeContents(key);
+        return { width: Math.round(r.width), height: Math.round(r.height),
+                 words: Math.round(ink.getBoundingClientRect().width),
+                 sideways: document.documentElement.scrollWidth - window.innerWidth,
+                 text: gate.innerText };
+      });
+      await second.setViewport({ width: 390, height: 844 });
+      await second.goto(BASE + '/', { waitUntil: 'load' });
+      const phone = await when(read, 6000);
+      await second.setViewport({ width: 1400, height: 900 });
+      await sleep(400);
+      return { phone, wide: await read() };
+    """, tmp_path)
+    for size in ("phone", "wide"):
+        got = out[size]
+        assert got, out
+        assert got["width"] <= got["words"] + 80, out    # 358 / 448 before
+        assert got["height"] >= 36, out
+        assert got["sideways"] <= 0, out
+    assert "on the left" not in out["phone"]["text"], out

@@ -4368,7 +4368,8 @@ class Dashboard {
     title.id = 'elsewhere-title';
     const text = make('p', 'gate-note', 'This station is open in another window. '
       + 'Use that one, or take over here.');
-    const stop = make('p', 'gate-note', 'The Stop on the left works from every window.');
+    // Not "on the left": on a phone the rail, and its Stop, is above.
+    const stop = make('p', 'gate-note', 'The Stop works from every window.');
     const take = make('button', 'button role-go', 'Take over here');
     take.type = 'button';
     take.id = 'take-over';
