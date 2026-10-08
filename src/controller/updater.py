@@ -1,12 +1,22 @@
 """The station's own update check (owner, 2026-09-28: "This should prompt for
 an update check on startup moving forward").
 
-`Updater` is `update.sh` ported into the station, with the same rules:
+`Updater` is `update.sh` ported into the station, with the same rules. It
+speaks in versions (REL-4): a release is a tag `vMAJOR.MINOR.PATCH` on
+GitHub (`dev/release.sh` cuts one), and a checkout updates from release to
+release, never to a branch head.
 
-    check()   fetch, then say how far this checkout is behind the branch it
-              tracks and what is coming. The working tree is never touched.
-    apply()   fast-forward only. Refused over local edits, over a checkout
-              that has diverged from GitHub, offline, and in a frozen bundle.
+    check()   fetch (tags included), then say which version this checkout
+              is and whether a newer release exists: "This checkout is at
+              1.3.0.post3+gabc1234; the latest release is v1.4.0 (3
+              commits ahead)", else "no newer release". Under it, for
+              developers, how the branch stands against the branch it
+              tracks (`detail`). The working tree is never touched.
+    apply()   fast-forward only, and only to the latest release tag's
+              commit (`git merge --ff-only <that commit>`): never to the
+              branch head, never when that commit does not descend from
+              HEAD ("this checkout has diverged from the release"), never
+              over local edits, never offline or in a frozen bundle.
               Reinstalls only when `pyproject.toml` / `requirements.txt`
               changed; says so when `firmware/` changed (flashing is
               the Setup page's Firmware row's job, never this one's).
@@ -26,10 +36,12 @@ launchers, written by `packaging/release.py`), it updates from the
 repository's GitHub Releases instead:
 
     check()   asks the Releases API for the latest release and compares its
-              tag with `VERSION`.
+              tag with `VERSION` as versions (v1.10.0 is newer than v1.9.0;
+              a release older than the running one is no update).
     apply()   downloads this machine's asset (`release.json` names it),
-              checks its size (and its SHA-256 when the release lists one),
-              unpacks it to `<install>.next`, then swaps: `<install>` ->
+              checks its size and its SHA-256 against the release's
+              `SHA256SUMS` asset (or a sum listed in the notes, as before
+              REL-2), unpacks it to `<install>.next`, then swaps: `<install>` ->
               `<install>.previous`, `<install>.next` -> `<install>`. A failed
               swap puts `.previous` back.
 
@@ -109,9 +121,9 @@ REASONS = {
     UP_TO_DATE: "This checkout is up to date; there is nothing to update.",
     DIRTY: "This checkout has local edits; update by hand (commit or discard "
            "them first; they are not touched).",
-    DIVERGED: "This checkout has commits GitHub does not, so it cannot "
-              "fast-forward; update by hand and tell the lead which machine "
-              "this is.",
+    DIVERGED: "This checkout has diverged from the release: it has commits "
+              "the release does not, so it cannot fast-forward to it; update "
+              "by hand and tell the lead which machine this is.",
     OFFLINE: "Could not reach GitHub; the station runs as it is. Check the "
              "network and try again.",
     NOT_GIT: "Not a git checkout, so the station cannot update itself.",
@@ -121,6 +133,9 @@ REASONS = {
                   "or open the repository once with git.",
     NO_RELEASE: "No release has been published yet.",
 }
+#: The asset every release carries beside its zips (REL-2): `sha256sum`
+#: lines, one per zip; the bundle's download is checked against it.
+SUMS_ASSET = "SHA256SUMS"
 #: GitHub answered 401: it did not take the login this machine sent.
 REFUSED_LOGIN = ("GitHub did not accept this machine's sign-in for the "
                  "station's repository (HTTP {code}). Sign in with an account "
@@ -147,6 +162,8 @@ class Updater:
         self._fetch = fetch or _fetch
         #: Seconds the last check took, for the log file.
         self.elapsed = None
+        #: (tag, commit) the last check found to fast-forward to, or None.
+        self._target = None
 
     # -- what the station runs ---------------------------------------------
     def version(self):
@@ -167,12 +184,20 @@ class Updater:
         return render_version(out)
 
     def check(self, timeout=10.0):
-        """How this checkout stands against the branch it tracks.
+        """How this checkout stands against the latest release.
 
-        -> {"status", "branch", "head", "remote", "behind", "ahead", "log",
-        "reason"}; `status` is one of `STATUSES`. The fetch is the only call
-        that reaches the network and the only one given `timeout`. Nothing
-        here writes the working tree or moves HEAD."""
+        -> {"status", "version", "tag", "latest", "behind", "ahead", "log",
+        "reason", "branch", "head", "remote", "branch_behind",
+        "branch_ahead", "detail"}; `status` is one of `STATUSES`.
+        `version` (= `tag`, the running version, as a bundle's) is
+        `version()`; `latest` the newest release tag (= `remote`); `behind`
+        / `ahead` count commits between HEAD and that release; `log` is the
+        release's first line, then what is coming (`git log --oneline`);
+        `reason` says it in versions. `detail` is the developers' line: the
+        branch against the branch it tracks (`branch_behind` /
+        `branch_ahead`), which no update ever follows. The fetch is the only
+        call that reaches the network and the only one given `timeout`.
+        Nothing here writes the working tree or moves HEAD."""
         started = self._clock()
         try:
             return self._check(timeout)
@@ -180,34 +205,40 @@ class Updater:
             self.elapsed = self._clock() - started
 
     def apply(self, timeout=10.0):
-        """Fast-forward to the tracked branch, then reinstall if the
+        """Fast-forward to the latest release's commit, then reinstall if the
         dependency files changed.
 
         -> {"updated", "old", "new", "deps_changed", "deps_ok",
-        "firmware_changed", "reason"}. Refused (`updated: False`, the tree
-        unchanged) unless a fresh check says `behind`."""
+        "firmware_changed", "reason"}; `old` / `new` are versions (`new` the
+        release tag). Refused (`updated: False`, the tree unchanged) unless
+        a fresh check says `behind`: a newer release that descends from
+        HEAD, and no local edits."""
         result = {"updated": False, "old": None, "new": None,
                   "deps_changed": False, "deps_ok": True,
                   "firmware_changed": False, "reason": ""}
         if _is_frozen() and self._release_info() is not None:
             return self._apply_release(result, timeout)
         found = self.check(timeout=timeout)
-        result["old"] = result["new"] = found["head"]
-        if found["status"] != BEHIND:
+        result["old"] = result["new"] = found.get("version") or found["head"]
+        if found["status"] != BEHIND or self._target is None:
             result["reason"] = found["reason"] or REASONS.get(
                 found["status"], "The update could not be checked.")
             return result
+        latest, target = self._target
         ok, old = self._git("rev-parse", "HEAD")
         if not ok:
             result["reason"] = "The update could not read this checkout; nothing was changed."
             return result
-        ok, out = self._git("merge", "--ff-only", "--quiet", self._upstream)
+        # The release's commit, never a branch: `--ff-only` refuses anything
+        # that is not a fast-forward, so a moved tag cannot rewrite HEAD.
+        ok, out = self._git("merge", "--ff-only", "--quiet", target)
         if not ok:
             result["reason"] = "The fast-forward failed; nothing was changed."
             return result
         _, new = self._git("rev-parse", "HEAD")
-        result.update(updated=True, old=old[:7], new=new[:7])
-        sentences = [f"Updated {found['branch']}: {old[:7]} to {new[:7]}."]
+        result.update(updated=True, new=latest)
+        sentences = [f"Updated this checkout from {result['old']} to {latest} "
+                     f"({old[:7]} to {new[:7]})."]
         if self._changed(old, new, *DEPENDENCY_FILES):
             result["deps_changed"] = True
             try:
@@ -232,8 +263,10 @@ class Updater:
     # -- the steps -----------------------------------------------------------
     def _check(self, timeout):
         result = {"status": ERROR, "branch": None, "head": None, "remote": None,
-                  "behind": 0, "ahead": 0, "log": [], "reason": ""}
-        self._upstream = None
+                  "behind": 0, "ahead": 0, "log": [], "reason": "",
+                  "version": None, "tag": None, "latest": None,
+                  "branch_behind": None, "branch_ahead": None, "detail": ""}
+        self._target = None
         if _is_frozen():
             info, stamp = self._release_info(), self._stamp()
             if info is None or stamp is None:
@@ -247,40 +280,107 @@ class Updater:
         result["branch"], result["head"] = branch or None, (sha[:7] or None)
         ok, upstream = self._git("rev-parse", "--abbrev-ref",
                                  "--symbolic-full-name", "@{u}")
-        if not ok or not upstream:
-            result["reason"] = ("This checkout tracks no branch on GitHub; "
-                                "update by hand. Set one with: git branch -u "
-                                "origin/<branch>")
+        upstream = upstream if ok and upstream else None
+        remote = "origin"
+        if upstream:
+            ok, configured = self._git("config", f"branch.{branch}.remote")
+            remote = configured if ok and configured else upstream.split("/", 1)[0]
+        if not self._git("config", f"remote.{remote}.url")[0]:
+            result["reason"] = (f"This checkout has no remote '{remote}' to take "
+                                "releases from; update by hand.")
             return result
-        ok, remote = self._git("config", f"branch.{branch}.remote")
-        remote = remote if ok and remote else upstream.split("/", 1)[0]
-        ok, _ = self._git("fetch", "--quiet", remote, timeout=timeout)
+        # Tags included: releases are tags. A fetch writes refs, never files.
+        ok, _ = self._git("fetch", "--quiet", "--tags", remote, timeout=timeout)
         if not ok:
             return _as(result, OFFLINE)
-        self._upstream = upstream
-        _, remote_sha = self._git("rev-parse", upstream)
-        result["remote"] = remote_sha[:7] or None
-        behind, ahead = self._count(f"HEAD..{upstream}"), self._count(f"{upstream}..HEAD")
+        version = self.version()
+        result["version"] = result["tag"] = version
+        self._branch_line(result, branch, upstream)
+        releases = self._releases()
+        if not releases:
+            result["status"] = NO_RELEASE
+            result["reason"] = (f"This checkout is at {version}; no release has "
+                                "been published yet.")
+            return result
+        _, latest, target = max(releases)
+        result["latest"] = result["remote"] = latest
+        if self._is_ancestor(target, "HEAD"):
+            result["status"] = UP_TO_DATE
+            result["reason"] = (f"This checkout is at {version}; no newer release "
+                                f"(the latest is {latest}).")
+            return result
+        behind = self._count(f"HEAD..{target}")
+        ahead = self._count(f"{target}..HEAD")
         if behind is None or ahead is None:
-            result["reason"] = "The update check could not compare this checkout with GitHub."
+            result["reason"] = ("The update check could not compare this checkout "
+                                f"with the release {latest}.")
             return result
         result["behind"], result["ahead"] = behind, ahead
-        if behind:
-            _, log = self._git("log", "--oneline", "--no-decorate",
-                               f"-n{LOG_LINES}", f"HEAD..{upstream}")
-            result["log"] = [line for line in log.splitlines() if line.strip()]
-        if behind == 0:
-            result["status"] = UP_TO_DATE
-            result["reason"] = ("" if not ahead else
-                                f"This checkout has {ahead} local commit(s) "
-                                "GitHub does not.")
+        result["log"] = self._coming(latest, target)
+        if not self._is_ancestor("HEAD", target):
+            result["status"] = DIVERGED
+            result["reason"] = (f"This checkout is at {version}; the latest release "
+                                f"is {latest}, but this checkout has diverged from "
+                                f"the release (it has {ahead} commit(s) the release "
+                                "does not), so it cannot fast-forward; update by "
+                                "hand and tell the lead which machine this is.")
             return result
         if self._is_dirty():
             return _as(result, DIRTY)
-        if ahead:
-            return _as(result, DIVERGED)
         result["status"] = BEHIND
+        result["reason"] = (f"This checkout is at {version}; the latest release is "
+                            f"{latest} ({behind} commit{'s' if behind != 1 else ''} "
+                            "ahead).")
+        self._target = (latest, target)
         return result
+
+    def _branch_line(self, result, branch, upstream):
+        """The developers' line: the branch against the one it tracks. An
+        update never follows it (`git pull` does)."""
+        if not upstream:
+            result["detail"] = (f"Developers: {branch} tracks no branch on GitHub "
+                                "(set one with: git branch -u origin/<branch>).")
+            return
+        behind, ahead = self._count(f"HEAD..{upstream}"), self._count(f"{upstream}..HEAD")
+        if behind is None or ahead is None:
+            return
+        result["branch_behind"], result["branch_ahead"] = behind, ahead
+        result["detail"] = (f"Developers: {branch} is {behind} commit(s) behind "
+                            f"{upstream} and {ahead} ahead.")
+
+    def _releases(self):
+        """[(version key, tag, commit)] for every release tag this checkout
+        has after the fetch. Pre-releases and other tags are not releases."""
+        ok, out = self._git("for-each-ref",
+                            "--format=%(refname:strip=2) %(objectname) %(*objectname)",
+                            "refs/tags/")
+        if not ok:
+            return []
+        found = []
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and RELEASE_TAG.fullmatch(parts[0]):
+                found.append((version_key(parts[0]), parts[0], parts[-1]))
+        return found
+
+    def _coming(self, latest, target):
+        """The release's first line (its notes are an annotated tag's
+        message; a lightweight tag has none), then the commits it brings, at
+        most LOG_LINES lines in all."""
+        _, out = self._git("for-each-ref", "--format=%(objecttype)%0a%(contents)",
+                           f"refs/tags/{latest}")
+        kind, _, message = out.partition("\n")
+        first = _first_line(message) if kind.strip() == "tag" else ""
+        _, log = self._git("log", "--oneline", "--no-decorate",
+                           f"-n{LOG_LINES}", f"HEAD..{target}")
+        lines = [first] if first else []
+        lines += [line for line in log.splitlines() if line.strip()]
+        return lines[:LOG_LINES]
+
+    def _is_ancestor(self, older, newer):
+        """`older` is `newer` or one of its ancestors. An error is "no",
+        which only ever refuses an update."""
+        return self._git("merge-base", "--is-ancestor", older, newer)[0]
 
     # -- the bundle's path (B3) ----------------------------------------------
     def _stamp(self):
@@ -337,8 +437,8 @@ class Updater:
 
     def _check_release(self, result, info, stamp, timeout):
         """-> (result, release or None, login or None)."""
-        result.update(tag=stamp["tag"], head=stamp["tag"], latest=None, title="",
-                      asset=asset_name(info))
+        result.update(tag=stamp["tag"], head=stamp["tag"], version=stamp["tag"],
+                      latest=None, title="", asset=asset_name(info))
         login = self._login()           # None: ask anonymously (a public repo)
         url = f"{API}/repos/{info['owner']}/{info['repo']}/releases/latest"
         try:
@@ -365,7 +465,7 @@ class Updater:
         first = _first_line(release.get("body") or "")
         result.update(latest=latest, remote=latest,
                       title=str(release.get("name") or latest))
-        if latest == stamp["tag"]:
+        if not _is_newer(latest, stamp["tag"]):
             result["status"] = UP_TO_DATE
             return result, release, login
         result.update(status=BEHIND, behind=1, log=[first] if first else [])
@@ -407,7 +507,7 @@ class Updater:
                                 "as your home folder.")
             return result
         try:
-            refusal = self._download(asset, name, release, login, work / name)
+            refusal = self._download(asset, name, release, login, work / name, timeout)
             if refusal:
                 result["reason"] = refusal
                 return result
@@ -429,10 +529,15 @@ class Updater:
                       reason=f"Updated to {latest}. Restart the station to run it.")
         return result
 
-    def _download(self, asset, name, release, login, path):
+    def _download(self, asset, name, release, login, path, timeout=10.0):
         """Fetch `asset` to `path`; -> a refusal sentence, or "" when the
-        file is whole (its size, and its SHA-256 when the release lists one)."""
+        file is whole: its size, and its SHA-256 against the release's
+        SHA256SUMS asset (else a sum its notes list). SHA256SUMS is read
+        first, so a release whose sums cannot be read costs no download."""
         headers = dict(_headers(login), Accept="application/octet-stream")
+        listed, refusal = self._expected_sum(release, name, headers, timeout)
+        if refusal:
+            return refusal
         try:
             with open(path, "wb") as sink:
                 code, _ = self._fetch(asset["url"], headers=headers,
@@ -448,7 +553,6 @@ class Updater:
         if isinstance(expected, int) and size != expected:
             return (f"The download is the wrong size ({size} bytes, the release "
                     f"says {expected}); nothing was changed. Try again.")
-        listed = _listed_sums(release.get("body") or "").get(name)
         if listed:
             digest = hashlib.sha256()
             with open(path, "rb") as f:
@@ -459,6 +563,31 @@ class Updater:
                         "lists; nothing was changed. Try again, and tell the "
                         "lead if it happens twice.")
         return ""
+
+    def _expected_sum(self, release, name, headers, timeout):
+        """-> (the SHA-256 the release gives for `name` or None, a refusal
+        or ""). A release that carries SHA256SUMS must list `name` in it."""
+        sums = next((a for a in release.get("assets") or ()
+                     if isinstance(a, dict) and a.get("name") == SUMS_ASSET
+                     and a.get("url")), None)
+        if sums is None:
+            return _listed_sums(release.get("body") or "").get(name), ""
+        unread = (f"The release's {SUMS_ASSET} could not be read; nothing was "
+                  "changed. Check the network and try again.")
+        try:
+            code, body = self._fetch(sums["url"], headers=headers, timeout=timeout)
+        except (OSError, ValueError):
+            return None, unread
+        if code != 200 or body is None:
+            return None, unread
+        try:
+            listed = _listed_sums(body.decode("utf-8")).get(name)
+        except UnicodeDecodeError:
+            listed = None
+        if not listed:
+            return None, (f"The release's {SUMS_ASSET} does not list {name}; "
+                          "nothing was changed. Tell the lead.")
+        return listed, ""
 
     def _is_dirty(self):
         """Edits to tracked files, staged or not: `update.sh`'s rule.
@@ -605,14 +734,33 @@ def _fetch(url, headers=None, timeout=10.0, sink=None):
         return response.status, None
 
 
+#: Keep-a-Changelog's category headings: never the line an operator reads.
+_CATEGORIES = {"added", "changed", "deprecated", "removed", "fixed", "security"}
+
+
 def _first_line(body):
     """The release notes' first line the operator reads: blank lines,
-    checksum lines and Markdown markers skipped."""
+    checksum lines, Markdown markers and the CHANGELOG's category and
+    version headings ("### Added", "## [1.4.0] - 2026-10-20") skipped."""
     for line in str(body).splitlines():
         text = line.strip().lstrip("#*->").strip()
-        if text and not _SUM_LINE.match(line.strip()):
-            return text
+        if not text or _SUM_LINE.match(line.strip()):
+            continue
+        if line.lstrip().startswith("#") and (
+                text.lower() in _CATEGORIES or text.startswith("[")):
+            continue
+        return text
     return ""
+
+
+def _is_newer(latest, running):
+    """`latest` is a newer version than `running`, compared as versions; a
+    tag that is no version is newer whenever it differs (the rule before
+    REL-4)."""
+    latest_key, running_key = version_key(latest), version_key(running)
+    if latest_key is None or running_key is None:
+        return str(latest).strip() != str(running).strip()
+    return latest_key > running_key
 
 
 def _listed_sums(body):
