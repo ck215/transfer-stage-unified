@@ -1584,6 +1584,14 @@ span.value.is-word,
 
 .row.stat > .label { grid-column: 1 / -1; }
 
+/* A secondary readout (schema `secondary`): the steps/s under a percent
+   dial. A quiet line in the statistic size, no caption of its own, drawn
+   directly under its control, and not on the Overview. */
+.row.secondary { align-self: flex-start; }
+.row.secondary > .value { font-size: var(--statistic-size); font-weight: 500; color: var(--muted); line-height: 1.1; }
+.row.secondary > .unit { font-size: var(--caption-size); }
+.sheet.is-overview .row.secondary { display: none; }
+
 /* A reading: the model's key number, in the numeral face at the theme's
    reading sizes - focal for the opened model's axes, compact for a closed
    probe's, primary for a single-value model, secondary for a change. */

@@ -1462,3 +1462,225 @@ def test_web5_a_thumbnail_is_served_by_relative_path_under_the_output_root(image
     assert get("images/missing.png")[0] == 404
     status, _, _ = _request(view, "/api/image?name=Nobody&path=images/a.png")
     assert status == 404
+
+
+# ==========================================================================
+# SP-2 / SP-3 (2026-10-07): the secondary readout, and hosted_tier
+# ==========================================================================
+class FakeDial(_Plain):
+    """A percent dial with its steps/s underneath, as a probe's Speeds."""
+
+    NAME = "Fake Dial"
+    PARAMS = {"speed_pct": Param("speed_pct", "int", default=13, minimum=0,
+                                 maximum=100, label="Speed", unit="%")}
+
+    def __init__(self):
+        super().__init__()
+        self.speed_pct = 13
+        self.speed = 416
+        self.x = 0
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Position", sch.readonly("X:", "x", rail=True, unit="steps")),
+            sch.section(
+                "Speeds",
+                sch.entry("Speed:", "speed_pct", self.PARAMS["speed_pct"], slider=(0, 100)),
+                sch.readonly("steps/s", "speed", secondary=True, unit="steps/s"),
+            ),
+        )
+
+
+@pytest.fixture
+def dial_station():
+    controller = Controller()
+    controller.factory = lambda config: FakeDial()
+    controller.add("Fake Dial", FakeDial(), {})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        yield view
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_sp2_the_secondary_is_a_quiet_line_under_its_control_and_not_on_the_overview(dial_station, tmp_path):
+    out = _browse(dial_station, r"""
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await until(() => document.querySelector('#cards .card'));
+      await sleep(400);
+      const overview = await page.evaluate(() => {
+        const n = document.querySelector('#cards .row.secondary');
+        return { drawn: Boolean(n && n.getClientRects().length) };
+      });
+      await page.click('#model-nav [data-model="Fake Dial"]');
+      await sleep(500);
+      const device = await page.evaluate(() => {
+        const sec = document.querySelector('#cards .row.secondary');
+        const row = sec.parentElement;
+        const group = row.querySelector('.group').getBoundingClientRect();
+        const box = sec.getBoundingClientRect();
+        const value = sec.querySelector('.value');
+        return {
+          drawn: Boolean(sec.getClientRects().length),
+          inRow: row.classList.contains('has-slider') && Boolean(row.querySelector('input[name="speed_pct"]')),
+          below: box.top >= group.bottom - 1,
+          label: Boolean(sec.querySelector('.label')),
+          text: sec.textContent,
+          size: parseFloat(getComputedStyle(value).fontSize),
+          quiet: getComputedStyle(value).color === getComputedStyle(row.querySelector('.label')).color,
+          readings: document.querySelectorAll('#cards .reading').length,
+          secondaryReading: Boolean(sec.classList.contains('reading')),
+        };
+      });
+      return { overview, device };
+    """, tmp_path)
+    assert not out["overview"]["drawn"], out
+    d = out["device"]
+    assert d["drawn"] and d["inRow"] and d["below"] and not d["label"], d
+    assert "416" in d["text"] and "steps/s" in d["text"], d
+    assert 24 <= d["size"] <= 26, d
+    assert d["quiet"], d
+    assert d["readings"] == 1 and not d["secondaryReading"], d   # the X reading only
+
+
+class FakeLive(FakeRed):
+    """A hosted model whose tier-1 Live group is placed at tier 2 on its
+    host's page (the analysis's shape)."""
+
+    NAME = "Fake Live"
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Live", sch.readonly("Red", "red", rail=True),
+                        sch.button("Start live", "press"), hosted_tier=2),
+            sch.section("Rows", sch.readonly("Rows", "rows"),
+                        tier=2, disclosure="Fake Live details"),
+            sch.section("Diagnostics", sch.readonly("Rows", "rows"), tier=3,
+                        disclosure="Diagnostics"),
+        )
+
+
+@pytest.fixture
+def live_station():
+    controller = Controller()
+    made = {"Fake Map": FakeMap, "Fake Live": FakeLive}
+    controller.factory = lambda config: made[config["kind"]]()
+    controller.add("Fake Map", FakeMap(), {"kind": "Fake Map"})
+    controller.add("Fake Live", FakeLive(), {"kind": "Fake Live"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        yield view
+    finally:
+        view.close()
+
+
+_LIVE_WHERE = r"""
+  const where = () => page.evaluate(() => {
+    const live = Array.from(document.querySelectorAll('#cards .card'))
+      .find((c) => (c.querySelector('.card-title') || {}).textContent === 'Fake Live');
+    const btn = Array.from(document.querySelectorAll('#cards button'))
+      .find((b) => b.textContent.trim() === 'Start live');
+    const tiers = Array.from(document.querySelectorAll('#cards .tier-well'));
+    return {
+      exists: Boolean(btn),
+      inBody: Boolean(btn && live.querySelector('.card-body').contains(btn)),
+      inWell: Boolean(btn && tiers.some((w) => w.contains(btn))),
+      wellHidden: Boolean(btn && tiers.find((w) => w.contains(btn)) && tiers.find((w) => w.contains(btn)).hidden),
+      shown: Boolean(btn && btn.getClientRects().length),
+    };
+  });
+"""
+
+
+@needs_browser
+def test_sp3_the_live_group_leaves_the_hosts_tier_one_and_is_behind_details(live_station, tmp_path):
+    out = _browse(live_station, _LIVE_WHERE + r"""
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await until(() => document.querySelectorAll('#cards .card-title').length >= 2);
+      await page.click('#model-nav [data-model="Fake Map"]');
+      await sleep(500);
+      const r = { shut: await where() };
+      await page.evaluate(() => Array.from(document.querySelectorAll('#cards .disclosure'))
+        .find((d) => d.textContent.trim() === 'Fake Live details').click());
+      await sleep(300);
+      r.open = await where();
+      // The other tier-1 control of the group's model is still the host's own.
+      r.hostSweep = await page.evaluate(() => Boolean(Array.from(document.querySelectorAll('#cards button'))
+        .find((b) => b.textContent.trim() === 'Sweep' && b.getClientRects().length)));
+      return r;
+    """, tmp_path)
+    assert out["shut"]["exists"] and out["shut"]["inWell"] and not out["shut"]["inBody"], out
+    assert out["shut"]["wellHidden"] and not out["shut"]["shown"], out
+    assert out["open"]["shown"] and out["open"]["inWell"] and not out["open"]["inBody"], out
+    assert out["hostSweep"], out
+
+
+@needs_browser
+def test_sp3_the_live_group_is_tier_one_on_the_models_own_page_and_returns_there(live_station, tmp_path):
+    out = _browse(live_station, _LIVE_WHERE + r"""
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await until(() => document.querySelectorAll('#cards .card-title').length >= 2);
+      const r = {};
+      await api('/api/close_model', { name: 'Fake Map' });
+      await until(() => document.querySelector('#model-nav [data-model="Fake Live"]'));
+      await sleep(400);
+      await page.click('#model-nav [data-model="Fake Live"]');
+      await sleep(400);
+      r.alone = await where();
+      await api('/api/open_model', { name: 'Fake Map' });
+      await until(() => document.querySelector('#model-nav [data-model="Fake Map"]')
+        && !document.querySelector('#model-nav [data-model="Fake Live"]'));
+      await sleep(400);
+      r.hosted = await where();
+      return r;
+    """, tmp_path)
+    assert out["alone"]["inBody"] and out["alone"]["shown"] and not out["alone"]["inWell"], out
+    assert out["hosted"]["inWell"] and not out["hosted"]["inBody"], out
+
+
+@needs_browser
+def test_sp3_the_real_analysis_live_group_is_behind_details_on_the_trial_page(map_station, tmp_path):
+    """The Transfer Map page's tier 1 no longer carries the analysis's Live
+    group (the procedure strip replaced it); Start run and Stop run are
+    behind "RGB analysis details", and the Live group is tier 1 again on the
+    analysis's own page."""
+    view, controller, launched = map_station
+    out = _browse(view, r"""
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await page.click('#model-nav [data-model="Transfer Map"]');
+      await sleep(600);
+      const where = (text) => page.evaluate((t) => {
+        const red = Array.from(document.querySelectorAll('#cards .card'))
+          .find((c) => (c.querySelector('.card-title') || {}).textContent === 'RGB Analysis');
+        const btn = Array.from(document.querySelectorAll('#cards button'))
+          .find((b) => b.textContent.trim() === t);
+        const wells = Array.from(document.querySelectorAll('#cards .tier-well'));
+        return { exists: Boolean(btn),
+                 inBody: Boolean(btn && red.querySelector('.card-body').contains(btn)),
+                 inWell: Boolean(btn && wells.some((w) => w.contains(btn))),
+                 shown: Boolean(btn && btn.getClientRects().length) };
+      }, text);
+      const r = { shut: await where('Start run') };
+      await page.evaluate(() => Array.from(document.querySelectorAll('#cards .disclosure'))
+        .find((d) => d.textContent.trim() === 'RGB analysis details').click());
+      await sleep(300);
+      r.start = await where('Start run');
+      r.stop = await where('Stop run');
+      return r;
+    """, tmp_path)
+    for key in ("shut", "start", "stop"):
+        assert out[key]["exists"] and out[key]["inWell"] and not out[key]["inBody"], out
+    assert not out["shut"]["shown"] and out["start"]["shown"], out
