@@ -2792,7 +2792,7 @@ class PanelCard {
     this.setStale(isStale(state) || isLost, isLost ? 'Connection lost' : 'Stale');
     const linkLine = (link && link.line) || '';
     this.setAlert(linkLine || (isLost ? sentence(this.title) + ' lost its ' + this.lost.join(' and ')
-      + '. Its readings are frozen. Press Stop, check the cable, then relaunch from Setup.'
+      + '. Its readings are frozen. Press Stop, check the cable, then Hard reset it in Setup.'
       : ''), linkLine ? (link.tier || 'error') : 'error');
     // State classes, not colour: a live model is silent; a lost one's head
     // rule turns signal red; a latched one's readings freeze to muted and
