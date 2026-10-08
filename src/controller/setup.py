@@ -705,6 +705,7 @@ class Setup(PortProbe, Panel):
                         _Selector(self, key, field))
             if row["needs_port"]:
                 setattr(self, f"hard_reset_{key}", _HardReset(self, key))
+                setattr(self, f"start_{key}", _StartRow(self, key))
         # Reopen goes through the registry from the start, not only after a
         # build: a model added with `controller.add(NAME, model, config)`
         # comes back from its remembered config like one Setup built.
@@ -724,8 +725,8 @@ class Setup(PortProbe, Panel):
     def mode_name(self):
         """`scanning` gates Launch; `launched` retires it (owner 2026-10-07:
         no relaunch - a device is recovered, or moved to a changed port
-        (2026-10-08), with its row's Hard reset; adding a device needs a
-        station Restart). The dropdowns are gated by neither: the operator may point a
+        (2026-10-08), with its row's Hard reset; a device plugged in since
+        is started by its row's Start, 2026-10-08 B). The dropdowns are gated by neither: the operator may point a
         row at a port while the scan is still walking the rest of them, and
         that choice then wins over auto-assign."""
         if self.is_scanning:
@@ -816,12 +817,15 @@ class Setup(PortProbe, Panel):
                 "needs_port": row["needs_port"],
                 "needs_gamepad": row["needs_gamepad"],
                 "is_chosen": key in chosen,
-                # A board that answered after the launch: its port, until a
-                # restart lets it launch.
-                "seen_after_launch": seen.get(key),
+                # A board that answered after the launch: its port, until
+                # its row's Start starts it.
+                "seen_after_launch": seen.get(key) if self._can_start(key) else None,
                 # A Port or Gamepad changed after the launch, waiting for
                 # the row's Hard reset (owner ruling 2026-10-08).
                 "pending_reset": self._pending_config(key) is not None,
+                # Not running after the launch: the row's key is Start
+                # (owner ruling 2026-10-08, B).
+                "can_start": self._can_start(key),
                 "options_command": row["options_command"],
             })
         snapshot.update({
@@ -1200,11 +1204,18 @@ class Setup(PortProbe, Panel):
             if name in running:
                 continue        # launched: its port is held, its row stands
             if self._is_launched:
-                # Owner 2026-10-07: a device plugged in after the launch is
-                # not added to the running station; a restart launches it.
+                # Owner ruling 2026-10-08 (B): a device plugged in after the
+                # launch is never started by itself; its row is pointed at
+                # it (unless the operator chose its port, or it was
+                # launched and closed) and Settings' Start starts it.
+                closed = list(getattr(self.controller, "closed_names", ()) or ())
                 with self._lock:
                     is_new = self._seen.get(key) != port
                     self._seen[key] = port
+                    mine = key in chosen and not force
+                if not mine and name not in closed and \
+                        getattr(self, f"{key}_port") != port:
+                    setattr(self, f"{key}_port", port)
                 if is_new:
                     seen.append((name, port))
                 continue
@@ -1232,13 +1243,12 @@ class Setup(PortProbe, Panel):
         if seen:
             words = _and([f"{name} on {port}" for name, port in seen])
             many = len(seen) > 1
-            events.warn(events.RESTART_NEEDED,
+            events.warn("Device Not Started",
                         f"{words} {'were' if many else 'was'} plugged in after "
                         f"the launch and {'are' if many else 'is'} not running. "
-                        "Restart the station to launch "
-                        f"{'them' if many else 'it'}.", source=self.NAME, ack=True,
-                        action=("Restart now", events.SETUP_PANEL,
-                                "restart_station", (True,)))
+                        f"Start {'them' if many else 'it'} in Settings: "
+                        f"{'their rows' if many else 'its row'}, Start.",
+                        source=self.NAME)
         events.debug("Auto-assign", "; ".join(assigned + kept) or
                      "nothing to assign", source=self.NAME)
         return assigned
@@ -1306,6 +1316,10 @@ class Setup(PortProbe, Panel):
         controller = self.controller
         if name not in self._running_names() and \
                 name not in list(getattr(controller, "closed_names", ()) or ()):
+            if self._is_launched:
+                # Owner ruling 2026-10-08 (B): the row's key is Start while
+                # the row is not running (the Web view labels it so).
+                return self._start_row(key)
             self._refuse(f"{name} is not launched, so there is nothing to reset.")
         if self.is_scanning:
             self._refuse("A scan is running. Wait for it, or press Cancel scan, "
@@ -1377,6 +1391,91 @@ class Setup(PortProbe, Panel):
                          "station.")
         self._refresh_rows()
         return name
+
+    def _can_start(self, key):
+        """A port row that is not running after the launch (owner ruling
+        2026-10-08, B): its key reads Start."""
+        row = self._rows[key]
+        if not (self._is_launched and row["needs_port"]) or self.controller is None:
+            return False
+        name = row["name"]
+        closed = list(getattr(self.controller, "closed_names", ()) or ())
+        return name not in self._running_names() and name not in closed
+
+    def _start_row(self, key):
+        """Start one device after the launch, from its Settings row (owner
+        ruling 2026-10-08, B: "A device plugged in after launch should be
+        able to have a port set in settings and be started after startup,
+        just not dynamically from outside settings like before"). Reached
+        through `start_<row>` and the row's key while the row is not
+        running. The row's choice is held to what Launch holds a row to: not
+        a port a running model holds (ports are exclusive), and answered as
+        this model in the identity handshake (or SIM). Builds and opens that
+        one model; nothing else restarts. Never asks: nothing is running on
+        it to take down."""
+        if key not in self._rows:
+            self._refuse(f"{key} is not a configurable model")
+        row = self._rows[key]
+        name = row["name"]
+        if not row["needs_port"]:
+            self._refuse(f"{name} has no port to start on.")
+        if not self._is_launched:
+            self._refuse(f"Nothing is launched yet: Launch starts {name} with "
+                         "the rest.")
+        if name in self._running_names():
+            self._refuse(f"{name} is already running. Its Hard reset restarts it.")
+        if not self._can_start(key):
+            self._refuse(f"{name} was launched and is closed: press its Hard "
+                         "reset to bring it back.")
+        if self.is_scanning:
+            self._refuse("A scan is running. Wait for it, or press Cancel scan, "
+                         f"then Start {name}.")
+        if self.is_flashing:
+            self._refuse("The firmware is being flashed. Start it when the "
+                         "Flashing cell is empty.")
+        if getattr(self, f"{key}_port") == NOT_CONNECTED:
+            self._refuse(f"{name} is not launched: choose its Port (or SIM), "
+                         "then press Start.")
+        config = self._row_config(key, row)
+        others = []
+        for other in self._running_names():
+            try:
+                others.append(self.controller.config(other) or {})
+            except Exception:
+                continue
+        self.validate([c for c in others if c.get("model")] + [config])
+        self._check_identities([config])
+        if not config.get("sim"):
+            with self._lock:
+                answered = self._found.get(config.get("port"))
+            if answered != name:
+                self._refuse(f"{name} has not answered on {config.get('port')}. "
+                             "Press Refresh to scan it, or choose another port.")
+        where = self._where(config)
+        # One build or reset at a time (the Hard reset's guard).
+        if not self._reset_lock.acquire(blocking=False):
+            self._refuse("A hard reset or start is already running; wait for it "
+                         "to finish, then press Start again if needed.")
+        try:
+            try:
+                self.controller.add(name, self.model_from_config(config), config)
+            except Refused:
+                self._refresh_rows()
+                raise
+            except Exception as exc:
+                events.debug("Start Failed", f"{name}: {exc!r}", source=self.NAME,
+                             exception=exc)
+                self._refresh_rows()
+                self._refuse(f"{name} did not start on {where}. Check its cable, "
+                             "then press Start again.")
+            with self._lock:
+                self._seen.pop(key, None)
+            self._refresh_rows()
+            events.info("Device Started", f"{name} on {where}, from Settings.",
+                        source=self.NAME)
+            return name
+        finally:
+            self._reset_lock.release()
 
     def _stop_for_reset(self, name, model):
         """The forced reset's stop path. The estop runs FIRST, while the
@@ -1534,7 +1633,8 @@ class Setup(PortProbe, Panel):
         if self._is_launched:
             self._refuse("The station is already launched. Recover a device, "
                          "or move it to another port, with its row's Hard "
-                         "reset; to add a device, Restart the station.")
+                         "reset; start a device plugged in since from its "
+                         "row: choose its Port, then Start.")
         if self.is_flashing:
             # A board mid-upload is not a board to open: its port is the
             # uploader's, and its firmware is neither the old nor the new.
@@ -3145,6 +3245,13 @@ class Setup(PortProbe, Panel):
                 elements.append(sch.button("Hard reset", f"hard_reset_{key}",
                                            role="neutral",
                                            enabled_when=[self.LAUNCHED]))
+                # Owner ruling 2026-10-08 (B): Start, for a row that is not
+                # running after the launch. Declared so `run("start_<row>")`
+                # passes the allow-list; it draws nothing: the row's key above
+                # reads Start then (the Web view, from `can_start`).
+                elements.append({"type": "internal", "command": f"start_{key}",
+                                 "writable": False, "role": "go",
+                                 "enabled_when": [self.LAUNCHED]})
             # Built from the class's resources; for the six built-ins that is
             # a Gamepad dropdown where one is declared, and nothing else.
             for field, kind, label, _ in row["columns"]:
@@ -3161,8 +3268,8 @@ class Setup(PortProbe, Panel):
             # state value for the API and the tests.
             # Once per run (owner 2026-10-07): no Relaunch and no Close every
             # model. After the launch a device is recovered, or moved to a
-            # changed port (2026-10-08), with its row's Hard reset; adding a
-            # device is a station Restart.
+            # changed port (2026-10-08), with its row's Hard reset; a device
+            # plugged in since is started by its row's Start (2026-10-08 B).
             sch.button("Launch", "launch", role="go",
                        enabled_when=[self.READY], disabled_when=[self.LAUNCHED]),
             layout="row",
@@ -3205,8 +3312,8 @@ class Setup(PortProbe, Panel):
         one sentence the operator reads to know whether the row launches."""
         with self._lock:
             seen = self._seen.get(key)
-        if seen:
-            return f"seen on {seen}: restart to launch"
+        if seen and self._can_start(key):
+            return f"seen on {seen}: press Start"
         pending = self._pending_config(key)
         if pending is not None:
             # Owner ruling 2026-10-08: the row's Hard reset applies it - once
@@ -3215,6 +3322,9 @@ class Setup(PortProbe, Panel):
                 return "changed: hard reset to apply"
             return "changed: not identified there; press Refresh"
         choice = getattr(self, f"{key}_port")
+        if self._can_start(key) and (choice == SIM or (
+                choice != NOT_CONNECTED and found.get(choice) == row["name"])):
+            return "not running: press Start"
         if self.guest_locked and is_signed_in_only(row["name"]):
             return "sign in to use"
         if choice == SIM:
@@ -3382,6 +3492,22 @@ class _Selector:
 
     def __repr__(self):
         return f"<set_{self.key}_{self.field}>"
+
+
+class _StartRow:
+    """One row's Start after the launch: `start_<row>()` (owner ruling
+    2026-10-08, B)."""
+
+    __slots__ = ("setup", "key")
+
+    def __init__(self, setup, key):
+        self.setup, self.key = setup, key
+
+    def __call__(self):
+        return self.setup._start_row(self.key)
+
+    def __repr__(self):
+        return f"<start_{self.key}>"
 
 
 class _HardReset:

@@ -5324,8 +5324,11 @@ class Dashboard {
       const button = widget && widget.node && widget.node.querySelector('button');
       if (!button) continue;
       widget.node.classList.add('hard-reset-cell');
-      const pending = launched && Boolean(row.pending_reset);
-      const words = pending ? 'Apply & reset' : 'Hard reset';
+      // A row not running after the launch (owner ruling 2026-10-08, B):
+      // the same key starts it (`hard_reset_<row>` runs Start for it).
+      const startable = launched && Boolean(row.can_start);
+      const pending = startable || (launched && Boolean(row.pending_reset));
+      const words = startable ? 'Start' : (pending ? 'Apply & reset' : 'Hard reset');
       if (button.dataset.words !== words) {
         button.dataset.words = words;
         const legend = Array.from(button.childNodes).find((n) => n.nodeType === 3);
