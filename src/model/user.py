@@ -369,9 +369,10 @@ class User(Panel):
     @property
     def schema(self):
         if self.is_guest:
+            # UX audit 2026-10-08 #13: a Guest is not signed in.
             return sch.schema(sch.section(
-                "Signed in",
-                sch.readonly("Signed in", "who", role="info"),
+                "Guest",
+                sch.readonly("Working as", "who", role="info"),
                 sch.button("Sign in / Switch user", "switch_user", role="go"),
             ))
         P = self.PARAMS

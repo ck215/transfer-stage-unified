@@ -130,10 +130,15 @@ from param import Param
 from result import NeedsConfirm, Refused
 
 #: Every recording command's refusal while no store is chosen (A3).
-NO_STORE = ("Choose a trial store first: the Transfer Map's page asks where "
-            "(New store, or Open store).")
+NO_STORE = ("Choose a trial store first: press New store or Open store on "
+            "the Transfer Map page.")
 #: The file the SQLite library writes first in every database.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _count(n, noun):
+    """ "1 trial", "2 trials" (UX audit 2026-10-08 #14: no "trial(s)")."""
+    return f"{n} {noun if n == 1 else noun + 's'}"
 
 
 #: The figure dropdown, in the operator's words -> `plot_data` kind.
@@ -426,7 +431,7 @@ class TrialStore:
                 db.close()
             labelled = self._labelled
         if fresh:
-            events.info("Map Database Created", "A new Transfer Map database "
+            events.info("Map Database Created", "A new trial store "
                         "was created at " + str(self.path) + ".",
                         source="Transfer Map")
         elif added is not None:
@@ -1073,7 +1078,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         except OSError as exc:
             raise Refused(f"{path} could not be read ({exc}).")
         if magic != _SQLITE_MAGIC:
-            raise Refused(f"{path} is not a Transfer Map store (not a "
+            raise Refused(f"{path} is not a trial store (not a "
                           "database file).")
         return self._choose(path, created=False)
 
@@ -1130,8 +1135,9 @@ class TransferMap(store_choice.StorePrompt, Model):
                 events.warn("Store Not Remembered", f"Trials go to {path}, but "
                             f"the choice could not be saved ({exc}); the station "
                             "will ask again next time.", source=self.NAME)
-        events.info("Trial Store", f"Trials go to {path}: {store.count()} "
-                    "trial(s).", source=self.NAME)
+        events.info("Trial Store", f"Trials go to {path}: "
+                    f"{_count(store.count(), 'trial')}.", source=self.NAME,
+                    resolves=events.TRIAL_STORE_NOT_CHOSEN)
         self._request_backup()
         return str(path)
 
@@ -1197,10 +1203,9 @@ class TransferMap(store_choice.StorePrompt, Model):
     def _announce_store(self):
         if not self._store_chosen:
             legacy = self.legacy_store_path()
-            events.warn("Trial Store Not Chosen", "Choose where the Transfer "
-                        "Map keeps its trials: its page asks (New store in a "
-                        "folder of your choice, or Open store for an existing "
-                        "file)." + (f" A store from an earlier version is at "
+            events.warn(events.TRIAL_STORE_NOT_CHOSEN, "Open the Transfer Map "
+                        "page and press New store or Open store to choose "
+                        "where its trials are saved." + (f" A store from an earlier version is at "
                                      f"{legacy}; move it out of the station's "
                                      "folder and open it there to keep its "
                                      "trials." if legacy else ""),
@@ -1209,13 +1214,13 @@ class TransferMap(store_choice.StorePrompt, Model):
         try:
             self._store.ensure()
         except Exception as exc:
-            events.error("Database Not Ready", f"The Transfer Map database "
+            events.error("Database Not Ready", f"The trial store "
                          f"could not be created at {self.db_path}. Check that "
                          "the folder exists and can be written, or start with "
                          "--map-db PATH.", source=self.NAME, exception=exc)
             return False
         events.info("Database Ready", f"{self.db_path}: "
-                    f"{self._store.count()} trial(s)", source=self.NAME)
+                    f"{_count(self._store.count(), 'trial')}", source=self.NAME)
         return True
 
     @property
@@ -2255,7 +2260,7 @@ class TransferMap(store_choice.StorePrompt, Model):
                         f"{len(samples)} samples are kept.", source=self.NAME)
         except Exception as exc:
             events.error("Trial Not Saved", f"Trial {trial.id} was aborted but "
-                         "could not be saved. Check the database folder.",
+                         "could not be saved. Check the trial store's folder.",
                          source=self.NAME, exception=exc)
 
     def _take_picture(self):
@@ -2380,7 +2385,13 @@ class TransferMap(store_choice.StorePrompt, Model):
         state: "no region" (no Red Percent, or no capture region), "stalled"
         (a run that reads nothing, or no run while recording), "unsettled"
         (most reads rejected), "settled"; "" while no run is expected
-        (setup, the tip prompt, review)."""
+        (setup, the tip prompt, review).
+
+        UX audit 2026-10-08 #15: "no region" only from the step where a
+        region is due (Capture region, then the recording); in Setup, step
+        1, it was a warning about something the operator cannot do yet."""
+        if self.phase not in ("region", "live", "marked"):
+            return ""
         red = self._red
         if red is None or not getattr(red, "region", None):
             return "no region"
@@ -2710,13 +2721,14 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise Refused(f"A trial is armed on tip {tip}. Finish or abort it "
                           "first.")
         if not confirmed:
-            raise NeedsConfirm(f"Retire tip {tip}? Its {record['count']} "
-                               "trial(s) are kept; arming on it later asks "
-                               "first.", "retire_tip")
+            n = record['count']
+            raise NeedsConfirm(f"Retire tip {tip}? Its {_count(n, 'trial')} "
+                               f"{'is' if n == 1 else 'are'} kept; arming on "
+                               "it later asks first.", "retire_tip")
         self._store.set_tip(tip, {"retired_at": _now()})
         self._changed()
         events.info("Tip Retired", f"Tip {tip} retired after "
-                    f"{record['count']} trial(s).", source=self.NAME)
+                    f"{_count(record['count'], 'trial')}.", source=self.NAME)
         return tip
 
     def unretire_tip(self):
@@ -2761,7 +2773,7 @@ class TransferMap(store_choice.StorePrompt, Model):
                 end += "  retired"
             note = f"  {tip['note']}" if tip["note"] else ""
             model = (tip.get("model") or "").strip() or self.NO_MODEL
-            lines.append(f"{tip['tip_id']}  {model}  {tip['count']} trial(s), "
+            lines.append(f"{tip['tip_id']}  {model}  {_count(tip['count'], 'trial')}, "
                          f"{span}{end}{note}")
         return lines
 
@@ -2774,7 +2786,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise Refused("Type the trial number under AFM measurement, Trial.")
         row = self._store.trial(trial_id)
         if row is None:
-            raise Refused(f"No trial {trial_id} in the database.")
+            raise Refused(f"No trial {trial_id} in the trial store.")
         if row["status"] == "armed":
             raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
         tilt = _number(self.typed_tilt)
@@ -2798,7 +2810,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise Refused("Type the trial number under AFM measurement, Trial.")
         row = self._store.trial(trial_id)
         if row is None:
-            raise Refused(f"No trial {trial_id} in the database.")
+            raise Refused(f"No trial {trial_id} in the trial store.")
         if row["status"] == "armed":
             raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
         flag = bool(invalid) and str(invalid).lower() not in ("false", "0")
@@ -2981,7 +2993,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         if trial_id:
             rows = [r for r in rows if r["id"] == trial_id]
             if not rows:
-                raise Refused(f"No trial {trial_id} in the database.")
+                raise Refused(f"No trial {trial_id} in the trial store.")
         else:
             rows = [r for r in rows if r["status"] in ("recorded", "measured")
                     and r.get("origin") == "recorded" and not r.get("invalid")]
@@ -3003,7 +3015,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             rebuilt[row["id"]] = fields
         if rebuilt:
             self._changed()
-        events.info("Force Rebuilt", f"{len(rebuilt)} trial(s) rebuilt from "
+        events.info("Force Rebuilt", f"{_count(len(rebuilt), 'trial')} rebuilt from "
                     "their footage: " + (", ".join(
                         f"{i} {f['force_class'] or 'no force'}"
                         for i, f in rebuilt.items()) or "none") + ".",
@@ -3032,7 +3044,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         "none"."""
         row = self._store.trial(int(trial_id or 0))
         if row is None:
-            raise Refused(f"No trial {trial_id} in the database.")
+            raise Refused(f"No trial {trial_id} in the trial store.")
         folder = self.pictures_root / str(row["id"])
 
         def still(name):
@@ -3065,7 +3077,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         trial_id = int(trial_id or 0)
         row = self._store.trial(trial_id)
         if row is None:
-            raise Refused(f"No trial {trial_id} in the database.")
+            raise Refused(f"No trial {trial_id} in the trial store.")
         if row["status"] == "armed":
             raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
         try:
@@ -3093,7 +3105,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise Refused("Type the trial number under AFM measurement, Trial.")
         row = self._store.trial(trial_id)
         if row is None:
-            raise Refused(f"No trial {trial_id} in the database.")
+            raise Refused(f"No trial {trial_id} in the trial store.")
         if row["status"] == "armed":
             raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
         speed = _number(self.typed_speed)
@@ -3114,7 +3126,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise Refused("Type the trial number the AFM measurement belongs to.")
         row = self._store.trial(trial_id)
         if row is None:
-            raise Refused(f"No trial {trial_id} in the database.")
+            raise Refused(f"No trial {trial_id} in the trial store.")
         if row["status"] == "armed":
             raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
         if not self.width_um or self.width_um <= 0:
@@ -3149,7 +3161,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise Refused("Type the trial number the optical width belongs to.")
         row = self._store.trial(trial_id)
         if row is None:
-            raise Refused(f"No trial {trial_id} in the database.")
+            raise Refused(f"No trial {trial_id} in the trial store.")
         if row["status"] == "armed":
             raise Refused(f"Trial {trial_id} is still armed. Finish it first.")
         if not self.width_optical_um or self.width_optical_um <= 0:
@@ -3435,7 +3447,7 @@ class TransferMap(store_choice.StorePrompt, Model):
                           "sample for trial.")
         row = self._store.trial(number)
         if row is None:
-            raise Refused(f"No trial {number} in the database.")
+            raise Refused(f"No trial {number} in the trial store.")
         if row["status"] == "armed":
             raise Refused(f"Trial {number} is still armed. Finish it first.")
         cut = self._store.count_for_flake(*where, before=number) + 1
@@ -3464,7 +3476,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         self._need_store()
         if self.is_armed or self._pending is not None:
             raise Refused("A trial is armed. Finish or abort it before starting "
-                          "a new database.")
+                          "a new trial store.")
         self.change_store()
         stamp = time.strftime("%Y%m%d_%H%M%S")
         name, suffix = f"transfer_map_{stamp}", 2
@@ -3516,7 +3528,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             for tip in self._store.tips():
                 writer.writerow([tip.get(c) for c in tip_columns]
                                 + [tip["count"], " ".join(map(str, tip["trials"]))])
-        events.info("Map Exported", f"{len(rows)} trial(s) written to {folder}",
+        events.info("Map Exported", f"{_count(len(rows), 'trial')} written to {folder}",
                     source=self.NAME)
         return str(trials_path), str(profile_path), str(tips_path)
 
@@ -3595,8 +3607,9 @@ class TransferMap(store_choice.StorePrompt, Model):
                     self._store.set_tip_broke(tip, trial_id, True)
             imported += 1
         self._changed()
-        created = (f"; tip(s) created: {', '.join(new_tips)}" if new_tips else "")
-        events.info("Map Imported", f"{imported} trial(s) imported from "
+        created = (f"; {'tip' if len(new_tips) == 1 else 'tips'} created: "
+                   f"{', '.join(new_tips)}" if new_tips else "")
+        events.info("Map Imported", f"{_count(imported, 'trial')} imported from "
                     f"{Path(path).name}; {skipped} skipped{created}.",
                     source=self.NAME)
         return {"imported": imported, "skipped": skipped}
@@ -3885,10 +3898,10 @@ class TransferMap(store_choice.StorePrompt, Model):
             # The start screen's (owner ruling 2026-10-07: what a step does
             # not use gets out of the way).
             sch.section(
-                "Session",
-                sch.readonly("Database", "db_path"),
+                "Trial store",
+                sch.readonly("Trial store", "db_path"),
                 sch.readonly("Trials", "trial_count", param=P["trial_count"]),
-                sch.button("New session database\u2026", "new_database",
+                sch.button("New trial store\u2026", "new_database",
                            disabled_when=("armed",)),
                 phases=("setup",),
             ),

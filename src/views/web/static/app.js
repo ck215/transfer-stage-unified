@@ -519,6 +519,14 @@ function isUnconfirmedEvent(event) {
   return Boolean(event && event.title === UNCONFIRMED_TITLE);
 }
 
+/** True when `event` says the tray's line `shown` is over: it names that
+ *  line's title in `resolves` and comes from the same source (events.py). */
+function resolvesTray(event, shown) {
+  return Boolean(event && shown && event.resolves
+    && event.resolves === shown.title
+    && String(event.source || '') === String(shown.source || ''));
+}
+
 /** The face of a toggle's state, rendered from the schema's true/false
  *  text. The schema writes "Sync X: OFF" beside a row captioned "Sync X",
  *  and "AUTONOMOUS MODE (Click to Stop)"; on a panel the caption is already
@@ -787,7 +795,27 @@ function elideMiddle(text, max) {
 function optionText(option, label) {
   const raw = String(option === null || option === undefined ? '' : option);
   if (typeof label === 'string' && label && label !== raw) return label;
-  return elideMiddle(raw, OPTION_CHARS);
+  return pathTail(raw) || elideMiddle(raw, OPTION_CHARS);
+}
+
+//: How much of a long folder path an option shows (its tail, after "…/").
+const PATH_CHARS = 32;
+
+/** A long path of three or more segments, by its tail: the folders of a
+ *  store prompt's Choose folder… list share their head ("/home/tran…" on
+ *  every line, UX audit 2026-10-08 #17), so the last two segments ("…/
+ *  stores/op@lab.test"), or the last one, are what tell them apart. Null
+ *  for anything else (a port keeps elideMiddle, F15). */
+function pathTail(raw) {
+  if (raw.length <= OPTION_CHARS) return null;
+  const sep = raw.indexOf('/') === -1 && raw.indexOf('\\') !== -1 ? '\\' : '/';
+  const parts = raw.split(sep).filter((p) => p !== '');
+  if (parts.length < 3) return null;
+  const lead = '…' + sep;
+  const two = parts.slice(-2).join(sep);
+  if (lead.length + two.length <= PATH_CHARS) return lead + two;
+  const last = parts[parts.length - 1];
+  return lead + elideMiddle(last, PATH_CHARS - lead.length);
 }
 
 /** Words that report an absence or an at-rest state. They are read, not
@@ -2144,6 +2172,22 @@ class PanelCard {
       head.appendChild(keys);
       this.wideKey = wide;
       this.moveKey = move;
+      // UX audit 2026-10-08 #19: Wide, Move and Open were three Tab stops
+      // per tile before its controls. Wide and Move are Tab stops only
+      // while focus is in this tile: Tab forward meets Open, and Shift+Tab
+      // from Open reaches Move (its arrow keys move the tile), then Wide.
+      wide.tabIndex = -1;
+      move.tabIndex = -1;
+      this.node.addEventListener('focusin', () => {
+        wide.tabIndex = 0;
+        move.tabIndex = 0;
+      });
+      this.node.addEventListener('focusout', (event) => {
+        if (event.relatedTarget && this.node.contains(event.relatedTarget)) return;
+        wide.tabIndex = -1;
+        move.tabIndex = -1;
+      });
+      open.setAttribute('aria-description', 'Shift+Tab for Move and Wide');
       head.appendChild(open);
       this.openButton = open;
     }
@@ -2388,7 +2432,7 @@ class PanelCard {
       this.phaseSections.push({
         node: block, phases: section.phases || null, tier, ownTier: tier,
         hostedTier: hostedTierOf(section),
-        widgets: mine, title: section.title || '',
+        widgets: mine, title: section.title || '', titleNode: rowTitle, isRow,
       });
       const drops = mine.filter((w) => w.element.type === 'dropdown' && w.reload);
       if (drops.length) this.dropdownGroups.push({ widgets: drops, seen: null });
@@ -2838,6 +2882,7 @@ class PanelCard {
     this.applyPhase((state && state.phase) || '');
     this.applyProcedure(state);
     this.watchOptions();
+    this.applyTitles(state);
     const link = this.linkWords;
     const isDown = Boolean(link && link.down);
     for (const widget of this.widgets) {
@@ -3033,6 +3078,9 @@ class PanelCard {
         item.classList.toggle('is-current', at === lit);
         if (at === lit) item.setAttribute('aria-current', 'step');
         else item.removeAttribute('aria-current');
+        // UX audit 2026-10-08 #16: a prompt ("New flake") is a question,
+        // not a place in the procedure; it is drawn only while it is asked.
+        if (isPromptStep(item.dataset.step)) item.classList.toggle('is-phase-off', at !== lit);
       });
     }
     if (seen.text !== text) {
@@ -3040,6 +3088,19 @@ class PanelCard {
       putText(this.stepText, text);
       putAttr(this.stepText, 'title', text);
       if (this.stepText.hidden !== !text) this.stepText.hidden = !text;
+    }
+    // UX audit 2026-10-08 #15: an info readout that says the strip's
+    // sentence word for word (a model's "Next step") is not drawn a second
+    // time. It still counts as said (the why-not caption reads isPhaseOff).
+    for (const widget of this.widgets) {
+      const element = widget.element;
+      if (element.type !== 'readonly' || element.role !== 'info' || !widget.node) continue;
+      const value = this.values[element.model_attr];
+      const echo = Boolean(text) && value !== undefined && value !== null
+        && String(value).trim() === text.trim();
+      if (widget.node.classList.contains('is-echo') !== echo) {
+        widget.node.classList.toggle('is-echo', echo);
+      }
     }
     if (seen.health !== health) {
       seen.health = health;
@@ -3182,6 +3243,33 @@ class PanelCard {
       if (group.seen !== null && group.seen !== sig) this.queueOptions(group.widgets);
       group.seen = sig;
     }
+  }
+
+  /** UX audit 2026-10-08 #11 ("New flake on ? · ?"): a procedure's section
+   *  titles may name the current pick ("New flake on S-001 · C1", "Pictures
+   *  of …"), but the card is built once from the schema fetched at the
+   *  launch, so they kept the picks of that moment. A model whose titles
+   *  move publishes them in its state (`section_titles`, one per schema
+   *  section); the titles that changed are rewritten in place (and the
+   *  prompt's name). The structure stays the build's; nothing is fetched. */
+  applyTitles(state) {
+    const titles = state && state.section_titles;
+    if (!Array.isArray(titles) || titles.length !== this.phaseSections.length) return;
+    titles.forEach((raw, at) => {
+      const entry = this.phaseSections[at];
+      const title = String(raw === null || raw === undefined ? '' : raw);
+      if (title === entry.title) return;
+      const box = entry.node.parentNode;
+      if (this.dialog && box && box.classList.contains('dialog-box')
+          && box.getAttribute('aria-label') === sentenceCase(entry.title)) {
+        box.setAttribute('aria-label', sentenceCase(title));
+      }
+      entry.title = title;
+      entry.node.dataset.section = title;
+      if (entry.titleNode) {
+        putText(entry.titleNode, entry.isRow ? sentence(title) : sentenceCase(title));
+      }
+    });
   }
 
   queueOptions(widgets) {
@@ -5621,6 +5709,10 @@ class Dashboard {
       this.dom.log.removeChild(this.dom.log.firstChild);
     }
     this.dom.log.scrollTop = this.dom.log.scrollHeight;
+    // A condition that is over is not the tray's headline (UX audit
+    // 2026-10-08 #10): an event that `resolves` the warning the tray shows
+    // (a store chosen after "Sample Store Not Chosen") takes it back.
+    if (resolvesTray(event, this.trayEvent)) this.setTray(null);
     // The collapsed tray is one line, and it carries warnings and errors
     // only (status by exception): an info event is history, in the log. A
     // line replayed from before this tab opened is history too (L21), bar

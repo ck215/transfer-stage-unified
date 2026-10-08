@@ -340,10 +340,12 @@ def test_a_guests_menu_is_who_and_sign_in_switch_user(store):
     calls = []
     guest = User.guest(on_switch_user=lambda: calls.append("switch") or "chosen")
     sections = _sections(guest)
-    assert list(sections) == ["Signed in"]
+    # Updated (UX audit 2026-10-08 #13): a Guest is not signed in, so the
+    # menu no longer says "Signed in" for one.
+    assert list(sections) == ["Guest"]
     assert [(e["type"], e.get("command") or e.get("model_attr"), e.get("text"))
-            for e in sections["Signed in"]["elements"]] == [
-        ("readonly", "who", "Signed in"),
+            for e in sections["Guest"]["elements"]] == [
+        ("readonly", "who", "Working as"),
         ("button", "switch_user", "Sign in / Switch user")]
     assert "Guest" in guest.state["values"]["who"] and guest.state["is_guest"] is True
     assert guest.run("switch_user").value == "chosen" and calls == ["switch"]

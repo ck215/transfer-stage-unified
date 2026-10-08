@@ -759,6 +759,10 @@ def _digest(path):
 def images(tmp_path):
     model = SampleMap(db_path=tmp_path / "data" / "sample_map.sqlite")
     model.open()
+    # Updated (UX audit 2026-10-08 #18): there is no default magnification;
+    # these tests are about other things, so their operator picked 10x
+    # (the old default). `unpicked` below is the sheet with no pick.
+    assert model.run("set_image_magnification", None, ("10x",)).is_ok
     yield model
     model.close()
 
@@ -810,7 +814,7 @@ def test_add_image_stores_the_original_under_the_typed_sample(images, tmp_path):
     assert images.image_note == ""                           # the note was used up
     (line,) = images.image_log
     assert line.startswith("4oct26  transfer_stage  50x  ") and line.endswith("left edge")
-    assert images.image_text == "1 picture(s) of 4oct26"
+    assert images.image_text == "1 picture of 4oct26"
 
 
 def test_the_image_log_is_the_picked_samples_newest_first(images, tmp_path):
@@ -822,7 +826,7 @@ def test_the_image_log_is_the_picked_samples_newest_first(images, tmp_path):
     images.select_sample("A1")
     assert [l.split()[0] for l in images.image_log] == ["A1", "A1"]
     ids = [r["id"] for r in images._store.images("A1")]
-    assert ids == [1, 3] and images.image_text == "2 picture(s) of A1"
+    assert ids == [1, 3] and images.image_text == "2 pictures of A1"
     images.select_sample("B2")
     assert len(images.image_log) == 1
 
@@ -859,7 +863,7 @@ def test_trials_for_a_sample_are_listed_newest_first_with_the_force_class(images
     assert [t["id"] for t in images.trials_for("4oct26")] == [2, 1]
     assert images.sample_trials_log == [
         "#2  2026-10-04T09:00:00  recorded  Low", "#1  2026-09-27T17:25:08  recorded"]
-    assert images.trials_text == "2 trial(s) recorded for 4oct26"
+    assert images.trials_text == "2 trials recorded for 4oct26"
     images.sample_id = "never"
     assert images.sample_trials_log == [] and "No trial" in images.trials_text
 
@@ -1128,9 +1132,9 @@ def test_pictures_follow_the_picked_level(images, tmp_path):
         [(None, None), ("2", None), ("2", "F1")]
     (line,) = images.image_log
     assert line.startswith("4oct26 \u00b7 2 \u00b7 F1  microscope  100x  ")
-    assert images.image_text == "1 picture(s) of 4oct26 \u00b7 2 \u00b7 F1"
+    assert images.image_text == "1 picture of 4oct26 \u00b7 2 \u00b7 F1"
     images.select_chip("2")
-    assert images.image_text == "1 picture(s) of 4oct26 \u00b7 2"
+    assert images.image_text == "1 picture of 4oct26 \u00b7 2"
     images.select_flake_id("F2")
     assert images.image_log == [] and "No pictures of 4oct26 \u00b7 2 \u00b7 F2" in images.image_text
 
@@ -1195,7 +1199,7 @@ def test_add_sample_inserts_copies_photos_selects_and_returns_to_browse(images, 
     assert not hidden.is_ok and images._image_instrument == "microscope"
     for n in (1, 2):
         assert images.run("stage_photo", None, (str(_shot(tmp_path, f"{n}.png", PNG + bytes([n]))),)).is_ok
-    assert images.staged_text.startswith("2 photo(s): 1.png, 2.png")
+    assert images.staged_text == "2 photos: 1.png (10x), 2.png (10x)"   # UX audit #14, #18
     result = images.run("create_sample", {"new_sample_id": " NEW1 ", "new_sample_note": "hello"})
     assert result.is_ok, result
     assert images.phase == "chip" and images.sample_id == "NEW1"
@@ -1203,7 +1207,7 @@ def test_add_sample_inserts_copies_photos_selects_and_returns_to_browse(images, 
     assert (row["material"], row["note"]) == ("graphite", "hello")
     assert len(images._store.images("NEW1")) == 2
     assert images.sample_pick == "NEW1 \u00b7 graphite" and images._staged == []
-    assert images.image_text == "2 picture(s) of NEW1"
+    assert images.image_text == "2 pictures of NEW1"
     assert images.new_sample_id == ""                        # the prompt resets
 
 
@@ -1306,15 +1310,15 @@ def test_trials_narrow_from_the_sample_to_the_chip_to_the_flake(images, tmp_path
     images.select_sample("4oct26")
     assert [t["id"] for t in images.trials_for("4oct26")] == [4, 3, 2, 1]
     assert images.trials_level == "sample" and len(images.sample_trials_log) == 4
-    assert images.trials_text == "4 trial(s) recorded for 4oct26"
+    assert images.trials_text == "4 trials recorded for 4oct26"
     assert _titles(images)[2] == "Trials on this sample"
     images.select_chip("2")
     assert [t["id"] for t in images._picked_trials()] == [2, 1]
-    assert images.trials_text == "2 trial(s) recorded for 4oct26 \u00b7 2"
+    assert images.trials_text == "2 trials recorded for 4oct26 \u00b7 2"
     assert _titles(images)[2] == "Trials on this chip"
     images.select_flake_id("F2")
     assert [t["id"] for t in images._picked_trials()] == [2]
-    assert images.trials_text == "1 trial(s) recorded for 4oct26 \u00b7 2 \u00b7 F2"
+    assert images.trials_text == "1 trial recorded for 4oct26 \u00b7 2 \u00b7 F2"
     assert _titles(images)[2] == "Trials on this flake"
     images.select_chip("1")
     assert [t["id"] for t in images._picked_trials()] == [3]
@@ -1372,7 +1376,7 @@ def test_the_preview_readouts_open_no_sqlite_while_nothing_changed(
     assert images.run("add_image", None, (str(source),)).is_ok   # 100x again
     assert images.preview_key != before["preview_key"]
     assert "newest of 2" in images.preview_text
-    assert images.image_text == "3 picture(s) of " + images._level_text()
+    assert images.image_text == "3 pictures of " + images._level_text()
     images._store.add_sample("9sep26", "MoS2")                  # a write elsewhere
     assert any(o.startswith("9sep26") for o in images.sample_options)
 
@@ -1403,3 +1407,60 @@ def test_the_pictures_section_previews_the_100x_picture_and_can_switch(images, t
                and e.get("data_command") == "preview_picture"]
     assert preview and preview[0]["model_attr"] == "preview_key"
     assert "preview_key" in images.state["values"]
+
+
+# -- UX audit 2026-10-08 #18: no silent 10x ----------------------------------
+@pytest.fixture
+def unpicked(tmp_path):
+    """A Sample DB whose operator has not picked a magnification."""
+    model = SampleMap(db_path=tmp_path / "fresh" / "sample_map.sqlite")
+    model.open()
+    model.run("begin_new_sample")
+    model.run("set_new_material", None, ("hBN",))
+    assert model.run("create_sample", {"new_sample_id": "S1"}).is_ok
+    yield model
+    model.close()
+
+
+def test_a_photo_has_no_default_magnification(unpicked, tmp_path):
+    assert unpicked.image_magnification == ""
+    refused = unpicked.run("add_image", None, (str(_shot(tmp_path, "plain.png")),))
+    assert not refused.is_ok and "magnification" in str(refused).lower()
+    assert unpicked._store.images("S1") == []
+
+
+@pytest.mark.parametrize("name, wanted", [
+    ("flake_100x.png", 100), ("S1_50X_2.png", 50), ("chip 20x.tif", 20),
+    ("QMDL_10x_0001.jpg", 10)])
+def test_the_file_name_gives_the_magnification(unpicked, tmp_path, name, wanted):
+    result = unpicked.run("add_image", None, (str(_shot(tmp_path, name)),))
+    assert result.is_ok, result
+    [row] = unpicked._store.images("S1")
+    assert row["magnification"] == wanted
+
+
+@pytest.mark.parametrize("name", ["a1000x.png", "x10.png", "10xyz.png",
+                                  "both_10x_100x.png"])
+def test_a_name_that_does_not_say_one_magnification_needs_a_pick(unpicked, tmp_path, name):
+    assert not unpicked.run("add_image", None, (str(_shot(tmp_path, name)),)).is_ok
+
+
+def test_a_staged_photo_takes_its_names_magnification_or_the_pick(unpicked, tmp_path):
+    unpicked.run("begin_new_chip")
+    plain = str(_shot(tmp_path, "chip.png", PNG + b"1"))
+    refused = unpicked.run("stage_photo", None, (plain,))
+    assert not refused.is_ok and "magnification" in str(refused).lower()
+    assert unpicked.run("stage_photo", None, (str(_shot(tmp_path, "chip_20x.png", PNG + b"2")),)).is_ok
+    assert unpicked.run("set_image_magnification", None, ("50x",)).is_ok
+    assert unpicked.run("stage_photo", None, (plain,)).is_ok
+    assert unpicked.staged_text == "2 photos: chip_20x.png (20x), chip.png (50x)"
+    assert unpicked.run("create_chip", {"new_chip_id": "C1"}).is_ok
+    mags = sorted(r["magnification"] for r in unpicked._store.images("S1", chip_id="C1"))
+    assert mags == [20, 50]
+
+
+def test_the_prompts_offer_the_magnification_beside_the_photo(unpicked):
+    for section in unpicked.schema["sections"]:
+        if section["title"].startswith(("New sample", "New chip", "New flake")):
+            attrs = [e.get("model_attr") for e in section["elements"]]
+            assert "image_magnification" in attrs, section["title"]

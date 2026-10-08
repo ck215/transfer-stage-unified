@@ -60,6 +60,7 @@ the `rotator_unknown` gate. Nothing here moves the Rotator.
 import datetime
 import math
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -137,6 +138,25 @@ class _BackedStore(ss.SampleStore):
         result = super().write(fn)
         self._after_write()
         return result
+
+
+#: "100x", "_50X", "chip 20x" in a file name: a magnification the store
+#: knows, not part of a longer number ("1000x") or word ("10xyz").
+_NAMED_MAGNIFICATION = re.compile(r"(?<![0-9])([0-9]+)\s*x(?![a-z0-9])", re.IGNORECASE)
+
+
+def magnification_in_name(name):
+    """The magnification a file name says (`flake_100x.png` -> 100), or None
+    when it says none, or more than one (UX audit 2026-10-08 #18)."""
+    stem = Path(str(name)).stem
+    found = {int(m) for m in _NAMED_MAGNIFICATION.findall(stem)}
+    found &= set(ss.IMAGE_MAGNIFICATIONS)
+    return found.pop() if len(found) == 1 else None
+
+
+def count(n, noun, plural=None):
+    """ "1 photo", "2 photos" (UX audit 2026-10-08 #14: no "photo(s)")."""
+    return f"{n} {noun if n == 1 else (plural or noun + 's')}"
 
 
 def _number(value):
@@ -266,10 +286,15 @@ class SampleMap(store_choice.StorePrompt, Model):
         self._flake_id = None
         self._new_material = ""        # the New sample prompt's material
         self._staged = []              # photo paths chosen in a prompt
+        self._staged_mags = []         # and the magnification of each
         self._shape = ss.SHAPES[0]
         self._thickness_method = ss.THICKNESS_APPROX_METHODS[0]
         self._image_instrument = ss.IMAGE_INSTRUMENTS[1]      # microscope
-        self._image_magnification = ss.IMAGE_MAGNIFICATIONS[0]
+        #: No default (UX audit 2026-10-08 #18): a photo was filed as 10x
+        #: unless the operator changed it, and the preview's 100x-then-50x
+        #: rule reads it. A file name that says (`..._50x.png`) gives it;
+        #: otherwise the operator picks it, or the photo is refused.
+        self._image_magnification = None
         self._preview = ss.PicturePreview()   # the picked level's picture
         self._trial_store = None      # the Transfer Map's `db_path`, read-only
         #: Who flags (`flakes.owner`) and how that was established
@@ -433,7 +458,8 @@ class SampleMap(store_choice.StorePrompt, Model):
                             f"the choice could not be saved ({exc}); the station "
                             "will ask again next time.", source=self.NAME)
         events.info("Sample Store", f"Samples go to {path}: "
-                    f"{len(self._store.samples())} sample(s).", source=self.NAME)
+                    f"{count(len(self._store.samples()), 'sample')}.", source=self.NAME,
+                    resolves=events.SAMPLE_STORE_NOT_CHOSEN)
         self._request_backup()
         return str(path)
 
@@ -470,6 +496,7 @@ class SampleMap(store_choice.StorePrompt, Model):
             self._selected = None
             self._chip = self._flake_id = None
             self._staged = []
+            self._staged_mags = []
             self._preview = ss.PicturePreview()
             self._phase = "browse"
         peer = self._trial_peer
@@ -495,9 +522,9 @@ class SampleMap(store_choice.StorePrompt, Model):
         super().open()
         if not self._store_chosen:
             legacy = self.legacy_store_path()
-            events.warn("Sample Store Not Chosen", f"Choose where the {self.NAME} "
-                        "keeps its samples: its page asks (New store in a folder "
-                        "of your choice, or Open store)." + (
+            events.warn(events.SAMPLE_STORE_NOT_CHOSEN, f"Open the {self.NAME} "
+                        "page and press New store or Open store to choose where "
+                        "its samples are saved." + (
                             f" A database from an earlier version is at {legacy}; "
                             "Copy it here keeps its samples." if legacy else ""),
                         source=self.NAME)
@@ -512,10 +539,13 @@ class SampleMap(store_choice.StorePrompt, Model):
             return
         absolute = self._store.absolute_image_paths()
         events.info("Database Ready", f"{self.db_path}: "
-                    f"{len(self._store.samples())} sample(s), "
-                    f"{len(self._store.images())} image(s)"
-                    + (f"; {absolute} older picture path(s) are absolute and "
-                       "were left as they are" if absolute else ""),
+                    f"{count(len(self._store.samples()), 'sample')}, "
+                    f"{count(len(self._store.images()), 'picture')}"
+                    + (f"; {count(absolute, 'older picture path')} "
+                       f"{'is' if absolute == 1 else 'are'} absolute and "
+                       f"{'was' if absolute == 1 else 'were'} left as "
+                       f"{'it is' if absolute == 1 else 'they are'}"
+                       if absolute else ""),
                     source=self.NAME)
 
     @property
@@ -1568,7 +1598,20 @@ class SampleMap(store_choice.StorePrompt, Model):
 
     @property
     def image_magnification(self):
-        return f"{self._image_magnification}x"
+        """The picked magnification ("50x"), or "" while none is picked."""
+        return f"{self._image_magnification}x" if self._image_magnification else ""
+
+    def _photo_magnification(self, path):
+        """The magnification a photo is filed at: the one its file name says
+        (`flake_100x.png`, `S1_50X_2.png`), else the one picked; neither is
+        a refusal that says so."""
+        named = magnification_in_name(Path(str(path)).name)
+        if named is not None:
+            return named
+        if self._image_magnification:
+            return self._image_magnification
+        raise Refused(f"Pick the magnification of {Path(str(path)).name} first: "
+                      "its file name does not say (for example ..._50x.png).")
 
     @property
     def image_magnification_options(self):
@@ -1639,9 +1682,10 @@ class SampleMap(store_choice.StorePrompt, Model):
         sample_id, chip, flake = self._picked()
         if not sample_id:
             raise Refused("Pick the sample the picture belongs to, then add it.")
+        magnification = self._photo_magnification(path)
         try:
             row = self._store.add_image(sample_id, path, self._image_instrument,
-                                        self._image_magnification,
+                                        magnification,
                                         note=self.image_note,
                                         chip_id=chip, flake_id=flake)
         except ss.StoreRefused as refusal:
@@ -1774,6 +1818,7 @@ class SampleMap(store_choice.StorePrompt, Model):
         self.new_flake_id = self.new_flake_note = ""
         self._new_material = ""
         self._staged = []
+        self._staged_mags = []
 
     def cancel_new(self):
         """Discard what the prompt collected (the photos were never copied)
@@ -1815,12 +1860,15 @@ class SampleMap(store_choice.StorePrompt, Model):
         source = Path(str(path))
         if not source.is_file():
             raise Refused(f"Could not find the picture {source.name or source}.")
+        magnification = self._photo_magnification(source)
         self._staged.append(str(source))
+        self._staged_mags.append(magnification)
         self._touch()
         return len(self._staged)
 
     def clear_photos(self):
         self._staged = []
+        self._staged_mags = []
         self._touch()
 
     @property
@@ -1833,8 +1881,8 @@ class SampleMap(store_choice.StorePrompt, Model):
                 need = "required" if self.PHOTO_REQUIRED[level] else "optional"
                 return f"No photo chosen yet (photo {need} for a {level})"
             return "No photo chosen yet"
-        return f"{len(self._staged)} photo(s): " + ", ".join(
-            Path(p).name for p in self._staged)
+        return f"{count(len(self._staged), 'photo')}: " + ", ".join(
+            f"{Path(p).name} ({m}x)" for p, m in zip(self._staged, self._staged_mags))
 
     def _check_staged(self, what, required):
         missing = [Path(p).name for p in self._staged if not Path(p).is_file()]
@@ -1847,9 +1895,9 @@ class SampleMap(store_choice.StorePrompt, Model):
     def _copy_staged(self, sample, chip=None, flake=None):
         done = 0
         try:
-            for source in self._staged:
+            for source, magnification in zip(self._staged, self._staged_mags):
                 self._store.add_image(sample, source, self._image_instrument,
-                                      self._image_magnification, chip_id=chip,
+                                      magnification, chip_id=chip,
                                       flake_id=flake)
                 done += 1
         except ss.StoreRefused as refusal:
@@ -1947,7 +1995,7 @@ class SampleMap(store_choice.StorePrompt, Model):
         n = self._store_cached(("level_count", sample, chip, flake),
                                lambda: len(self._store.images(sample, chip, flake)))
         where = self._level_text()
-        return f"{n} picture(s) of {where}" if n else f"No pictures of {where} yet"
+        return f"{count(n, 'picture')} of {where}" if n else f"No pictures of {where} yet"
 
     # -- the preview of the picked level's picture (owner 2026-10-08) ---------------------
     def _preview_rows(self):
@@ -2092,7 +2140,7 @@ class SampleMap(store_choice.StorePrompt, Model):
             return "The Transfer Map is not open: no trials to list"
         n = len(self._picked_trials())
         where = self._level_text()
-        return f"{n} trial(s) recorded for {where}" if n else \
+        return f"{count(n, 'trial')} recorded for {where}" if n else \
             f"No trial is recorded for {where}"
 
     @property
@@ -2111,6 +2159,11 @@ class SampleMap(store_choice.StorePrompt, Model):
         snapshot["values"]["has_chip"] = self.has_chip
         snapshot["store"] = {"path": str(self.db_path) if self._store_chosen else None,
                              "chosen": self._store_chosen}
+        # UX audit 2026-10-08 #11: the titles name the current pick ("New
+        # flake on S-001 · C1"); a view built its card from the schema of
+        # an earlier moment, so the titles of now ride in the state.
+        snapshot["section_titles"] = [s.get("title", "")
+                                      for s in self.schema["sections"]]
         return snapshot
 
     # -- data -----------------------------------------------------------------------
@@ -2182,7 +2235,12 @@ class SampleMap(store_choice.StorePrompt, Model):
         def photo(level):
             # The path box's hint says what the file is and the photo rule.
             need = "required" if self.PHOTO_REQUIRED[level] else "optional"
-            return [sch.file_open("Add photo\u2026", "stage_photo",
+            # The magnification beside the photo (UX audit 2026-10-08 #18):
+            # a file name that says it wins; otherwise this pick is asked for.
+            return [sch.dropdown("Magnification", "image_magnification",
+                                 "set_image_magnification",
+                                 "image_magnification_options"),
+                    sch.file_open("Add photo\u2026", "stage_photo",
                                   extensions=self.IMAGE_EXTENSIONS,
                                   placeholder="Path to a saved microscope image "
                                               f"(photo {need})"),

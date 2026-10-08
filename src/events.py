@@ -25,10 +25,11 @@ import traceback
 
 class Event:
     __slots__ = ("id", "severity", "source", "title", "message", "exception",
-                 "needs_ack", "count", "first_seen", "last_seen", "action")
+                 "needs_ack", "count", "first_seen", "last_seen", "action",
+                 "resolves")
 
     def __init__(self, id, severity, source, title, message, exception,
-                 needs_ack, now, action=None):
+                 needs_ack, now, action=None, resolves=None):
         self.id, self.severity, self.source = id, severity, source
         self.title, self.message, self.exception = title, message, exception
         self.needs_ack, self.count = needs_ack, 1
@@ -38,6 +39,11 @@ class Event:
         #: `SETUP_PANEL`; the view runs it the way a press of a button on
         #: that panel runs, so refusals and confirmations show as usual.
         self.action = action
+        #: UX audit 2026-10-08 #10: the title of a warning from the same
+        #: source that this event says is over (a store was chosen after
+        #: "Sample Store Not Chosen"). A view that still shows that warning
+        #: as its one standing line drops it; the log keeps both.
+        self.resolves = resolves
 
     @property
     def key(self):
@@ -56,7 +62,8 @@ class Event:
                 "needs_ack": self.needs_ack, "count": self.count,
                 "text": self.text, "last_seen": self.last_seen,
                 "action": dict(self.action, args=list(self.action["args"]))
-                if self.action else None}
+                if self.action else None,
+                "resolves": self.resolves}
 
     def __repr__(self):
         return f"<Event {self.id} {self.severity} {self.text!r}>"
@@ -85,6 +92,10 @@ LINK_LOST = "Connection Lost"
 LINK_RESTORED = "Connection Restored"
 #: L6: a probe's position snapped to (0,0,0) while enabled (warning only).
 BOARD_RESET_SUSPECTED = "Board Reset Suspected"
+#: UX audit 2026-10-08 #10: a map with no store warns once at open; the
+#: info that a store was chosen `resolves` the warning, so the tray drops it.
+SAMPLE_STORE_NOT_CHOSEN = "Sample Store Not Chosen"
+TRIAL_STORE_NOT_CHOSEN = "Trial Store Not Chosen"
 
 #: The `name` an action (and the Web's `/api/run`) gives the Setup panel.
 SETUP_PANEL = "__setup__"
@@ -140,8 +151,15 @@ class EventLog:
         return self._publish("warning", source, title, message, exception, ack,
                              _action(action, ack))
 
-    def info(self, title, message, *, source=""):
-        return self._publish("info", source, title, message, None, False)
+    def info(self, title, message, *, source="", resolves=None):
+        """A log line. `resolves` names a warning title from the same
+        `source` that this says is over: the view drops it from its tray,
+        and the dedupe episode of that title ends, so if the condition comes
+        back it is a new warning that notifies again."""
+        if resolves:
+            self.forget(resolves)
+        return self._publish("info", source, title, message, None, False,
+                             resolves=resolves)
 
     def debug(self, title, message, *, source="", exception=None, every=0.0):
         """File only. `every` = at most one line per that many seconds for this
@@ -205,7 +223,7 @@ class EventLog:
                 pass
 
     def _publish(self, severity, source, title, message, exception, needs_ack,
-                 action=None):
+                 action=None, resolves=None):
         now = self._clock()
         with self._lock:
             self._prune_recent(now)
@@ -217,7 +235,7 @@ class EventLog:
                 is_new = False
             else:
                 event = Event(self._next_id, severity, source, title, message,
-                              exception, needs_ack, now, action)
+                              exception, needs_ack, now, action, resolves)
                 self._next_id += 1
                 self._events.append(event)
                 del self._events[:-self._max_events]
@@ -306,6 +324,7 @@ for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSE
               "BROWSER_GONE", "TEMPERATURE_DISCONNECTED", "ROTATOR_UNREACHABLE",
               "HEATER_OFF_NOT_SENT", "UPDATE_READY", "RESTART_NEEDED",
               "FIRMWARE_OUT_OF_DATE", "LINK_LOST", "LINK_RESTORED",
-              "BOARD_RESET_SUSPECTED",
+              "BOARD_RESET_SUSPECTED", "SAMPLE_STORE_NOT_CHOSEN",
+              "TRIAL_STORE_NOT_CHOSEN",
               "SETUP_PANEL", "ATTENTION"):
     setattr(events, _name, globals()[_name])

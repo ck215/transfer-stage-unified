@@ -175,3 +175,43 @@ def test_tiles_draw_without_storage(launched, tmp_path):
     """ % {"order": _ORDER}, tmp_path)
     assert out["start"] == NAMES, out
     assert out["moved"] == ["Probe B", "Probe C", "Probe D", "Probe A"], out
+
+
+@needs_browser
+def test_a_tiles_wide_and_move_are_not_tab_stops_on_the_way_through(launched, tmp_path):
+    """UX audit 2026-10-08 #19: Wide, Move and Open were three Tab stops per
+    tile before its controls (21 with seven tiles). Tab forward meets each
+    tile's Open, not its Wide and Move; Shift+Tab from Open reaches Move,
+    then Wide, and Move's arrow keys still move the tile."""
+    out = _browse(launched, r"""
+      await until(() => document.querySelectorAll('#cards > .card').length === 4);
+      await sleep(400);
+      const label = () => page.evaluate(() => document.activeElement.getAttribute('aria-label')
+        || document.activeElement.textContent.trim().slice(0, 30));
+      await page.focus('#cards > .card:nth-child(1) .card-open');
+      const forward = [await label()];
+      for (let i = 0; i < 40; i += 1) {
+        await page.keyboard.press('Tab');
+        forward.push(await label());
+      }
+      await page.focus('#cards > .card:nth-child(2) .card-open');
+      await page.keyboard.down('Shift');
+      await page.keyboard.press('Tab');
+      const back1 = await label();
+      await page.keyboard.press('Tab');
+      const back2 = await label();
+      await page.keyboard.up('Shift');
+      await page.focus('#cards > .card:nth-child(2) .card-open');
+      await page.keyboard.down('Shift');
+      await page.keyboard.press('Tab');
+      await page.keyboard.up('Shift');
+      await page.keyboard.press('ArrowLeft');
+      await sleep(200);
+      return { forward, back1, back2, order: await page.evaluate(%(order)s),
+               focus: await label() };
+    """ % {"order": _ORDER}, tmp_path)
+    forward = out["forward"]
+    assert sum(1 for f in forward if f.startswith("Open ")) >= 2, forward
+    assert not [f for f in forward if f.startswith(("Wide ", "Move "))], forward
+    assert out["back1"] == "Move Probe B" and out["back2"] == "Wide Probe B", out
+    assert out["order"][0] == "Probe B" and out["focus"] == "Move Probe B", out
