@@ -396,7 +396,7 @@ def test_the_setup_drawer_withdraws_when_the_first_model_appears():
     # Updated (owner 2026-10-07): the launch side is one move, landOnSheet -
     # Setup slides away, the entries settle, focus lands on the page - and it
     # still closes the drawer; the stop side still opens it.
-    assert "if (isLaunched) this.landOnSheet();" in collapse
+    assert "if (isLaunched) this.landOnSheet(!isFirstLook);" in collapse
     assert "else this.setDrawerOpen(true);" in collapse
     land = _body(r"landOnSheet\(\) \{(.*?)\n  \}")
     assert "this.setDrawerOpen(false);" in land
