@@ -795,7 +795,27 @@ function elideMiddle(text, max) {
 function optionText(option, label) {
   const raw = String(option === null || option === undefined ? '' : option);
   if (typeof label === 'string' && label && label !== raw) return label;
-  return elideMiddle(raw, OPTION_CHARS);
+  return pathTail(raw) || elideMiddle(raw, OPTION_CHARS);
+}
+
+//: How much of a long folder path an option shows (its tail, after "…/").
+const PATH_CHARS = 32;
+
+/** A long path of three or more segments, by its tail: the folders of a
+ *  store prompt's Choose folder… list share their head ("/home/tran…" on
+ *  every line, UX audit 2026-10-08 #17), so the last two segments ("…/
+ *  stores/op@lab.test"), or the last one, are what tell them apart. Null
+ *  for anything else (a port keeps elideMiddle, F15). */
+function pathTail(raw) {
+  if (raw.length <= OPTION_CHARS) return null;
+  const sep = raw.indexOf('/') === -1 && raw.indexOf('\\') !== -1 ? '\\' : '/';
+  const parts = raw.split(sep).filter((p) => p !== '');
+  if (parts.length < 3) return null;
+  const lead = '…' + sep;
+  const two = parts.slice(-2).join(sep);
+  if (lead.length + two.length <= PATH_CHARS) return lead + two;
+  const last = parts[parts.length - 1];
+  return lead + elideMiddle(last, PATH_CHARS - lead.length);
 }
 
 /** Words that report an absence or an at-rest state. They are read, not

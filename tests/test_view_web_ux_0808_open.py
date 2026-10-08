@@ -16,6 +16,7 @@ from events import events
 from param import Param
 from views.web.server import WebView
 
+from test_view_web_client import NODE, _node_value
 from test_view_web_procedure import FakeProc, _READY
 from test_view_web_server import FakeSetup, _browse, needs_browser
 
@@ -249,7 +250,29 @@ def test_the_next_step_sentence_is_said_once_and_prompts_are_not_steps(echo_stat
       const asking = await page.evaluate(%s);
       return { before, asking };
     """ % (_SEEN, _SEEN), tmp_path)
-    assert out["before"]["sentences"] == 1, out
+    assert out["before"]["sentences"] == 1, out  # 2 before the fix
     # The strip lists the procedure; a prompt shows only while it is asked.
     assert out["before"]["steps"] == ["setup", "live"], out
     assert "new_tip" in out["asking"]["steps"], out
+
+
+# --------------------------------------------- #17 folder choices that differ
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def test_folder_choices_show_the_tail_that_tells_them_apart():
+    """The store prompt's Choose folder… list read "/home/tran…op@lab.test",
+    "/home/tran…runs/stores", "/home/tran…-stage-user": the head they all
+    share, then a cut. A long path shows its last segments after "…/"; the
+    whole path is the option's title (loadOptions)."""
+    shown = [_node_value(f"optionText({path!r}, undefined)") for path in (
+        "/home/transfer-stage-user/transfer-stage-runs/stores/op@lab.test",
+        "/home/transfer-stage-user/transfer-stage-runs/stores",
+        "/home/transfer-stage-user",
+        "/home/transfer-stage-user/transfer-stage-runs/stores/ialbinog@uci.edu")]
+    assert shown == ["…/stores/op@lab.test", "…/transfer-stage-runs/stores",
+                     "/home/tran…-stage-user", "…/stores/ialbinog@uci.edu"], shown
+    assert len(set(shown)) == len(shown)
+    # A port stays as F15 settled it.
+    assert _node_value("optionText('/dev/cu.usbmodem1234567890123', undefined)") \
+        == "/dev/cu.us…34567890123"
+    assert _node_value("optionText('C:\\\\Users\\\\lab\\\\Documents\\\\stores\\\\a@b.c', undefined)") \
+        == "…\\stores\\a@b.c"
