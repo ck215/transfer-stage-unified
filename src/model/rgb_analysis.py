@@ -77,6 +77,7 @@ import schema as sch
 from devices.screen import Screen
 from events import events
 from model.base import Model
+from model import estimators
 from model import plot_data
 from param import Param
 from result import Refused, NeedsConfirm
@@ -356,6 +357,17 @@ class RgbAnalysis(Model):
     #: The five a row adds beside the red share it already carried: the keys
     #: of a subscriber's row dict, read with `.get`.
     CHANNEL_KEYS = RGB_KEYS[1:]
+    # -- the estimator bank (owner ruling 2026-10-07) ---------------------
+    #: The comparison plot replots at most this often, whatever polls it.
+    PLOT_INTERVAL_S = 1.0
+    #: The bank's window, and the most points a series is sent with.
+    ESTIMATOR_WINDOW_S = 60.0
+    PLOT_MAX_POINTS = 600
+    #: The most curves one plot carries (the payload is points x curves).
+    MAX_ESTIMATOR_KEYS = 12
+    #: What the plot shows until the operator chooses.
+    DEFAULT_ESTIMATOR_KEYS = ("full.red_share", "right_half.shade_g_median",
+                              "full.g_mean", "centre.shade_g_median")
     #: One sampling mode: a row when the red percentage changes (owner ruling
     #: 2026-09-22). Since 2026-10-07 the loop samples settled frames at about
     #: the source's rate (CAP-1, below), not as fast as it can grab.
@@ -449,6 +461,18 @@ class RgbAnalysis(Model):
                   label="Mean Green"),
             Param("mean_blue", "float", default=0.0, decimals=1,
                   label="Mean Blue"),
+            # The estimator bank's plot: which curves, and the custom crop.
+            Param("estimator_keys", "text",
+                  default=", ".join(DEFAULT_ESTIMATOR_KEYS),
+                  label="Curves (crop.estimator, ...)"),
+            Param("custom_left", "int", default=0, minimum=0, maximum=100000,
+                  unit="px", label="Custom crop left"),
+            Param("custom_top", "int", default=0, minimum=0, maximum=100000,
+                  unit="px", label="Custom crop top"),
+            Param("custom_width", "int", default=0, minimum=0, maximum=100000,
+                  unit="px", label="Custom crop width (0 = off)"),
+            Param("custom_height", "int", default=0, minimum=0, maximum=100000,
+                  unit="px", label="Custom crop height (0 = off)"),
             Param("frame_rate", "float", default=0.0, decimals=1, unit="Hz",
                   label="Frame Rate"),
             Param("position_age", "float", default=0.0, decimals=3, unit="s",
@@ -483,6 +507,15 @@ class RgbAnalysis(Model):
         self._rgb_state = None
 
         self._run = None
+        #: The estimator bank (`model.estimators`): every accepted frame, the
+        #: last ESTIMATOR_WINDOW_S seconds, in a fixed ring. Reset at run
+        #: start; kept after the run ends so the curves can be read.
+        self._estimators = estimators.EstimatorBank(self.ESTIMATOR_WINDOW_S)
+        self._estimator_keys = tuple(self.DEFAULT_ESTIMATOR_KEYS)
+        self._custom_rect = [0, 0, 0, 0]       # left, top, width, height
+        self._clock = time.monotonic           # the plot cache's clock
+        self._estimator_lock = threading.Lock()
+        self._estimator_cache = None           # {"at", "key", "payload", "png"}
         #: MAP-2: callables fed `(t_s, red, row)` for every row the run log
         #: appends, `row` the positions by axis and the five RG-1 numbers. A
         #: tuple, replaced whole, so the run thread reads it without a lock
@@ -618,6 +651,178 @@ class RgbAnalysis(Model):
     @property
     def mean_blue(self):
         return self._latest(5)
+
+    # -- the estimator bank --------------------------------------------------
+    @property
+    def estimator_bank(self):
+        """The bank itself, for a reader (the Transfer Map's secondary
+        readout): `latest()`, `series(...)`, `set_custom(...)`."""
+        return self._estimators
+
+    @property
+    def estimators_latest(self):
+        """The bank's latest raw row, rounded (NaN as None), or None."""
+        row = self._estimators.latest()
+        if row is None:
+            return None
+        return {key: (None if isinstance(value, float) and value != value
+                      else round(value, 3)) for key, value in row.items()}
+
+    @staticmethod
+    def _rgb_array(frame):
+        """`frame` as an HxWx3 RGB array (a view, no copy), or None. The
+        screen's bgra buffers and 4-channel arrays are BGRA; a 3-channel array
+        is RGB, as `_channels` reads them."""
+        buffer = getattr(frame, "bgra", None)
+        if buffer is not None:
+            pixels = numpy.frombuffer(buffer, dtype=numpy.uint8)
+            height = getattr(frame, "height", None)
+            width = getattr(frame, "width", None)
+            if height is None or width is None:
+                width, height = frame.size
+            return pixels.reshape(int(height), int(width), 4)[:, :, 2::-1]
+        if isinstance(frame, numpy.ndarray) and frame.ndim == 3:
+            if frame.shape[2] >= 4:
+                return frame[:, :, 2::-1]
+            if frame.shape[2] == 3:
+                return frame
+        return None
+
+    def _update_estimators(self, run, now, frame):
+        """Feed one ACCEPTED frame to the bank. Advisory: a failure here is
+        logged and never ends the recording."""
+        try:
+            self._estimators.update(now - run.started_monotonic,
+                                    self._rgb_array(frame),
+                                    run.red_threshold["r_min"])
+        except Exception as exc:
+            events.debug("Estimator Bank Failed", repr(exc),
+                         source=self.NAME, every=5.0)
+
+    @property
+    def estimator_keys(self):
+        """The curves shown, as the text the entry holds."""
+        return ", ".join(self._estimator_keys)
+
+    @estimator_keys.setter
+    def estimator_keys(self, text):
+        keys = []
+        for part in str(text or "").replace(";", ",").replace("\n", ",").split(","):
+            key = part.strip()
+            if not key:
+                continue
+            try:
+                estimators.key_parts(key)
+            except ValueError:
+                raise Refused(f"{key!r} is not a curve. Use crop.estimator, "
+                              "for example full.red_share.") from None
+            if key not in keys:
+                keys.append(key)
+        if not keys:
+            raise Refused("Choose at least one curve.")
+        if len(keys) > self.MAX_ESTIMATOR_KEYS:
+            raise Refused(f"At most {self.MAX_ESTIMATOR_KEYS} curves at once.")
+        self._estimator_keys = tuple(keys)
+        self._estimator_cache = None
+
+    def _preset_table(self):
+        table = {"Default": tuple(self.DEFAULT_ESTIMATOR_KEYS)}
+        for name in estimators.ESTIMATOR_NAMES:
+            table[f"{name}, every crop"] = tuple(
+                f"{crop}.{name}" for crop in estimators.CROP_NAMES
+                if crop != "custom" or self._estimators.custom is not None)
+        for crop in estimators.CROP_NAMES:
+            if crop != "custom" or self._estimators.custom is not None:
+                table[f"every estimator, {crop}"] = tuple(
+                    f"{crop}.{name}" for name in estimators.ESTIMATOR_NAMES)
+        return table
+
+    @property
+    def estimator_preset_options(self):
+        return list(self._preset_table())
+
+    @property
+    def estimator_preset(self):
+        """The preset the current curves are, else "Custom"."""
+        for name, keys in self._preset_table().items():
+            if keys == self._estimator_keys:
+                return name
+        return "Custom"
+
+    def set_estimator_preset(self, selection):
+        table = self._preset_table()
+        if selection not in table:
+            if selection == "Custom":
+                return self.estimator_preset
+            raise Refused(f"{selection!r} is not a curve set")
+        self._estimator_keys = table[selection]
+        self._estimator_cache = None
+        self._touch()
+        return self.estimator_preset
+
+    def _custom_part(self, index):
+        return self._custom_rect[index]
+
+    def _set_custom_part(self, index, value):
+        rect = list(self._custom_rect)
+        rect[index] = int(value)
+        self._custom_rect = rect
+        self._estimators.set_custom(tuple(rect) if rect[2] > 0 and rect[3] > 0
+                                    else None)
+        self._estimator_cache = None
+
+    custom_left = property(lambda self: self._custom_part(0),
+                           lambda self, v: self._set_custom_part(0, v))
+    custom_top = property(lambda self: self._custom_part(1),
+                          lambda self, v: self._set_custom_part(1, v))
+    custom_width = property(lambda self: self._custom_part(2),
+                            lambda self, v: self._set_custom_part(2, v))
+    custom_height = property(lambda self: self._custom_part(3),
+                             lambda self, v: self._set_custom_part(3, v))
+
+    def _estimator_entry(self):
+        """The plot's answer and its picture, recomputed at most once per
+        PLOT_INTERVAL_S: a faster poll gets the last one. A change of curves
+        or of the custom crop drops it (an operator action, not a poll)."""
+        with self._estimator_lock:
+            now = self._clock()
+            cached = self._estimator_cache
+            if (cached is not None and 0 <= now - cached["at"]
+                    < self.PLOT_INTERVAL_S):
+                return cached
+            keys = list(self._estimator_keys)
+            data = self._estimators.series(keys, normalise="baseline",
+                                           max_points=self.PLOT_MAX_POINTS)
+            first = data[keys[0]] if keys else []
+            # `x`/`y` is the one-line shape the Web plot draws today; the
+            # per-key lists are the comparison itself.
+            data["x"] = list(data["t"])
+            data["y"] = [0.0 if v is None else v for v in first]
+            data["keys"] = keys
+            cached = {"at": now, "payload": data, "png": None}
+            self._estimator_cache = cached
+            return cached
+
+    @property
+    def estimator_series(self):
+        """Data command of the comparison plot: `{"t": [...], "<key>": [...],
+        "x", "y", "keys"}`, the selected curves normalised to their own
+        baselines, at most PLOT_MAX_POINTS points each."""
+        return self._estimator_entry()["payload"]
+
+    @property
+    def estimator_figure(self):
+        """The same curves as one PNG (every curve on one axis), cached with
+        the series for the same interval. b"" while there is nothing."""
+        entry = self._estimator_entry()
+        with self._estimator_lock:
+            if entry["png"] is None:
+                payload = entry["payload"]
+                entry["png"] = estimators.render_png(
+                    {key: payload[key] for key in ("t", *payload["keys"])},
+                    title=f"Estimators, last "
+                    f"{int(self.ESTIMATOR_WINDOW_S)} s")
+            return entry["png"]
 
     @property
     def is_running(self):
@@ -917,6 +1122,8 @@ class RgbAnalysis(Model):
         self._saved_rows = 0
         self._red_state = (0.0, 0.0)
         self._rgb_state = None
+        self._estimators.reset()
+        self._estimator_cache = None
 
         run.thread = threading.Thread(target=self._run_loop, args=(run,),
                                       daemon=True, name=f"rgb-analysis-{run.run_id}")
@@ -1074,6 +1281,7 @@ class RgbAnalysis(Model):
                     rgb = self._measure_rgb(frame, threshold)
                     red = rgb[0]
                     self._rgb_state = rgb
+                    self._update_estimators(run, now, frame)
                     run.accepted_red = red
                     if run.baseline_red is None:
                         run.baseline_red = red
@@ -1811,6 +2019,8 @@ class RgbAnalysis(Model):
             "source_rate_hz": self.source_rate_hz,
             # RG-1: the latest accepted sample's six numbers (None before one).
             "latest": self.latest,
+            # The estimator bank's latest raw row (None before a frame).
+            "estimators_latest": self.estimators_latest,
             "has_unsaved_data": self.has_unsaved_data,
             "output_root": str(self.output_root),
             "run_dir": str(self.run_dir),
@@ -1914,6 +2124,31 @@ class RgbAnalysis(Model):
                              format=".1f"),
                 sch.readonly("Mean Blue:", "mean_blue", param=P["mean_blue"],
                              format=".1f"),
+                tier=2, disclosure=self.DISCLOSURE,
+            ),
+            sch.section(
+                # The bank: a buffer-based comparison of estimators and crops,
+                # replotted at most once a second (PLOT_INTERVAL_S). Owner
+                # ruling 2026-10-07: wanted on the trial page during a run.
+                "Estimators",
+                sch.plot("Estimators, last 60 s", "estimator_series",
+                         x_label="s", y_label="relative to baseline",
+                         empty="No estimators yet. They plot here during a run."),
+                sch.image("Estimators, every curve", "estimator_figure",
+                          empty="No estimators yet. They plot here during a run."),
+                sch.dropdown("Curves:", "estimator_preset",
+                             "set_estimator_preset", "estimator_preset_options"),
+                tier=2, disclosure=self.DISCLOSURE, hosted_tier=1,
+            ),
+            sch.section(
+                "Estimator curves and crop",
+                sch.entry("Curve list:", "estimator_keys", P["estimator_keys"]),
+                sch.entry("Custom crop left:", "custom_left", P["custom_left"]),
+                sch.entry("Custom crop top:", "custom_top", P["custom_top"]),
+                sch.entry("Custom crop width:", "custom_width",
+                          P["custom_width"]),
+                sch.entry("Custom crop height:", "custom_height",
+                          P["custom_height"]),
                 tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
