@@ -1032,7 +1032,7 @@ def test_the_close_guard_is_always_armed_and_the_tab_says_it_is_leaving():
     guard = re.search(r"window\.addEventListener\('beforeunload', \(event\) => \{(.*?)\n    \}\);",
                       APP_JS, re.S).group(1)
     assert "energized" not in guard, "the guard is keyed on energized again"
-    assert "if (this.isShutDown || this.isReloading) return;" in guard
+    assert "if (this.isShutDown || this.isReloading || this.isElsewhere) return;" in guard
     assert "event.preventDefault();" in guard
     assert "this.isReloading = true;" in _body(r"reloadPage\(\) \{(.*?)\n  \}")
     watch = _body(r"watchVisibility\(\) \{(.*?)\n  \}")
@@ -1042,7 +1042,21 @@ def test_the_close_guard_is_always_armed_and_the_tab_says_it_is_leaving():
     assert "if (this.isShutDown) return;" in leaving
     assert "'/api/leave'" in leaving and "keepalive: true" in leaving
     assert "page: this.pageId" in leaving
-    assert "body: JSON.stringify({ hidden, page })" in APP_JS, "the worker's beat has no page id"
+    assert "body: JSON.stringify({ hidden, page, tab })" in APP_JS, "the worker's beat has no page id"
+
+
+def test_one_live_page_the_tab_id_travels_and_a_refusal_shows_the_notice():
+    """Owner 2026-10-07: one live browser connection. The tab's id is kept in
+    sessionStorage (a reload is the same tab) and rides every request; a
+    409 that says `X-Station-Live: no` shows the notice; the guard does not
+    ask on a page that is not the live one."""
+    assert "window.sessionStorage" in APP_JS and "'station-tab'" in APP_JS
+    wrapper = _body(r"async function api\(path, options\) \{(.*?)\n\}")
+    assert "'X-Station-Tab': TAB_ID" in wrapper
+    assert "response.headers.get('X-Station-Live') === 'no'" in wrapper
+    assert "onNotLive = () => this.setElsewhere(true);" in APP_JS
+    assert "this.isElsewhere) return;" in APP_JS
+    assert "'/api/take_over'" in APP_JS
 
 
 def test_the_heartbeat_has_its_own_interval():

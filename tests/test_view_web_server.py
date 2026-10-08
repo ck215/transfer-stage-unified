@@ -4595,8 +4595,8 @@ def leaving_station(tmp_path, monkeypatch):
     assert view.open()
     leaves = []
     real_leave = view.leave
-    view.leave = lambda page=None: (leaves.append((time.monotonic(), page)),
-                                    real_leave(page=page))[1]
+    view.leave = lambda page=None, tab=None: (leaves.append((time.monotonic(), page)),
+                                              real_leave(page=page, tab=tab))[1]
     waiter = threading.Thread(target=view.wait, name="launcher", daemon=True)
     waiter.start()
     try:
@@ -4657,28 +4657,76 @@ def test_closing_the_last_tab_quits_the_station(leaving_station, tmp_path):
         "the station quit without the Quit control's stop")
 
 
+#: The "open in another window" notice, as a page shows it.
+_ELSEWHERE = r"""
+  const elsewhere = (p) => p.evaluate(() => {
+    const gate = document.getElementById('elsewhere-gate');
+    return Boolean(gate && !gate.hidden && gate.getClientRects().length);
+  });
+"""
+
+
 @needs_browser
-def test_a_reload_and_a_second_tab_keep_the_station_up(leaving_station, tmp_path):
+def test_a_reload_keeps_the_station_and_a_second_tab_only_stops(leaving_station, tmp_path):
+    """Owner 2026-10-07: one live page. The reload stays live; a second tab
+    shows the notice, its commands are refused, its Stop lands; closing it
+    changes nothing; closing the live page quits."""
     view, waiter, leaves = leaving_station
-    out = _browse(view, _ALIVE + r"""
+    out = _browse(view, _ALIVE + _ELSEWHERE + r"""
       await page.click('.rail');
       await page.reload({ waitUntil: 'load' });
       await sleep(3500);                       // two graces and more
-      const r = { afterReload: await alive() };
+      const r = { afterReload: await alive(), firstElsewhere: await elsewhere(page) };
       const second = await browser.newPage();
       await second.goto(BASE + '/', { waitUntil: 'load' });
-      await sleep(1000);
-      await page.close();                      // one of two tabs
+      r.secondElsewhere = await when(() => elsewhere(second), 6000);
+      r.secondRun = await second.evaluate(async () => {
+        const res = await fetch('/api/clear_estop_all', { method: 'POST',
+          headers: { 'Content-Type': 'application/json',
+                     'X-Station-Tab': sessionStorage.getItem('station-tab') },
+          body: '{}' });
+        return res.status;
+      });
+      await second.click('#full-stop');        // the stop always wins
+      r.latched = await when(async () => (await page.evaluate(async () =>
+        (await (await fetch('/api/state')).json()).is_estopped)), 4000);
+      await second.close();                    // not the live page
       await sleep(3500);
-      r.afterOneOfTwo = await alive();
-      await second.close();                    // the last one
+      r.afterSecondClosed = await alive();
+      await page.close();                      // the live one
       r.afterLast = !(await when(async () => !(await alive()), 8000));
       return r;
     """, tmp_path)
-    assert out == {"afterReload": True, "afterOneOfTwo": True, "afterLast": False}, out
-    assert len(leaves) == 3, leaves
+    assert out == {"afterReload": True, "firstElsewhere": False, "secondElsewhere": True,
+                   "secondRun": 409, "latched": True, "afterSecondClosed": True,
+                   "afterLast": False}, out
     waiter.join(timeout=5)
     assert not waiter.is_alive()
+
+
+@needs_browser
+def test_take_over_moves_the_live_page_between_windows(leaving_station, tmp_path):
+    view, waiter, leaves = leaving_station
+    out = _browse(view, _ELSEWHERE + r"""
+      await sleep(2500);
+      const second = await browser.newPage();
+      await second.goto(BASE + '/', { waitUntil: 'load' });
+      const r = { secondFirst: await when(() => elsewhere(second), 6000) };
+      r.focus = await second.evaluate(() => document.activeElement && document.activeElement.id);
+      await second.click('#take-over');
+      r.secondAfter = await when(async () => !(await elsewhere(second)), 4000);
+      r.firstAfter = await when(() => elsewhere(page), 6000);
+      r.firstQuitDisabled = await page.evaluate(() => document.getElementById('quit-link').disabled);
+      r.stopReachable = await page.evaluate(() => {
+        const b = document.getElementById('full-stop').getBoundingClientRect();
+        const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+        return Boolean(hit && hit.closest('#full-stop'));
+      });
+      return r;
+    """, tmp_path)
+    assert out == {"secondFirst": True, "focus": "take-over", "secondAfter": True,
+                   "firstAfter": True, "firstQuitDisabled": True,
+                   "stopReachable": True}, out
 
 
 @needs_browser

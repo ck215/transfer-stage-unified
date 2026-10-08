@@ -74,6 +74,27 @@ const OPTION_CHARS = 22;
 // ==========================================================================
 // fetch, bounded. Overridable so a test can shrink it.
 // ==========================================================================
+//: One live page (owner 2026-10-07): this tab's id, kept in sessionStorage so
+//: a reload is the same tab and keeps (or regains) the live seat; another
+//: tab or window is another id. Null where there is no sessionStorage: the
+//: page then names no tab and is treated as it was before.
+const TAB_ID = (() => {
+  try {
+    const store = window.sessionStorage;
+    let id = store.getItem('station-tab');
+    if (!id) {
+      id = newPageId();
+      store.setItem('station-tab', id);
+    }
+    return id;
+  } catch (err) {
+    return null;
+  }
+})();
+//: Called when the station refuses a command because this page is not the
+//: live one (409, `X-Station-Live: no`): the dashboard shows its notice.
+let onNotLive = null;
+
 function fetchTimeoutMs() {
   return window.__FETCH_TIMEOUT_MS__ || 8000;
 }
@@ -82,7 +103,15 @@ async function api(path, options) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), fetchTimeoutMs());
   try {
-    return await fetch(path, Object.assign({}, options, { signal: controller.signal }));
+    const sent = Object.assign({}, options, { signal: controller.signal });
+    // One live page: every request names its tab (the server refuses a
+    // command from a tab that is not the live one).
+    if (TAB_ID) sent.headers = Object.assign({}, options && options.headers, { 'X-Station-Tab': TAB_ID });
+    const response = await fetch(path, sent);
+    if (response.status === 409 && response.headers.get('X-Station-Live') === 'no' && onNotLive) {
+      onNotLive();
+    }
+    return response;
   } finally {
     clearTimeout(timer);
   }
@@ -132,15 +161,15 @@ async function apiPostChecked(path, body) {
 //: fetch is bounded like every other (WEB-22).
 const HEARTBEAT_WORKER_SOURCE = [
   "'use strict';",
-  "let url = '', every = 0, bound = 8000, hidden = false, page = '', timer = null;",
+  "let url = '', every = 0, bound = 8000, hidden = false, page = '', tab = null, timer = null;",
   "async function beat() {",
   "  const controller = new AbortController();",
   "  const clock = setTimeout(() => controller.abort(), bound);",
   "  try {",
   "    const response = await fetch(url, { method: 'POST', signal: controller.signal,",
-  "      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden, page }) });",
+  "      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden, page, tab }) });",
   "    const answer = await response.json();",
-  "    postMessage({ ok: Boolean(answer && answer.status === 'ok') });",
+  "    postMessage({ ok: Boolean(answer && answer.status === 'ok'), live: !(answer && answer.live === false) });",
   "  } catch (err) {",
   "    postMessage({ ok: false });",
   "  } finally {",
@@ -151,7 +180,7 @@ const HEARTBEAT_WORKER_SOURCE = [
   "  const said = message.data || {};",
   "  if ('hidden' in said) hidden = Boolean(said.hidden);",
   "  if (said.start && !timer) {",
-  "    url = said.url; every = said.every; bound = said.bound || bound; page = said.page || '';",
+  "    url = said.url; every = said.every; bound = said.bound || bound; page = said.page || ''; tab = said.tab || null;",
   "    beat();",
   "    timer = setInterval(beat, every);",
   "  }",
@@ -3286,6 +3315,11 @@ class Dashboard {
     this.isPolling = false;
     this.heartbeatTimer = null;
     this.heartbeatWorker = null;
+    //: Another page is the live one (owner 2026-10-07): this one shows the
+    //: "open in another window" notice and only stops.
+    this.isElsewhere = false;
+    this.elsewhereGate = null;
+    onNotLive = () => this.setElsewhere(true);
     //: This page's id on its heartbeats and its leave; a page restored from
     //: the back-forward cache takes a new one.
     this.pageId = newPageId();
@@ -3460,7 +3494,7 @@ class Dashboard {
     // typed in. After Quit there is nothing left to guard, and the page's
     // own reloads (Restart, a new station run) do not ask.
     window.addEventListener('beforeunload', (event) => {
-      if (this.isShutDown || this.isReloading) return;
+      if (this.isShutDown || this.isReloading || this.isElsewhere) return;
       event.preventDefault();
       event.returnValue = '';
     });
@@ -3535,12 +3569,14 @@ class Dashboard {
     const setInert = (node, flag) => { if (node && node.inert !== flag) node.inert = flag; };
     const gone = this.isShutDown;
     // The sign-in screen: everything but it and the rail's stop and Quit.
-    const gated = this.isGated;
+    // Another page is the live one: everything but the notice and the stop.
+    const gated = this.isGated || this.isElsewhere;
     setInert(this.dom.cards, covered || this.isDrawerOpen || gated || gone);
     setInert(this.dom.logPanel, covered || gated || gone);
     setInert(this.dom.drawer, covered || !this.isDrawerOpen || gated || gone);
     setInert(this.dom.nav, gated);
-    setInert(this.dom.gate, covered || !gated || gone);
+    setInert(this.dom.gate, covered || !this.isGated || this.isElsewhere || gone);
+    setInert(this.elsewhereGate, covered || !this.isElsewhere || gone);
     for (const layer of overlays) setInert(layer, layer !== top);
     for (const win of this.floating) setInert(win, covered || gated || gone);
   }
@@ -3563,7 +3599,7 @@ class Dashboard {
     this.isGated = isGated;
     this.dom.gate.hidden = !isGated;
     document.body.classList.toggle('is-gated', isGated);
-    for (const key of this.dom.railExtras) key.disabled = isGated;
+    for (const key of this.dom.railExtras) key.disabled = isGated || this.isElsewhere;
     if (isGated) {
       putText(this.dom.gateError, '');
       this.setDrawerOpen(false);
@@ -3762,10 +3798,11 @@ class Dashboard {
     const hidden = typeof document !== 'undefined' && Boolean(document.hidden);
     const worker = heartbeatWorker();
     if (worker) {
-      worker.onmessage = (message) => this.heardBeat(message.data && message.data.ok);
+      worker.onmessage = (message) => this.heardBeat(message.data && message.data.ok,
+                                                     !(message.data && message.data.live === false));
       worker.postMessage({ start: true, every: HEARTBEAT_MS, bound: fetchTimeoutMs(),
         url: new URL('/api/heartbeat', window.location.href).href, hidden,
-        page: this.pageId });
+        page: this.pageId, tab: TAB_ID });
       this.heartbeatWorker = worker;
       return;
     }
@@ -3788,16 +3825,18 @@ class Dashboard {
   async sendHeartbeat() {
     try {
       const hidden = typeof document !== 'undefined' && Boolean(document.hidden);
-      const answer = await apiPost('/api/heartbeat', { hidden, page: this.pageId });
-      this.heardBeat(Boolean(answer && answer.status === 'ok'));
+      const answer = await apiPost('/api/heartbeat', { hidden, page: this.pageId, tab: TAB_ID });
+      this.heardBeat(Boolean(answer && answer.status === 'ok'), !(answer && answer.live === false));
     } catch (err) {
       // Nothing to recover: a missed heartbeat is the signal itself.
     }
   }
 
   /** A heartbeat landed (or did not). */
-  heardBeat(isOk) {
+  heardBeat(isOk, isLive) {
     if (!isOk || this.isShutDown) return;
+    // One live page: the station says on every beat whether this is it.
+    this.setElsewhere(isLive === false);
     this.lastBeatOk = Date.now();
     // O12 (PM8-3): the browser is back, so the watchdog's warning is
     // over: the tray takes it back (the log keeps it).
@@ -3831,7 +3870,68 @@ class Dashboard {
     if (this.isShutDown) return;
     api('/api/leave', { method: 'POST', keepalive: true,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ page: this.pageId }) }).catch(() => {});
+      body: JSON.stringify({ page: this.pageId, tab: TAB_ID }) }).catch(() => {});
+  }
+
+  // -- one live page (owner 2026-10-07) ------------------------------------
+  //
+  // The station serves one live page. Another tab or window shows this
+  // notice beside the rail - the rail's Stop stays in reach and always
+  // works from any page; nothing else does - until the operator takes over
+  // here, which turns the other page into the one showing the notice.
+
+  /** Show or withdraw the "open in another window" notice. */
+  setElsewhere(flag) {
+    const isElsewhere = Boolean(flag) && !this.isShutDown;
+    if (isElsewhere === this.isElsewhere) return;
+    this.isElsewhere = isElsewhere;
+    const gate = this.elsewhereGate || this.buildElsewhereGate();
+    gate.hidden = !isElsewhere;
+    document.body.classList.toggle('is-elsewhere', isElsewhere);
+    for (const key of this.dom.railExtras) key.disabled = isElsewhere || this.isGated;
+    // Quit too: the live page quits the station, not this one.
+    const quit = document.getElementById('quit-link');
+    if (quit) quit.disabled = isElsewhere;
+    if (isElsewhere) {
+      this.answerConfirm(false);
+      this.setDrawerOpen(false);
+      this.dom.setupLink.hidden = true;
+    } else {
+      this.dom.setupLink.hidden = this.isDrawerOpen || this.isGated;
+    }
+    this.updateInert();
+    if (isElsewhere) gate.querySelector('button').focus({ preventScroll: true });
+  }
+
+  buildElsewhereGate() {
+    const gate = make('section', 'gate elsewhere-gate');
+    gate.id = 'elsewhere-gate';
+    gate.hidden = true;
+    gate.setAttribute('aria-labelledby', 'elsewhere-title');
+    const body = make('div', 'gate-body');
+    const title = make('h2', 'gate-title', 'Open in another window');
+    title.id = 'elsewhere-title';
+    const text = make('p', 'gate-note', 'This station is open in another window. '
+      + 'Use that one, or take over here.');
+    const stop = make('p', 'gate-note', 'The Stop on the left works from every window.');
+    const take = make('button', 'button role-go', 'Take over here');
+    take.type = 'button';
+    take.id = 'take-over';
+    take.addEventListener('click', () => this.takeOver());
+    body.append(title, text, take, stop);
+    gate.append(body);
+    document.body.append(gate);
+    this.elsewhereGate = gate;
+    return gate;
+  }
+
+  async takeOver() {
+    try {
+      const answer = await apiPostChecked('/api/take_over', { page: this.pageId, tab: TAB_ID });
+      if (answer && answer.live) this.setElsewhere(false);
+    } catch (err) {
+      // Still elsewhere: the notice stays, and the next beat says so again.
+    }
   }
 
   // -- polling ------------------------------------------------------------
