@@ -5,14 +5,19 @@ Every estimator is checked against a frame whose answer is known by
 construction; the bank is checked against the registry it is a fast path of,
 and against `RgbAnalysis._measure_rgb` for the numbers the run already logs.
 """
+import csv
+import importlib.util
 import threading
 import time
+from pathlib import Path
 
 import numpy
 import pytest
 
 from model import estimators as E
 from model.rgb_analysis import RgbAnalysis
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def solid(rgb, height=8, width=12):
@@ -421,3 +426,70 @@ def test_render_png_draws_the_curves_or_nothing():
     series = bank.series(["full.g_mean", "centre.shade_g_median"])
     png = E.render_png(series, title="t")
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+# ---------------------------------------------------------------------
+# dev/estimators_offline.py
+# ---------------------------------------------------------------------
+
+def _offline():
+    spec = importlib.util.spec_from_file_location(
+        "estimators_offline", ROOT / "dev" / "estimators_offline.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _video(path, frames, band=0, size=(64, 48), fps=15):
+    cv2 = pytest.importorskip("cv2")
+    width, height = size
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps,
+                             (width, height + band))
+    if not writer.isOpened():
+        pytest.skip("this OpenCV cannot write mp4")
+    for rgb in frames:
+        picture = numpy.empty((height + band, width, 3), dtype=numpy.uint8)
+        picture[:band] = (16, 16, 16)
+        picture[band:] = rgb[::-1]                       # BGR for the writer
+        writer.write(picture)
+    writer.release()
+
+
+def test_the_offline_tool_writes_the_csv_and_the_png(tmp_path):
+    offline = _offline()
+    video = tmp_path / "trial.mp4"
+    _video(video, [(60, 140 + min(i, 40), 60) for i in range(45)])
+    out = tmp_path / "res" / "run"
+    code = offline.main([str(video), "--out", str(out)])
+    assert code == 0
+    rows = list(csv.reader((tmp_path / "res" / "run.csv").read_text().splitlines()))
+    expected = ["t_s"] + [f"{c}.{n}" for c in offline.FIXED_CROPS
+                          for n in E.ESTIMATOR_NAMES]
+    assert rows[0] == expected
+    assert len(rows) == 46
+    assert float(rows[1][0]) == 0.0 and float(rows[2][0]) == pytest.approx(1 / 15, abs=1e-3)
+    column = rows[0].index("full.g_mean")
+    assert float(rows[-1][column]) > float(rows[1][column])      # the ramp rose
+    assert (tmp_path / "res" / "run.png").read_bytes()[:4] == b"\x89PNG"
+
+
+def test_the_offline_tool_crops_the_label_band_and_takes_keys_and_a_custom_crop(tmp_path):
+    offline = _offline()
+    video = tmp_path / "band.mp4"
+    _video(video, [(200, 100, 50)] * 20, band=30)
+    out = tmp_path / "b"
+    offline.main([str(video), "--out", str(out), "--keys",
+                  "full.r_mean,custom.g_mean", "--custom", "0,0,10,10"])
+    rows = list(csv.reader((tmp_path / "b.csv").read_text().splitlines()))
+    assert rows[0] == ["t_s", "full.r_mean", "custom.g_mean"]
+    # the band (16, 16, 16) is not in the means: the picture is solid
+    assert float(rows[1][1]) == pytest.approx(200, abs=6)
+    assert float(rows[1][2]) == pytest.approx(100, abs=6)
+
+
+def test_the_offline_tool_refuses_a_bad_crop_or_a_missing_custom(tmp_path):
+    offline = _offline()
+    with pytest.raises(SystemExit):
+        offline.main([str(tmp_path / "none.mp4"), "--crop", "sideways"])
+    with pytest.raises(SystemExit):
+        offline.main([str(tmp_path / "none.mp4"), "--crop", "custom"])
