@@ -4332,6 +4332,9 @@ class Dashboard {
     const quit = document.getElementById('quit-link');
     if (quit) quit.disabled = isElsewhere;
     if (isElsewhere) {
+      // The Stop is drawn here at once: this page skips the poll that would
+      // reveal it at the launch, and its Stop must work from any window.
+      this.revealStop(false);
       this.answerConfirm(false);
       this.setDrawerOpen(false);
       this.dom.setupLink.hidden = true;
