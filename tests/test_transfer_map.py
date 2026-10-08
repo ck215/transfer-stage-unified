@@ -1945,7 +1945,9 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     assert _keys(by_title["Trial"]) == ["next_step", "tilt_now", "speed_now"]
     assert _keys(by_title["Start"]) == [
         "tip_pick", "new_tip", "tip_status",
-        "sample_pick", "chip_pick", "flake_pick", "cut_next",
+        "sample_pick", "chip_pick", "flake_pick",
+        # The picked flake's picture (owner 2026-10-08).
+        "preview_key", "preview_text", "preview_magnification", "cut_next",
         "typed_tilt", "typed_speed", "arm_trial"]
     assert _keys(by_title["Capture region"]) == ["set_region"]
     # TM-2: no live plot in the recording steps; the trace is the review's.
@@ -4791,3 +4793,48 @@ def test_rebuild_force_reads_the_stored_shade_when_the_video_is_gone(tmp_path):
         assert gone.is_ok and gone.value == {}       # nothing left to read
     finally:
         model.close()
+
+
+def test_the_trial_setup_previews_the_picked_flakes_picture(tmp_path):
+    """Owner 2026-10-08: the picked flake's picture in the trial setup,
+    100x by default (else 50x, else lower), from the Sample DB's store."""
+    from PIL import Image
+    (tmp_path / "images").mkdir()
+    Image.new("RGB", (80, 60), (200, 0, 0)).save(tmp_path / "images" / "f100.png")
+    Image.new("RGB", (80, 60), (0, 0, 200)).save(tmp_path / "images" / "f10.png")
+    rows = [{"id": 1, "magnification": 10, "captured_at": "2026-10-07T10:00:00-07:00",
+             "path": "images/f10.png", "sample_id": "S", "chip_id": "1", "flake_id": "F"},
+            {"id": 2, "magnification": 100, "captured_at": "2026-10-07T10:00:00-07:00",
+             "path": "images/f100.png", "sample_id": "S", "chip_id": "1", "flake_id": "F"}]
+
+    class Pictures:
+        directory = tmp_path
+
+        def samples(self):
+            return [{"sample_id": "S"}]
+
+        def chips(self, sample):
+            return [{"chip_id": "1"}]
+
+        def flakes(self, sample, chip):
+            return [{"flake_id": "F"}]
+
+        def images(self, sample, chip=None, flake=None, any=False):
+            return list(rows) if (chip, flake) == ("1", "F") else []
+
+        def image_file(self, row):
+            return tmp_path / row["path"]
+
+    model = TransferMap(db_path=tmp_path / "map.sqlite",
+                        sample_store_factory=lambda path: Pictures())
+    model.on_model_added("Sample DB", FakeSampleMap(tmp_path / "s.sqlite"))
+    assert model.preview_text == "Pick a sample" and model.preview_picture == b""
+    for command, label in (("pick_sample", "S"), ("pick_chip", "1"), ("pick_flake", "F")):
+        assert model.run(command, None, (label,)).is_ok
+    assert model.preview_magnification == "100x"
+    assert model.preview_magnification_options == ["100x", "10x"]
+    assert model.preview_key == "2:images/f100.png"
+    assert model.preview_picture.startswith(b"\x89PNG")
+    assert model.run("set_preview_magnification", None, ("10x",)).is_ok
+    assert model.state["values"]["preview_key"] == "1:images/f10.png"
+    assert model.run("set_preview_magnification", None, ("50x",)).is_refused

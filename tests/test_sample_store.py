@@ -752,3 +752,62 @@ def test_the_export_stays_additive_and_carries_the_hierarchy(store, tmp_path):
     other = ss.SampleStore(tmp_path / "other" / "s.sqlite")
     other.import_document(doc)
     assert other.chips("4oct26")[0]["chip_id"] == "2" and other.flakes("4oct26", "2")
+
+
+# -- the picture preview's pick (owner 2026-10-08) -------------------------------------
+def _pic(id_, mag, when="2026-10-07T10:00:00-07:00"):
+    return {"id": id_, "magnification": mag, "captured_at": when,
+            "path": f"images/s/{id_}_{mag}x.png"}
+
+
+def test_the_preview_prefers_100x_then_50x_then_the_next_lower():
+    assert ss.pick_preview([_pic(1, 10), _pic(2, 100), _pic(3, 50)])[0]["id"] == 2
+    assert ss.pick_preview([_pic(1, 10), _pic(3, 50), _pic(4, 20)])[0]["id"] == 3
+    assert ss.pick_preview([_pic(1, 10), _pic(4, 20), _pic(5, 5)])[0]["id"] == 4
+    assert ss.pick_preview([_pic(5, 5)])[0]["id"] == 5
+    # The order on offer: 100, 50, then lower highest first, then the rest.
+    assert ss.preview_order([5, 10, 20, 50, 100, 60, 150]) == [100, 50, 20, 10, 5, 150, 60]
+
+
+def test_the_newest_picture_wins_at_one_magnification():
+    rows = [_pic(1, 100, "2026-10-07T10:00:00-07:00"),
+            _pic(2, 100, "2026-10-08T09:00:00-07:00"),
+            _pic(3, 100, "2026-10-07T12:00:00-07:00"),
+            _pic(4, 10, "2026-10-09T00:00:00-07:00")]
+    assert ss.pick_preview(rows)[0]["id"] == 2
+    # Same timestamp: the later row.
+    assert ss.pick_preview([_pic(7, 50), _pic(8, 50)])[0]["id"] == 8
+
+
+def test_no_pictures_is_no_preview_and_a_choice_is_honoured_only_when_there():
+    assert ss.pick_preview([]) == (None, [])
+    rows = [_pic(1, 10), _pic(2, 100)]
+    assert ss.pick_preview(rows, "10x")[0]["id"] == 1
+    assert ss.pick_preview(rows, "50x")[0]["id"] == 2
+    preview = ss.PicturePreview()
+    level = ("S", "1", "F")
+    assert preview.text(level, []) == "No picture"
+    assert preview.png(None, level, []) == b""
+    assert preview.choose(level, rows, "10x") == "10x"
+    assert preview.magnification(level, rows) == "10x"
+    # A new pick starts again at the default.
+    assert preview.magnification(("S", "1", "G"), rows) == "100x"
+    with pytest.raises(ss.StoreRefused, match="No picture at 50x"):
+        preview.choose(level, rows, "50x")
+
+
+def test_the_preview_reads_only_a_file_inside_the_store(tmp_path):
+    import io
+    from PIL import Image
+    store = ss.SampleStore(tmp_path / "store" / "sample_map.sqlite")
+    (tmp_path / "store" / "images").mkdir(parents=True)
+    Image.new("RGB", (1200, 900), (200, 80, 20)).save(tmp_path / "store" / "images" / "a.png")
+    Image.new("RGB", (10, 10)).save(tmp_path / "outside.png")
+    inside = dict(_pic(1, 100), path="images/a.png")
+    outside = dict(_pic(2, 100), path="../outside.png")
+    assert ss.preview_file(store, inside) is not None
+    assert ss.preview_file(store, outside) is None
+    png = ss.PicturePreview().png(store, ("S", None, None), [inside])
+    small = Image.open(io.BytesIO(png))
+    assert max(small.size) == ss.PREVIEW_PX and small.size[0] > small.size[1]
+    assert ss.PicturePreview().png(store, ("S", None, None), [outside]) == b""

@@ -788,6 +788,10 @@ def test_trace_is_for_numbers_and_a_quiet_word_is_muted():
     assert _node_value("readoutKind('off')") == "quiet"
     assert _node_value("readoutKind('Not set')") == "quiet"
     assert _node_value("readoutKind('run_20260924_101025')") == "word"
+    # 2026-10-08: a sentence opening with a count is words, so it wraps
+    # (set as a number it spilled a phone wide); a number and unit is not.
+    assert _node_value("readoutKind('3 picture(s) of 15jul26 · 1 · 1')") == "word"
+    assert _node_value("readoutKind('12 steps/s')") == "number"
     assert re.search(r"span\.value\.is-word,\s*\.row span\.value\.is-word\s*\{[^}]*"
                      r"color:\s*var\(--text\)", STYLES)
 

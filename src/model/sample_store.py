@@ -1066,3 +1066,158 @@ class SampleStore:
                                      else row[c] for c in columns])
             paths.append(path)
         return paths
+
+
+# -- the picture preview (owner 2026-10-08) -------------------------------------------
+#: "Any images should show a preview, with the 50 or 100x view by default and
+#: fallback to lower zooms if there are no values": 100x first, then 50x,
+#: then the next lower magnification there is, highest first.
+PREVIEW_FIRST = (100, 50)
+#: The longest side of a preview, in pixels: a microscope picture is ~6 MB;
+#: the page gets a small PNG drawn from it, never the original.
+PREVIEW_PX = 560
+#: Thumbnails kept per model (a few flakes back and forth costs no re-read).
+PREVIEW_CACHE = 12
+
+
+def preview_order(magnifications):
+    """The magnifications a preview offers, in the order it prefers them:
+    100x, 50x, then every lower one highest first, then anything left
+    (a magnification between 50x and 100x, or above 100x) highest first."""
+    there = sorted({int(m) for m in magnifications}, reverse=True)
+    first = [m for m in PREVIEW_FIRST if m in there]
+    lower = [m for m in there if m not in first and m < PREVIEW_FIRST[-1]]
+    return first + lower + [m for m in there if m not in first and m not in lower]
+
+
+def pick_preview(rows, magnification=None):
+    """(the picture to show, the magnifications on offer in preview order).
+
+    `rows` are `sample_images` rows; `magnification` the operator's choice,
+    honoured only while a picture at it exists (else the default order
+    decides). Among several pictures at one magnification the newest wins:
+    the latest `captured_at`, then the highest id. No rows: (None, [])."""
+    by = {}
+    for row in rows:
+        try:
+            by.setdefault(int(row["magnification"]), []).append(row)
+        except (TypeError, ValueError, KeyError):
+            continue
+    order = preview_order(by)
+    if not order:
+        return None, []
+    try:
+        wanted = int(str(magnification).strip().lower().rstrip("x"))
+    except (TypeError, ValueError):
+        wanted = None
+    chosen = wanted if wanted in by else order[0]
+    newest = max(by[chosen], key=lambda r: (str(r["captured_at"] or ""), r["id"] or 0))
+    return newest, order
+
+
+def preview_file(store, row):
+    """The picture's file, only when it is a file INSIDE the store's folder
+    (realpath, so a symlink or a `..` out of it is refused): the same rule
+    as the Web view's `/api/image`. None otherwise."""
+    if row is None:
+        return None
+    root = os.path.realpath(store.directory)
+    full = os.path.realpath(store.image_file(row))
+    if os.path.commonpath([root, full]) != root or not os.path.isfile(full):
+        return None
+    return Path(full)
+
+
+def thumbnail_png(path, size=PREVIEW_PX):
+    """`path` scaled down to fit `size` x `size`, as PNG bytes."""
+    import io
+    from PIL import Image
+    with Image.open(path) as picture:
+        picture.draft("RGB", (size, size))          # a JPEG decodes small
+        small = picture.convert("RGB")
+        small.thumbnail((size, size))
+        out = io.BytesIO()
+        small.save(out, "PNG")
+        return out.getvalue()
+
+
+class PicturePreview:
+    """One model's preview of the picked level's picture: which picture
+    (`pick_preview`), the operator's magnification choice for THIS level
+    (a new pick starts again at the default), and a small thumbnail cache.
+    The Sample DB and the Transfer Map's trial setup each hold one."""
+
+    NONE = "No picture"
+
+    def __init__(self):
+        self._choice = (None, None)          # (level, magnification)
+        self._cache = {}
+
+    def _wanted(self, level):
+        return self._choice[1] if self._choice[0] == level else None
+
+    def pick(self, level, rows):
+        return pick_preview(rows, self._wanted(level))
+
+    def choose(self, level, rows, magnification):
+        """The operator's magnification for this level: one on offer."""
+        _row, order = pick_preview(rows)
+        try:
+            number = int(str(magnification).strip().lower().rstrip("x"))
+        except (TypeError, ValueError):
+            number = None
+        if number not in order:
+            raise StoreRefused(
+                f"No picture at {magnification}: "
+                + (", ".join(f"{m}x" for m in order) if order else "there are none")
+                + ".")
+        self._choice = (level, number)
+        return f"{number}x"
+
+    def magnification(self, level, rows):
+        row, _order = self.pick(level, rows)
+        return f"{int(row['magnification'])}x" if row is not None else ""
+
+    def options(self, level, rows):
+        return [f"{m}x" for m in self.pick(level, rows)[1]]
+
+    def key(self, level, rows):
+        """Changes exactly when the picture shown does: the page refetches
+        the preview on a change only, never on every poll."""
+        row, _order = self.pick(level, rows)
+        return "" if row is None else f"{row['id']}:{row['path']}"
+
+    def text(self, level, rows):
+        row, order = self.pick(level, rows)
+        if row is None:
+            return self.NONE
+        mag = int(row["magnification"])
+        same = sum(1 for r in rows if _int_or_none(r["magnification"]) == mag)
+        when = str(row["captured_at"] or "")[:16].replace("T", " ")
+        return (f"{mag}x picture, taken {when}"
+                + (f", newest of {same}" if same > 1 else ""))
+
+    def png(self, store, level, rows):
+        """The shown picture as a small PNG; b"" when there is none (or its
+        file is missing, outside the store, or unreadable)."""
+        row, _order = self.pick(level, rows)
+        path = preview_file(store, row) if store is not None else None
+        if path is None:
+            return b""
+        try:
+            stat = path.stat()
+            key = (str(path), stat.st_mtime_ns, stat.st_size)
+            if key not in self._cache:
+                if len(self._cache) >= PREVIEW_CACHE:
+                    self._cache.pop(next(iter(self._cache)))
+                self._cache[key] = thumbnail_png(path)
+            return self._cache[key]
+        except Exception:
+            return b""
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
