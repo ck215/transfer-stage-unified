@@ -1,0 +1,103 @@
+{
+  "id": "rotator",
+  "title": "Operating the Rotator",
+  "requires": "any",
+  "steps": [
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Rotator"},
+      "say": "The Rotator is the rotation stage on its SMC100 controller. After Launch in Setup it appears in the sidebar under its name; press the name to open this page.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Position (deg)"},
+      "say": "There is no rotator simulator: on a SIM port, or with no stage answering, every control that needs the stage is greyed out. On a real stage the angle is read four times a second.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Position (deg)"},
+      "say": "Past ±30° the stage risks damaging the tubing. Every move is judged on where it lands: one that would end beyond ±30° asks you first, and so does a relative move while the position is unknown.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Step"},
+      "say": "Step is the size of one relative move, in degrees (1.0 to start with). A step of 0 is refused, not sent.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Move +"},
+      "say": "Move + and Move - turn the stage by one Step. Each is counted from the last target you sent, not the last reading, so several quick presses add up and are checked against ±30° together.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Home"},
+      "say": "Home sends the stage to 0°. After power-up or a reset the controller reads Not referenced, and Home is how it finds its zero.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Stop motion"},
+      "say": "Stop motion halts the stage where it is, at once, without latching. The stage did not reach its target, so that target is forgotten. Only one move runs at a time: a second press while one is moving is refused.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Configure Rotator"},
+      "say": "An absolute move and the controller reset sit one level down. Press Configure Rotator to open them.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Move to"},
+      "say": "Move to turns the stage to the Target angle (-175° to 175°), under the same ±30° check.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Reset & configure"},
+      "say": "Reset & configure resets the SMC100, reloads the stage's own settings, then homes it, so it moves and asks first. Use it when the controller reports an error.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Diagnostics"},
+      "say": "Open Diagnostics for the controller's state, its connection lamp and this device's own stop.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Motion state"},
+      "say": "Motion state is the controller's word: Ready, Moving, Homing, Not referenced, Disabled or Configuring. If the stage stops answering it reads Communication lost and the position goes blank.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"selector": "#full-stop"},
+      "say": "The stop: the Stop disc on the rail, or Ctrl+. from anywhere on the page, halts every device at once and latches it. The moves grey out until the stop is cleared.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"selector": "#full-stop"},
+      "say": "When every device is stopped the disc reads Clear; pressing it asks, then clears. Clearing moves nothing. Ctrl+. only ever stops.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Stop this model"},
+      "say": "Stop this model halts and latches only the Rotator. Pressed again (it then reads Stopped) it clears just this one, after asking.",
+      "wait": null
+    },
+    {
+      "page": "Rotator",
+      "anchor": {"text": "Fault reason"},
+      "say": "A move that does not finish, or a controller error, shows here: check the stage, then use Reset & configure. If the controller will not answer, use Hard reset on its row in Setup, or check its cable and power.",
+      "wait": null
+    }
+  ]
+}

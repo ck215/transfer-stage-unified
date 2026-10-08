@@ -1,0 +1,145 @@
+{
+  "id": "dc-probe",
+  "title": "Operating the DC Probe",
+  "requires": "any",
+  "steps": [
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "DC Probe"},
+      "say": "The DC Probe is the three-axis probe on the DC-motor board, which reads its position from encoders. After Launch in Setup it appears in the sidebar under its name; press the name to open this page.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "X"},
+      "say": "X, Y and Z are the board's encoder counts, reported about twenty times a second. They count from when the link came up: a reconnect or a board reset starts them again at zero.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Autonomous speed"},
+      "say": "Autonomous speed is how fast a Step moves, as a percent of the 3200 steps/s ceiling; the steps/s figure with it is what is sent. It is locked while the probe is in a mode.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Manual speed"},
+      "say": "Manual speed is the gamepad's jog speed, on the same scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Configure DC Probe"},
+      "say": "The step sizes, the targets of a Step and the two brake fields sit one level down. Press Configure DC Probe to open them.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Target X dist"},
+      "say": "A Step moves each axis by its target dist × its step size, relative to where it is now. The DC board drives the axes one at a time: X, then Y, then Z. 0 leaves an axis still.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Brake speed (slow)"},
+      "say": "Brake speed (slow) and Brake distance travel with every Step, but the current DC firmware reads them and does nothing with them. Every field here is locked while the probe is in a mode.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Enter autonomous mode"},
+      "say": "Control system 1, autonomous: press Enter autonomous mode. Nothing moves yet; the probe waits for Step.",
+      "wait": {"state": {"name": "DC Probe", "key": "model_mode", "equals": "autonomous"}}
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Step"},
+      "say": "Step sends one move to the targets at the autonomous speed (it enters autonomous mode by itself if needed). Let the stage settle before the next Step: one pressed while it still moves is refused.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Autonomous mode"},
+      "say": "Press Autonomous mode to leave it. Leaving any mode sends a zero-motion frame, which halts the motors.",
+      "wait": {"state": {"name": "DC Probe", "key": "model_mode", "equals": "disabled"}}
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Gamepad"},
+      "say": "Control system 2, manual: a gamepad drives the probe. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Enter manual mode"},
+      "say": "Now press Enter manual mode. The station streams the pad to the board 50 times a second. Step is greyed out while in manual.",
+      "wait": {"state": {"name": "DC Probe", "key": "model_mode", "equals": "manual"}}
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Manual mode"},
+      "say": "Left stick: X and Y, at the manual speed. The left and right triggers drive Z in opposite directions. The D-pad and the bumpers do nothing on this board. Let go of a stick and that axis brakes and holds.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Manual / gamepad"},
+      "say": "A mode times out: after 5 minutes with no motion and no gamepad input the probe leaves its mode. In the last minute a countdown with Extend shows on the rail; Extend gives it another 5 minutes.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Manual mode"},
+      "say": "Press Manual mode to leave it. Unplugging the pad, or choosing another pad or None in the list, also ends manual mode.",
+      "wait": {"state": {"name": "DC Probe", "key": "model_mode", "equals": "disabled"}}
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"selector": "#full-stop"},
+      "say": "The stop: the Stop disc on the rail, or Ctrl+. from anywhere on the page, stops every device at once and latches it. The probe leaves its mode and its controls grey out.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"selector": "#full-stop"},
+      "say": "Know this board: it has no power-down command. A stop or leaving a mode halts the motion, but the motors may stay powered. The station warns once (Power down not supported); treat the probe as live.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"selector": "#full-stop"},
+      "say": "When every device is stopped the disc reads Clear; pressing it asks, then clears. Clearing restarts nothing: enter a mode again. Ctrl+. only ever stops.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Diagnostics"},
+      "say": "Open Diagnostics for this probe's own stop, its fault, how old the last position is, and the Gamepad log, which shows whether the pad is bound and reacting.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Stop this model"},
+      "say": "Stop this model latches only this probe. Pressed again (it then reads Stopped) it clears just this probe, after asking.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Fault reason"},
+      "say": "If a stop cannot be confirmed, the probe shows a fault: treat it as live. Modes are refused until a stop is confirmed. A board silent for 1 s while in a mode is stopped by the station.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Position age (s)"},
+      "say": "A board that has stopped answering cannot be armed. Use Hard reset on its row in Setup, or cut its power and reconnect, then clear the stop. A lost cable reconnects by itself; enter the mode again after.",
+      "wait": null
+    },
+    {
+      "page": "DC Probe",
+      "anchor": {"text": "Manual / gamepad"},
+      "say": "Keep the station in its own browser window while the probe is in a mode: if no browser checks in for 15 s while a device is energized, the station stops every device.",
+      "wait": null
+    }
+  ]
+}

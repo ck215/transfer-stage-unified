@@ -1,0 +1,145 @@
+{
+  "id": "chuck-positioner",
+  "title": "Operating the Chuck Positioner",
+  "requires": "any",
+  "steps": [
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Chuck Positioner"},
+      "say": "The Chuck Positioner is a three-axis stage on a stepper-family board, driven like the probes. After Launch in Setup it appears in the sidebar under its name; press the name to open this page.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "X"},
+      "say": "X, Y and Z are the board's step counts, reported about ten times a second. They count from when the link came up: a reconnect or a board reset starts them again at zero.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "X"},
+      "say": "The Sample Map can use these counts as its locating axes. Because they restart with the link, positions taken before a reconnect no longer line up with the stage.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Autonomous speed"},
+      "say": "Autonomous speed is how fast a Step moves, as a percent of this board's 600 steps/s ceiling (lower than the probes'). The steps/s figure with it is what is sent. It is locked while the stage is in a mode.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Manual speed"},
+      "say": "Manual speed is the gamepad's jog speed, on the same scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Configure Chuck Positioner"},
+      "say": "The step sizes and the targets of a Step sit one level down. Press Configure Chuck Positioner to open them.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "X step size"},
+      "say": "A step size multiplies every move on its axis: a Step travels target dist × step size, and one D-pad or bumper press moves one step size. These fields are locked while the stage is in a mode.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Target X dist"},
+      "say": "Target X, Y and Z dist are the move one Step makes, relative to where the stage is now, in step-size units. The sign picks the direction; 0 leaves that axis still.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Enter autonomous mode"},
+      "say": "Control system 1, autonomous: press Enter autonomous mode. It powers the motors but moves nothing; the stage then waits for Step.",
+      "wait": {"state": {"name": "Chuck Positioner", "key": "model_mode", "equals": "autonomous"}}
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Step"},
+      "say": "Step sends one move to the targets at the autonomous speed (it enters autonomous mode by itself if needed). Let the stage settle before the next Step: one pressed while it still moves is refused.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Autonomous mode"},
+      "say": "Press Autonomous mode to leave it. Leaving any mode sends a zero-motion frame, then powers the motors down: there is no 'stop but hold' setting.",
+      "wait": {"state": {"name": "Chuck Positioner", "key": "model_mode", "equals": "disabled"}}
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Gamepad"},
+      "say": "Control system 2, manual: a gamepad drives the stage. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Enter manual mode"},
+      "say": "Now press Enter manual mode. The motors power up and the station streams the pad to the board 50 times a second. Step is greyed out while in manual.",
+      "wait": {"state": {"name": "Chuck Positioner", "key": "model_mode", "equals": "manual"}}
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Manual mode"},
+      "say": "Left stick: X and Y, smoothly, at the manual speed. Left trigger raises Z, right trigger lowers it. D-pad: one step on X (left, right) or Y (up, down) per press. Bumpers: one Z step per press.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Manual / gamepad"},
+      "say": "A mode times out: after 5 minutes with no motion and no gamepad input the stage powers down. In the last minute a countdown with Extend shows on the rail; Extend gives it another 5 minutes.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Manual mode"},
+      "say": "Press Manual mode to leave it: a zero frame, then the motors power down. Unplugging the pad, or choosing another pad or None in the list, also ends manual mode and powers down.",
+      "wait": {"state": {"name": "Chuck Positioner", "key": "model_mode", "equals": "disabled"}}
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"selector": "#full-stop"},
+      "say": "The stop: the Stop disc on the rail, or Ctrl+. from anywhere on the page, stops every device at once and latches it. The stage leaves its mode, powers down, and its controls grey out.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"selector": "#full-stop"},
+      "say": "When every device is stopped the disc reads Clear; pressing it asks, then clears. Clearing restarts nothing: enter a mode again. Ctrl+. only ever stops.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Diagnostics"},
+      "say": "Open Diagnostics for this stage's own stop, its fault, how old the last position is, and the Gamepad log, which shows whether the pad is bound and reacting.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Stop this model"},
+      "say": "Stop this model latches only this stage. Pressed again (it then reads Stopped) it clears just this stage, after asking.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Fault reason"},
+      "say": "If a disable or a stop cannot be confirmed, the stage shows a fault: treat it as powered. Modes are refused until a stop is confirmed. A board silent for 1 s while in a mode is stopped by the station.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Position age (s)"},
+      "say": "A board that has stopped answering cannot be armed. Use Hard reset on its row in Setup, or cut its power and reconnect, then clear the stop. A lost cable reconnects by itself; enter the mode again after.",
+      "wait": null
+    },
+    {
+      "page": "Chuck Positioner",
+      "anchor": {"text": "Manual / gamepad"},
+      "say": "Keep the station in its own browser window while the stage is in a mode: if no browser checks in for 15 s while a device is energized, the station stops every device.",
+      "wait": null
+    }
+  ]
+}

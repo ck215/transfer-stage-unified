@@ -1,0 +1,115 @@
+{
+  "id": "temperature-controller",
+  "title": "Operating the Temperature Controller",
+  "requires": "any",
+  "steps": [
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Temperature Controller"},
+      "say": "The Temperature Controller is the heater board: a PID loop that heats to a setpoint. After Launch in Setup it appears in the sidebar under its name; press the name to open this page.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Current temperature"},
+      "say": "Current temperature is what the board reports, a little under twice a second. It reads N/A until the first reading, Disconnected when the link is down, and Simulated on a SIM port.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Setpoint"},
+      "say": "Setpoint is the temperature to hold, 0 to 300 °C (the station's limit). Typing a number heats nothing: only Enter settings sends it.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Configure Temperature Controller"},
+      "say": "The rest of what Enter settings sends sits one level down. Press Configure Temperature Controller to open it.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Ramp rate"},
+      "say": "Ramp rate, in seconds per degree as on the board's display (RR): when heating, the board raises its working setpoint 1 °C every that many seconds until it reaches the setpoint. A lower setpoint is taken at once.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Proportional term (P)"},
+      "say": "P, I and D are the loop's gains; Offset (-100 to 100 °C) is added to the thermocouple reading. All of them go with every Enter settings, together with the setpoint and the ramp rate.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Temperature over time"},
+      "say": "The plot shows the last couple of minutes of readings as they arrive.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Enter settings"},
+      "say": "Enter settings sends all six fields as one frame. If any field does not parse, nothing is sent: the board would read the fields shifted. Too many decimals are refused too; use fewer.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Heating to"},
+      "say": "Heating to is the setpoint the board was last sent. It is empty while the heater is off, so a typed but unsent setpoint never looks like heating.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Current temperature"},
+      "say": "Heating has no idle timeout, and the board has no watchdog of its own: it holds the last setpoint for as long as it has power, until a stop reaches it. Stop it when you are done.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Stop heater"},
+      "say": "Stop heater turns the heater off now (setpoint and gains to 0) without latching anything. A stop always wins over an Enter settings still waiting to be sent.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Stop heater"},
+      "say": "On a real board, stopping while heating counts only once the board reports its setpoint at 0 within 1.5 s. If it does not, a warning says it may still be heating: switch it off at the controller.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"selector": "#full-stop"},
+      "say": "The stop: the Stop disc on the rail, or Ctrl+. from anywhere on the page, sends the same heater-off to every device at once and latches it. Enter settings greys out until the stop is cleared.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"selector": "#full-stop"},
+      "say": "When every device is stopped the disc reads Clear; pressing it asks, then clears. Clearing does not heat again: press Enter settings when you want heat. Ctrl+. only ever stops.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Diagnostics"},
+      "say": "Open Diagnostics for the link and this device's own stop.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Connection"},
+      "say": "Connection is the link's state. After a few failed readings the station warns and keeps retrying; check the cable and power. If the board stays silent, use Hard reset on its row in Setup.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Stop this model"},
+      "say": "Stop this model sends the heater-off and latches only this device. Pressed again (it then reads Stopped) it clears just this one, after asking.",
+      "wait": null
+    },
+    {
+      "page": "Temperature Controller",
+      "anchor": {"text": "Current temperature"},
+      "say": "Keep the station in its own browser window while heating: if no browser checks in for 15 s while a device is energized, the station stops every device.",
+      "wait": null
+    }
+  ]
+}
