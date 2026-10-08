@@ -666,7 +666,9 @@ kbd {
   background: transparent;
   color: var(--text);
   font-family: inherit;
-  font-size: var(--t-sm);
+  /* 15 px (UX audit 2026-10-07): the page list is read from across the
+     bench; it was the caption size. */
+  font-size: var(--t-md);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -1070,7 +1072,10 @@ kbd {
 .card-head {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(0, 1fr) auto;
+  /* The name never shrinks under its longest word (UX audit 2026-10-07: at
+     1366 px "Connection lost" was painted over "Stepper Probe"); in a
+     narrow entry the state takes a line of its own under it (below). */
+  grid-template-columns: minmax(min-content, max-content) minmax(0, 1fr) auto;
   align-items: center;
   column-gap: var(--space-4);
   min-height: var(--hit-panel);
@@ -1142,6 +1147,17 @@ kbd {
   font-weight: 500;
   color: var(--text);
   white-space: nowrap;
+}
+
+/* An Overview entry three across is too narrow for the name, the state and
+   "Open" on one line: the state moves to its own line under the name, left
+   to right, and "Open" keeps its place beside the name. */
+.sheet.is-overview > .card { container-type: inline-size; }
+
+@container (max-width: 32rem) {
+  .card-head { grid-template-columns: minmax(min-content, 1fr) auto; }
+  .card-side { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
+  .card-side:empty { display: none; }
 }
 
 .stale-badge[hidden], .card-state[hidden] { display: none; }
@@ -1556,6 +1572,11 @@ kbd {
 }
 
 .unit { font-size: var(--caption-size); font-weight: 500; color: var(--muted); text-shadow: var(--engrave); }
+
+/* A unit belongs to a number (UX audit 2026-10-07): beside a word it read
+   "Simulated °C". "--" keeps its unit: unknown, in degrees. */
+.value.is-word + .unit,
+.value.is-empty:not(.is-dash) + .unit { display: none; }
 
 /* -- readings and values ------------------------------------------------- */
 /* A value is ink. A number is drawn in trace only while it is CHANGING
@@ -2445,9 +2466,11 @@ label.row-title[for] { cursor: pointer; }
 .table-head > .row-title {
   min-height: 0;
   padding: var(--space-1) 0;
-  font-size: var(--t-xs);
-  font-weight: 400;
+  /* The caption size, engraved, like every caption on the sheet (was 12/400). */
+  font-size: var(--t-cap);
+  font-weight: 500;
   color: var(--muted);
+  text-shadow: var(--engrave);
 }
 
 .section-row:not(.section-span):not(.table-head) > .cell > .label {
@@ -2523,11 +2546,18 @@ label.row-title[for] { cursor: pointer; }
    track list inline, so this is the only way to reach it. */
 .drawer .card-body.table {
   grid-template-columns:
-    minmax(0, max-content) minmax(9rem, 1fr) max-content minmax(9rem, 1fr)
-    minmax(0, max-content)
+    minmax(min-content, max-content) minmax(9rem, 1fr) max-content minmax(9rem, 1fr)
+    minmax(min-content, max-content)
     !important;
   column-gap: var(--space-3);
 }
+
+/* UX audit 2026-10-07: the name and status tracks never shrink under their
+   longest word (at minmax(0, ...) a narrow window cut "Temperature
+   Controller" to "Tempera" under the Port dropdown); a long name or status
+   wraps at a space instead. */
+.drawer .section-row:not(.section-span) > .row-title { white-space: normal; }
+.drawer .section-row > .cell .value { overflow-wrap: normal; }
 
 .drawer .select-key, .drawer .select { width: 100%; min-width: 0; }
 
@@ -2542,18 +2572,30 @@ label.row-title[for] { cursor: pointer; }
 
 .drawer .value,
 .drawer span.value.is-word,
-.drawer span.value.is-empty { min-width: 0; font-size: var(--t-sm); }
+.drawer span.value.is-empty { min-width: 0; font-size: var(--t-sm); line-height: 1.35; }
 
 .drawer .value:not(.is-word):not(.is-empty) { font-family: var(--font-family); font-stretch: normal; font-weight: 500; }
 
 .drawer .section-row > .cell { min-width: 0; }
 
-/* Setup's Launch row: the count of ticked models, then the commands
-   right-aligned as one group, over a 2 px ink rule. */
-.drawer .section-span > .actions:last-child {
-  flex: 1 0 100%;
-  justify-content: flex-end;
-}
+/* Setup's section lines (UX audit 2026-10-07): the name, what it says, and
+   its keys at the right edge - on the same line when they fit, right-aligned
+   under it when they do not - in every section alike. (A `.actions:last-child`
+   rule meant for the Launch row matched only Account's keys and sent them to
+   a line of their own; Update's and Firmware's sat wherever the text ended.)
+   A key group right after the name stays beside it (Devices: Refresh). */
+.drawer .section-span > .actions { margin-left: auto; }
+.drawer .section-span > .row-title + .actions { margin-left: 0; }
+.drawer .section-span > .cell.stat { min-width: 0; flex: 0 1 auto; }
+/* A section's sentence (an info line: who is signed in, what the update
+   check said, the boards) takes the line's spare room and wraps in it, so
+   its keys stay on the same line. */
+.drawer .section-span > .cell.stat:has(> .value.role-info) { flex: 1 1 18rem; }
+
+/* The scan line takes the room it has and wraps inside it, so a long
+   "Scanning /dev/... (1 of 3)" no longer pushes Address onto a line of its
+   own and the device table jumps down and back as the scan ends. */
+.drawer .section-span > .row-title + .actions + .cell.stat { flex: 1 1 0; }
 
 .drawer .section-span:last-child {
   margin-top: var(--space-5);
@@ -2770,9 +2812,29 @@ label.row-title[for] { cursor: pointer; }
 
 .gate-field .input { width: 100%; font-size: var(--t-md); }
 
-.gate-error { min-height: 1.4em; font-size: var(--t-sm); color: var(--error-ink); }
+/* UX audit 2026-10-07: the line keeps its room while empty, so the keys
+   under it do not jump at the pointer when a refusal appears, and a
+   refusal carries the warning glyph like every other refusal on the page -
+   in ink: a refused sign-in is not a stop. */
+.gate-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-height: 1.45em;
+  font-size: var(--t-sm);
+  color: var(--error-ink);
+}
 
-.gate-error:empty { min-height: 0; }
+.gate-error:not(:empty)::before {
+  content: "";
+  flex: 0 0 auto;
+  width: var(--glyph);
+  height: var(--glyph);
+  margin-top: 0.1em;
+  background: var(--warning-mark);
+  -webkit-mask: var(--icon-warning) center / contain no-repeat;
+  mask: var(--icon-warning) center / contain no-repeat;
+}
 
 .gate-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 
@@ -2785,7 +2847,11 @@ label.row-title[for] { cursor: pointer; }
   border-top: var(--rule-strong-px) solid var(--rule-strong);
 }
 
-.gate-note { font-size: var(--t-md); max-width: 36ch; }
+/* Scoped to the sign-in screen (UX audit 2026-10-07): `.gate-note` is also
+   L3's muted line under a row whose go command cannot go, and an unscoped
+   rule here set every one of those at body size, 36 characters wide. The
+   guest notice runs the form's full width, like the fields above it. */
+.gate .gate-note { font-size: var(--t-md); color: var(--muted); }
 
 .dialog {
   max-width: 34rem;
@@ -2889,6 +2955,17 @@ label.row-title[for] { cursor: pointer; }
   .mushroom, .mushroom.is-latched { font-size: var(--t-stop-narrow); }
   .card.span-2 { grid-column: span 3; }
   .sheet { column-gap: var(--space-9); }
+  /* UX audit 2026-10-07: beside a 200 px rail the drawer has under 560 px
+     for five columns; the table takes the phone's shape (the name on its
+     own line, the port, Hard reset, the gamepad and the status under it)
+     instead of painting the dropdowns over the names. */
+  .drawer .card-body.table {
+    grid-template-columns:
+      minmax(0, 1fr) max-content minmax(0, 1fr) minmax(min-content, max-content)
+      !important;
+  }
+  .drawer .section-row > .row-title { grid-column: 1 / -1; padding-bottom: 0; border-bottom: 0 !important; }
+  .drawer .table-head > .row-title { display: none; }
 }
 
 /* Under 760 px the entries stack in one column. */
