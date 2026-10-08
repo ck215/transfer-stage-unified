@@ -1233,6 +1233,14 @@ class TransferMap(store_choice.StorePrompt, Model):
         return self.is_armed
 
     @property
+    def is_arming(self):
+        """Arm pressed and no row yet: the `region` step, or the Arm in
+        flight (`_start_trial`). Not `is_active` (nothing records yet), but
+        Setup refuses a Guest switch on it: removing the map would discard
+        the Arm (arch audit #13)."""
+        return self._pending is not None or self._arming is not None
+
+    @property
     def mode_name(self):
         """What the station is doing: "armed" from Arm (the `region` step
         included) to Finish or Abort, else "ready". Where in the procedure
