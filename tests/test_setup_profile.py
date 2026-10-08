@@ -558,15 +558,16 @@ def test_a_signed_in_users_store_is_theirs_and_the_station_keeps_its_own(setup, 
     assert setup.map_store_status == str(station)
 
 
-def test_the_maps_own_open_store_remembers_for_the_signed_in_user(setup, stores):
+def test_a_user_without_a_store_gets_the_prompt_and_their_choice_is_theirs(setup, stores):
     from controller import user_config
     station, mine = stores
     setup.build(CONFIGS)
     create(setup)
     tmap = models(setup)["Transfer Map"]
-    assert tmap.db_path == station, "a user with no store of their own: the station's"
-    # 2026-10-08: Open store is on the map's store prompt (Change store…).
-    assert setup.controller.run("Transfer Map", "change_store").is_ok
+    # Owner ruling 2026-10-08 (data safety): a user with no store of their
+    # own gets the store prompt, never the station's (it was the fallback).
+    assert not tmap.has_store and tmap.phase == "new_store"
+    assert tmap.db_path is None and str(station) not in str(tmap.store_path)
     result = setup.controller.run("Transfer Map", "open_store", {"store_path": str(mine)})
     assert result.is_ok, result.reason
     assert UserStore().setting(EMAIL, "map_store") == str(mine)
@@ -597,5 +598,7 @@ def test_a_users_missing_store_is_a_warning_not_a_failed_sign_in(setup, stores, 
     setup.run("sign_out")
     setup.build(CONFIGS)
     assert sign_in(setup).is_ok
-    assert models(setup)["Transfer Map"].db_path == station
+    # 2026-10-08: the prompt, never the station's store.
+    assert models(setup)["Transfer Map"].db_path is None
+    assert models(setup)["Transfer Map"].phase == "new_store"
     assert any("Trial Store Missing" in line for line in heard())

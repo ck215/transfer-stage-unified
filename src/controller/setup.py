@@ -255,13 +255,36 @@ del _built_in
 #: Guest removes them - refused while a trial is open.
 SIGNED_IN_ONLY = (TransferMap, SampleMap)
 
-# A3: the Transfer Map remembers the operator's store choice in the one
-# choices file. Wired here, at the composition root: `model/` never imports
-# the controller.
-TransferMap.choices = user_config
-# 2026-10-07: the Sample DB's store is chosen and remembered the same way
-# (`sample_store`); it no longer defaults to a file inside the install.
-SampleMap.choices = user_config
+class _StationChoices:
+    """The store models' class-level `choices` (what a map reads while it is
+    built, before Setup hands it the session's `_SessionChoices`).
+
+    With accounts off the station's choices file (`controller.user_config`)
+    is the operator's, as before (A3). With accounts on a map exists only
+    for a signed-in user, and owner ruling 2026-10-08 (data safety): "Signed
+    in but no map -> it prompts for creation of a new db, does NOT default
+    to another user's data!" - so the station's file is never read for one
+    (it may hold whoever chose a store before accounts), and nothing is
+    remembered there for one."""
+
+    @staticmethod
+    def read(key, default=None):
+        if PROFILES_ENABLED:
+            return default
+        return user_config.read(key, default)
+
+    @staticmethod
+    def write(key, value):
+        if PROFILES_ENABLED:
+            raise OSError("no signed-in user to remember it for")
+        return user_config.write(key, value)
+
+
+# A3: the maps remember the operator's store choice. Wired here, at the
+# composition root: `model/` never imports the controller. 2026-10-07: the
+# Sample DB's store is chosen and remembered the same way (`sample_store`).
+TransferMap.choices = _StationChoices
+SampleMap.choices = _StationChoices
 
 
 def is_signed_in_only(name):
@@ -682,6 +705,7 @@ class Setup(PortProbe, Panel):
                         _Selector(self, key, field))
             if row["needs_port"]:
                 setattr(self, f"hard_reset_{key}", _HardReset(self, key))
+                setattr(self, f"start_{key}", _StartRow(self, key))
         # Reopen goes through the registry from the start, not only after a
         # build: a model added with `controller.add(NAME, model, config)`
         # comes back from its remembered config like one Setup built.
@@ -701,8 +725,8 @@ class Setup(PortProbe, Panel):
     def mode_name(self):
         """`scanning` gates Launch; `launched` retires it (owner 2026-10-07:
         no relaunch - a device is recovered, or moved to a changed port
-        (2026-10-08), with its row's Hard reset; adding a device needs a
-        station Restart). The dropdowns are gated by neither: the operator may point a
+        (2026-10-08), with its row's Hard reset; a device plugged in since
+        is started by its row's Start, 2026-10-08 B). The dropdowns are gated by neither: the operator may point a
         row at a port while the scan is still walking the rest of them, and
         that choice then wins over auto-assign."""
         if self.is_scanning:
@@ -793,12 +817,15 @@ class Setup(PortProbe, Panel):
                 "needs_port": row["needs_port"],
                 "needs_gamepad": row["needs_gamepad"],
                 "is_chosen": key in chosen,
-                # A board that answered after the launch: its port, until a
-                # restart lets it launch.
-                "seen_after_launch": seen.get(key),
+                # A board that answered after the launch: its port, until
+                # its row's Start starts it.
+                "seen_after_launch": seen.get(key) if self._can_start(key) else None,
                 # A Port or Gamepad changed after the launch, waiting for
                 # the row's Hard reset (owner ruling 2026-10-08).
                 "pending_reset": self._pending_config(key) is not None,
+                # Not running after the launch: the row's key is Start
+                # (owner ruling 2026-10-08, B).
+                "can_start": self._can_start(key),
                 "options_command": row["options_command"],
             })
         snapshot.update({
@@ -1177,11 +1204,18 @@ class Setup(PortProbe, Panel):
             if name in running:
                 continue        # launched: its port is held, its row stands
             if self._is_launched:
-                # Owner 2026-10-07: a device plugged in after the launch is
-                # not added to the running station; a restart launches it.
+                # Owner ruling 2026-10-08 (B): a device plugged in after the
+                # launch is never started by itself; its row is pointed at
+                # it (unless the operator chose its port, or it was
+                # launched and closed) and Settings' Start starts it.
+                closed = list(getattr(self.controller, "closed_names", ()) or ())
                 with self._lock:
                     is_new = self._seen.get(key) != port
                     self._seen[key] = port
+                    mine = key in chosen and not force
+                if not mine and name not in closed and \
+                        getattr(self, f"{key}_port") != port:
+                    setattr(self, f"{key}_port", port)
                 if is_new:
                     seen.append((name, port))
                 continue
@@ -1209,13 +1243,12 @@ class Setup(PortProbe, Panel):
         if seen:
             words = _and([f"{name} on {port}" for name, port in seen])
             many = len(seen) > 1
-            events.warn(events.RESTART_NEEDED,
+            events.warn("Device Not Started",
                         f"{words} {'were' if many else 'was'} plugged in after "
                         f"the launch and {'are' if many else 'is'} not running. "
-                        "Restart the station to launch "
-                        f"{'them' if many else 'it'}.", source=self.NAME, ack=True,
-                        action=("Restart now", events.SETUP_PANEL,
-                                "restart_station", (True,)))
+                        f"Start {'them' if many else 'it'} in Settings: "
+                        f"{'their rows' if many else 'its row'}, Start.",
+                        source=self.NAME)
         events.debug("Auto-assign", "; ".join(assigned + kept) or
                      "nothing to assign", source=self.NAME)
         return assigned
@@ -1259,9 +1292,16 @@ class Setup(PortProbe, Panel):
         Controller's own remove: estop, then close - the heater's off is
         read back before its port lets go), then built again and opened:
         opening the port pulses DTR, which resets the board, and the
-        identity handshake runs again. Refused while the model is energized
-        or running; asked first. A reset that did not come back can be
-        pressed again: the config is remembered.
+        identity handshake runs again. Asked first. A reset that did not
+        come back can be pressed again: the config is remembered.
+
+        Owner ruling 2026-10-08 (A): "Hard reset should force a device to
+        clear state, disconnect, reconnect." It is never refused for being
+        energized or in a mode: the one question says it stops it first, and
+        the model's full stop path (estop, then close: halt, de-energize, the
+        heater's off read back) runs before its port lets go. The model is
+        built fresh, so its latch, fault, mode and pending steps are gone.
+        Refused while a scan runs (the scan may be probing ports).
 
         Owner ruling 2026-10-08: the no-relaunch rule only keeps devices
         from being enabled or disabled outside Settings; it never meant a
@@ -1276,12 +1316,17 @@ class Setup(PortProbe, Panel):
         controller = self.controller
         if name not in self._running_names() and \
                 name not in list(getattr(controller, "closed_names", ()) or ()):
+            if self._is_launched:
+                # Owner ruling 2026-10-08 (B): the row's key is Start while
+                # the row is not running (the Web view labels it so).
+                return self._start_row(key)
             self._refuse(f"{name} is not launched, so there is nothing to reset.")
+        if self.is_scanning:
+            self._refuse("A scan is running. Wait for it, or press Cancel scan, "
+                         "then Hard reset.")
         model = controller._model_or_none(name)
-        if model is not None and (getattr(model, "is_energized", False)
-                                  or getattr(model, "is_active", False)):
-            self._refuse(f"{name} is energized. Stop it and put it out of its "
-                         "mode first, then hard reset.")
+        energized = model is not None and (getattr(model, "is_energized", False)
+                                           or getattr(model, "is_active", False))
         launched = controller.config(name)
         wanted = self._pending_config(key)
         where = self._where(launched)
@@ -1291,7 +1336,11 @@ class Setup(PortProbe, Panel):
         if not confirmed:
             latched = (" It is stopped now; the reset clears that."
                        if getattr(model, "is_estopped", False) else "")
-            if wanted is None:
+            if energized:
+                # One question (the pattern of the retired Relaunch's
+                # `_ask_before_taking_down`): it is stopped first.
+                question = f"{name} is energized: Hard reset stops it first. Reset?"
+            elif wanted is None:
                 question = (f"Hard reset {name}? It is stopped and disconnected, "
                             f"its board is reset, and it is opened again on "
                             f"{where}.{latched}")
@@ -1323,9 +1372,7 @@ class Setup(PortProbe, Panel):
             events.info("Hard Reset", f"{name}: closing on {where}, then opening "
                         f"on {target}.", source=self.NAME)
         if model is not None:
-            # The stop path, then the old port closes: `remove` is estop,
-            # then close, before anything is built on the new choice.
-            controller.remove(name)
+            self._stop_for_reset(name, model)
         try:
             if wanted is None:
                 controller.reopen(name)
@@ -1344,6 +1391,121 @@ class Setup(PortProbe, Panel):
                          "station.")
         self._refresh_rows()
         return name
+
+    def _can_start(self, key):
+        """A port row that is not running after the launch (owner ruling
+        2026-10-08, B): its key reads Start."""
+        row = self._rows[key]
+        if not (self._is_launched and row["needs_port"]) or self.controller is None:
+            return False
+        name = row["name"]
+        closed = list(getattr(self.controller, "closed_names", ()) or ())
+        return name not in self._running_names() and name not in closed
+
+    def _start_row(self, key):
+        """Start one device after the launch, from its Settings row (owner
+        ruling 2026-10-08, B: "A device plugged in after launch should be
+        able to have a port set in settings and be started after startup,
+        just not dynamically from outside settings like before"). Reached
+        through `start_<row>` and the row's key while the row is not
+        running. The row's choice is held to what Launch holds a row to: not
+        a port a running model holds (ports are exclusive), and answered as
+        this model in the identity handshake (or SIM). Builds and opens that
+        one model; nothing else restarts. Never asks: nothing is running on
+        it to take down."""
+        if key not in self._rows:
+            self._refuse(f"{key} is not a configurable model")
+        row = self._rows[key]
+        name = row["name"]
+        if not row["needs_port"]:
+            self._refuse(f"{name} has no port to start on.")
+        if not self._is_launched:
+            self._refuse(f"Nothing is launched yet: Launch starts {name} with "
+                         "the rest.")
+        if name in self._running_names():
+            self._refuse(f"{name} is already running. Its Hard reset restarts it.")
+        if not self._can_start(key):
+            self._refuse(f"{name} was launched and is closed: press its Hard "
+                         "reset to bring it back.")
+        if self.is_scanning:
+            self._refuse("A scan is running. Wait for it, or press Cancel scan, "
+                         f"then Start {name}.")
+        if self.is_flashing:
+            self._refuse("The firmware is being flashed. Start it when the "
+                         "Flashing cell is empty.")
+        if getattr(self, f"{key}_port") == NOT_CONNECTED:
+            self._refuse(f"{name} is not launched: choose its Port (or SIM), "
+                         "then press Start.")
+        config = self._row_config(key, row)
+        others = []
+        for other in self._running_names():
+            try:
+                others.append(self.controller.config(other) or {})
+            except Exception:
+                continue
+        self.validate([c for c in others if c.get("model")] + [config])
+        self._check_identities([config])
+        if not config.get("sim"):
+            with self._lock:
+                answered = self._found.get(config.get("port"))
+            if answered != name:
+                self._refuse(f"{name} has not answered on {config.get('port')}. "
+                             "Press Refresh to scan it, or choose another port.")
+        where = self._where(config)
+        # One build or reset at a time (the Hard reset's guard).
+        if not self._reset_lock.acquire(blocking=False):
+            self._refuse("A hard reset or start is already running; wait for it "
+                         "to finish, then press Start again if needed.")
+        try:
+            try:
+                self.controller.add(name, self.model_from_config(config), config)
+            except Refused:
+                self._refresh_rows()
+                raise
+            except Exception as exc:
+                events.debug("Start Failed", f"{name}: {exc!r}", source=self.NAME,
+                             exception=exc)
+                self._refresh_rows()
+                self._refuse(f"{name} did not start on {where}. Check its cable, "
+                             "then press Start again.")
+            with self._lock:
+                self._seen.pop(key, None)
+            self._refresh_rows()
+            events.info("Device Started", f"{name} on {where}, from Settings.",
+                        source=self.NAME)
+            return name
+        finally:
+            self._reset_lock.release()
+
+    def _stop_for_reset(self, name, model):
+        """The forced reset's stop path. The estop runs FIRST, while the
+        model is still registered, so a FULL STOP pressed meanwhile still
+        reaches it (architecture audit 2026-10-08: `Controller.remove` drops
+        a model before it stops it). Then `remove`: estop again, then close
+        (halt, de-energize, the heater's off read back), and the port lets
+        go. Whatever raises on the way, the model ends stopped and closed
+        and the row can be reset again (its config is remembered)."""
+        try:
+            if not model.estop():
+                events.warn("Stop Not Confirmed", f"{name} did not confirm its "
+                            "stop before the hard reset; it is closed now. "
+                            "Treat it as live until it is back.", source=self.NAME)
+        except Exception as exc:
+            events.debug("Hard Reset Stop Failed", f"{name}: {exc!r}",
+                         source=self.NAME, exception=exc)
+        try:
+            self.controller.remove(name)
+        except Exception as exc:
+            events.debug("Hard Reset Failed", f"{name} remove: {exc!r}",
+                         source=self.NAME, exception=exc)
+            try:
+                model.close()       # isolated steps: halt, disable, ports
+            except Exception as close_exc:
+                events.debug("Close Failed", repr(close_exc), source=self.NAME,
+                             exception=close_exc)
+            self._refresh_rows()
+            self._refuse(f"{name} was stopped and closed, but its reset did not "
+                         "finish. Press Hard reset again, or restart the station.")
 
     @staticmethod
     def _where(config):
@@ -1471,7 +1633,8 @@ class Setup(PortProbe, Panel):
         if self._is_launched:
             self._refuse("The station is already launched. Recover a device, "
                          "or move it to another port, with its row's Hard "
-                         "reset; to add a device, Restart the station.")
+                         "reset; start a device plugged in since from its "
+                         "row: choose its Port, then Start.")
         if self.is_flashing:
             # A board mid-upload is not a board to open: its port is the
             # uploader's, and its firmware is neither the old nor the new.
@@ -1638,6 +1801,7 @@ class Setup(PortProbe, Panel):
         if not email:
             self._take_password()
             self._refuse("Type your email and password, or press Proceed as guest.")
+        self._refuse_other_user_mid_trial(email)
         record = self.users.user(email)
         if record is None:
             self._take_password()
@@ -1680,6 +1844,7 @@ class Setup(PortProbe, Panel):
             self._take_password()
             self._refuse(f"An account for {email} already exists. Press Sign in "
                          "instead.")
+        self._refuse_other_user_mid_trial(email)
         if not confirmed:
             raise NeedsConfirm(
                 f"Create an account for {email} on this station? The password is "
@@ -1839,17 +2004,33 @@ class Setup(PortProbe, Panel):
         return {name: model for name, model in self.controller.models.items()
                 if is_signed_in_only(name)}
 
+    def _busy_signed_in_only(self):
+        return [name for name, model in self._open_signed_in_only().items()
+                if getattr(model, "is_active", False)]
+
     def _refuse_guest_mid_trial(self):
         """Back to Guest takes the Transfer Map and the Sample Map away, so
         not while one of them is busy (an armed trial, a recording)."""
         if not PROFILES_ENABLED or self.user.is_guest:
             return
-        busy = [name for name, model in self._open_signed_in_only().items()
-                if getattr(model, "is_active", False)]
+        busy = self._busy_signed_in_only()
         if busy:
             self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
                          "open. Finish or abort it first: a Guest has no Transfer "
                          "Map or Sample DB, so they close when you switch.")
+
+    def _refuse_other_user_mid_trial(self, email):
+        """Signing in as someone else closes the previous user's stores
+        (owner ruling 2026-10-08), so not while a trial is being recorded
+        into one of them."""
+        if not PROFILES_ENABLED or self.user.is_guest or email == self.user.email:
+            return
+        busy = self._busy_signed_in_only()
+        if busy:
+            self._take_password()
+            self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
+                         f"open for {self.user.user_name}. Finish or abort it before "
+                         "someone else signs in: their stores replace this user's.")
 
     def _drop_signed_in_only(self):
         """A Guest's station: the signed-in-only models closed (stopped,
@@ -2756,29 +2937,27 @@ class Setup(PortProbe, Panel):
         return [m for m in models.values() if isinstance(m, self.STORE_MODELS)]
 
     def _follow_store(self, previous):
-        """After a sign-in or sign-out, each open map records where the new
-        session's store is: the signed-in user's remembered store, or - back
-        to Guest from a user - the station's remembered one. The prompt's
-        suggested folder becomes the new user's."""
+        """After a sign-in or a switch, each open map is on the new user's
+        own remembered store, or on its store prompt: never the previous
+        user's, never the station's (owner ruling 2026-10-08, data safety).
+        The prompt's suggested folder becomes the new user's. A Guest has no
+        maps (`_drop_signed_in_only` closed them)."""
         for model in self._store_models():
             model.suggest_store_dir(self._suggested_store_dir())
         if not PROFILES_ENABLED:
             return
         for model in self._store_models():
             model.choices = self._map_choices
-            key = model.STORE_KEY
             if not self.user.is_guest:
                 self._open_users_store(model)
-            elif not previous.is_guest and not os.environ.get(self.STORE_ENV[key]):
-                station = user_config.read(key)
-                if station:
-                    self._open_store_on(model, station, "The station's")
 
     def _open_users_store(self, model):
         """The signed-in user's remembered store (`UserStore` setting
         `map_store` / `sample_store`) becomes `model`'s, when it is still
-        there. `--map-db` / `--sample-db` win over it, as over the station's
-        choice."""
+        there; with none (or one that is gone or will not open) the model
+        lets go of whatever it had and asks (`release_store`, the `new_store`
+        prompt) - owner ruling 2026-10-08: never the station's store, never
+        another user's. `--map-db` / `--sample-db` win over all of it."""
         key = model.STORE_KEY
         if os.environ.get(self.STORE_ENV[key]):
             return
@@ -2789,34 +2968,49 @@ class Setup(PortProbe, Panel):
                         "store could not be read from the accounts file; the "
                         f"{model.NAME} asks where its store is.",
                         source=self.NAME, exception=exc)
+            path = None
+        else:
+            if path and not Path(path).is_file():
+                events.warn(self._store_word(model) + " Missing", f"{self.user.user_name}'s {model.NAME} "
+                            f"store {path} is not there any more. The {model.NAME} "
+                            "asks where its store is; open or make one there.",
+                            source=self.NAME)
+                path = None
+        if path and self._open_store_on(model, path, f"{self.user.user_name}'s"):
             return
-        if not path:
+        self._release_store(model)
+
+    def _release_store(self, model):
+        """`model` back to its store prompt, for the signed-in user."""
+        release = getattr(model, "release_store", None)
+        if not callable(release):
             return
-        if not Path(path).is_file():
-            events.warn(self._store_word(model) + " Missing", f"{self.user.user_name}'s {model.NAME} "
-                        f"store {path} is not there any more. The {model.NAME} "
-                        "asks where its store is; open or make one there.",
-                        source=self.NAME)
-            return
-        self._open_store_on(model, path, f"{self.user.user_name}'s")
+        try:
+            release()
+        except Refused as refusal:      # a switch mid-trial is refused before this
+            events.warn(self._store_word(model) + " Not Closed", f"The {model.NAME} "
+                        f"kept its store: {refusal.reason}", source=self.NAME)
 
     def _open_store_on(self, model, path, whose):
         """Open `path` on `model` the way Open store does; a refusal is a
-        warning, never a failed sign-in."""
+        warning, never a failed sign-in. True when `model` is on `path`."""
         current = getattr(model, "db_path", None)
         if (current is not None and getattr(model, "has_store", False)
                 and Path(current) == Path(path).expanduser().resolve()):
-            return
+            return True
         model.store_path = str(path)
         try:
             model.open_store()
         except Refused as refusal:
             events.warn(self._store_word(model) + " Not Opened", f"{whose} {model.NAME} store {path} "
                         f"was not opened: {refusal.reason}", source=self.NAME)
+            return False
         except Exception as exc:
             events.warn(self._store_word(model) + " Not Opened", f"{whose} {model.NAME} store {path} "
                         "was not opened; the details are in the log file.",
                         source=self.NAME, exception=exc)
+            return False
+        return True
 
     @staticmethod
     def _store_word(model):
@@ -3045,12 +3239,19 @@ class Setup(PortProbe, Panel):
             ]
             if row["needs_port"]:
                 # Its board reset and the model opened again on the same
-                # port; asks first, refused while energized (`_hard_reset`).
+                # port; asks first; an energized one is stopped first (`_hard_reset`).
                 # Right after Port, so a row without it (no port) or without
                 # a Gamepad still lines up: a view pads before the Status.
                 elements.append(sch.button("Hard reset", f"hard_reset_{key}",
                                            role="neutral",
                                            enabled_when=[self.LAUNCHED]))
+                # Owner ruling 2026-10-08 (B): Start, for a row that is not
+                # running after the launch. Declared so `run("start_<row>")`
+                # passes the allow-list; it draws nothing: the row's key above
+                # reads Start then (the Web view, from `can_start`).
+                elements.append({"type": "internal", "command": f"start_{key}",
+                                 "writable": False, "role": "go",
+                                 "enabled_when": [self.LAUNCHED]})
             # Built from the class's resources; for the six built-ins that is
             # a Gamepad dropdown where one is declared, and nothing else.
             for field, kind, label, _ in row["columns"]:
@@ -3067,8 +3268,8 @@ class Setup(PortProbe, Panel):
             # state value for the API and the tests.
             # Once per run (owner 2026-10-07): no Relaunch and no Close every
             # model. After the launch a device is recovered, or moved to a
-            # changed port (2026-10-08), with its row's Hard reset; adding a
-            # device is a station Restart.
+            # changed port (2026-10-08), with its row's Hard reset; a device
+            # plugged in since is started by its row's Start (2026-10-08 B).
             sch.button("Launch", "launch", role="go",
                        enabled_when=[self.READY], disabled_when=[self.LAUNCHED]),
             layout="row",
@@ -3111,8 +3312,8 @@ class Setup(PortProbe, Panel):
         one sentence the operator reads to know whether the row launches."""
         with self._lock:
             seen = self._seen.get(key)
-        if seen:
-            return f"seen on {seen}: restart to launch"
+        if seen and self._can_start(key):
+            return f"seen on {seen}: press Start"
         pending = self._pending_config(key)
         if pending is not None:
             # Owner ruling 2026-10-08: the row's Hard reset applies it - once
@@ -3121,6 +3322,9 @@ class Setup(PortProbe, Panel):
                 return "changed: hard reset to apply"
             return "changed: not identified there; press Refresh"
         choice = getattr(self, f"{key}_port")
+        if self._can_start(key) and (choice == SIM or (
+                choice != NOT_CONNECTED and found.get(choice) == row["name"])):
+            return "not running: press Start"
         if self.guest_locked and is_signed_in_only(row["name"]):
             return "sign in to use"
         if choice == SIM:
@@ -3288,6 +3492,22 @@ class _Selector:
 
     def __repr__(self):
         return f"<set_{self.key}_{self.field}>"
+
+
+class _StartRow:
+    """One row's Start after the launch: `start_<row>()` (owner ruling
+    2026-10-08, B)."""
+
+    __slots__ = ("setup", "key")
+
+    def __init__(self, setup, key):
+        self.setup, self.key = setup, key
+
+    def __call__(self):
+        return self.setup._start_row(self.key)
+
+    def __repr__(self):
+        return f"<start_{self.key}>"
 
 
 class _HardReset:

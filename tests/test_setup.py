@@ -192,10 +192,12 @@ def test_a_row_is_name_then_port_hard_reset_gamepad_then_status(panel):
             for e in row["elements"]] == [
         ("dropdown", "alpha_port"),
         ("button", "hard_reset_alpha"),
+        # Owner ruling 2026-10-08 (B): declared, drawn as the row's key.
+        ("internal", "start_alpha"),
         ("dropdown", "alpha_gamepad"),
         ("readonly", "alpha_status"),
     ]
-    port, reset, pad, _ = row["elements"]
+    port, reset, _, pad, _ = row["elements"]
     assert "enabled_by" not in port and "enabled_by" not in pad
     assert reset["text"] == "Hard reset" and reset["enabled_when"] == ["launched"]
     assert panel.alpha_name == "Alpha"
@@ -526,7 +528,8 @@ def test_launch_runs_once_and_a_second_launch_is_refused(panel):
     import schema as sch
     from views.base import gate_reason
     assert sch.is_enabled(launch, "ready") and not sch.is_enabled(launch, "launched")
-    assert gate_reason(launch, "launched") == "Launched: to add a device, restart the station"
+    # Owner ruling 2026-10-08 (B): a device is started from its row, no Restart.
+    assert gate_reason(launch, "launched") == "Launched: start a device from its row"
     assert panel.run("launch").is_ok
     model = panel.controller._model("Alpha")
     # The panel's gate refuses the command (the button is disabled), and a
@@ -534,7 +537,7 @@ def test_launch_runs_once_and_a_second_launch_is_refused(panel):
     again = panel.run("launch", args=(True,))
     assert again.is_refused and "launched" in again.reason
     from result import Refused
-    with pytest.raises(Refused, match="Hard reset.*Restart the station"):
+    with pytest.raises(Refused, match="Hard reset.*choose its Port, then Start"):
         panel.launch(True)
     assert panel.controller.model_names == ["Alpha", "Screen"]
     assert panel.controller._model("Alpha") is model and model.closed == 0
@@ -718,7 +721,7 @@ def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
                      "detected": None,
                      "needs_port": True, "needs_gamepad": True,
                      "is_chosen": False, "seen_after_launch": None,
-                     "pending_reset": False,
+                     "pending_reset": False, "can_start": False,
                      "options_command": "port_options"}
     assert state["values"]["scan_status"] == "not scanned yet"
     assert state["scan"]["elapsed"] is None and state["scan"]["port"] is None
@@ -1049,43 +1052,89 @@ def test_hard_reset_asks_then_reopens_the_same_device_on_the_same_port(panel):
     assert panel.is_launched and "Screen" in panel.controller.model_names
 
 
-def test_hard_reset_is_refused_while_the_device_is_energized(panel):
+# Owner ruling 2026-10-08 (A): "Hard reset should force a device to clear
+# state, disconnect, reconnect." It is never refused for being energized: the
+# model's full stop path runs first (estop, then close: halt, de-energize,
+# the heater's off read back), then the port closes, and a fresh model (no
+# latch, no mode) is built and identified. One question while energized.
+
+@pytest.mark.parametrize("busy", ["is_energized", "is_active"])
+def test_hard_reset_of_an_energized_device_asks_once_then_stops_it_first(
+        panel, fake_types, monkeypatch, busy):
+    log = []
     old = _launch_alpha_on(panel)
-    old.is_energized = True     # this file's fake is a plain class
-    result = panel.run("hard_reset_alpha", args=(True,))
-    assert result.is_refused and "energized" in result.reason
+    setattr(old, busy, True)            # this file's fake is a plain class
+    old.is_estopped = True              # a latched stop, cleared by the reset
+    _record_order(monkeypatch, fake_types["Alpha"], log)
+    asked = panel.run("hard_reset_alpha")
+    assert asked.needs_confirm and asked.command == "hard_reset_alpha"
+    assert asked.reason == "Alpha is energized: Hard reset stops it first. Reset?"
+    assert log == [] and panel.controller._model("Alpha") is old
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert log[0] == ("estop", "/dev/ttyUSB0"), "the stop path before anything else"
+    assert log.index(("estop", "/dev/ttyUSB0")) < log.index(("close", "/dev/ttyUSB0")) \
+        < log.index(("build", "/dev/ttyUSB0", None)) < log.index(("open", "/dev/ttyUSB0"))
+    new = panel.controller._model("Alpha")
+    assert new is not old and new.is_open and not old.is_open
+    for cleared in ("is_energized", "is_active", "is_estopped"):
+        assert not getattr(new, cleared, False), cleared
+
+
+def test_the_forced_reset_stops_the_model_while_full_stop_still_reaches_it(
+        panel, fake_types, monkeypatch):
+    """Architecture audit 2026-10-08: `Controller.remove` drops a model
+    before it stops it, so a FULL STOP pressed then would miss it. The
+    reset's stop runs while the model is still registered."""
+    old = _launch_alpha_on(panel)
+    old.is_energized = True
+    registered = []
+    original = fake_types["Alpha"].estop
+
+    def estop(self):
+        registered.append("Alpha" in panel.controller.model_names)
+        return original(self)
+    monkeypatch.setattr(fake_types["Alpha"], "estop", estop)
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert registered and registered[0] is True
+
+
+def test_hard_reset_is_refused_while_a_scan_runs(panel):
+    old = _launch_alpha_on(panel)
+
+    class Alive:
+        def is_alive(self):
+            return True
+    panel._scan_thread = Alive()
+    result = panel.run("hard_reset_alpha", args=(True,))   # the gate
+    assert result.is_refused and "scan" in result.reason.lower()
+    # ... and the command itself, for a caller that is not gated.
+    with pytest.raises(Refused, match="scan"):
+        panel.hard_reset_alpha(True)
     assert panel.controller._model("Alpha") is old and old.closed == 0
+    panel._scan_thread = None
 
 
-def test_a_second_hard_reset_while_one_runs_is_refused(panel, monkeypatch):
-    """Architecture audit 2026-10-08: Setup commands are not serialised (the
-    Web server is threaded) and `Controller.add` opens outside its lock, so
-    two confirmed resets could both build and open the model, the second
-    overwriting the first: an open port and threads no stop could reach.
-    One reset at a time; the second is refused in words."""
-    import threading
-    _launch_alpha_on(panel)
-    entered, gate = threading.Event(), threading.Event()
-    real = panel.controller.reopen
+def test_a_hard_reset_that_fails_mid_way_leaves_the_device_stopped_and_retryable(
+        panel, fake_types, monkeypatch):
+    """A peer that raises while the old model is being taken out must never
+    leave it registered nowhere and still energized."""
+    log = []
+    old = _launch_alpha_on(panel)
+    old.is_energized = True
+    _record_order(monkeypatch, fake_types["Alpha"], log)
 
-    def slow(name):
-        entered.set()
-        gate.wait(5)
-        return real(name)
+    falls = [True]
 
-    monkeypatch.setattr(panel.controller, "reopen", slow)
-    results = []
-    first = threading.Thread(
-        target=lambda: results.append(panel.run("hard_reset_alpha", args=(True,))))
-    first.start()
-    assert entered.wait(5)
-    second = panel.run("hard_reset_alpha", args=(True,))
-    gate.set()
-    first.join(5)
-    assert second.is_refused and "already running" in second.reason
-    assert results and results[0].is_ok
-    assert panel.controller.calls.count("add:Alpha") == 2     # launch + one reset
-    assert panel.run("hard_reset_alpha", args=(True,)).is_ok   # free again
+    def boom(self, name, model):
+        if falls.pop() if falls else False:
+            raise RuntimeError("a peer fell over")
+    monkeypatch.setattr(fake_types["Screen"], "on_model_removed", boom)
+    result = panel.run("hard_reset_alpha", args=(True,))
+    assert result.is_refused and "Hard reset again" in result.reason
+    assert ("estop", "/dev/ttyUSB0") in log and ("close", "/dev/ttyUSB0") in log
+    assert not old.is_open, "stopped and its port let go"
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert panel.controller._model("Alpha") is not old
 
 
 def test_hard_reset_of_a_row_that_did_not_launch_is_refused(panel):
@@ -1174,7 +1223,11 @@ def test_hard_reset_applies_a_changed_port_stop_path_first(
     assert panel.run("hard_reset_alpha", args=(True,)).is_ok
     # The stop path ran on the old port, then the old port closed, and only
     # then was the model built and opened on the new one.
-    assert log == [("estop", "/dev/ttyUSB0"), ("close", "/dev/ttyUSB0"),
+    # 2026-10-08 (A): the reset's own estop runs while the model is still
+    # registered (a FULL STOP still reaches it), then `remove` estops again
+    # and closes.
+    assert log == [("estop", "/dev/ttyUSB0"), ("estop", "/dev/ttyUSB0"),
+                   ("close", "/dev/ttyUSB0"),
                    ("build", "/dev/ttyUSB1", None), ("open", "/dev/ttyUSB1")]
     assert panel.controller.config("Alpha")["port"] == "/dev/ttyUSB1"
     assert panel.controller._model("Alpha").port == "/dev/ttyUSB1"
@@ -1272,22 +1325,132 @@ def test_a_scan_after_the_launch_never_opens_a_port_a_model_holds(panel, monkeyp
     assert panel.alpha_port == "/dev/ttyUSB0" and panel.alpha_enabled is True
 
 
-def test_a_board_plugged_in_after_the_launch_is_seen_not_launched(
+# -- a device started after the launch, from Settings (owner ruling 2026-10-08, B) --
+# "A device plugged in after launch should be able to have a port set in
+# settings and be started after startup, just not dynamically from outside
+# settings like before." A row that is not running gets a Port and its key
+# reads Start (`start_<row>`, also what the row's key runs while the row is
+# not running): identified first, never on a port a running model holds.
+
+def test_a_board_plugged_in_after_the_launch_is_seen_and_offered_start_not_started(
         panel, monkeypatch, warnings):
     _launch_alpha_on(panel)
     answers = {"/dev/ttyUSB0": "Alpha", "/dev/ttyUSB1": "Beta"}
     _scan_with(panel, monkeypatch, answers)
-    assert "Beta" not in panel.controller.model_names
-    assert "Beta" not in [c["model"] for c in panel.configs]
-    assert panel.beta_status == "seen on /dev/ttyUSB1: restart to launch"
+    assert "Beta" not in panel.controller.model_names, "never started by itself"
+    assert panel.beta_port == "/dev/ttyUSB1", "its row is pointed at it"
+    assert panel.beta_status == "seen on /dev/ttyUSB1: press Start"
     row = next(r for r in panel.state["rows"] if r["key"] == "beta")
-    assert row["seen_after_launch"] == "/dev/ttyUSB1"
+    assert row["seen_after_launch"] == "/dev/ttyUSB1" and row["can_start"] is True
+    alpha = next(r for r in panel.state["rows"] if r["key"] == "alpha")
+    assert alpha["can_start"] is False
     said = [e for e in warnings if e.title == events.RESTART_NEEDED]
-    assert len(said) == 1 and "Beta on /dev/ttyUSB1" in said[0].message
-    assert "Restart the station" in said[0].message
-    assert said[0].action["command"] == "restart_station"
+    assert not said, "no Restart: it is started from Settings"
+    [seen] = [e for e in warnings if e.title == "Device Not Started"]
+    assert "Beta on /dev/ttyUSB1" in seen.message and "Start" in seen.message
+    assert not seen.action, "nothing outside Settings starts it"
     _scan_with(panel, monkeypatch, answers)       # seen again: said once
-    assert len([e for e in warnings if e.title == events.RESTART_NEEDED]) == 1
+    assert len([e for e in warnings if e.title == "Device Not Started"]) == 1
+
+
+def test_a_device_plugged_in_after_the_launch_starts_from_its_row(panel, monkeypatch):
+    _launch_alpha_on(panel)
+    heard = []
+    panel.controller.subscribe(lambda event, name: heard.append((event, name)))
+    _scan_with(panel, monkeypatch, {"/dev/ttyUSB0": "Alpha", "/dev/ttyUSB1": "Beta"})
+    alpha = panel.controller._model("Alpha")
+    result = panel.run("start_beta")
+    assert result.is_ok, result.reason
+    beta = panel.controller._model("Beta")
+    assert beta.is_open and beta.port == "/dev/ttyUSB1"
+    assert panel.controller.config("Beta")["port"] == "/dev/ttyUSB1"
+    assert ("added", "Beta") in heard, "the rail and the Controller are told"
+    assert panel.controller._model("Alpha") is alpha, "nothing else restarts"
+    row = next(r for r in panel.state["rows"] if r["key"] == "beta")
+    assert row["can_start"] is False and row["seen_after_launch"] is None
+    assert panel.beta_status == "detected: Beta"
+    # Running now: its key is Hard reset again, and Start is refused.
+    assert panel.run("start_beta").is_refused
+    assert panel.run("hard_reset_beta").needs_confirm
+
+
+def test_the_rows_key_starts_a_row_that_is_not_running(panel, monkeypatch):
+    """The Settings row has one key: Start while the row is not running."""
+    _launch_alpha_on(panel)
+    offer(panel, "/dev/ttyUSB1")
+    panel._found["/dev/ttyUSB1"] = "Beta"
+    select(panel, "beta", "port", "/dev/ttyUSB1")
+    assert panel.beta_status == "not running: press Start"
+    assert panel.run("hard_reset_beta").is_ok
+    assert "Beta" in panel.controller.model_names
+
+
+def test_start_after_launch_refuses_a_port_that_did_not_answer_as_the_device(panel):
+    _launch_alpha_on(panel)
+    offer(panel, "/dev/ttyUSB1")                 # listed, never identified
+    select(panel, "beta", "port", "/dev/ttyUSB1")
+    result = panel.run("start_beta")
+    assert result.is_refused and "not answered" in result.reason
+    panel._found["/dev/ttyUSB1"] = "Alpha"       # answered as something else
+    result = panel.run("start_beta")
+    assert result.is_refused and "answered as Alpha" in result.reason
+    assert "Beta" not in panel.controller.model_names
+
+
+def test_start_after_launch_on_sim_needs_no_answer(panel):
+    _launch_alpha_on(panel)
+    select(panel, "beta", "port", SIM)
+    assert panel.run("start_beta").is_ok
+    assert panel.controller._model("Beta").sim is True
+
+
+def test_start_after_launch_refuses_a_port_a_running_model_holds(panel):
+    old = _launch_alpha_on(panel)
+    panel._found["/dev/ttyUSB0"] = "Beta"        # say it answered as Beta
+    select(panel, "beta", "port", "/dev/ttyUSB0")
+    result = panel.run("start_beta")
+    assert result.is_refused and "already assigned to Alpha" in result.reason
+    assert "Beta" not in panel.controller.model_names
+    assert panel.controller._model("Alpha") is old and old.closed == 0
+
+
+def test_start_is_refused_before_the_launch_and_while_a_scan_runs(panel):
+    assert panel.run("start_beta").is_refused, "before the launch, Launch starts it"
+    _launch_alpha_on(panel)
+    assert "Beta" not in panel.controller.model_names
+    select(panel, "beta", "port", SIM)
+
+    class Alive:
+        def is_alive(self):
+            return True
+    panel._scan_thread = Alive()
+    with pytest.raises(Refused, match="scan"):
+        panel.start_beta()
+    panel._scan_thread = None
+
+
+def test_a_start_that_fails_says_so_and_can_be_pressed_again(panel, fake_types):
+    _launch_alpha_on(panel)
+    offer(panel, "/dev/ttyUSB1")
+    panel._found["/dev/ttyUSB1"] = "Beta"
+    select(panel, "beta", "port", "/dev/ttyUSB1")
+    fake_types["Beta"].FAIL_ON_OPEN = True
+    result = panel.run("start_beta")
+    assert result.is_refused and "did not start" in result.reason
+    assert "Beta" not in panel.controller.model_names
+    fake_types["Beta"].FAIL_ON_OPEN = False
+    assert panel.run("start_beta").is_ok
+
+
+def test_no_command_outside_setup_adds_a_device():
+    """Only Setup builds a new model (a device never launched): the Web
+    server and the views have no route or call that does."""
+    import inspect
+    from views import base
+    from views.web import server
+    for module in (server, base):
+        source = inspect.getsource(module)
+        assert "controller.add(" not in source and "model_from_config" not in source
 
 
 # -- the update check (owner, 2026-09-28) ------------------------------------
@@ -2406,7 +2569,11 @@ def test_the_store_row_says_nothing_is_chosen_then_what_was(store_choice, tmp_pa
     assert panel.new_map_store() == str(path)
     assert path.is_file()
     assert panel.map_store_status == str(path)
-    assert TransferMap().db_path == path         # remembered for the map
+    from controller import user_config
+    assert user_config.read("map_store") == str(path)   # remembered (a Guest's)
+    # Owner ruling 2026-10-08 (data safety): with accounts on a map is a
+    # signed-in user's and never opens the station's remembered store.
+    assert TransferMap().db_path is None
 
 
 def test_opening_a_store_from_setup_moves_an_open_map_onto_it(store_choice, tmp_path):

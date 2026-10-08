@@ -455,6 +455,31 @@ class SampleMap(store_choice.StorePrompt, Model):
         self._touch()
         return str(path)
 
+    def release_store(self):
+        """No store until the user chooses one: the `new_store` prompt,
+        prefilled with the suggested folder (Setup, at a user switch: owner
+        ruling 2026-10-08, a user never sees another's samples). The previous
+        store stays on disk untouched; nothing of it is left in the prompt's
+        fields. An open New prompt is dropped with it (it wrote nothing yet,
+        and it was the previous user's)."""
+        with self._lock:
+            self._no_store()
+            self._choosing_store = False
+            self.store_path = ""
+            self.store_dir = self.suggested_folder
+            self._selected = None
+            self._chip = self._flake_id = None
+            self._staged = []
+            self._preview = ss.PicturePreview()
+            self._phase = "browse"
+        peer = self._trial_peer
+        if peer is not None:
+            try:
+                peer.on_model_added(self.NAME, self)
+            except Exception as exc:
+                events.debug("Peer Not Told", repr(exc), source=self.NAME)
+        self._touch()
+
     # -- the Model contract ----------------------------------------------------
     @property
     def devices(self):
@@ -510,9 +535,9 @@ class SampleMap(store_choice.StorePrompt, Model):
         if name == self.TRANSFER_MAP and model is not self:
             self._trial_peer = model
             path = getattr(model, "db_path", None)
-            if path:
-                self._trial_store = Path(path)
-                self._touch()
+            # None too: a released store is never read on (2026-10-08).
+            self._trial_store = Path(path) if path else None
+            self._touch()
         if all(hasattr(model, a) for a in ("position", "position_time",
                                             "position_age", "velocity")):
             self._stages[name] = model
