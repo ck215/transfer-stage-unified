@@ -640,6 +640,30 @@ def test_options_come_from_the_scan(panel):
     assert panel.options("device_options") == [ON, SIM]
 
 
+def test_option_labels_name_known_devices_and_keep_the_raw_values(
+        panel, monkeypatch):
+    """Friendly names are labels only: the options (what configs, choices
+    and the wire carry) stay raw; an unknown port shows its raw path."""
+    monkeypatch.setattr(serial_port_module, "list_ports", lambda: [
+        ("/dev/ttyACM0", "USB VID:PID=2341:0042 SER=A"),
+        ("/dev/ttyACM1", "USB VID:PID=16C0:0483 SER=B"),
+        ("/dev/ttyUSB0", "USB VID:PID=0403:6001 SER=C"),
+        ("/dev/ttyUSB1", "USB VID:PID=1234:5678 SER=D"),
+    ], raising=False)
+    panel._ports = panel.scan_ports()
+    panel._found = {"/dev/ttyACM0": "Stepper Probe", "/dev/ttyACM1": None}
+    options = panel.options("port_options")
+    assert options == [SIM, "/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyUSB0",
+                       "/dev/ttyUSB1"]
+    assert panel.option_labels("port_options", options) == [
+        SIM, "Stepper Probe — ACM0", "Teensy — ACM1",
+        "FTDI USB-serial — USB0", "/dev/ttyUSB1"]
+    assert panel.option_labels("device_options", [ON, SIM]) == [ON, SIM]
+    pads = ["None", "ID 0: Logitech Gamepad F310", "ID 1: Mystery Pad"]
+    assert panel.option_labels("gamepad_options", pads) == [
+        "None", "Logitech F310", "ID 1: Mystery Pad"]
+
+
 def test_a_command_the_schema_does_not_declare_is_refused(panel):
     assert panel.run("build").is_refused
     assert panel.run("auto_assign").is_refused   # automatic, not a button

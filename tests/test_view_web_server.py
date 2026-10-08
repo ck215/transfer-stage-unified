@@ -455,6 +455,22 @@ def test_options_come_from_the_panel(station):
     _, setup_options = _post(view, "/api/options", {
         "name": SETUP_NAME, "command": "port_options"})
     assert setup_options["options"] == ["SIM", "COM3"]
+    assert "labels" not in data          # a model sends values only
+
+
+def test_setup_options_carry_friendly_labels_beside_the_raw_values(station):
+    view, _, _ = station
+    view.setup.option_labels = lambda command, options: [
+        "SIM", "Stepper Probe — COM3"]
+    _, answer = _post(view, "/api/options", {
+        "name": SETUP_NAME, "command": "port_options"})
+    assert answer["options"] == ["SIM", "COM3"]
+    assert answer["labels"] == ["SIM", "Stepper Probe — COM3"]
+    # A labeler that fails or miscounts costs the labels, never the options.
+    view.setup.option_labels = lambda command, options: ["SIM"]
+    _, answer = _post(view, "/api/options", {
+        "name": SETUP_NAME, "command": "port_options"})
+    assert answer["options"] == ["SIM", "COM3"] and "labels" not in answer
 
 
 def test_an_undeclared_options_command_is_refused_not_served(station):
@@ -1291,6 +1307,26 @@ def test_a_refusal_sits_under_its_control_in_view_and_clears_on_success(station,
     assert out["text"] == "the stage is not parked from here"
     assert out["inView"], "the refusal landed off screen or under the rail"
     assert out["cleared"], "a successful command did not clear the refusal"
+
+
+@needs_browser
+def test_setup_port_dropdown_shows_friendly_labels_and_keeps_raw_values(
+        station, tmp_path):
+    """Friendly device names: the option reads "Stepper Probe — COM3", its
+    value (what a choice sends back) stays "COM3"."""
+    view, _, _ = station
+    view.setup.option_labels = lambda command, options: [
+        "SIM", "Stepper Probe — COM3"][:len(options)]
+    out = _browse(view, r"""
+      await page.click('#setup-link');
+      await until(() => document.querySelectorAll('#drawer-body select option').length > 2);
+      return await page.evaluate(() => Array.from(
+        document.querySelectorAll('#drawer-body select option'))
+        .filter((o) => o.value).map((o) => [o.value, o.textContent, o.title]));
+    """, tmp_path)
+    assert out == [["SIM", "SIM", "SIM"],
+                   ["COM3", "Stepper Probe — COM3",
+                    "Stepper Probe — COM3 (COM3)"]]
 
 
 @needs_browser

@@ -407,8 +407,22 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         except KeyError:
             return self._send_json(404, {"status": "error", "options": [],
                                          "reason": f"{name} is not open"})
-        return self._send_json(200, {"status": "ok", "reason": "",
-                                     "options": [str(o) for o in options]})
+        options = [str(o) for o in options]
+        answer = {"status": "ok", "reason": "", "options": options}
+        # What each option shows, parallel to `options` (Setup only: friendly
+        # device names). The values sent back stay the raw options.
+        labeler = (getattr(self.view.setup, "option_labels", None)
+                   if name == SETUP_NAME else None)
+        if labeler is not None:
+            try:
+                labels = [str(label) for label in labeler(command, options)]
+            except Exception as exc:
+                events.debug("Option Labels Failed", repr(exc), source=SOURCE,
+                             exception=exc)
+                labels = None
+            if labels is not None and len(labels) == len(options):
+                answer["labels"] = labels
+        return self._send_json(200, answer)
 
     def _send_data(self, name, command):
         """One route for the three data element types.
