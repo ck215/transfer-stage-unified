@@ -101,15 +101,11 @@ def test_the_station_defaults_section_comes_first_and_only_saves_them(setup):
     assert setup.schema["sections"][0]["title"] == Setup.ACCOUNT_SECTION == "Station defaults"
     elements = _section(setup)["elements"]
     assert [(e["type"], e.get("command") or e.get("model_attr")) for e in elements] == [
-        ("button", "save_station_settings"),
-        # 2026-10-07 (B): the signed-in user's backup (until it moves to the
-        # account menu).
-        ("readonly", "backup_status"), ("entry", "backup_dir"),
-        ("button", "set_backup_dir"), ("button", "back_up_now")]
-    assert [e["text"] for e in elements if e["type"] == "button"] == [
-        "Save station settings", "Set backup folder", "Back up now"]
+        ("button", "save_station_settings")]
     shown = {e.get("command") or e.get("model_attr") for e in sch.elements(setup.schema)}
     assert not shown & {"switch_user", "account_status", "remember_current"}
+    # 2026-10-08: the backup is one user's own, on the account menu.
+    assert not shown & {"backup_status", "backup_dir", "set_backup_dir", "back_up_now"}
     assert "account_password" in Setup.SECRET_INPUTS
     for gone in ("set_profile_user", "add_profile", "remember_settings"):
         assert gone not in {e.get("command") for e in elements}
@@ -568,6 +564,8 @@ def test_the_maps_own_open_store_remembers_for_the_signed_in_user(setup, stores)
     create(setup)
     tmap = models(setup)["Transfer Map"]
     assert tmap.db_path == station, "a user with no store of their own: the station's"
+    # 2026-10-08: Open store is on the map's store prompt (Change store…).
+    assert setup.controller.run("Transfer Map", "change_store").is_ok
     result = setup.controller.run("Transfer Map", "open_store", {"store_path": str(mine)})
     assert result.is_ok, result.reason
     assert UserStore().setting(EMAIL, "map_store") == str(mine)

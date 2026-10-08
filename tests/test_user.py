@@ -296,8 +296,12 @@ def test_the_menu_is_who_switch_user_sign_out_then_name_password_defaults(store)
     """A menu, so everything at tier 1: who, Switch user and Sign out; the
     name, the password and "Remember current values as my defaults"."""
     sections = _sections(signed_in(store))
-    assert list(sections) == ["Signed in", "Name", "Password", "My defaults"]
+    assert list(sections) == ["Signed in", "Name", "Password", "My defaults", "Backup"]
     assert all(s["tier"] == 1 for s in sections.values())
+    assert [(e["type"], e.get("command") or e.get("model_attr"))
+            for e in sections["Backup"]["elements"]] == [
+        ("readonly", "backup_status"), ("entry", "backup_dir"),
+        ("button", "set_backup_dir"), ("button", "back_up_now")]
     first = sections["Signed in"]
     assert [(e["type"], e.get("command") or e.get("model_attr")) for e in first["elements"]] \
         == [("readonly", "who"), ("button", "switch_user"), ("button", "sign_out")]
@@ -308,6 +312,28 @@ def test_the_menu_is_who_switch_user_sign_out_then_name_password_defaults(store)
     assert remember["text"] == "Remember current values as my defaults"
     secrets = [e["model_attr"] for e in sch.elements(signed_in(store).schema) if e.get("secret")]
     assert secrets == ["current_password", "new_password"]
+
+
+def test_the_backup_commands_go_to_setups_hooks(store):
+    """2026-10-08: the sheet's backup is Setup's service, through hooks; the
+    folder shown starts as the one the user set."""
+    calls = []
+    user = signed_in(store, backup_status=lambda: "Last backup 12:00 -> /b",
+                     backup_folder=lambda email: calls.append(("folder", email)) or "/b",
+                     on_set_backup_dir=lambda text: calls.append(("set", text)) or text,
+                     on_back_up_now=lambda: calls.append("now") or "/b")
+    assert user.backup_dir == "/b" and user.backup_status.startswith("Last backup")
+    assert user.run("set_backup_dir", {"backup_dir": " /c "}).is_ok
+    assert user.backup_dir == "/c"
+    assert user.run("back_up_now").is_ok
+    assert calls == [("folder", "ian@uci.edu"), ("set", "/c"), "now"]
+    assert user.run("set_backup_dir", {"backup_dir": ""}).is_ok and user.backup_dir == ""
+    loose = signed_in(store)
+    assert loose.run("back_up_now").is_refused and "not connected" in loose.backup_status
+    guest = User.guest(on_back_up_now=lambda: "x")
+    assert guest.backup_status == "" and guest.back_up_now  # no control drawn for it
+    with pytest.raises(Exception):
+        guest.back_up_now()
 
 
 def test_a_guests_menu_is_who_and_sign_in_switch_user(store):
