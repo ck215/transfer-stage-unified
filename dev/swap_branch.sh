@@ -1,143 +1,149 @@
 #!/bin/bash
 # dev/swap_branch.sh — a developer tool, not the station's launcher (that is
-# ./run.sh, whose Setup page checks and flashes the firmware). It runs either
-# branch's app on the same boards, flashing first only what the chosen tree's
-# firmware says is out of date. It keeps its own flash step because `main`'s
-# app has no Setup page that flashes. (It was ./run_swap.sh until 2026-09-28.)
+# ./run.sh, whose Setup page checks and flashes the firmware). It runs the
+# station or the lab's ORIGINAL Tk app (the `legacy` branch) on the same
+# boards, flashing first, because the original app has no Setup page that
+# flashes.
 #
-#   dev/swap_branch.sh [new|mvc-refactor|main|classic] [--no-flash] [--force-flash] [view flags...]
+#   dev/swap_branch.sh legacy|station [--no-flash] [-- app args...]
 #
-#   new / mvc-refactor (default)  this checkout, through ./run.sh [view flags]
-#   main / classic                 a git worktree of `main`: python3 src/mainGUI.py
-#                                  (Tk only). Found at $STATION_MAIN_TREE, else
-#                                  ../transfer-stage-unified-main, else ../main
+#   legacy    the original app, from a SIBLING checkout at ../legacy-app: made
+#             with `git worktree add ../legacy-app legacy` when this checkout
+#             has the branch, else `git clone --branch legacy <origin>`; its
+#             venv ../legacy-app/.venv is made and filled on first use. The
+#             boards are flashed by THAT tree's own firmware/flash_firmware.py
+#             (its sketches, its wire format), then `python src/mainGUI.py`
+#             runs there with the app args.
+#   station   this checkout: the boards are flashed from this tree's firmware
+#             (in-process controller.flashing: only boards whose sketch hash
+#             differs) and `src/app.py --web` runs from its venv. ./run.sh does
+#             the same without the flash; this is the symmetric command.
 #
-# Before launching, firmware/flash_firmware.py (this checkout's copy) flashes
-# every board whose recorded sketch hash (~/transfer-stage-runs/flashed.json)
-# differs from the sketch the chosen branch needs; when all are current it
-# opens no port. `main` is the stable branch and is never modified: its Mega
-# sketches (stepper, chuck, DC) speak a different protocol from mvc-refactor's,
-# so swapping branches reflashes the Megas. The Temperature Controller always
-# gets THIS checkout's sketch: its serial protocol is identical on both
-# branches, and main's sketch does not build against the LCD/MAX6675
-# libraries installed on the bench PC. If a flash fails the app is not
-# launched.
+# Never switches branches in this checkout, never touches the legacy tree
+# beyond creating it. If a flash fails the app is not launched. Silent on
+# success; every failure is one sentence on stderr and a non-zero exit.
 #
-#   --no-flash       skip the flash step
-#   --force-flash    flash every connected board even if already current
-#   RUN_SWAP_DRY_RUN=1          print the flash and launch commands, run nothing
+#   --no-flash                 skip the flash step
+#   RUN_SWAP_DRY_RUN=1         print every command, run none (no worktree, clone,
+#                              venv or flash)
 #   STATION_FLASH_ONLY="Stepper Probe,Chuck Positioner"
-#                    limit the flash step to these boards (e.g. to stop a board
-#                    that is never plugged in here from triggering a port scan)
-#   STATION_MAIN_TREE=PATH      where the main worktree lives
+#                              limit the flash step to these boards
 set -u
-# The checkout this tool belongs to: dev/ -> the repo root.
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN_TREE="${STATION_MAIN_TREE:-$(dirname "$HERE")/transfer-stage-unified-main}"
-if [ -z "${STATION_MAIN_TREE:-}" ] && [ ! -f "$MAIN_TREE/src/mainGUI.py" ] \
-        && [ -f "$(dirname "$HERE")/main/src/mainGUI.py" ]; then
-    MAIN_TREE="$(dirname "$HERE")/main"
-fi
+PARENT="$(dirname "$HERE")"
+LEGACY="$PARENT/legacy-app"
 DRY="${RUN_SWAP_DRY_RUN:-0}"
 
-BRANCH="new"
-case "${1:-}" in
-    new|mvc-refactor) BRANCH="new"; shift ;;
-    main|classic)     BRANCH="main"; shift ;;
-esac
+# The legacy app's third-party imports (read off its src/; it ships no
+# requirements file), pinned as the station and packaging/requirements-stable.txt
+# pin them. tests/test_launchers.py checks these against pyproject.toml.
+LEGACY_PINS=(pyserial==3.5 pygame==2.6.1 mss==10.2.0 Pillow==12.3.0 numpy==2.5.2 gcodeparser==0.3.0)
 
-FLASH=1
-FORCE=""
-APP_ARGS=()
-for arg in "$@"; do
-    case "$arg" in
-        --no-flash)    FLASH=0 ;;
-        --force-flash) FORCE="--force" ;;
-        *)             APP_ARGS+=("$arg") ;;
-    esac
-done
-
-if [ "$BRANCH" = "main" ]; then
-    TREE="$MAIN_TREE"
-    if [ ! -f "$TREE/src/mainGUI.py" ]; then
-        echo "[swap_branch] The main worktree is missing: $TREE" >&2
-        echo "[swap_branch] It is a plain checkout of origin/main (not a worktree); refresh it with:" >&2
-        echo "    git -C \"$TREE\" pull --ff-only" >&2
-        exit 2
-    fi
-    APP=(python3 src/mainGUI.py)
-    if [ ${#APP_ARGS[@]} -gt 0 ]; then
-        echo "[swap_branch] main's app is Tkinter only; ignoring: ${APP_ARGS[*]}" >&2
-    fi
-else
-    TREE="$HERE"
-    # Through run.sh, so the macOS Qt repair still happens.
-    APP=("$HERE/run.sh" ${APP_ARGS[@]+"${APP_ARGS[@]}"})
-fi
-
-# One venv serves both trees (the main worktree has none of its own).
-if [ -f "$HERE/.venv/bin/activate" ]; then
-    # shellcheck disable=SC1091
-    source "$HERE/.venv/bin/activate"
-elif [ -z "${VIRTUAL_ENV:-}" ]; then
-    echo "[swap_branch] No .venv in $HERE and none active: create or activate the project's venv first." >&2
-    exit 1
-fi
-
-# Which boards to consider (STATION_FLASH_ONLY narrows the default set).
-WANT=("Stepper Probe" "Chuck Positioner" "DC Probe" "Temperature Controller")
-if [ -n "${STATION_FLASH_ONLY:-}" ]; then
-    IFS=',' read -r -a WANT <<< "$STATION_FLASH_ONLY"
-fi
-MEGAS=()
-TEENSY=()
-for dev in "${WANT[@]}"; do
-    dev="$(echo "$dev" | sed 's/^ *//; s/ *$//')"
-    case "$dev" in
-        "Temperature Controller") TEENSY+=("$dev") ;;
-        "") ;;
-        *) MEGAS+=("$dev") ;;
-    esac
-done
-
-# One flash pass per sketch tree: the Megas from the chosen branch, the
-# Teensy always from this checkout.
-FLASH_CMDS=()
-flash_cmd() {   # flash_cmd <sketch root> <device>...
-    local root="$1"; shift
-    local cmd=(python3 "$HERE/firmware/flash_firmware.py" --sketch-root "$root" --yes)
-    [ -n "$FORCE" ] && cmd+=("$FORCE")
-    cmd+=(--only "$@")
-    printf '%q ' "${cmd[@]}"
+die() { echo "swap_branch: $*" >&2; exit 1; }
+show() { local l; l="$(printf '%q ' "$@")"; echo "+ ${l% }"; }
+# step "<what failed>" cmd...: print it (dry run) or run it silently.
+step() {
+    local what="$1"; shift
+    if [ "$DRY" = 1 ]; then show "$@"; return 0; fi
+    local out
+    out="$("$@" 2>&1)" || { printf '%s\n' "$out" | tail -n 15 >&2; die "$what"; }
 }
-[ ${#MEGAS[@]} -gt 0 ] && FLASH_CMDS+=("$(flash_cmd "$TREE/firmware" "${MEGAS[@]}")")
-[ ${#TEENSY[@]} -gt 0 ] && FLASH_CMDS+=("$(flash_cmd "$HERE/firmware" "${TEENSY[@]}")")
 
-show() { printf '%q ' "$@"; echo; }
+TARGET="${1:-}"
+case "$TARGET" in
+    legacy|station) shift ;;
+    *) die "usage: dev/swap_branch.sh legacy|station [--no-flash] [-- app args...]" ;;
+esac
+FLASH=1
+APP_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-flash) FLASH=0 ;;
+        --) shift; APP_ARGS=("$@"); break ;;
+        *) die "unknown argument '$1' (usage: dev/swap_branch.sh legacy|station [--no-flash] [-- app args...])" ;;
+    esac
+    shift
+done
 
-echo "[swap_branch] branch: $BRANCH  tree: $TREE"
-if [ "$FLASH" = 1 ]; then
-    if [ "$DRY" = 1 ]; then
-        echo "[swap_branch] would flash:"
-        for c in "${FLASH_CMDS[@]}"; do echo "    $c"; done
-    else
-        echo "[swap_branch] checking firmware (flashes only boards that are out of date)..."
-        for c in "${FLASH_CMDS[@]}"; do
-            if ! eval "$c"; then
-                echo "[swap_branch] Flashing failed, so the app was NOT launched." >&2
-                echo "[swap_branch] The boards may be half-flashed or running the other branch's firmware." >&2
-                echo "[swap_branch] Fix the error above and rerun, or pass --no-flash to launch anyway." >&2
-                exit 1
-            fi
-        done
-    fi
-else
-    echo "[swap_branch] --no-flash: firmware left as it is"
+if [ "$(basename "$HERE")" = legacy-app ] || [ -f "$HERE/src/mainGUI.py" ]; then
+    die "this is the legacy app's own tree; run dev/swap_branch.sh from the station checkout."
 fi
 
+ONLY=()
+if [ -n "${STATION_FLASH_ONLY:-}" ]; then
+    IFS=',' read -r -a RAW <<< "$STATION_FLASH_ONLY"
+    for b in "${RAW[@]}"; do
+        b="$(echo "$b" | sed 's/^ *//; s/ *$//')"
+        [ -n "$b" ] && ONLY+=("$b")
+    done
+fi
+
+if [ "$TARGET" = legacy ]; then
+    command -v git >/dev/null 2>&1 || die "git is not installed, so the legacy checkout cannot be made."
+    command -v python3 >/dev/null 2>&1 || die "python3 is not installed, so the legacy venv cannot be made."
+    G=(git --no-optional-locks)
+
+    if [ -e "$LEGACY" ]; then
+        [ -f "$LEGACY/src/mainGUI.py" ] \
+            || die "$LEGACY exists but is not a checkout of the legacy branch; move it aside and rerun."
+    elif "${G[@]}" -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+            && "${G[@]}" -C "$HERE" show-ref --verify --quiet refs/heads/legacy; then
+        step "git could not add the legacy worktree at $LEGACY (is legacy checked out elsewhere?)." \
+            "${G[@]}" -C "$HERE" worktree add "$LEGACY" legacy
+    elif ORIGIN="$("${G[@]}" -C "$HERE" remote get-url origin 2>/dev/null)" && [ -n "$ORIGIN" ]; then
+        step "git could not clone the legacy branch from $ORIGIN." \
+            "${G[@]}" clone --quiet --branch legacy "$ORIGIN" "$LEGACY"
+    else
+        die "this checkout has no legacy branch and no origin to clone it from."
+    fi
+
+    LPY="$LEGACY/.venv/bin/python"
+    if [ ! -x "$LPY" ]; then
+        step "python3 could not create $LEGACY/.venv." python3 -m venv "$LEGACY/.venv"
+        if [ -f "$LEGACY/requirements.txt" ]; then
+            step "pip could not install the legacy app's requirements." \
+                "$LPY" -m pip install --quiet -r "$LEGACY/requirements.txt"
+        else
+            step "pip could not install the legacy app's requirements." \
+                "$LPY" -m pip install --quiet "${LEGACY_PINS[@]}"
+        fi
+    fi
+
+    if [ "$FLASH" = 1 ]; then
+        FLASH_CMD=("$LPY" "$LEGACY/firmware/flash_firmware.py" --yes)
+        [ ${#ONLY[@]} -gt 0 ] && FLASH_CMD+=(--only "${ONLY[@]}")
+        step "flashing failed, so the legacy app was not launched (fix the error, or pass --no-flash)." \
+            "${FLASH_CMD[@]}"
+    fi
+
+    if [ "$DRY" = 1 ]; then
+        echo "+ cd $(printf '%q' "$LEGACY")"
+        show "$LPY" src/mainGUI.py ${APP_ARGS[@]+"${APP_ARGS[@]}"}
+        exit 0
+    fi
+    cd "$LEGACY" || die "cannot enter $LEGACY."
+    exec "$LPY" src/mainGUI.py ${APP_ARGS[@]+"${APP_ARGS[@]}"}
+fi
+
+# station
+if [ -x "$HERE/.venv/bin/python3" ]; then PY="$HERE/.venv/bin/python3"
+elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python3" ]; then PY="$VIRTUAL_ENV/bin/python3"
+else die "no .venv in $HERE and no virtualenv active; run ./run.sh once or create the venv first."
+fi
+if [ "$FLASH" = 1 ]; then
+    FLASH_PY='import os, sys
+from controller import flashing as f
+only = [b.strip() for b in os.environ.get("STATION_FLASH_ONLY", "").split(",") if b.strip()]
+r = f.flash(only or None, sketch_root=f.default_sketch_root(), stamp=f.default_stamp(),
+            tools=f.tools_for(), on_line=print)
+sys.exit(r["returncode"])'
+    step "flashing failed, so the station was not launched (fix the error, or pass --no-flash)." \
+        env "PYTHONPATH=$HERE/src" "$PY" -c "$FLASH_PY"
+fi
 if [ "$DRY" = 1 ]; then
-    echo "[swap_branch] would launch (in $TREE):"; printf '    '; show "${APP[@]}"
+    echo "+ cd $(printf '%q' "$HERE")"
+    show "$PY" src/app.py --web ${APP_ARGS[@]+"${APP_ARGS[@]}"}
     exit 0
 fi
-cd "$TREE" || exit 1
-exec "${APP[@]}"
+cd "$HERE" || die "cannot enter $HERE."
+exec "$PY" src/app.py --web ${APP_ARGS[@]+"${APP_ARGS[@]}"}

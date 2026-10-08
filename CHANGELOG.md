@@ -21,6 +21,7 @@ How this file is kept:
 
 ### Changed
 
+- **Swap to the original app.** `dev/swap_branch.sh legacy` flashes the boards and runs the lab's original Tk app from a `legacy-app` folder beside this one (made on first use); `station` swaps back.
 - **Settled frames only.** Red Percent records a frame only once the viewer
   has finished drawing it, at the rate the viewer draws. Black, stale and
   half-drawn grabs are thrown away and counted (Diagnostics shows how many),

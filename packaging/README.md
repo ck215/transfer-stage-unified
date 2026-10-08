@@ -195,8 +195,8 @@ its section there.
 | `main` | The pre-release line. It receives merges from `mvc-refactor` (a merge commit whenever the integration branch is ready; main keeps its own history, and the first such merge takes the branch's tree) and from feature pull requests. **Releases are tags on main**; `dev/release.sh` runs on main only. |
 | `mvc-refactor` | The integration branch for agent worktree rounds; merged into main when it is ready. |
 | `feat/<topic>`, `fix/<topic>`, `agent/<topic>` | Short-lived branches that open a pull request into main (or into mvc-refactor during a round). |
-| `legacy` | The lab's original Tk app (the old main), frozen. |
-| `stable` | The original app's packaging ref: what `package.yml` freezes as `stable/` (`stable_ref`) and `dev/swap_branch.sh` runs. Unchanged. |
+| `legacy` | The lab's original Tk app (the old main), frozen. `dev/swap_branch.sh legacy [--no-flash] [-- app args]` runs it on the same boards: it makes `../legacy-app` (a worktree of this checkout's `legacy` branch, else a clone of origin's) and its venv on first use, flashes the boards with that tree's own `firmware/flash_firmware.py`, then runs `src/mainGUI.py` there; `station` flashes from this tree and runs the Web view. It never switches branches in this checkout; `RUN_SWAP_DRY_RUN=1` prints the commands and runs none. |
+| `stable` | The original app's packaging ref: what `package.yml` freezes as `stable/` (`stable_ref`) and the original app's packaging ref. |
 
 `.github/workflows/gate.yml` runs on every pull request into, and every
 push to, main and mvc-refactor: the fast suite, the golden wire gate and a
