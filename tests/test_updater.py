@@ -607,6 +607,174 @@ def test_a_firmware_change_points_at_the_firmware_row(released):
     assert "run_swap" not in result["reason"]
 
 
+# -- update.sh / update.bat (REL-5): the terminal does what Update now does ---
+
+THIS_CHECKOUT = Path(__file__).resolve().parents[1]
+
+
+def update_sh(station, tmp_path, *args):
+    """Run a copy of this repository's update.sh at the root of `station`
+    (it works on the checkout it sits in). `pgrep` is stubbed to "nothing
+    running", so a station open on this machine cannot change the answer."""
+    import shutil
+    if shutil.which("bash") is None:
+        pytest.skip("needs bash")
+    shutil.copy2(THIS_CHECKOUT / "update.sh", station / "update.sh")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir(exist_ok=True)
+    (fake_bin / "pgrep").write_text("#!/bin/sh\nexit 1\n")
+    (fake_bin / "pgrep").chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    return subprocess.run(["bash", str(station / "update.sh"), *args], cwd=station,
+                          env=env, capture_output=True, text=True, timeout=60)
+
+
+def said_version(output):
+    import re
+    return re.search(r"this checkout is at (\S+?);", output).group(1)
+
+
+def test_update_sh_check_prints_the_version_and_the_latest_release(released, tmp_path):
+    _, station, upstream = released
+    before = head(station)
+    for n in range(3):
+        push(upstream, f"n{n}.txt", "x\n", f"coming {n}")
+    release(upstream, "v1.1.0")
+    push(upstream, "after.txt", "x\n", "past the release")
+    done = update_sh(station, tmp_path, "--check")
+    assert done.returncode == 0, done.stderr
+    assert ("this checkout is at v1.0.0; the latest release is v1.1.0 "
+            "(3 commit(s) ahead).") in done.stdout
+    assert "main is 4 commit(s) behind origin/main" in done.stdout
+    assert "--check: nothing changed" in done.stdout
+    assert head(station) == before
+
+
+def test_update_sh_fast_forwards_to_the_release_not_the_branch_head(released, tmp_path):
+    _, station, upstream = released
+    push(upstream, "new.txt", "new\n", "in the release")
+    target = release(upstream, "v1.1.0")
+    push(upstream, "after.txt", "after\n", "past the release")
+    done = update_sh(station, tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert head(station) == target
+    assert (station / "new.txt").exists() and not (station / "after.txt").exists()
+    assert "updated main from v1.0.0 to v1.1.0" in done.stdout
+
+
+def test_update_sh_with_no_release_takes_nothing(repos, tmp_path):
+    _, station, upstream = repos
+    before = head(station)
+    push(upstream, "new.txt", "new\n", "on the branch only")
+    done = update_sh(station, tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert "no release has been published yet" in done.stdout
+    assert head(station) == before and not (station / "new.txt").exists()
+
+
+def test_update_sh_with_no_newer_release_takes_nothing(released, tmp_path):
+    _, station, upstream = released
+    before = head(station)
+    push(upstream, "new.txt", "new\n", "on the branch only")
+    done = update_sh(station, tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert "this checkout is at v1.0.0; no newer release (the latest is v1.0.0)." in done.stdout
+    assert head(station) == before
+
+
+def test_update_sh_refuses_a_checkout_diverged_from_the_release(released, tmp_path):
+    _, station, upstream = released
+    push(upstream, "theirs.txt", "theirs\n", "theirs")
+    release(upstream, "v1.1.0")
+    mine = commit(station, "mine.txt", "mine\n", "mine")
+    done = update_sh(station, tmp_path)
+    assert done.returncode == 1
+    assert "diverged from the release v1.1.0" in done.stderr
+    assert head(station) == mine and not (station / "theirs.txt").exists()
+
+
+def test_update_sh_refuses_local_edits(released, tmp_path):
+    _, station, upstream = released
+    before = head(station)
+    push(upstream, "new.txt", "new\n", "coming")
+    release(upstream, "v1.1.0")
+    (station / "README.md").write_text("a bench edit\n")
+    done = update_sh(station, tmp_path)
+    assert done.returncode == 1 and "local edits" in done.stderr
+    assert head(station) == before
+    assert (station / "README.md").read_text() == "a bench edit\n"
+
+
+def _no_tag(station):
+    pass
+
+
+def _on_tag(station):
+    tag(station, "v1.3.0", "release")
+
+
+def _past_tag(station):
+    _on_tag(station)
+    commit(station, "a.txt", "a\n", "a")
+    commit(station, "b.txt", "b\n", "b")
+
+
+def _dirty_on_tag(station):
+    _on_tag(station)
+    (station / "README.md").write_text("edit\n")
+
+
+def _dirty_past_tag(station):
+    _past_tag(station)
+    (station / "README.md").write_text("edit\n")
+
+
+def _dirty_no_tag(station):
+    (station / "README.md").write_text("edit\n")
+
+
+@pytest.mark.parametrize("state", [_no_tag, _on_tag, _past_tag, _dirty_on_tag,
+                                   _dirty_past_tag, _dirty_no_tag],
+                         ids=lambda f: f.__name__.strip("_"))
+def test_update_sh_says_the_same_version_as_the_updater(repos, tmp_path, state):
+    """One version string: update.sh renders `git describe` itself (it must
+    run where the venv is broken), by the same rules as render_version."""
+    _, station, _ = repos
+    state(station)
+    done = update_sh(station, tmp_path, "--check")
+    assert done.returncode == 0, done.stderr
+    assert said_version(done.stdout) == Updater(root=station).version()
+
+
+def test_update_bat_follows_the_release_as_update_sh_does():
+    """Not runnable here; its shape is pinned instead (UNVERIFIED on Windows)."""
+    text = (THIS_CHECKOUT / "update.bat").read_text()
+    for needle in ("git fetch --quiet --tags %REMOTE%",
+                   'git tag -l --sort^=-version:refname "v*"',
+                   'findstr /r /x "v[0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*"',
+                   "git rev-list -n 1 %TAG%",
+                   "git merge-base --is-ancestor %TARGET% HEAD",
+                   "git merge-base --is-ancestor HEAD %TARGET%",
+                   "git merge --ff-only --quiet %TARGET%",
+                   r"packaging\release.py version",
+                   "this checkout is at %VERSION%",
+                   "diverged from the release"):
+        assert needle in text, needle
+    assert "%UPSTREAM%" not in text.split("git merge --ff-only", 1)[1].split("\n", 1)[0]
+    lowered = text.lower()
+    for verb in ("stash", "reset", "checkout", "switch", "rebase", "pull", "clean"):
+        assert f"git {verb}" not in lowered, verb
+
+
+def test_update_sh_never_stashes_resets_or_takes_a_branch_head():
+    text = (THIS_CHECKOUT / "update.sh").read_text()
+    assert 'git merge --ff-only --quiet "$TARGET"' in text
+    assert "UPSTREAM\"" not in text.split("git merge --ff-only", 1)[1].split("\n", 1)[0]
+    for verb in ("stash", "reset", "checkout", "switch", "rebase", "pull --", "clean"):
+        assert f"git {verb}" not in text, verb
+
+
 def test_no_launcher_or_updater_names_the_retired_run_swap():
     root = Path(__file__).resolve().parents[1]
     for name in ("update.sh", "update.bat", "src/controller/updater.py",

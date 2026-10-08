@@ -18,8 +18,8 @@ can switch between the two while the refactor is validated.
 | `hooks/hook-panel.py` | stops pyinstaller-hooks-contrib's HoloViz `panel` hook firing on the station's own `panel.py` |
 | `smoke.sh` | bundle acceptance test, macOS / Linux (P4) |
 | `smoke.ps1` | the same for Windows (written, not yet run) |
-| `release.py` | stamps `VERSION` and `release.json` into a bundle (the spec calls it), patches a build's pyproject version from the tag, names this machine's asset, zips the bundle with links and modes kept |
-| `release.json` | the template: owner and repo left empty (filled at build time), the asset pattern `station-{os}-{arch}.zip` and its OS/arch lookups |
+| `release.py` | the version of a tree (`version`, the one version string), stamps `VERSION` and `release.json` into a bundle (the spec calls it), patches a build's pyproject version from the tag, names this machine's asset and every asset a release carries (`asset-name`, `assets`), zips the bundle with links and modes kept, gives a release's notes (`notes`) and cuts CHANGELOG.md for `dev/release.sh` (`changelog`) |
+| `release.json` | the template: owner and repo left empty (filled at build time), the asset pattern `station-{os}-{arch}.zip`, its OS/arch lookups, and `targets`: the four builds a release carries (the one place that names the assets) |
 
 ## The layout (`layout.py`; `src/` consumes it, neither side changes it without the lead)
 
@@ -179,13 +179,116 @@ the lead's to add).
 
 ## Releases
 
-Push a tag `v1.3.0` (an annotated tag's message becomes the release notes;
-its first line is what the Update row shows). `.github/workflows/package.yml`
-builds all four zips into a draft release and publishes it once every build
-has passed its smoke. Installed bundles pick it up at their next startup check.
+A version is a git tag `vMAJOR.MINOR.PATCH`, and nothing else names one:
+`pyproject.toml` says 0.0.0 in git. `python packaging/release.py version`
+(or `src/app.py --version`, or the Setup page's Station row) says what any
+tree is: `v1.3.0` exactly on a release, `1.3.0.post3+gabc1234` three commits
+past it (`.dirty` with local edits), `0.0.0+abc1234` before the first one. A
+bundle says the tag it was built from. `CHANGELOG.md` at the repository root
+holds what changed, in the operator's words; a release's notes on GitHub are
+its section there.
+
+### Cutting a release
+
+From a clean checkout of the release branch, level with GitHub:
+
+```
+dev/release.sh v1.0.0            # checks, cuts CHANGELOG.md, commits, tags; pushes nothing
+git push origin <branch>         # the two commands it prints, branch first
+git push origin v1.0.0
+```
+
+`dev/release.sh` refuses, changing nothing, a tag that is not
+`vMAJOR.MINOR.PATCH`, one that exists (here or on GitHub) or is not newer
+than the latest release, local edits, a detached HEAD, a HEAD that is not
+exactly GitHub's copy of the branch, and an empty Unreleased section. It
+moves Unreleased under `## [1.0.0] - <date>`, commits that alone ("Release
+v1.0.0") and makes an annotated tag whose message is the section.
+`dev/release.sh v1.0.0 --push` runs the two pushes too.
+
+The tag's push starts `.github/workflows/package.yml`:
+
+1. **draft**: the release is created as a draft, its notes the tag's
+   CHANGELOG section. A draft is invisible to every installed station.
+2. **build**, four runners at once (macOS arm64 and x86_64, Windows, Linux):
+   the tools, the stable app, the station, the smoke, the zip, uploaded to
+   the draft. Expect most of an hour (the job timeout is two hours; the
+   first run will give the real figure).
+3. **publish**, only when all four builds passed and all four zips are on
+   the draft: it adds `SHA256SUMS`, sets the notes and publishes the release
+   as latest. If any build failed, the release stays a draft and the run's
+   summary says which step stopped it; fix the cause and re-run the failed
+   jobs from the Actions page (the zips already uploaded stay).
+
 A run by hand (`workflow_dispatch`, once the file is on the default branch)
 builds and smokes without releasing; its `stable_ref` input picks the branch
 frozen as `stable/`. Every action is pinned to a commit SHA.
+
+### What an installed station sees
+
+- **A bundle** checks GitHub's latest release at startup (and on Check
+  again) and compares it with its own `VERSION` as versions. The Update row
+  says "v1.0.0 is ready: <the notes' first entry>". Update now downloads
+  this machine's zip (about 400 MB), checks its size and its SHA-256 against
+  the release's `SHA256SUMS`, unpacks it to `<install>.next` and swaps it in
+  (`<install>` becomes `<install>.previous`); Restart runs it. On Windows,
+  where a running folder cannot move, the swap happens at the restart.
+- **A checkout** (`./run.sh`, the lab PC today) does the same in git: its
+  Update row, `update.sh` and `update.bat` fetch the tags, say "This
+  checkout is at X; the latest release is v1.0.0 (N commits ahead)", and
+  fast-forward ONLY to that release's commit: never to the branch head,
+  never over local edits, never when the checkout has diverged from the
+  release. Commits on the branch past the latest release are for
+  developers (`git pull`); the Update row's developers' line counts them.
+
+### From a checkout to an installed release (the lab PC)
+
+The lab PC runs a git checkout with local code GitHub does not have. In
+this order:
+
+1. **Push the bench's work first.** In the checkout: `git status` to see
+   what changed, then commit the source changes on their own branch and
+   push it, so nothing lives only on that PC:
+
+   ```
+   git switch -c bench/2026-10            # a new branch at the bench's HEAD
+   git add <the changed source files>     # not data/, logs or trial folders
+   git commit -m "Bench code as it ran in the lab, 2026-10"
+   git push -u origin bench/2026-10
+   ```
+
+   Tell the lead the branch's name: it is merged before the first release
+   the lab installs. The checkout itself stays as it is.
+2. **Wait for a release that holds that work.** The lab's Transfer Map
+   stores are newer than the repository's store code (v7/v8 against v6, as
+   of 2026-10-07): do not point an installed release at them until its notes
+   say the bench's store code is in.
+3. **Install the bundle beside the checkout**, never inside it: download
+   `station-windows-x86_64.zip` from the repository's latest release, unzip
+   it to a folder the lab account can write (for example
+   `C:\Users\<lab account>\station`, not Program Files), and start
+   `station-web.exe` (SmartScreen: More info, Run anyway, until P7).
+4. **The trials carry over.** The Transfer Map's store is the operator's
+   file, chosen outside any install (Setup refuses one inside it), and the
+   choice is remembered in `~/transfer-stage-runs/station.json`, which the
+   checkout and the bundle share on one account. The bundle opens the same
+   store the checkout used; an update replaces the install folder and never
+   touches the store.
+5. **The checkout stays** as the development tree (`run.bat`,
+   `update.bat`). Run one station at a time: one process holds the serial
+   ports.
+
+### Rolling back
+
+- **A bundle** keeps the version it replaced in `<install>.previous` (one
+  only: the next update replaces it). Quit the station, rename `<install>`
+  to `<install>.bad` and `<install>.previous` to `<install>`, and start it.
+  Its Update row then offers the newer release again; it is not installed
+  until someone presses Update now. Any older release can also be
+  downloaded from GitHub and unzipped beside it.
+- **A checkout** goes back with git, by hand: `git switch -c rollback
+  v1.0.0` (a branch at the release; Update now and `update.sh` take it
+  forward again from there).
 
 ## Smoke
 
