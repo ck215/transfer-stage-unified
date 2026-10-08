@@ -24,6 +24,9 @@ def _and(names):
 
 class Controller:
     ESTOP_ALL_BUDGET = 1.0   # s, total, however many models
+    #: s a second `close()` waits for the first. Above the heater's worst
+    #: read-back (3 x 1.5 s) plus every other model's bounded teardown.
+    CLOSE_WAIT = 30.0
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -31,6 +34,11 @@ class Controller:
         self._remembered = {}       # configs of removed models, for reopen()
         self._subscribers = []
         self._closed = False
+        self._closing_thread = None
+        self._close_done = threading.Event()
+        #: A signal that landed on the thread already inside `close()`;
+        #: re-raised once that close has finished.
+        self._deferred_signal = None
         self._hooked = False
         self.factory = None         # set by Setup: config -> Model
 
@@ -88,12 +96,42 @@ class Controller:
             self._remembered.clear()
 
     def close(self):
-        """Process exit. Runs once."""
+        """Process exit. Runs once.
+
+        A second call - SIGTERM or atexit while Quit is closing on another
+        thread - WAITS for the first to finish (bounded by CLOSE_WAIT)
+        instead of returning at once: the signal handler re-raises after
+        `close()` returns, and that used to end the process with a model's
+        teardown (the heater's off and its read-back) half done. A call from
+        the thread already closing (a signal handler that interrupted it)
+        returns at once; there is nothing to wait for that it is not doing.
+        """
         with self._lock:
             if self._closed:
-                return
-            self._closed = True
-        self._close_models()
+                closing_thread = self._closing_thread
+                done = self._close_done
+            else:
+                closing_thread = done = None
+                self._closed = True
+                self._closing_thread = threading.get_ident()
+        if done is not None:
+            if closing_thread != threading.get_ident():
+                if not done.wait(self.CLOSE_WAIT):
+                    events.debug("Close Wait Expired", f"the first close is still "
+                                 f"running after {self.CLOSE_WAIT:g} s",
+                                 source="Controller")
+            return
+        try:
+            self._close_models()
+        finally:
+            self._close_done.set()
+        deferred, self._deferred_signal = self._deferred_signal, None
+        if deferred is not None:
+            events.debug("Signal Re-raised", f"signal {deferred} arrived during "
+                         "this close; re-raised now that it is done",
+                         source="Controller")
+            signal.signal(deferred, signal.SIG_DFL)
+            signal.raise_signal(deferred)
 
     def _close_models(self):
         with self._lock:
@@ -372,6 +410,16 @@ class Controller:
         after the view is built.
         """
         def _handler(signum, _frame):
+            if (self._closing_thread == threading.get_ident()
+                    and not self._close_done.is_set()):
+                # This thread is inside close() already (Quit, then the
+                # terminal closed): re-raising now would end the process
+                # mid-teardown. close() re-raises when it is done.
+                self._deferred_signal = signum
+                events.debug("Signal Deferred", f"signal {signum} arrived "
+                             "inside close(); re-raised when it finishes",
+                             source="Controller")
+                return
             self.close()
             signal.signal(signum, signal.SIG_DFL)
             signal.raise_signal(signum)

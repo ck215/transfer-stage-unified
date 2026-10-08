@@ -110,6 +110,23 @@ class Heater(Model):
     #: within OFF_CONFIRM_SECONDS. SIM has no telemetry and is not checked.
     OFF_CONFIRM_SECONDS = 1.5
     OFF_SETPOINT_MAX = 0.5
+    #: Owner, 2026-10-07: "closing that device/program should DISABLE the
+    #: heater before closing" and "build the watchdog that confirms setpoint
+    #: is 0 (disabled) before close". On every close of a real port, and at
+    #: connect when the board is found heating, the off is read back from the
+    #: board's own telemetry: one look, then up to OFF_CONFIRM_ATTEMPTS - 1
+    #: re-sent off frames, each given OFF_CONFIRM_SECONDS to show a reported
+    #: setpoint <= OFF_SETPOINT_MAX. Worst case 4.5 s per close; a healthy
+    #: board answers in one telemetry line (~0.6 s).
+    OFF_CONFIRM_ATTEMPTS = 3
+    #: s after `open()` the reader waits for a first reading before it sends
+    #: the reset frame, so that a setpoint left on the board by an earlier
+    #: session or another program is SEEN before it is overwritten (on
+    #: 2026-10-07 22:39 the reset went out before anything was read, and the
+    #: board's earlier state was lost). The port's whole connect sequence
+    #: plus the off-confirm window; with no reading by then the reset goes
+    #: out anyway, unchecked.
+    CONNECT_CHECK_SECONDS = BOOT_GRACE_SEC + OFF_CONFIRM_SECONDS
 
     def __init__(self, port=None, gamepad=None, sim=False, clock=time.monotonic):
         """was TemperatureSystem.__init__
@@ -163,6 +180,16 @@ class Heater(Model):
         self._is_link_lost = False
         #: L12: the heating stop awaiting the board's word, or None.
         self._off_pending = None
+        #: The last setpoint the board REPORTED (telemetry's third field),
+        #: or None before any reading. Not what was sent: what it says.
+        self._reported_setpoint = None
+        #: `clock()` value the connect check gives up waiting for a first
+        #: reading at; None = no check (no `open()`, or SIM / a test double).
+        self._connect_check_until = None
+        #: The outcome of the last off read-back: True (the board reported
+        #: setpoint 0), False (it did not, within the budget), None (never
+        #: checked, or nothing to check: SIM, a double, a port never open).
+        self.off_confirmed = None
 
     # -- devices and lifecycle ---------------------------------------------
     @property
@@ -174,6 +201,8 @@ class Heater(Model):
         and joins it BEFORE the devices close, so it is never inside
         `read_line` on a descriptor closing under it (TEMP-11)."""
         self._arm_boot_grace()
+        if self._can_read_back():
+            self._connect_check_until = self._clock() + self.CONNECT_CHECK_SECONDS
         self._spawn("reader", self._read_loop)
 
     def _arm_boot_grace(self):
@@ -433,7 +462,13 @@ class Heater(Model):
                          "The heater-off frame could not be confirmed on the "
                          "wire, so the heater may still be at its last "
                          "setpoint.", source=self.NAME, ack=False)
-        return is_off and is_drained
+            return False
+        # Owner, 2026-10-07: the bytes leaving the computer are not the board
+        # obeying them. Before the port is let go, the board's own telemetry
+        # must say setpoint 0; the reader is already stopped (`close()` joins
+        # it first), so this reads the port itself.
+        confirmed = self._read_back_off("closing", send_first=False)
+        return confirmed is not False
 
     def _send_heater_off(self, build_frame):
         """The one stop path. Supersede first, then force the frame out.
@@ -474,6 +509,145 @@ class Heater(Model):
             self._commanded_setpoint = None
             self._was_reachable = True
         return is_written
+
+    # -- the read-back: the board's own word that the heater is off -----------
+    def _can_read_back(self):
+        """A port with telemetry to read: a real SerialPort. SIM and a test
+        double have none, and are closed exactly as before."""
+        port = self.port
+        return isinstance(port, SerialPort) and not port.is_simulated
+
+    def _is_readable(self):
+        return (self.port.is_open
+                and self.port.status not in ("lost", "reconnecting", "closed",
+                                             "connecting"))
+
+    def _read_back_off(self, why, *, send_first, first_frame=None, abort=None):
+        """Drive the board to setpoint 0 and confirm it from its telemetry.
+
+        -> True (a reported setpoint <= OFF_SETPOINT_MAX arrived after the
+        last off frame), False (it did not, within OFF_CONFIRM_ATTEMPTS
+        windows of OFF_CONFIRM_SECONDS), None (nothing to read back: SIM, a
+        double). False is an `events.error` that asks for acknowledgement:
+        the heater may still be on, and the operator is told so rather than
+        the port being let go in silence. Never raises.
+
+        `send_first`: send an off frame before the first look (`first_frame`,
+        default the heater-off frame); otherwise the first look checks the
+        frames already sent (close: halt's off frame and disable's reset).
+        `abort()` true (the reader's connect check, when a close starts)
+        ends it quietly with None: the close runs its own read-back.
+        Every retry re-sends the existing heater-off frame through the one
+        stop path (`_send_heater_off`: priority lane, bounded lock wait,
+        forced past a held lock), so the latch, a held Enter Settings or a
+        busy reader never skip it. The bytes are the existing frames.
+        """
+        if not self._can_read_back():
+            self.off_confirmed = None
+            return None
+        started = time.monotonic()
+        attempt, last_seen = 0, self._reported_setpoint
+        for attempt in range(1, self.OFF_CONFIRM_ATTEMPTS + 1):
+            if abort is not None and abort():
+                return None
+            try:
+                if not self._is_readable():
+                    events.debug("Off Read-back", f"{why}: the port is "
+                                 f"{self.port.status}; nothing to read",
+                                 source=self.NAME)
+                    break
+                if send_first or attempt > 1:
+                    self._drain_stale_lines()
+                    build = (first_frame if attempt == 1 and first_frame
+                             else self._heater_off_frame)
+                    if not self._send_heater_off(build):
+                        continue
+                outcome, last_seen = self._await_reported_off(
+                    self.OFF_CONFIRM_SECONDS, last_seen, abort)
+            except Exception as exc:
+                events.debug("Off Read-back Raised", f"{why}: {exc!r}",
+                             source=self.NAME, exception=exc)
+                break
+            if outcome:
+                self.off_confirmed = True
+                events.debug("Heater Off Confirmed", f"{why}: the board "
+                             f"reported setpoint {last_seen:g} after attempt "
+                             f"{attempt} in "
+                             f"{(time.monotonic() - started) * 1000:.0f} ms",
+                             source=self.NAME)
+                return True
+        if abort is not None and abort():
+            return None
+        self.off_confirmed = False
+        reported =("no reading" if last_seen is None
+                    else f"its last reported setpoint was {last_seen:g} °C")
+        events.debug("Heater Off Unconfirmed", f"{why}: {reported}; "
+                     f"{attempt} attempt(s) in "
+                     f"{(time.monotonic() - started) * 1000:.0f} ms",
+                     source=self.NAME)
+        events.error("Heater Off Not Confirmed",
+                     f"The {self.NAME} did not report its setpoint at 0 while "
+                     f"{why} ({reported}), so the heater may still be on. "
+                     "Switch it off at the controller and check its display.",
+                     source=self.NAME, ack=True)
+        return False
+
+    def _drain_stale_lines(self, limit=64):
+        """Read, and record, what is already waiting, so a line printed before
+        the next off frame cannot be taken as the board's answer to it."""
+        for _ in range(limit):
+            line = self.port.read_line(timeout=0)
+            if not line:
+                return
+            self._parse_line(line)
+
+    def _await_reported_off(self, window, last_seen, abort=None):
+        """Read lines for up to `window` s. -> (seen_off, last_setpoint)."""
+        deadline = time.monotonic() + window
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or (abort is not None and abort()):
+                return False, last_seen
+            line = self.port.read_line(timeout=min(remaining, self.READ_TIMEOUT))
+            if not line:
+                continue
+            setpoint = self._parse_line(line)
+            if setpoint is None:
+                continue
+            last_seen = setpoint
+            if setpoint <= self.OFF_SETPOINT_MAX:
+                return True, last_seen
+
+    def _check_board_at_connect(self):
+        """The first reading, before the reset frame: is the board heating?
+
+        A setpoint above OFF_SETPOINT_MAX that this station did not send is
+        a heater left on by an earlier session or another program: an
+        error that asks for acknowledgement, then the reset frame (the
+        board's power-on state, the frame this connect always sent) with
+        the same read-back as a close. Left unconfirmed, the setpoint stays
+        on `heating_to` and in `is_active`, so the panel and the browser
+        watchdog treat the heater as heating."""
+        reported = self._reported_setpoint
+        if (reported is None or reported <= self.OFF_SETPOINT_MAX
+                or self._commanded_setpoint is not None):
+            return False
+        events.error("Heater Was On At Connect",
+                     f"The {self.NAME} was holding a setpoint of {reported:g} °C "
+                     "that this station did not set (left by an earlier "
+                     "session or another program). Sending heater-off now.",
+                     source=self.NAME, ack=True)
+        with self._write_lock:
+            self._has_sent_reset = True
+        confirmed = self._read_back_off("connecting", send_first=True,
+                                        first_frame=lambda: self.RESET_FRAME,
+                                        abort=self._threads_stop.is_set)
+        if confirmed is False and self._commanded_setpoint is None:
+            self._commanded_setpoint = reported
+        elif confirmed:
+            events.info("Heater Switched Off", f"The {self.NAME} now reports "
+                        "setpoint 0.", source=self.NAME)
+        return True
 
     # -- frames --------------------------------------------------------------
     def _build_settings_frame(self):
@@ -677,6 +851,21 @@ class Heater(Model):
         if self._has_sent_reset:
             return
         self._was_reachable = True
+        until = self._connect_check_until
+        if until is not None:
+            # Look before overwriting (2026-10-07): wait for the first
+            # reading, bounded, so a setpoint the board was left holding is
+            # seen and reported instead of silently replaced.
+            if self._reported_setpoint is None and self._clock() < until:
+                return
+            self._connect_check_until = None
+            if self._reported_setpoint is None:
+                events.debug("Connect Check Skipped", "no reading within "
+                             f"{self.CONNECT_CHECK_SECONDS:g} s of open; "
+                             "sending the reset frame unchecked",
+                             source=self.NAME)
+            elif self._check_board_at_connect():
+                return
         with self._write_lock:
             if self._commanded_setpoint is None:
                 self.port.write(self.RESET_FRAME)
@@ -690,6 +879,8 @@ class Heater(Model):
 
         `timer , temperature , setpoint`. Anything else — the `DEV: t`
         handshake answer, a half line, a boot banner — is ignored.
+        Returns the reported setpoint, or None for a line that is not a
+        reading (the off read-back reads it).
         """
         if isinstance(line, bytes):
             line = line.decode("utf-8", errors="ignore")
@@ -715,6 +906,7 @@ class Heater(Model):
                 series.append(value)
                 del series[:-self.HISTORY_LENGTH]
             self._latest = temperature
+            self._reported_setpoint = setpoint
         pending = self._off_pending
         if pending is not None and setpoint <= self.OFF_SETPOINT_MAX:
             self._off_pending = None
@@ -722,3 +914,4 @@ class Heater(Model):
         self._touch()
         events.debug("Reading", f"t={seconds:g}s temp={temperature:.2f}C "
                      f"sp={setpoint:.2f}C", source=self.NAME, every=5.0)
+        return setpoint

@@ -655,6 +655,71 @@ def test_the_sigterm_handler_stops_and_closes_then_re_raises(controller, monkeyp
     assert reraised == [signal.SIGTERM], "the signal must be re-raised, not swallowed"
 
 
+class _SlowDisable(FakeModel):
+    """A model whose teardown takes a while (the heater's read-back does)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+        self.closed = threading.Event()
+        self.on_disable = None
+
+    def disable(self):
+        self.entered.set()
+        if self.on_disable is not None:
+            self.on_disable()
+        self.gate.wait(5)
+        super().disable()
+        self.closed.set()
+
+
+def test_a_second_close_waits_for_the_first_to_finish(controller):
+    """Quit is closing on one thread when SIGTERM (or atexit) calls close on
+    another. Before 2026-10-07 the second call returned at once, the handler
+    re-raised and the process died with the heater's teardown half done."""
+    model = _SlowDisable()
+    controller.add("heater", model)
+    first = threading.Thread(target=controller.close)
+    first.start()
+    assert model.entered.wait(2)
+    second_done = threading.Event()
+
+    def _second():
+        controller.close()
+        second_done.set()
+
+    threading.Thread(target=_second, daemon=True).start()
+    time.sleep(0.2)
+    assert not second_done.is_set(), "the second close returned before the models closed"
+    model.gate.set()
+    assert second_done.wait(5)
+    assert model.closed.is_set()
+    first.join(5)
+
+
+def test_a_signal_landing_inside_this_threads_own_close_waits_for_it(
+        controller, monkeypatch):
+    """The handler runs on the main thread, which may be the one already
+    closing (Quit, then the terminal is closed: SIGHUP). It must not re-raise
+    (which kills the process) until that close has finished."""
+    import signal
+
+    model = _SlowDisable()
+    model.gate.set()
+    controller.add("heater", model)
+    installs, reraised = [], []
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: installs.append((sig, handler)))
+    monkeypatch.setattr(signal, "raise_signal",
+                        lambda sig: reraised.append((sig, model.closed.is_set())))
+    controller.hook_signals()
+    handler = dict(installs)[signal.SIGHUP]
+    model.on_disable = lambda: handler(signal.SIGHUP, None)
+    controller.close()
+    assert model.closed.is_set()
+    assert reraised == [(signal.SIGHUP, True)], reraised
+
+
 # -- the station's stop state (audit round 7, IMP7-1/2, TK7-1) --------------
 #
 # `is_estopped` is "any model latched" and stays so (the watchdog and the
