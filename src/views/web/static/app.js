@@ -24,6 +24,9 @@ const SETUP_NAME = '__setup__';
 //: The rail's first page, every launched model at a glance: "Dashboard" (owner
 //: 2026-10-08; K4 called it the Overview, and the code's names still do).
 const DASHBOARD_WORD = 'Dashboard';
+//: Where this browser keeps the Dashboard's tile order and Wide tiles
+//: (a per-viewer convenience; the page draws fine without it).
+const TILES_KEY = 'transfer-stage.dashboard-tiles.v1';
 //: The account menu's sheet (`views.web.server.USER_NAME`): Setup's signed-in
 //: user, never a model (owner 2026-10-07).
 const USER_NAME = '__user__';
@@ -595,16 +598,6 @@ function commandGlyph(element) {
   if (element.type === 'file_save') return 'download';
   if (element.type === 'log_stream' && /gamepad/i.test(String(element.text || ''))) return 'gamepad';
   return COMMAND_GLYPHS[element.command] || '';
-}
-
-/** The Overview's grid (K4): how many entries share the row that entry
- *  `index` of `count` sits on. Rows of three; a lone entry is never left on
- *  the last row - the last four go two and two instead - and three or fewer
- *  share one row. The sheet has six columns, so an entry spans 6 / this. */
-function sheetAcross(count, index) {
-  if (count <= 3) return Math.max(count, 1);
-  const twos = count % 3 === 1 ? 4 : (count % 3 === 2 ? 2 : 0);
-  return index >= count - twos ? 2 : 3;
 }
 
 /** Status by exception: is this value a normal state, not worth drawing in
@@ -2112,6 +2105,26 @@ class PanelCard {
       open.setAttribute('aria-label', 'Open ' + name);
       open.title = 'Open ' + name;
       open.addEventListener('click', () => dashboard.showPage(name));
+      // The Dashboard's tile keys (owner 2026-10-08): Wide (one tile or two
+      // across, the same entry either way) and Move (drag, or the arrow
+      // keys). Above the head's stretched Open target; Dashboard only.
+      const keys = make('span', 'tile-keys');
+      const wide = make('button', 'button role-neutral tile-key tile-wide', 'Wide');
+      wide.type = 'button';
+      wide.setAttribute('aria-pressed', 'false');
+      wide.setAttribute('aria-label', 'Wide ' + name);
+      wide.title = 'Show ' + name + ' two tiles wide on the Dashboard';
+      wide.addEventListener('click', () => dashboard.toggleWide(name));
+      const move = make('button', 'button role-neutral tile-key tile-move', 'Move');
+      move.type = 'button';
+      move.setAttribute('aria-label', 'Move ' + name);
+      move.title = 'Move ' + name + ': drag it, or press the arrow keys';
+      move.addEventListener('keydown', (event) => dashboard.moveByKey(name, event));
+      move.addEventListener('pointerdown', (event) => dashboard.startTileDrag(name, event));
+      keys.append(wide, move);
+      head.appendChild(keys);
+      this.wideKey = wide;
+      this.moveKey = move;
       head.appendChild(open);
       this.openButton = open;
     }
@@ -2467,7 +2480,8 @@ class PanelCard {
     this.detachFromHost();
     this.hostName = host.name;
     this.node.classList.add('is-hosted');
-    for (const other of ['span-2', 'span-3', 'span-6', 'is-pinned']) this.node.classList.remove(other);
+    for (const other of ['is-wide', 'is-pinned']) this.node.classList.remove(other);
+    this.node.style.removeProperty('--tile-rows');
     if (this.titleNode) this.titleNode.setAttribute('aria-level', '3');
     host.node.insertBefore(this.node, host.disclose2 || host.firstGuestTiers() || null);
     this.placeSections(true);
@@ -3453,6 +3467,8 @@ class Dashboard {
     //: (Setup's `state.account`), and the launch's moment while Setup leaves.
     this.hasAccounts = false;
     this.isStepsLeaving = false;
+    //: The Dashboard's tiles as this viewer left them (loadTiles).
+    this.tiles = this.loadTiles();
     //: The sign-in screen is up (Setup's `account.chosen` is false): only
     //: it, the rail's stop and Quit are usable (2026-10-07).
     this.isGated = false;
@@ -3540,6 +3556,7 @@ class Dashboard {
     });
     window.addEventListener('resize', () => this.reserveLogSpace());
     window.addEventListener('resize', () => this.pinOpened());
+    window.addEventListener('resize', () => this.sizeTiles());
     // The rail is a column on the left, or a bar across the top on a phone,
     // and the tray grows when it opens; the drawer, the scrim and every
     // overlay are fixed against both, so both are measured, not assumed.
@@ -4589,6 +4606,8 @@ class Dashboard {
     card.node.style.setProperty('--stagger', String(this.cards.size));
     this.cards.set(name, card);
     this.dom.cards.appendChild(card.node);
+    this.applyTileOrder();
+    this.watchTile(card);
   }
 
   removeCard(name) {
@@ -4654,12 +4673,13 @@ class Dashboard {
 
   // -- the sheet's two pages (K4) ------------------------------------------
   //
-  // The Overview: every launched model as a compact entry, rows of three
-  // (sheetAcross), its tier-1 body only - no wells, no disclosures. The
-  // device page: one model alone, full width, readings focal, its tiers.
-  // Which page is `this.opened`; the entries are shown and hidden by CSS on
-  // the sheet's class, never moved or rebuilt, so a model's controls, focus
-  // and remembered tiers survive every trip between the two.
+  // The Dashboard (K4's Overview): every launched model as a compact entry
+  // on standard tiles (below), its tier-1 body only - no wells, no
+  // disclosures. The device page: one model alone, full width, readings
+  // focal, its tiers. Which page is `this.opened`; the entries are shown and
+  // hidden by CSS on the sheet's class, never rebuilt, and moved only when
+  // the viewer reorders them, so a model's controls, focus and remembered
+  // tiers survive every trip between the two.
   layoutSheet() {
     const names = this.pageNames();
     // The shown device was closed, or is gone (or is drawn on another
@@ -4670,14 +4690,16 @@ class Dashboard {
     // write rewrites the class attribute, which is a mutation every poll (F21).
     this.dom.cards.classList.toggle('is-device', isDevice);
     this.dom.cards.classList.toggle('is-overview', !isDevice && names.length > 0);
-    names.forEach((name, index) => {
+    // The Dashboard's tiles (owner 2026-10-08, replacing K4's rows of
+    // three): one tile wide or two (Wide), as many rows tall as the entry
+    // needs (sizeTiles), in the order this viewer left them.
+    for (const name of names) {
       const card = this.cards.get(name);
       card.setOpened(isDevice && name === this.opened);
-      const span = isDevice ? null : 'span-' + (6 / sheetAcross(names.length, index));
-      for (const other of ['span-2', 'span-3', 'span-6']) {
-        card.node.classList.toggle(other, other === span);
-      }
-    });
+      const isWide = this.tiles.wide.includes(name);
+      card.node.classList.toggle('is-wide', isWide);
+      if (card.wideKey) putAttr(card.wideKey, 'aria-pressed', isWide ? 'true' : 'false');
+    }
     // A guest is opened with its host's page; the host's head says a
     // guest's stop only where the guest is not drawn (paintHead).
     for (const [guest, host] of this.hostOf) {
@@ -4686,6 +4708,197 @@ class Dashboard {
     }
     for (const name of names) this.cards.get(name).paintHead();
     this.pinOpened();
+    this.sizeTiles();
+  }
+
+  // -- the Dashboard's tiles (owner 2026-10-08) -----------------------------
+  //
+  // Standard sizes: a tile is one column of the Dashboard's grid (three
+  // across, two under 1000 px, one under 760) or two (Wide); its height is
+  // a whole number of grid rows (--tile-row), the fewest that hold its
+  // entry. The entry inside is the same in both: head, then tier-1 body.
+  // The order is the viewer's own: drag a tile by Move, or press Move's
+  // arrow keys; kept in this browser (localStorage, when it is there) and
+  // drawn fine without it. A tile is in the sheet's flow beside the rail:
+  // nothing here ever covers or moves the rail's Stop.
+
+  /** What this viewer kept: { order: [names], wide: [names] }. */
+  loadTiles() {
+    let kept = null;
+    try {
+      kept = JSON.parse(window.localStorage.getItem(TILES_KEY) || 'null');
+    } catch (err) { kept = null; }
+    const list = (value) => (Array.isArray(value) ? value.filter((n) => typeof n === 'string') : []);
+    return { order: list(kept && kept.order), wide: list(kept && kept.wide) };
+  }
+
+  saveTiles() {
+    try {
+      window.localStorage.setItem(TILES_KEY, JSON.stringify(this.tiles));
+    } catch (err) { /* private window or blocked storage: this session only */ }
+  }
+
+  /** The page entries in the Dashboard's order: the kept order first, then
+   *  any model it does not name, in launch order. */
+  tileOrder() {
+    const names = this.pageNames();
+    const kept = this.tiles.order.filter((n) => names.includes(n));
+    return kept.concat(names.filter((n) => !kept.includes(n)));
+  }
+
+  /** Put the entries in the DOM in the Dashboard's order, so Tab, a screen
+   *  reader and the eye all read the same sequence. Moves a node only when
+   *  it is out of place; focus inside a moved entry is put back. */
+  applyTileOrder() {
+    const order = this.tileOrder();
+    const sheet = this.dom.cards;
+    const active = document.activeElement;
+    let anchor = null;
+    for (const name of order) {
+      const node = this.cards.get(name).node;
+      const expected = anchor ? anchor.nextElementSibling : this.firstEntry();
+      if (node !== expected) {
+        if (anchor) anchor.after(node);
+        else sheet.insertBefore(node, this.firstEntry());
+      }
+      anchor = node;
+    }
+    if (active && active !== document.activeElement && active.isConnected
+        && active.focus) active.focus({ preventScroll: true });
+  }
+
+  firstEntry() {
+    return Array.from(this.dom.cards.children).find((n) => n.classList.contains('card')) || null;
+  }
+
+  toggleWide(name) {
+    const wide = this.tiles.wide.filter((n) => n !== name);
+    if (wide.length === this.tiles.wide.length) wide.push(name);
+    this.tiles.wide = wide;
+    this.saveTiles();
+    this.layoutSheet();
+  }
+
+  /** Move a tile to `index` in the Dashboard's order (clamped). */
+  moveTile(name, index) {
+    const order = this.tileOrder();
+    const from = order.indexOf(name);
+    if (from === -1) return false;
+    const to = Math.max(0, Math.min(order.length - 1, index));
+    if (to === from) return false;
+    order.splice(from, 1);
+    order.splice(to, 0, name);
+    this.tiles.order = order;
+    this.saveTiles();
+    this.applyTileOrder();
+    this.sizeTiles();
+    return true;
+  }
+
+  /** Move's keyboard path: Left or Up is earlier, Right or Down later,
+   *  Home first, End last. Focus stays on Move; the new place is said. */
+  moveByKey(name, event) {
+    const steps = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 };
+    const order = this.tileOrder();
+    const at = order.indexOf(name);
+    let to = null;
+    if (event.key in steps) to = at + steps[event.key];
+    else if (event.key === 'Home') to = 0;
+    else if (event.key === 'End') to = order.length - 1;
+    if (to === null) return;
+    event.preventDefault();
+    if (this.moveTile(name, to)) {
+      const card = this.cards.get(name);
+      if (card && card.moveKey) card.moveKey.focus({ preventScroll: true });
+      this.sayTilePlace(name);
+    }
+  }
+
+  sayTilePlace(name) {
+    const order = this.tileOrder();
+    this.announce('polite', name + ', ' + (order.indexOf(name) + 1) + ' of ' + order.length + '.');
+  }
+
+  /** Move's pointer path: the tile follows the pointer through the order -
+   *  over another tile, it goes before that tile when the pointer is in its
+   *  first half (left half; top half in one column), else after it. */
+  startTileDrag(name, event) {
+    if (event.button !== 0 || this.opened) return;
+    const card = this.cards.get(name);
+    if (!card) return;
+    event.preventDefault();
+    // Listened for on the window, not captured on Move: the tile (Move in
+    // it) changes place in the DOM mid-drag, which would end a capture.
+    const handle = event.currentTarget;
+    card.node.classList.add('is-dragging');
+    let moved = false;
+    const onMove = (e) => {
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      const over = hit && hit.closest('#cards > .card');
+      if (!over || over === card.node) return;
+      const target = Array.from(this.cards.entries()).find(([, c]) => c.node === over);
+      if (!target) return;
+      const box = over.getBoundingClientRect();
+      const column = box.width >= this.dom.cards.clientWidth * 0.9;
+      const before = column ? e.clientY < box.top + box.height / 2
+        : e.clientX < box.left + box.width / 2;
+      const order = this.tileOrder().filter((n) => n !== name);
+      const at = order.indexOf(target[0]) + (before ? 0 : 1);
+      if (this.moveTile(name, at)) moved = true;
+    };
+    const onEnd = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onEnd);
+      window.removeEventListener('pointercancel', onEnd);
+      card.node.classList.remove('is-dragging');
+      if (moved) this.sayTilePlace(name);
+      handle.focus({ preventScroll: true });
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onEnd);
+    window.addEventListener('pointercancel', onEnd);
+  }
+
+  /** Each tile's height, in whole grid rows: the fewest rows whose span
+   *  holds the entry as laid out (its children's extent, which does not
+   *  depend on the tile's own stretched height). Written only on change. */
+  sizeTiles() {
+    const sheet = this.dom.cards;
+    if (!sheet.classList.contains('is-overview')) return;
+    const style = getComputedStyle(sheet);
+    const row = parseFloat(style.gridAutoRows) || 0;
+    const gap = parseFloat(style.rowGap) || 0;
+    if (!row) return;
+    for (const name of this.pageNames()) {
+      const node = this.cards.get(name).node;
+      const top = node.getBoundingClientRect().top;
+      let bottom = top;
+      for (const child of node.children) {
+        if (!child.getClientRects().length) continue;
+        bottom = Math.max(bottom, child.getBoundingClientRect().bottom);
+      }
+      const own = getComputedStyle(node);
+      const needed = bottom - top + (parseFloat(own.paddingBottom) || 0)
+        + (parseFloat(own.borderBottomWidth) || 0);
+      const rows = String(Math.max(1, Math.ceil((needed + gap - 0.5) / (row + gap))));
+      if (node.style.getPropertyValue('--tile-rows') !== rows) node.style.setProperty('--tile-rows', rows);
+    }
+  }
+
+  /** Re-size a tile when what is in it changes size (a state line, a
+   *  refusal, a fault): its children are watched, not the tile. */
+  watchTile(card) {
+    if (typeof ResizeObserver === 'undefined') return;
+    if (!this.tileWatch) {
+      this.tileWatch = new ResizeObserver(() => {
+        if (this.tileFrame) return;
+        this.tileFrame = requestAnimationFrame(() => {
+          this.tileFrame = null;
+          this.sizeTiles();
+        });
+      });
+    }
+    for (const child of card.node.children) this.tileWatch.observe(child);
   }
 
   /** O15 (L5's parity): on a device page the entry's head and its tier-1

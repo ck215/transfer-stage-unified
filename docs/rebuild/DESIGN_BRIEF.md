@@ -54,8 +54,12 @@ the same way inside the well.
 
 - **Dashboard** (named "Overview" until the owner renamed it, 2026-10-08) — the rail's first item, shown at launch, after Setup
   launches, and whenever the shown device is closed. Every launched model
-  is a compact entry in the grid (three across, then two; one column under
-  1000 px): its tier-1 body only, no wells, no disclosures. The entry's
+  is a compact entry on a standard tile (owner 2026-10-08, replacing rows of
+  three): one grid column wide or two ("Wide"), a whole number of grid rows
+  tall; three columns, two under 1000 px, one under 760. The viewer
+  reorders tiles by dragging "Move" or with its arrow keys; the order and
+  the Wide tiles are kept per browser. Its tier-1 body only, no wells, no
+  disclosures. The entry's
   head is a press target ("Open" affordance at its right); a press opens
   the device.
 - **Device page** — one model alone, full width, its readings `focal`, its

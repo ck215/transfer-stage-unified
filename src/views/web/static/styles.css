@@ -942,9 +942,9 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .headline-note { font-size: var(--t-sm); font-weight: 500; color: var(--muted); text-shadow: var(--engrave); }
 
-/* Entries, not cards, on two pages (K4). The Overview: every model, rows
-   of three, a lone last one never (layoutSheet / sheetAcross write span-2 /
-   span-3), tier-1 bodies only. The device page: one model, full width.
+/* Entries, not cards, on two pages (K4). The Dashboard (K4's Overview):
+   every model on standard tiles (below), tier-1 bodies only. The device
+   page: one model, full width.
    Entries are separated by whitespace; the 44 px gutter is the only column
    divider. */
 .sheet {
@@ -988,10 +988,53 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
    taken back). */
 .card > .disclosure[data-tier="2"] + .tier-well { margin-top: calc(var(--space-2) - var(--space-4)); }
 
-.card.span-2 { grid-column: span 2; }
-.card.span-3 { grid-column: span 3; }
-.card.span-6 { grid-column: span 6; }
 .card.is-opened { grid-column: 1 / -1; }
+
+/* -- the Dashboard's tiles (owner 2026-10-08) --------------------------- */
+/* Standard sizes, replacing K4's rows of three: a tile is one column of the
+   Dashboard's grid (three across; two under 1000 px; one under 760, where
+   Wide is one too) or two (Wide), and a whole number of --tile-row rows tall
+   - the fewest that hold its entry (app.js sizeTiles writes --tile-rows).
+   The entry inside is the same in both sizes: head, then tier-1 body. In
+   the sheet's flow beside the rail, so no tile covers or moves the Stop. */
+.sheet {
+  --tile-cols: 3;
+  --tile-wide: 2;
+  --tile-row: 5rem;
+}
+
+.sheet.is-overview {
+  grid-template-columns: repeat(var(--tile-cols), minmax(0, 1fr));
+  grid-auto-rows: var(--tile-row);
+  align-items: stretch;
+}
+
+.sheet.is-overview > .card.is-wide { grid-column: span var(--tile-wide); }
+
+/* The tile keys - Wide and Move - sit in the head, above its stretched
+   Open target, and only on the Dashboard. */
+.tile-keys {
+  position: relative;
+  z-index: 1;
+  display: none;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.sheet.is-overview .tile-keys { display: inline-flex; }
+
+.tile-key {
+  min-height: var(--hit-panel);
+  padding: 0 var(--space-3);
+  font-size: var(--t-cap);
+}
+
+.tile-move { cursor: grab; touch-action: none; }
+
+/* Mid-drag: the tile held is marked by a muted inset ring (tone, not
+   colour); it moves through the order, never over another tile. */
+.card.is-dragging { box-shadow: inset 0 0 0 2px var(--muted); }
+.card.is-dragging .tile-move { cursor: grabbing; }
 
 /* O15: the device page pins its entry's head and tier-1 body (Dashboard.
    pinOpened decides, and measures the head for the body's offset); the
@@ -1029,6 +1072,9 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
    and stays the only thing that sets the top edge apart. The hosted guest
    lives inside its host's box (it is not drawn here at all). */
 .sheet.is-overview > .card {
+  /* A tile (above): one column, whole rows. */
+  grid-column: span 1;
+  grid-row: span var(--tile-rows, 1);
   padding-right: var(--space-6);
   padding-bottom: var(--space-6);
   padding-left: var(--space-6);
@@ -1087,7 +1133,7 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
   /* The name never shrinks under its longest word (UX audit 2026-10-07: at
      1366 px "Connection lost" was painted over "Stepper Probe"); in a
      narrow entry the state takes a line of its own under it (below). */
-  grid-template-columns: minmax(min-content, max-content) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(min-content, max-content) minmax(0, 1fr) auto auto;
   align-items: center;
   column-gap: var(--space-4);
   min-height: var(--hit-panel);
@@ -1167,7 +1213,7 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 .sheet.is-overview > .card { container-type: inline-size; }
 
 @container (max-width: 32rem) {
-  .card-head { grid-template-columns: minmax(min-content, 1fr) auto; }
+  .card-head { grid-template-columns: minmax(min-content, 1fr) auto auto; }
   .card-side { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
   .card-side:empty { display: none; }
 }
@@ -3048,7 +3094,7 @@ label.row-title[for] { cursor: pointer; }
   .plate { padding: var(--space-4) var(--space-3); }
   .station-name { font-size: var(--t-lg); }
   .mushroom, .mushroom.is-latched { font-size: var(--t-stop-narrow); }
-  .card.span-2 { grid-column: span 3; }
+  .sheet { --tile-cols: 2; }
   .sheet { column-gap: var(--space-9); }
   /* UX audit 2026-10-07: beside a 200 px rail the drawer has under 560 px
      for five columns; the table takes the phone's shape (the name on its
@@ -3066,7 +3112,9 @@ label.row-title[for] { cursor: pointer; }
 /* Under 760 px the entries stack in one column. */
 @media (max-width: 47.5rem) {
   .sheet.is-overview > .card { padding-right: var(--space-5); padding-left: var(--space-5); }
-  .card.span-2, .card.span-3 { grid-column: span 6; }
+  .sheet { --tile-cols: 1; --tile-wide: 1; }
+  /* One column: every tile is the full width, so Wide has nothing to do. */
+  .sheet.is-overview .tile-wide { display: none; }
 }
 
 /* A phone: the rail becomes a bar across the top - the name, the disc at a
