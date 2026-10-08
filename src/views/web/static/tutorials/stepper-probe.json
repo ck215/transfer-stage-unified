@@ -78,7 +78,7 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Manual mode"},
-      "say": "Left stick, left and right: X. Right stick, up and down: Y. Both move smoothly, at the manual speed. Left trigger raises Z, right trigger lowers it. D-pad: one step on X (left, right) or Y (up, down) per press. Bumpers: one Z step per press.",
+      "say": "Left stick, left and right: X. Right stick, up and down: Y. Both move smoothly at the manual speed. Left trigger raises Z, right trigger lowers it. D-pad: one step on X (left, right) or Y (up, down) per press. Bumpers: one Z step per press.",
       "wait": null
     },
     {

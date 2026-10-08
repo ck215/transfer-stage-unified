@@ -78,7 +78,7 @@
     {
       "page": "DC Probe",
       "anchor": {"text": "Manual mode"},
-      "say": "Left stick, left and right: X. Right stick, up and down: Y. Both at the manual speed. The left and right triggers drive Z in opposite directions. The D-pad and the bumpers do nothing on this board. Let go of a stick and that axis brakes and holds.",
+      "say": "Left stick, left and right: X. Right stick, up and down: Y. Both at the manual speed. The two triggers drive Z, one each way. The D-pad and the bumpers do nothing on this board. Let go of a stick and that axis brakes and holds.",
       "wait": null
     },
     {

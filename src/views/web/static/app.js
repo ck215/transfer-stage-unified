@@ -3662,7 +3662,12 @@ class Dashboard {
     const rail = document.querySelector('.rail');
     if (!rail) return;
     const box = rail.getBoundingClientRect();
-    const isColumn = box.height > box.width;
+    // Which shape the stylesheet gave it, not which side is longer: on a
+    // phone the bar grows taller than it is wide once alert lines and the
+    // page list wrap in it, and was then taken for a column - every layer,
+    // Setup and the tray among them, moved one screen width to the right
+    // (UX audit 2026-10-07).
+    const isColumn = getComputedStyle(rail).flexDirection === 'column';
     const left = (isColumn ? Math.round(box.width) : 0) + 'px';
     const top = (isColumn ? 0 : Math.round(box.height)) + 'px';
     if (root.getPropertyValue('--rail-left') !== left) root.setProperty('--rail-left', left);
