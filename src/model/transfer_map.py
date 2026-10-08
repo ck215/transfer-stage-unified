@@ -120,6 +120,7 @@ from model import tip_shade
 from model import transfer_map_analysis as analysis
 from model.base import Model
 from model.sample_store import SampleStore
+from model.sample_store import PicturePreview, StoreRefused as _PreviewRefused
 from model.trial_telemetry import TrialTelemetry
 from param import Param
 from result import NeedsConfirm, Refused
@@ -3258,6 +3259,65 @@ class TransferMap(store_choice.StorePrompt, Model):
     def flake_pick(self):
         return self._flake or ""
 
+    # -- the picked level's picture (owner 2026-10-08) ------------------------------
+    def _preview_store_rows(self):
+        """(store, level, rows): the picked level's own pictures from the
+        Sample DB's store, read-only; a level with none of its own
+        previews what is under it."""
+        level = (self._sample or None, self._chip if self._sample else None,
+                 self._flake if self._sample and self._chip else None)
+        if not level[0]:
+            return None, level, []
+        store = self._samples_store()
+        if store is None:
+            return None, level, []
+        try:
+            rows = store.images(*level) or store.images(*level, any=True)
+        except Exception as exc:
+            events.debug("Preview Not Read", repr(exc), source=self.NAME, every=5.0)
+            rows = []
+        return store, level, rows
+
+    def _preview_or_new(self):
+        preview = getattr(self, "_picture_preview", None)
+        if preview is None:
+            preview = self._picture_preview = PicturePreview()
+        return preview
+
+    @property
+    def preview_magnification(self):
+        _store, level, rows = self._preview_store_rows()
+        return self._preview_or_new().magnification(level, rows)
+
+    @property
+    def preview_magnification_options(self):
+        _store, level, rows = self._preview_store_rows()
+        return self._preview_or_new().options(level, rows)
+
+    def set_preview_magnification(self, magnification):
+        _store, level, rows = self._preview_store_rows()
+        try:
+            return self._preview_or_new().choose(level, rows, magnification)
+        except _PreviewRefused as refusal:
+            raise Refused(str(refusal))
+
+    @property
+    def preview_key(self):
+        _store, level, rows = self._preview_store_rows()
+        return self._preview_or_new().key(level, rows)
+
+    @property
+    def preview_text(self):
+        _store, level, rows = self._preview_store_rows()
+        if not level[0]:
+            return "Pick a sample"
+        return self._preview_or_new().text(level, rows)
+
+    @property
+    def preview_picture(self):
+        store, level, rows = self._preview_store_rows()
+        return self._preview_or_new().png(store, level, rows)
+
     @staticmethod
     def _match(label, options):
         """The option `label` names: itself, else the one equal to it
@@ -3863,6 +3923,14 @@ class TransferMap(store_choice.StorePrompt, Model):
                 sch.dropdown("Flake", "flake_pick", "pick_flake",
                              "flake_options", enabled_by="has_chip_pick",
                              enabled_by_reason="Choose a chip first"),
+                # The picked flake's picture (owner 2026-10-08): 100x, else
+                # 50x, else the next lower; read from the Sample DB's store.
+                sch.image("Picture", "preview_picture", model_attr="preview_key",
+                          empty=PicturePreview.NONE),
+                sch.readonly("Shown", "preview_text"),
+                sch.dropdown("Show magnification", "preview_magnification",
+                             "set_preview_magnification",
+                             "preview_magnification_options"),
                 sch.readonly("Cut", "cut_next"),
                 # Bench 2026-09-28: the tilt varies between trials of one
                 # tip and was buried two tiers down; it is asked here, per

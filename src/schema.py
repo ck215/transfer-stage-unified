@@ -305,14 +305,22 @@ def file_open(text, command, *, extensions=("csv",), role="neutral",
     return element
 
 
-def image(text, data_command, *, role="neutral", empty="No image yet."):
+def image(text, data_command, *, role="neutral", empty="No image yet.",
+          model_attr=None):
     """A picture the model supplies as PNG bytes through `data_command`;
     empty bytes mean "nothing to show" and a view draws `empty` as one
-    caption line instead of a full-size pane (L15)."""
-    return {
+    caption line instead of a full-size pane (L15).
+
+    `model_attr` makes it a still (a preview): the attribute is a key that
+    changes exactly when the picture does, and a view fetches the picture
+    when the key changes instead of on every poll."""
+    element = {
         "type": "image", "text": text, "data_command": data_command,
         "empty": str(empty), "writable": False, "role": role,
     }
+    if model_attr:
+        element["model_attr"] = model_attr
+    return element
 
 
 def indicator(text, model_attr, *, on_role="danger", off_role="neutral"):

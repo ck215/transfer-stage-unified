@@ -806,6 +806,11 @@ const QUIET_WORDS = ['--', 'off', 'none', 'no', 'not set', 'not scanned',
 function readoutKind(text) {
   const word = String(text === null || text === undefined ? '' : text).trim();
   if (word === '' || QUIET_WORDS.indexOf(word.toLowerCase()) !== -1) return 'quiet';
+  // A sentence that happens to open with a count ("3 picture(s) of 15jul26
+  // · 1 · 1") is words: set as a number it was the reading face, unwrapped,
+  // and spilled off a phone (2026-10-08). Two or more words of letters make
+  // a sentence; "12 steps/s" and "-1.5, 0.0, 2" stay numbers.
+  if ((word.match(/(^|\s)\S*[A-Za-z]{2}\S*/g) || []).length >= 2) return 'word';
   if (/^[-+−]?(\d|\.\d)/.test(word)) return 'number';
   return 'word';
 }
@@ -1589,6 +1594,19 @@ function renderPlot(panel, element) {
   };
 }
 
+/** A picture preview (an image with a `model_attr` key, owner 2026-10-08):
+ *  a scaled-down still that never holds the page up - lazy, decoded off the
+ *  main thread, sized by styles.css (`.is-preview`) to fit a phone. */
+function markPreview(node, frame, picture) {
+  node.classList.add('is-preview');
+  frame.classList.add('is-preview');
+  picture.classList.add('is-preview');
+  picture.loading = 'lazy';
+  picture.decoding = 'async';
+  picture.width = 480;
+  picture.height = 360;
+}
+
 function renderImage(panel, element) {
   const node = row(element, 'wide');
   const frame = make('div', 'plot-frame');
@@ -1609,6 +1627,7 @@ function renderImage(panel, element) {
   };
   picture.addEventListener('load', () => shown(true));
   picture.addEventListener('error', () => shown(false));
+  if (element.model_attr) markPreview(node, frame, picture);
   frame.appendChild(picture);
   frame.appendChild(empty);
   node.appendChild(frame);
@@ -2806,6 +2825,14 @@ class PanelCard {
         widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
       } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
         widget.setOn(Boolean(this.values[attr]));
+      } else if (kind === 'image' && attr) {
+        // A still (a picture preview, schema `model_attr`): fetched when its
+        // key changes, never on every poll - the picture is a file, not a feed.
+        const key = this.values[attr] === undefined ? '' : String(this.values[attr]);
+        if (key !== widget.stillKey && this.wantsData(widget)) {
+          widget.stillKey = key;
+          this.loadData(widget);
+        }
       } else if (kind === 'plot' || kind === 'image' || kind === 'log_stream') {
         if (wantsData && this.wantsData(widget)) this.loadData(widget);
       }

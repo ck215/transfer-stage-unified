@@ -1335,3 +1335,31 @@ def test_a_trial_store_without_chip_and_flake_columns_lists_at_sample_level_only
         "No trial is recorded for 4oct26 \u00b7 2"
     images.select_flake_id("F1")
     assert images.sample_trials_log == []
+
+
+def test_the_pictures_section_previews_the_100x_picture_and_can_switch(images, tmp_path):
+    """Owner 2026-10-08: a preview of the picked level's picture, 100x by
+    default; the operator may pick another magnification on offer."""
+    import schema as sch
+    from PIL import Image
+    _tree(images, tmp_path)
+    images.select_sample("4oct26")
+    images.select_chip("2")
+    images.select_flake_id("F1")
+    assert images.preview_text == "No picture" and images.preview_picture == b""
+    for mag, colour in (("10x", (0, 0, 200)), ("100x", (200, 0, 0))):
+        source = tmp_path / f"{mag}.png"
+        Image.new("RGB", (64, 48), colour).save(source)
+        images.run("set_image_magnification", None, (mag,))
+        assert images.run("add_image", None, (str(source),)).is_ok
+    assert images.preview_magnification == "100x"
+    assert images.preview_magnification_options == ["100x", "10x"]
+    assert images.preview_text.startswith("100x picture, taken ")
+    first = images.preview_key
+    assert images.preview_picture.startswith(b"\x89PNG")
+    assert images.run("set_preview_magnification", None, ("10x",)).is_ok
+    assert images.preview_magnification == "10x" and images.preview_key != first
+    preview = [e for e in sch.elements(images.schema) if e.get("type") == "image"
+               and e.get("data_command") == "preview_picture"]
+    assert preview and preview[0]["model_attr"] == "preview_key"
+    assert "preview_key" in images.state["values"]

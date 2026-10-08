@@ -270,7 +270,8 @@ class SampleMap(store_choice.StorePrompt, Model):
         self._thickness_method = ss.THICKNESS_APPROX_METHODS[0]
         self._image_instrument = ss.IMAGE_INSTRUMENTS[1]      # microscope
         self._image_magnification = ss.IMAGE_MAGNIFICATIONS[0]
-        self._trial_store = None       # the Transfer Map's `db_path`, read-only
+        self._preview = ss.PicturePreview()   # the picked level's picture
+        self._trial_store = None      # the Transfer Map's `db_path`, read-only
         #: Who flags (`flakes.owner`) and how that was established
         #: (`owner_auth`): Setup sets both from the signed-in profile.
         self.owner = "station"
@@ -1902,6 +1903,58 @@ class SampleMap(store_choice.StorePrompt, Model):
         where = self._level_text()
         return f"{n} picture(s) of {where}" if n else f"No pictures of {where} yet"
 
+    # -- the preview of the picked level's picture (owner 2026-10-08) ---------------------
+    def _preview_rows(self):
+        """(level, rows): the picked level's own pictures; a level with none
+        of its own previews what is under it (a sample's chips and flakes)."""
+        picked = self._picked()
+        if not picked[0]:
+            return picked, []
+        try:
+            rows = self._store.images(*picked) or self._store.images(*picked, any=True)
+        except Exception as exc:
+            events.debug("Preview Not Read", repr(exc), source=self.NAME, every=5.0)
+            rows = []
+        return picked, rows
+
+    @property
+    def preview_magnification(self):
+        return self._preview.magnification(*self._preview_rows())
+
+    @property
+    def preview_magnification_options(self):
+        return self._preview.options(*self._preview_rows())
+
+    def set_preview_magnification(self, magnification):
+        try:
+            shown = self._preview.choose(*self._preview_rows(), magnification)
+        except ss.StoreRefused as refusal:
+            raise Refused(str(refusal))
+        self._touch()
+        return shown
+
+    @property
+    def preview_key(self):
+        return self._preview.key(*self._preview_rows())
+
+    @property
+    def preview_text(self):
+        level, rows = self._preview_rows()
+        if not level[0]:
+            return "Pick a sample"
+        text = self._preview.text(level, rows)
+        row, _order = self._preview.pick(level, rows)
+        if row is not None:
+            where = self.SEP.join(str(x) for x in (row["sample_id"], row["chip_id"],
+                                                  row["flake_id"]) if x)
+            if where != self._level_text():
+                text += f", of {where}"
+        return text
+
+    @property
+    def preview_picture(self):
+        return self._preview.png(self._store, *self._preview_rows())
+
     # -- trials for this sample: a READ-ONLY look at the Transfer Map's store --------
     def _trial_connection(self):
         """A second connection, `mode=ro`: nothing here can write to it."""
@@ -2111,13 +2164,22 @@ class SampleMap(store_choice.StorePrompt, Model):
             ),
             sch.section(
                 "Pictures" + (f" of {where}" if where else ""),
+                # The preview (owner 2026-10-08): 100x, else 50x, else the
+                # next lower; the operator may look at another one.
+                sch.image("Picture", "preview_picture", model_attr="preview_key",
+                          empty=ss.PicturePreview.NONE),
+                sch.readonly("Shown", "preview_text"),
+                sch.dropdown("Show magnification", "preview_magnification",
+                             "set_preview_magnification",
+                             "preview_magnification_options"),
                 sch.dropdown("Taken with", "image_instrument", "set_image_instrument",
                              "image_instrument_options"),
                 sch.dropdown("Magnification", "image_magnification",
                              "set_image_magnification", "image_magnification_options"),
                 sch.entry("Image note", "image_note", P["image_note"]),
                 sch.file_open("Add photo\u2026", "add_image",
-                              extensions=self.IMAGE_EXTENSIONS, role="go"),
+                              extensions=self.IMAGE_EXTENSIONS, role="go",
+                              placeholder="Path to a saved microscope image"),
                 sch.readonly("Pictures", "image_text"),
                 sch.log_stream("Image log", "image_log"),
                 phases=browse,

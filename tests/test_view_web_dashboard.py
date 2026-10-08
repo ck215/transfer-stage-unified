@@ -1684,3 +1684,79 @@ def test_sp3_the_real_analysis_live_group_is_behind_details_on_the_trial_page(ma
     for key in ("shut", "start", "stop"):
         assert out[key]["exists"] and out[key]["inWell"] and not out[key]["inBody"], out
     assert not out["shut"]["shown"] and out["start"]["shown"], out
+
+
+# ==========================================================================
+# Picture previews (owner 2026-10-08): a still keyed by `model_attr`
+# ==========================================================================
+class FakePreview(_Plain):
+    """A model with a picture preview: the image is fetched when its key
+    changes, not on every poll."""
+    NAME = "Fake Preview"
+
+    def __init__(self, png):
+        super().__init__()
+        self.png = png
+        self.key = "1:a.png"
+        self.fetched = 0
+
+    @property
+    def schema(self):
+        return sch.schema(sch.section(
+            "Pictures",
+            sch.image("Picture", "preview_picture", model_attr="preview_key",
+                      empty="No picture"),
+            sch.readonly("Shown", "preview_text")))
+
+    @property
+    def preview_key(self):
+        return self.key
+
+    @property
+    def preview_text(self):
+        return "3 picture(s) of Izzie's Gift 22April25 · Chip 1 · Flake 12"
+
+    @property
+    def preview_picture(self):
+        self.fetched += 1
+        return self.png
+
+
+@needs_browser
+def test_a_picture_preview_renders_scaled_and_is_fetched_once_per_key(tmp_path):
+    import io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (1600, 1200), (200, 90, 30)).save(out, "PNG")
+    controller = Controller()
+    model = FakePreview(out.getvalue())
+    controller.add("Fake Preview", model, {"kind": "Fake Preview"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open()
+    try:
+        drawn = _browse(view, _PHASE_READ.split("const drawn")[0] + r"""
+          await page.setViewport({ width: 390, height: 844 });
+          await until(() => {
+            const img = document.querySelector('#cards img.picture.is-preview');
+            return img && img.complete && img.naturalWidth > 0;
+          });
+          await sleep(2500);
+          return page.evaluate(() => {
+            const img = document.querySelector('#cards img.picture.is-preview');
+            const box = img.getBoundingClientRect();
+            const shown = document.querySelector('#cards [data-attr="preview_text"] .value');
+            return { natural: img.naturalWidth, width: box.width, height: box.height,
+                     loading: img.loading, page: document.documentElement.scrollWidth,
+                     view: document.documentElement.clientWidth,
+                     word: shown ? shown.classList.contains('is-word') : null };
+          });
+        """, tmp_path)
+    finally:
+        view.close()
+    assert drawn["natural"] == 1600, drawn
+    assert 0 < drawn["width"] <= 390 and drawn["height"] <= 844 * 0.4 + 1, drawn
+    assert drawn["loading"] == "lazy"
+    assert drawn["page"] <= drawn["view"], "nothing spills past a phone"
+    assert drawn["word"] is True, "a sentence opening with a count is words"
+    # Fetched for its key, not once a poll (a handful of polls went by).
+    assert model.fetched <= 2, model.fetched
