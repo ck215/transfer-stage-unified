@@ -1043,6 +1043,12 @@ class TransferMap(store_choice.StorePrompt, Model):
         #: `release_arm`, so no Arm lands between Setup's busy check and the
         #: map's removal or store change (arch audit #13).
         self._arm_held = False
+        #: Every stop that reached `_halt_hardware` (estop, halt, a link
+        #: loss), counted: Arm captures it before the stage-still grab and
+        #: compares after, so a stop inside the grab wins even when it was
+        #: already cleared (or never latched) by the re-check, the same
+        #: latch as the Controller's `_stop_count`.
+        self._stop_count = 0
         self._persisting = []          # abort writers the stop started
         self._red = None
         self._red_name = None
@@ -1329,6 +1335,9 @@ class TransferMap(store_choice.StorePrompt, Model):
     #: Arm while Setup switches the user (`hold_arm`).
     ARM_HELD = ("The user is being switched on this station: nothing was "
                 "armed. Arm again once the switch is done.")
+    #: Arm when a stop landed during the stage still: the base `_guard`'s
+    #: own sentence, said even when the stop is already cleared.
+    STOPPED = f"{NAME} is stopped. Clear the stop, then try again."
 
     def hold_arm(self):
         """Setup's Guest switch (and a sign-in as someone else), atomically
@@ -1380,6 +1389,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         no lock wait without a timeout: the stop is never held by the disk.
         A New tip prompt or a store prompt over a chosen store closes (the
         stop returns to setup; with no store the page stays the prompt)."""
+        self._stop_count += 1              # first: Arm's grab compares it
         adding, self._adding_tip = self._adding_tip, False
         choosing, self._choosing_store = self._choosing_store, False
         pending, self._pending = self._pending, None
@@ -1793,22 +1803,23 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise NeedsConfirm(prompt, "arm_trial",
                                inputs={"typed_tilt": self.typed_tilt or "",
                                        "typed_speed": self.typed_speed or ""})
+        stops_seen = self._stop_count
         still, size = self._take_still()
         pending = _Pending(tip, still, size, self._display_bounds(), where)
         with self._lock:
             held = self._arm_held          # a switch began during the grab
-            if self.is_estopped:           # a stop inside the grab wins
-                stopped = True
-            else:
-                stopped = False
-                if not held:
-                    self._pending = pending
+            # A stop inside the grab wins: latched now, or counted since the
+            # grab began even if it is already cleared (or was a plain halt).
+            stopped = self.is_estopped or self._stop_count != stops_seen
+            if not stopped and not held:
+                self._pending = pending
         if stopped or held:
             self._discard_still(pending)
             if stopped:
-                self._guard("Arm")
-            if held:
-                raise Refused(self.ARM_HELD)
+                events.debug("Guard", "Arm refused: a stop during the stage "
+                             "still", source=self.NAME)
+                raise Refused(self.STOPPED)
+            raise Refused(self.ARM_HELD)
         self._touch()
         events.info("Stage Taken", f"Pick the capture region on the picture "
                     f"of the stage to start the trial on tip {tip}.",

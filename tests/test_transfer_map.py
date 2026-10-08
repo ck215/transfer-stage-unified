@@ -2298,6 +2298,39 @@ def test_a_stop_during_the_arm_pictures_arms_nothing(idle_station, private_db):
     assert not list(staging.iterdir())
 
 
+def _stop_then_clear(model):
+    model.estop()
+    model.clear_estop(confirmed=True)
+
+
+@pytest.mark.parametrize("stop", [_stop_then_clear, lambda m: m.halt()],
+                         ids=["estop_then_cleared", "halt_no_latch"])
+def test_a_stop_during_the_arm_still_wins_even_once_cleared(
+        idle_station, private_db, stop):
+    """The stop-detection latches: a stop inside the grab that is already
+    cleared (or never latched: a plain halt) by the time Arm re-checks still
+    discards the still and refuses with the guard's sentence. Before, the
+    re-check read only `is_estopped`, found it clear, and logged "Stage
+    Taken" with nothing armed."""
+    model, red = idle_station
+    model._recorder_factory = lambda *a: _Recorder(then=lambda: stop(model))
+    since = events.latest_id
+    result = model.run("arm_trial", None, (True,))
+    assert result.is_refused, "a stop during the grab did not refuse Arm"
+    assert result.reason == ("Transfer Map is stopped. Clear the stop, then "
+                             "try again.")
+    assert not _titled("Stage Taken", since)
+    assert model.phase == "setup" and model.trial_count == 0
+    assert not red.is_running
+    staging = model.pictures_root / tm_module.STAGING
+    assert not list(staging.iterdir())
+    # The latch is per grab: the next Arm, with no stop, arms.
+    model._recorder_factory = lambda *a: _Recorder()
+    assert not model.run("arm_trial", None, (True,)).is_refused
+    assert model.phase == "region"
+    model.run("abort_trial")
+
+
 def test_a_stop_while_the_region_lands_starts_nothing(idle_station, private_db,
                                                        monkeypatch):
     """The stop inside the region step's start (here: its capture gate)
