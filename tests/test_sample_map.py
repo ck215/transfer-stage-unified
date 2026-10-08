@@ -759,6 +759,10 @@ def _digest(path):
 def images(tmp_path):
     model = SampleMap(db_path=tmp_path / "data" / "sample_map.sqlite")
     model.open()
+    # Updated (UX audit 2026-10-08 #18): there is no default magnification;
+    # these tests are about other things, so their operator picked 10x
+    # (the old default). `unpicked` below is the sheet with no pick.
+    assert model.run("set_image_magnification", None, ("10x",)).is_ok
     yield model
     model.close()
 
@@ -1195,7 +1199,7 @@ def test_add_sample_inserts_copies_photos_selects_and_returns_to_browse(images, 
     assert not hidden.is_ok and images._image_instrument == "microscope"
     for n in (1, 2):
         assert images.run("stage_photo", None, (str(_shot(tmp_path, f"{n}.png", PNG + bytes([n]))),)).is_ok
-    assert images.staged_text.startswith("2 photo(s): 1.png, 2.png")
+    assert images.staged_text == "2 photos: 1.png (10x), 2.png (10x)"   # UX audit #14, #18
     result = images.run("create_sample", {"new_sample_id": " NEW1 ", "new_sample_note": "hello"})
     assert result.is_ok, result
     assert images.phase == "chip" and images.sample_id == "NEW1"
@@ -1403,3 +1407,60 @@ def test_the_pictures_section_previews_the_100x_picture_and_can_switch(images, t
                and e.get("data_command") == "preview_picture"]
     assert preview and preview[0]["model_attr"] == "preview_key"
     assert "preview_key" in images.state["values"]
+
+
+# -- UX audit 2026-10-08 #18: no silent 10x ----------------------------------
+@pytest.fixture
+def unpicked(tmp_path):
+    """A Sample DB whose operator has not picked a magnification."""
+    model = SampleMap(db_path=tmp_path / "fresh" / "sample_map.sqlite")
+    model.open()
+    model.run("begin_new_sample")
+    model.run("set_new_material", None, ("hBN",))
+    assert model.run("create_sample", {"new_sample_id": "S1"}).is_ok
+    yield model
+    model.close()
+
+
+def test_a_photo_has_no_default_magnification(unpicked, tmp_path):
+    assert unpicked.image_magnification == ""
+    refused = unpicked.run("add_image", None, (str(_shot(tmp_path, "plain.png")),))
+    assert not refused.is_ok and "magnification" in str(refused).lower()
+    assert unpicked._store.images("S1") == []
+
+
+@pytest.mark.parametrize("name, wanted", [
+    ("flake_100x.png", 100), ("S1_50X_2.png", 50), ("chip 20x.tif", 20),
+    ("QMDL_10x_0001.jpg", 10)])
+def test_the_file_name_gives_the_magnification(unpicked, tmp_path, name, wanted):
+    result = unpicked.run("add_image", None, (str(_shot(tmp_path, name)),))
+    assert result.is_ok, result
+    [row] = unpicked._store.images("S1")
+    assert row["magnification"] == wanted
+
+
+@pytest.mark.parametrize("name", ["a1000x.png", "x10.png", "10xyz.png",
+                                  "both_10x_100x.png"])
+def test_a_name_that_does_not_say_one_magnification_needs_a_pick(unpicked, tmp_path, name):
+    assert not unpicked.run("add_image", None, (str(_shot(tmp_path, name)),)).is_ok
+
+
+def test_a_staged_photo_takes_its_names_magnification_or_the_pick(unpicked, tmp_path):
+    unpicked.run("begin_new_chip")
+    plain = str(_shot(tmp_path, "chip.png", PNG + b"1"))
+    refused = unpicked.run("stage_photo", None, (plain,))
+    assert not refused.is_ok and "magnification" in str(refused).lower()
+    assert unpicked.run("stage_photo", None, (str(_shot(tmp_path, "chip_20x.png", PNG + b"2")),)).is_ok
+    assert unpicked.run("set_image_magnification", None, ("50x",)).is_ok
+    assert unpicked.run("stage_photo", None, (plain,)).is_ok
+    assert unpicked.staged_text == "2 photos: chip_20x.png (20x), chip.png (50x)"
+    assert unpicked.run("create_chip", {"new_chip_id": "C1"}).is_ok
+    mags = sorted(r["magnification"] for r in unpicked._store.images("S1", chip_id="C1"))
+    assert mags == [20, 50]
+
+
+def test_the_prompts_offer_the_magnification_beside_the_photo(unpicked):
+    for section in unpicked.schema["sections"]:
+        if section["title"].startswith(("New sample", "New chip", "New flake")):
+            attrs = [e.get("model_attr") for e in section["elements"]]
+            assert "image_magnification" in attrs, section["title"]
