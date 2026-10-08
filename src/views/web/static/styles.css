@@ -1537,6 +1537,13 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 }
 
 .dialog-box > .section { flex-direction: column; align-items: stretch; }
+/* A prompt with a text entry is as wide as a store path, and its text
+   entries (Folder, Name, Existing store file, Sample ID) run the box's
+   width (UX audit 2026-10-08 #17: Folder showed "/home/transfer-sta" in a
+   9rem box). On a phone the box is the card's width, never wider. A number
+   keeps a number's width. */
+.dialog-box:has(.input:not([type="number"])) { width: min(40rem, 100%); }
+.dialog-box .group > .input:not([type="number"]) { flex: 1 1 auto; width: auto; }
 /* A dropdown keeps its key's width in a prompt: stretched across the box,
    the key wrapper drew its chevron at the far right, a hand's width from
    the 10rem select it belongs to. */
