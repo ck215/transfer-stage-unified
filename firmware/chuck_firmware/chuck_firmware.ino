@@ -90,13 +90,13 @@ struct __attribute__((packed)) ManualControlPacket {
     float x_axisStatus;         // X axis status
     float y_axisStatus;         // Y axis status
     float z_axisStatus;         // Z axis status
-    int x_stepSize;           // X step size
-    int y_stepSize;           // Y step size
-    int z_stepSize;           // Z step size
-    int dpad_LR;              // D-pad left-right value
-    int dpad_UD;              // D-pad up-down value
-    int bumpers;              // Bumper combined value
-    int manual_jog_speed;     // Manual jog speed
+    float x_stepSize;           // X step size
+    float y_stepSize;           // Y step size
+    float z_stepSize;           // Z step size
+    float dpad_LR;              // D-pad left-right value
+    float dpad_UD;              // D-pad up-down value
+    float bumpers;              // Bumper combined value
+    float manual_jog_speed;     // Manual jog speed
 };
 
 const size_t BINARY_PACKET_SIZE = sizeof(ManualControlPacket);
@@ -319,19 +319,30 @@ void parseHybridSerial() {
             }
         }
 
-        // ---OPTION B: TOGGLE ENABLE
-        else if (peekChar == 0x74) {
+        // ---OPTION B: EXPLICIT DISABLE (idempotent — safe even if already disabled)
+        else if (peekChar == 0x64) { // 'd'
             Serial.read();
 
-            if (system_enabled) {
-                system_enabled = false;
-                xUART.toff(0);
-                yUART.toff(0);
-                zUART.toff(0);
-            }
-            else {
+            // TOFF=0 is what actually disables a TMC2209 driver output stage
+            // (see setup()'s toff(0) at boot for the same convention) --
+            // toff(2) here previously left the driver enabled with a
+            // different chopper off-time, never cutting coil current at all.
+            // Also run this unconditionally rather than gating on our own
+            // system_enabled belief: a stale/desynced flag must never be
+            // able to block the one command that actually kills power.
+            system_enabled = false;
+            xUART.toff(0);
+            yUART.toff(0);
+            zUART.toff(0);
+        }
+
+        // ---OPTION B2: EXPLICIT ENABLE (idempotent — safe even if already enabled)
+        else if (peekChar == 0x65) { // 'e'
+            Serial.read();
+
+            if (!system_enabled) {
                 system_enabled = true;
-                
+
                 // Safety: Force speeds to 0 before power-up so they don't jump instantly
                 x_axis.setSpeed(0);
                 y_axis.setSpeed(0);
@@ -502,8 +513,8 @@ void setup() {
   xUART.rms_current(600);    // can increase this to 700 if we want even more torque for, say, more accurate microsteps
   xUART.microsteps(microstepMode);      
   xUART.intpol(true);     
-  yUART.pwm_autoscale(true);
-  yUART.en_spreadCycle(false);
+  xUART.pwm_autoscale(true);
+  xUART.en_spreadCycle(false);
 
   yUART.begin();        
   yUART.I_scale_analog(false);    

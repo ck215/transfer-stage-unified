@@ -1,0 +1,250 @@
+# P5 (docs/rebuild/PACKAGING_PLAN.md): one bundle per platform, built on the
+# platform itself, on every tag `v*` and by hand. `dev/release.sh` makes the
+# tag; this file turns it into a published release with no hand step.
+#
+#   draft    refuses a tag that is not vMAJOR.MINOR.PATCH; creates the
+#            tag's release as a DRAFT, its notes the tag's CHANGELOG.md
+#            section (`packaging/release.py notes`; the tag's message when
+#            the CHANGELOG has none). GitHub's /releases/latest never
+#            returns a draft, so no installed bundle sees the release
+#            before it is published.
+#   build    one runner per release target; Python 3.13 from
+#            actions/setup-python; pip install -e .[dev] and the stable
+#            app's extra (packaging/requirements-stable.txt); then the
+#            bundle layout (packaging/layout.py), in order:
+#              tools   packaging/tools.py: arduino-cli (pinned, SHA-256),
+#                      arduino:avr + teensy:avr + the libraries, and
+#                      teensy_loader_cli compiled from pinned source
+#              stable  the STABLE_REF branch checked out into
+#                      build/stable-src, frozen by packaging/stable.spec
+#              station packaging/station.spec: station-web (the only
+#                      launcher; Tk and Qt are retired); copies firmware/,
+#                      tools/ and stable/ beside it (STATION_REQUIRE_FULL
+#                      refuses a partial bundle) and stamps VERSION and
+#                      release.json (packaging/release.py)
+#            the smoke script, headless (station-web; the layout, tools
+#            offline, the stable self-check); zip under the name
+#            release.json gives this machine (the step refuses a name that
+#            is not one of release.json's targets); upload to the draft.
+#   publish  runs after EVERY build, whatever became of it. It publishes
+#            only when every build succeeded and every asset
+#            `release.py assets` names is on the draft: it uploads
+#            SHA256SUMS (one `sha256sum` line per asset; a bundle's updater
+#            verifies its download against it), sets the notes and
+#            publishes the draft as latest. Otherwise the draft stays a
+#            draft and the job summary says why.
+#
+# A run by hand (workflow_dispatch) builds and smokes; its zips are workflow
+# artifacts, never a release. Its `stable_ref` input picks the branch frozen
+# as stable/ (default `stable`; `main` is today's original app). Actions are
+# pinned by commit SHA (the tag in the comment). Nothing signs (P7 is the
+# owner's). Ref names reach the shell through env, never through ${{ }}
+# inside a script. The workflow's token is read-only; the three jobs that
+# write the release ask for write access themselves.
+name: package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      stable_ref:
+        description: "Branch or commit frozen as stable/ (the original Tk app)"
+        required: false
+        default: stable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Draft the tag's release (notes = its CHANGELOG section, else its message)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "## $TAG is not a release tag (vMAJOR.MINOR.PATCH); nothing was drafted" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          python3 packaging/release.py notes "$TAG" > notes.md
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "The release $TAG exists; the builds upload to it."
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes-file notes.md
+          fi
+
+  build:
+    needs: draft
+    # A run by hand has no draft job; a tag's builds wait for the draft.
+    if: ${{ !cancelled() && (needs.draft.result == 'success' || needs.draft.result == 'skipped') }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # One runner per release target. release.json names the targets and
+        # their assets; the Zip step refuses a runner whose bundle is not one
+        # of them, and publish waits for all of them.
+        runner: [macos-14, macos-15-intel, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      TRANSFER_STAGE_DATA_ROOT: ${{ github.workspace }}/smoke-runs
+      STATION_NO_UPDATE_CHECK: "1"
+      # A tag's run has no inputs: it freezes the `stable` branch.
+      STABLE_REF: ${{ inputs.stable_ref || 'stable' }}
+      # station.spec refuses to assemble a bundle without tools/ and stable/.
+      STATION_REQUIRE_FULL: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Check out the stable app (STABLE_REF) into build/stable-src
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ env.STABLE_REF }}
+          path: build/stable-src
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.13"
+      - name: Linux libraries (SDL, libusb for the Teensy loader)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 \
+            libxkbcommon-x11-0 libfontconfig1 libdbus-1-3 libusb-dev
+      - name: A C compiler for the Teensy loader (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if ! command -v gcc > /dev/null; then
+            choco install mingw -y --no-progress
+            echo "C:\ProgramData\mingw64\mingw64\bin" >> "$GITHUB_PATH"
+          fi
+      - name: Version (a tag's run is the tag; a run by hand, this tree's version)
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then TAG="$REF_NAME"; else TAG="$(python packaging/release.py version)"; fi
+          echo "STATION_TAG=$TAG" >> "$GITHUB_ENV"
+          python packaging/release.py pyproject "$TAG"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install -r packaging/requirements-stable.txt
+      - name: Tools (arduino-cli, cores, libraries, teensy_loader_cli; the only network step)
+        run: |
+          python packaging/tools.py fetch build/tools
+          python packaging/tools.py check build/tools
+      - name: Build the stable app (build/stable-src -> dist/station-stable)
+        run: |
+          export STATION_STABLE_REF="$STABLE_REF"
+          export STATION_STABLE_SHA="$(git -C build/stable-src rev-parse HEAD)"
+          python -m PyInstaller --noconfirm --clean packaging/stable.spec
+      - name: Build the station (assembles firmware/ tools/ stable/; stamps VERSION and release.json)
+        run: python -m PyInstaller --noconfirm --clean packaging/station.spec
+      - name: Smoke (macOS)
+        if: runner.os == 'macOS'
+        run: packaging/smoke.sh dist/station
+      - name: Smoke (Linux)
+        if: runner.os == 'Linux'
+        run: packaging/smoke.sh dist/station
+      - name: Smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/smoke.ps1 -BundleDir dist/station
+      - name: Zip (under the name release.json gives this machine)
+        id: zip
+        run: |
+          NAME="$(python packaging/release.py asset-name)"
+          if ! python packaging/release.py assets | grep -qxF "$NAME"; then
+            echo "This runner's bundle would be $NAME, which is not one of release.json's targets:"
+            python packaging/release.py assets
+            exit 1
+          fi
+          python packaging/release.py zip dist/station "$NAME"
+          echo "asset=$NAME" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ${{ steps.zip.outputs.asset }}
+          path: ${{ steps.zip.outputs.asset }}
+          if-no-files-found: error
+      - name: Upload to the draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          ASSET: ${{ steps.zip.outputs.asset }}
+        run: gh release upload "$TAG" "$ASSET" --clobber
+
+  publish:
+    needs: [draft, build]
+    # Not skipped when a build fails: this job is what says so.
+    if: ${{ !cancelled() && github.ref_type == 'tag' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Every build and every asset, then SHA256SUMS and publish as latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          DRAFT: ${{ needs.draft.result }}
+          BUILDS: ${{ needs.build.result }}
+        run: |
+          unpublished() {
+            {
+              echo "## $TAG was NOT published"
+              echo
+              echo "$1"
+              echo
+              echo "The release stays a draft, which no installed station sees."
+              echo "Fix the cause and re-run the failed jobs: the assets already on the draft stay."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          [ "$DRAFT" = success ] || unpublished "The draft job ended '$DRAFT'."
+          [ "$BUILDS" = success ] || unpublished "A build ended '$BUILDS' (open the build jobs above for which one)."
+          python3 packaging/release.py assets > expected.txt
+          gh release view "$TAG" --json assets --jq '.assets[].name' > present.txt
+          missing="$(grep -vxF -f present.txt expected.txt || true)"
+          [ -z "$missing" ] || unpublished "Missing from the draft: $(echo $missing)"
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          mkdir assets
+          while read -r name; do
+            gh release download "$TAG" --pattern "$name" --dir assets
+          done < expected.txt
+          (cd assets && sha256sum station-*.zip) > SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
+          python3 packaging/release.py notes "$TAG" > notes.md
+          gh release edit "$TAG" --notes-file notes.md --draft=false --latest
+          {
+            echo "## $TAG published"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

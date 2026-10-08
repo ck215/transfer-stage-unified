@@ -1,0 +1,651 @@
+{
+  "_meta": {
+    "description": "SMC100 rotator controller wire frames",
+    "captured_from": "src/ (the old code), driven in simulator mode",
+    "regenerate_with": "python3 tests/station/golden/capture.py",
+    "handshake_frames_filtered": 0,
+    "handshake_note": "Transport ping traffic (b's\\n') is filtered out of every frame list and counted here. Simulator mode never runs the handshake at all, so this is 0; a non-zero value means a capture was taken against a live port and the pings were removed from the golden bytes.",
+    "scenario_count": 10
+  },
+  "scenarios": [
+    {
+      "id": "smc100.home",
+      "device": "SMC100",
+      "description": "Home and wait. OR, then TS? until the controller reports a target state. The scripted reply is '32' (READY from HOMING), which is a target state, so no follow-up absolute move is issued. Note that `sendcmd` writes the command and the CRLF as two separate calls - the wire sees one frame either way, and the split is preserved so a reimplementation cannot quietly change the write granularity.",
+      "prelude": [
+        "SMC100(1, port)",
+        "<scripted reply: 1TS000032>"
+      ],
+      "old_calls": [
+        "smc.home(waitStop=True)"
+      ],
+      "new_calls": [
+        "rotator.run(\"home\")  -> SMC100.home()"
+      ],
+      "inputs": {
+        "waitStop": true,
+        "scripted_replies": [
+          "1TS000032"
+        ]
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "314f52",
+          "length": 3,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1OR",
+            "controller_id": "1",
+            "command": "OR",
+            "argument": ""
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "3154533f",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1TS?",
+            "controller_id": "1",
+            "command": "TS",
+            "argument": "?"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.home_no_wait",
+      "device": "SMC100",
+      "description": "Home without waiting: OR followed immediately by an absolute move to 0, so the stage ends at the origin whether or not it was already homed.",
+      "prelude": [
+        "SMC100(1, port)"
+      ],
+      "old_calls": [
+        "smc.home(waitStop=False)"
+      ],
+      "new_calls": [
+        "SMC100.home(waitStop=False)"
+      ],
+      "inputs": {
+        "waitStop": false
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "314f52",
+          "length": 3,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1OR",
+            "controller_id": "1",
+            "command": "OR",
+            "argument": ""
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "315041302e30",
+          "length": 6,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1PA0.0",
+            "controller_id": "1",
+            "command": "PA",
+            "argument": "0.0"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.move_absolute",
+      "device": "SMC100",
+      "description": "Absolute move to 45.0 deg. PA carries the position as Python's own str() of the float, which is what reaches the controller.",
+      "prelude": [
+        "SMC100(1, port)"
+      ],
+      "old_calls": [
+        "smc.move_absolute_deg(45.0, waitStop=False)"
+      ],
+      "new_calls": [
+        "rotator.run(\"move_to\", inputs={\"target\": 45.0}) -> SMC100.move_absolute_deg"
+      ],
+      "inputs": {
+        "position_deg": 45.0,
+        "waitStop": false
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "31504134352e30",
+          "length": 7,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1PA45.0",
+            "controller_id": "1",
+            "command": "PA",
+            "argument": "45.0"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.move_relative_positive",
+      "device": "SMC100",
+      "description": "Relative move +1.5 deg. PR is on the no-retry list, so it is never resent automatically - a retried relative move is a second move.",
+      "prelude": [
+        "SMC100(1, port)"
+      ],
+      "old_calls": [
+        "smc.move_relative_deg(1.5, waitStop=False)"
+      ],
+      "new_calls": [
+        "rotator.run(\"move_by\", inputs={\"step\": 1.5}) -> SMC100.move_relative_deg"
+      ],
+      "inputs": {
+        "dist_deg": 1.5,
+        "waitStop": false
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "315052312e35",
+          "length": 6,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1PR1.5",
+            "controller_id": "1",
+            "command": "PR",
+            "argument": "1.5"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.move_relative_negative",
+      "device": "SMC100",
+      "description": "Relative move -1.5 deg. The old model had two commands (move_relative_positive / move_relative_negative); the new one has one signed step, and this is the negative half of it.",
+      "prelude": [
+        "SMC100(1, port)"
+      ],
+      "old_calls": [
+        "smc.move_relative_deg(-1.5, waitStop=False)"
+      ],
+      "new_calls": [
+        "rotator.run(\"move_by\", inputs={\"step\": -1.5})"
+      ],
+      "inputs": {
+        "dist_deg": -1.5,
+        "waitStop": false
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "3150522d312e35",
+          "length": 7,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1PR-1.5",
+            "controller_id": "1",
+            "command": "PR",
+            "argument": "-1.5"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.stop",
+      "device": "SMC100",
+      "description": "ST on the ordinary path, through `sendcmd` and its lock.",
+      "prelude": [
+        "SMC100(1, port)"
+      ],
+      "old_calls": [
+        "smc.stop()"
+      ],
+      "new_calls": [
+        "rotator.halt() -> SMC100.stop()"
+      ],
+      "inputs": {
+        "priority": false
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "315354",
+          "length": 3,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1ST",
+            "controller_id": "1",
+            "command": "ST",
+            "argument": ""
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.stop_priority",
+      "device": "SMC100",
+      "description": "ST on the priority path, which bypasses `sendcmd` entirely and writes through a bounded lock acquisition (ROTATOR-8). **The bytes are identical to the ordinary path** - that is the point: a stop that forces its way past a held lock must not be a different command.",
+      "prelude": [
+        "SMC100(1, port)"
+      ],
+      "old_calls": [
+        "smc.stop(priority=True)"
+      ],
+      "new_calls": [
+        "rotator._halt_hardware() -> SMC100.stop(priority=True)"
+      ],
+      "inputs": {
+        "priority": true
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "315354",
+          "length": 3,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1ST",
+            "controller_id": "1",
+            "command": "ST",
+            "argument": ""
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.status",
+      "device": "SMC100",
+      "description": "TS? - the status query the rotator's sample loop issues. Four hex error digits then a two-character state code; '33' is READY from MOVING.",
+      "prelude": [
+        "SMC100(1, port)",
+        "<scripted reply: 1TS000033>"
+      ],
+      "old_calls": [
+        "smc.get_status(silent=True)"
+      ],
+      "new_calls": [
+        "rotator._poll() -> SMC100.get_status(silent=True)"
+      ],
+      "inputs": {
+        "scripted_replies": [
+          "1TS000033"
+        ]
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "3154533f",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1TS?",
+            "controller_id": "1",
+            "command": "TS",
+            "argument": "?"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.position",
+      "device": "SMC100",
+      "description": "TP? - the position query, issued by the same sample loop as the status query and captured with it because the pair is what the controller actually sees at 1 Hz.",
+      "prelude": [
+        "SMC100(1, port)",
+        "<scripted reply: 1TP12.345>"
+      ],
+      "old_calls": [
+        "smc.get_position_deg()"
+      ],
+      "new_calls": [
+        "rotator._poll() -> SMC100.get_position_deg()"
+      ],
+      "inputs": {
+        "scripted_replies": [
+          "1TP12.345"
+        ]
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "3154503f",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1TP?",
+            "controller_id": "1",
+            "command": "TP",
+            "argument": "?"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    },
+    {
+      "id": "smc100.reset_and_configure",
+      "device": "SMC100",
+      "description": "Full reset and reconfigure: RS twice, wait for NOT REFERENCED from reset, read the stage id, enter config mode (PW1), load stage parameters (ZX1), enable the stage id check (ZX2), leave config mode (PW0), wait for NOT REFERENCED from configuration. Ten commands in a fixed order; the scripted replies put the controller in the expected state at each wait so exactly one TS? is needed per wait.",
+      "prelude": [
+        "SMC100(1, port)",
+        "<scripted replies: ['1TS00000A', '1ID TRB25CC', '1TS000014', '1TS00000C']>"
+      ],
+      "old_calls": [
+        "smc.reset_and_configure()"
+      ],
+      "new_calls": [
+        "rotator.run(\"configure\") -> SMC100.reset_and_configure()"
+      ],
+      "inputs": {
+        "scripted_replies": [
+          "1TS00000A",
+          "1ID TRB25CC",
+          "1TS000014",
+          "1TS00000C"
+        ]
+      },
+      "handshake_frames_filtered": 0,
+      "frames": [
+        {
+          "hex": "315253",
+          "length": 3,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1RS",
+            "controller_id": "1",
+            "command": "RS",
+            "argument": ""
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "315253",
+          "length": 3,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1RS",
+            "controller_id": "1",
+            "command": "RS",
+            "argument": ""
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "3154533f",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1TS?",
+            "controller_id": "1",
+            "command": "TS",
+            "argument": "?"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "3149443f",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1ID?",
+            "controller_id": "1",
+            "command": "ID",
+            "argument": "?"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "31505731",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1PW1",
+            "controller_id": "1",
+            "command": "PW",
+            "argument": "1"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "3154533f",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1TS?",
+            "controller_id": "1",
+            "command": "TS",
+            "argument": "?"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "315a5831",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1ZX1",
+            "controller_id": "1",
+            "command": "ZX",
+            "argument": "1"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "315a5832",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1ZX2",
+            "controller_id": "1",
+            "command": "ZX",
+            "argument": "2"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "31505730",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1PW0",
+            "controller_id": "1",
+            "command": "PW",
+            "argument": "0"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        },
+        {
+          "hex": "3154533f",
+          "length": 4,
+          "decode": {
+            "kind": "command",
+            "format": "<ID><command><argument>, CRLF sent as a separate write",
+            "text": "1TS?",
+            "controller_id": "1",
+            "command": "TS",
+            "argument": "?"
+          }
+        },
+        {
+          "hex": "0d0a",
+          "length": 2,
+          "decode": {
+            "kind": "terminator",
+            "text": "CRLF"
+          }
+        }
+      ]
+    }
+  ]
+}

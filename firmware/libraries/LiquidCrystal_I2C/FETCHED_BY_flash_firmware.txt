@@ -1,0 +1,4 @@
+LiquidCrystal_I2C
+source: https://github.com/fmalpartida/New-LiquidCrystal
+pinned ref: ad26c7ab0e3b85903021595180ae0b68e9c2dc23
+Fetched by firmware/flash_firmware.py; delete this directory to force a re-download.

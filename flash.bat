@@ -1,1 +1,0 @@
-python firmware/flash_firmware.py %*

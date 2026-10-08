@@ -2,6 +2,45 @@
 
 This document outlines the standard procedures for system initialization, controller configuration, and software operation of the transfer stage devices.
 
+## Install
+
+The station ships as one folder per operating system, with one launcher in
+it: `station-web` (`.exe` on Windows). The Web view is the station's only
+frontend; the Tk and Qt windows were retired on 2026-10-07.
+
+1. Download the zip for your computer from the repository's latest GitHub
+   Release: `station-windows-x86_64.zip`, `station-macos-arm64.zip` (Apple
+   silicon), `station-macos-x86_64.zip` (Intel Mac) or
+   `station-linux-x86_64.zip`.
+2. Unzip it where it will stay (for example your home folder). Keep the
+   whole `station` folder together; do not move a launcher out of it.
+3. Run the launcher.
+   - macOS: the bundle is not signed yet, so the first run is blocked;
+     right-click the launcher and choose **Open**.
+   - Windows: SmartScreen may warn; choose **More info**, then **Run anyway**.
+
+**Updates.** The Setup panel's Update row checks GitHub at startup. The
+repository is private, so only a machine already signed in to GitHub can
+update: sign in once with `gh auth login` (GitHub CLI), or clone or pull the
+repository once with git so its credential helper remembers you. A machine
+that is not signed in says so on the Update row and runs as it is. When a
+new version is ready, press **Update now**, then **Restart**. The previous
+version is kept beside the new one as `station.previous`.
+
+Developers run from a source checkout instead (`run.sh` / `run.bat`, or
+`pip install -e .`, which installs the one entry point `station-web`); a checkout updates itself by fast-forwarding git.
+Until the first installed release (after v1.0.0) the lab runs from a checkout:
+a fresh `git clone --branch main <url>`, `pip install -e .`, `./run.sh` (the repository lives at
+`~/GitHub/transfer-stage-unified/`; on the lead's Mac the checkout is still named `mvc-refactor/`
+until it is re-cloned; `dev/swap_branch.sh legacy` makes `../legacy-app` for the original app). The branches are explained in
+`packaging/README.md`; the original app is the `legacy` branch.
+
+**Which version is this?** `station-web --version` (or `python src/app.py --version`)
+prints it, and so does the Setup page's Station row. A version is a git tag
+(`v1.3.0`); a checkout past a tag says `1.3.0.post3+gabc1234`, one before the first
+release `0.0.0+abc1234`. What changed for the bench, release by release, is in
+`CHANGELOG.md`.
+
 ## System Initialization and Operating System Selection
 
 Upon powering on the PC, a *GRUB bootloader* menu will appear to select between Windows and Linux Mint.
@@ -36,9 +75,20 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
 
 ### Software Initialization
 
-1. Double-click the **Transfer Stage Launcher** icon on the desktop.
-2. A configuration GUI will open and automatically populate the available *COM ports*.
+1. Double-click the **Transfer Stage Launcher** icon on the desktop (on the Linux station PC `dev/desktop_shortcuts.sh` rewrites that icon and **Transfer Stage Classic** if either goes missing or stops working). To start it from a terminal instead, run `./run.sh` in the repository folder on macOS or Linux, or `run.bat` on Windows; the Web dashboard opens (`--web` is the default and only view; `--tk` and `--qt` print a retired message and exit with status 2), and `--help` lists the other flags. The launcher finds the project's virtual environment (a `.venv` in the folder, or the one already active) and prints nothing unless it cannot. A desktop shortcut that still names `run_macos.sh`, `run_swap_macos.sh` or `run_swap.sh` must be pointed at `run.sh`; those files are gone.
+2. The Setup page opens, scans the *COM ports* by itself and ticks every board that answers. Its first rows say what this station runs:
+   - **Update**: whether GitHub has something newer, and **Update now** to take it. From a terminal, `./update.sh` (`update.bat` on Windows) does the same with the station closed: it shows what is coming, fast-forwards, and reinstalls dependencies only when they changed; `./update.sh --check` only reports. Both refuse while the station runs or when the checkout has local edits, so nothing is ever overwritten.
+   - **Firmware**: **Boards** says whether each board still runs the sketch this checkout carries (`all current`, `Stepper Probe out of date`, `never flashed here`, or that arduino-cli is missing and the board must be flashed by hand). When the check at startup finds a board to flash, a dialog asks once ("Stepper Probe out of date. Flash it now?"): **Flash now** flashes it unattended, as the old launcher did, and **Later** leaves it to the row's **Flash out-of-date boards**, which flashes exactly those, after asking, with every model closed. **Flashing** shows the flash tool's progress while it runs, and Launch waits for it. Nothing is ever flashed without one of those two keys. Launching a board whose firmware is out of date asks once first ("Stepper Probe's firmware is out of date. Launch anyway?"), since that can be deliberate.
+   - **Address** on the Devices row is where the dashboard is served.
 3. Use the drop-down menus on the right to assign the Xbox controller to each device.
+   Setup's **Account** section signs you in with your email and password (**Sign in**),
+   makes an account (**Create account…**), or **Open as guest**; a guest runs with the
+   station's defaults and the records you make carry the word "guest". A signed-in
+   account keeps its own defaults (**Remember current values as my defaults**) and
+   stamps its email on the trials and samples it records. (Set `STATION_PROFILES=0`
+   to hide the section.) The **Tutorials** button on the rail walks through "Your first
+   trial" and "Register a sample" by pointing at the real controls; they run on a
+   simulated station only.
 
 > ![Configuration GUI](./images/GUI_chose_ports_controllers.png)
 > *Figure 4: Configuration GUI showing the COM port drop-down menus.*
@@ -64,12 +114,12 @@ To begin using the system in any operational mode, the **Enable System** button 
 This mode is used to move the probe by fixed, precise step amounts. Ensure **Enable System** has been clicked prior to attempting stepping.
 
 - **Step Sizes**: This applies a multiplier to the input. The minimum verified step size for each system is as follows:
-  > - **Stepper**: `4` (approximately 1.25 micrometers). For example, with a step size of 5, an input of 100 steps will move the probe 500 counts. (A full step of 16 *microsteps* corresponds to exactly 5 microns).
+  > - **Stepper**: `4` (approximately 2.5 micrometers). For example, with a step size of 5, an input of 100 steps will move the probe 500 counts. (The firmware runs 8 *microsteps* per full step, and a full step is 5 microns, so one count is 0.625 microns.)
   > - **DC**: UNVERIFIED
   > - **Chuck**: UNVERIFIED
 - **Relative Step Counts**: Enter the desired X, Y, and Z step increments. The probe will move to the resulting coordinate. 
   > **Note**: Diagonal (multi-axis) movement is unverified. Restrict movement to a single axis at a time.
-- **Full Speed**: Sets the constant speed of the probe during movement.
+- **Autonomous Speed**: Sets the constant speed of the probe during movement, as a percent of the device's ceiling (stepper 3200 steps/s, chuck 600 steps/s); the steps per second it means appear in small type under the dial.
 - **Execution**: Click **Start Stepping** to send the command. The probe will move first in the x, then y, then z directions in successive order. If a field is left at zero, no steps will occur in that direction. 
 
 > **Important**: Once a command is sent, it cannot be updated. To correct a mistake, click **FULL STOP**, wait for the probe to stop completely, and send a new command.
@@ -79,7 +129,7 @@ This mode is used to move the probe by fixed, precise step amounts. Ensure **Ena
 Manual mode allows for real-time movement of the stages using the Xbox controller or Thrustmaster Joystick. Ensure **Enable System** has been clicked prior to attempting joystick inputs.
 
 - **Input Controls**: Use the analog thumbsticks to move along the X (left thumbstick) and Y (right thumbstick) axes. Use the analog triggers to move along the Z axis; left trigger to raise, right trigger to lower the probe. The D-pad and bummpers an also be used for discrete directional inputs in the x/y and z directions, respectively.
-- **Speed Limits**: The maximum speed during manual operation is determined by the 'Manual Mode Max Speed' field. For Stepper and Chuck controllers, this is set in Microsteps/Sec. For DC controllers, this sets the maximum *PWM* signal on a scale from 30 to 255. Lower values may be possible, but are not officially supported on the DC probe and may result in stalling.
+- **Speed Limits**: The maximum speed during manual operation is determined by the **Manual Speed** dial. For Stepper and Chuck controllers, this is a percent of the device's ceiling (stepper 3200 steps/s, chuck 600 steps/s), with the steps per second shown beneath. For DC controllers, this sets the maximum *PWM* signal on a scale from 30 to 255. Lower values may be possible, but are not officially supported on the DC probe and may result in stalling.
 - **Stopping**: To halt continuous movement from the controller, click the **Full Stop** button. This will stop the system from reading controller inputs and halt the motors safely.
 
 ## Temperature Controller
@@ -98,7 +148,7 @@ The Temperature Controller module provides a dedicated interface for *PID* therm
   - **Temperature Offset**: A calibration value used to correct any known discrepancies between the measured temperature and the actual physical temperature.
   Click **Enter** to send these parameters to the microcontroller and begin thermal regulation.
 - **Data Display**: The interface continuously reads the *serial connection* data to update the 'Current Temperature' display. It also records a rolling history of the most recent 200 data points for time, temperature, and setpoint.
-- **Closing the Module**: Click **Quit** to safely stop data polling and close the *serial connection* before the window exits.
+- **Closing the Module**: Close the module's tab to safely stop data polling and close the *serial connection*. Reopening it starts the module fresh.
 
 ## Troubleshooting Steps
 
@@ -169,54 +219,3 @@ For persistent issues, contact Carter or Ian via the lab Slack.
 - **PWM (Pulse Width Modulation)**: A method of controlling the amount of power sent to a motor by rapidly turning the power on and off. A higher PWM threshold means the motor can receive more average power and spin faster.
 - **Serial connection**: A type of communication where data is sent one bit at a time over a wire. This is how the PC talks to the Arduino Mega.
 - **USB-A to USB-B cable**: The standard, squarish USB cable (often used for printers) connecting the PC (USB-A end) to the Arduino Mega (USB-B end).
-
-## Flashing firmware
-
-`firmware/flash_firmware.py` detects each connected board over the app's own
-`DEV:` handshake and flashes it with the sketch in this repo. Prerequisites:
-[arduino-cli](https://arduino.github.io/arduino-cli/latest/installation/) and,
-for the Teensy-based Temperature Controller,
-[teensy_loader_cli](https://www.pjrc.com/teensy/loader_cli.html), both on PATH.
-Run `python firmware/flash_firmware.py --install-deps` once to install the
-`arduino:avr` and `teensy:avr` cores plus AccelStepper, TMCStepper and the
-Adafruit MAX6675 library. One library cannot be installed that way: the
-Temperature Controller needs the **NewLiquidCrystal** fork of
-`LiquidCrystal_I2C` (the one with the 10-argument constructor), which is not in
-the arduino-cli index — install it by hand from
-<https://github.com/fmalpartida/New-LiquidCrystal>. `--install-deps` prints a
-warning naming it.
-
-The three commands:
-
-```
-python firmware/flash_firmware.py --list                       # detect only
-python firmware/flash_firmware.py                              # detect, confirm each, flash
-python firmware/flash_firmware.py --port "Stepper Probe=COM7"  # assign a port by hand
-```
-
-Use `--port` for a blank board that cannot answer the handshake yet, `--dry-run`
-to print the commands without running them, and `--yes` to skip the per-board
-confirmation.
-
-**Why you must flash these sketches to run this branch's app.** The sketches
-here speak one specific protocol: enable/disable is a `'t'` toggle, and manual
-control is a 28-byte binary packet in `struct` format `<BBfffhhhhhhh`, which is
-exactly what `src/serialDrive.py` sends. A board carrying newer or otherwise
-different firmware will enumerate and answer the identity query but will not
-drive correctly from this branch. Flashing with this tool is how you restore
-compatibility; the script prints the protocol before it touches a board so you
-know what you are putting on it.
-
-## Running the tests
-
-```
-python tests/run_isolated.py            # every tests/test_*.py in its own process
-python tests/run_isolated.py serial     # only files whose name contains "serial"
-```
-
-Nine test files replace `serial`, `pygame` or `numpy` in `sys.modules` at
-import time, so a single shared `pytest tests` process lets the first file
-collected decide what those names mean for every file after it — six tests
-that pass on their own fail that way. Until those preambles become fixtures,
-the per-file runner is the honest run; it also times out any test that blocks
-on a Tk dialog instead of stalling forever.

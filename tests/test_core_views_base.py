@@ -1,0 +1,706 @@
+"""`views.base` — the view logic written once for Tk and Qt.
+
+No Tk, no Qt, no window: the toolkit half is a recording double, which is the
+point of the split. Ports the intent of `tests/ui/test_edge_mvc_ui.py`,
+`tests/ui/test_pyside4_discard_unsaved.py` (a refresh must not stamp on what
+the operator is typing), `tests/pyside/test_pyside21_error_popup_queued.py`
+and `tests/core/test_tkinter_teardown.py` (no modal after the close path
+starts — it hung the Qt suite for three sessions).
+"""
+import pytest
+
+import schema as sch
+from controller.controller import Controller
+from events import events
+from views.base import Dashboard, PanelView, hardware_links
+
+from test_core_fakes import (EventRecorder, FakeDashboard, FakeModel,
+                             FakePanelView, FakeSetupPanel)
+
+pytestmark = pytest.mark.schema
+
+
+@pytest.fixture
+def station():
+    controller = Controller()
+    model = FakeModel()
+    controller.add("probe", model)
+    yield controller, model
+    model.release()
+    controller.close()
+
+
+@pytest.fixture
+def view(station):
+    controller, model = station
+    built = FakePanelView(controller, "probe")
+    built._build()
+    return built
+
+
+def _element(view, text):
+    return next(e for e in view._elements if e.get("text") == text)
+
+
+# -- construction: feature parity, enforced ---------------------------------
+
+def test_a_view_that_cannot_render_an_element_type_cannot_be_built(station):
+    controller, _ = station
+
+    class Partial(FakePanelView):
+        _make_plot = None            # a toolkit that forgot one element type
+
+    with pytest.raises(TypeError, match="cannot render"):
+        Partial(controller, "probe")
+
+
+def test_the_error_names_every_missing_renderer(station):
+    controller, _ = station
+
+    class Partial(FakePanelView):
+        _make_plot = None
+        _make_image = "not callable either"
+
+    with pytest.raises(TypeError) as raised:
+        Partial(controller, "probe")
+    assert "plot" in str(raised.value) and "image" in str(raised.value)
+
+
+def test_a_complete_view_builds_every_element_the_schema_declares(view):
+    declared = [e["type"] for e in sch.elements(view._schema())]
+    assert [kind for kind, _ in view.built] == declared
+    assert view.sections == ["Motion", "Modes", "Safety"]
+    assert view.theme_calls == 1
+
+
+def test_a_view_reaches_the_backend_only_through_schema_state_run(station):
+    controller, _ = station
+    built = FakePanelView(controller, "probe")
+    assert built.controller is controller
+    assert set(vars(PanelView)) >= {"_schema", "_state", "_call", "_options"}
+
+
+def test_a_panel_the_controller_does_not_own_is_driven_directly(station):
+    """Setup is not a Model, so a PanelView takes it explicitly."""
+    controller, _ = station
+    panel = FakeSetupPanel()
+    built = FakePanelView(controller, "setup", panel=panel)
+    built._build()
+    assert built.sections == ["Setup"]
+    assert built._call("build").is_ok
+
+
+# -- a command carries its declared inputs plus every dirty entry (MOD-6) ---
+
+def test_mod6_a_declared_input_travels_even_when_clean(view, station):
+    """(a) "Move" declares speed and steps: they go with it and are
+    validated as a set (D-5), typed or not."""
+    _, model = station
+    view.entry_text.update({"speed": "42.5", "steps": "9"})
+    assert not view.dirty_entries
+    result = view._run(_element(view, "Move"))
+    assert result.is_ok
+    assert (model.speed, model.steps) == (42.5, 9)
+
+
+def test_mod6_an_undeclared_clean_entry_does_not_travel(view, station):
+    """(b) CON-8: a clean field the command does not use stays home, so a
+    stale or bad box elsewhere cannot refuse an unrelated command."""
+    _, model = station
+    view.entry_text["note"] = "stale words"
+    gathered = view._gather_inputs(_element(view, "Move"))
+    assert set(gathered) == {"speed", "steps"}
+    view._run(_element(view, "Move"))
+    assert model.note != "stale words"
+    assert view._gather_inputs(_element(view, "Boom")) == {}
+
+
+def test_mod6_an_undeclared_dirty_entry_travels(view, station):
+    """(c) Nothing the operator just typed is lost: an edited, uncommitted
+    box goes with any command, declared or not."""
+    _, model = station
+    view.entry_text["note"] = "hello"
+    view.dirty_entries.add("note")
+    assert view._gather_inputs(_element(view, "Boom")) == {"note": "hello"}
+    result = view._run(_element(view, "Move"))
+    assert result.is_ok
+    assert model.note == "hello"
+
+
+def test_a_read_only_element_is_not_sent_as_an_input(view):
+    view.dirty_entries.update({"note", "mode", "is_auto"})
+    gathered = view._gather_inputs(_element(view, "Move"))
+    assert set(gathered) == {"speed", "steps", "note"}
+    assert "mode" not in gathered and "is_auto" not in gathered
+
+
+def test_a_bad_entry_refuses_the_command_and_shows_why(view, station):
+    _, model = station
+    view.entry_text["speed"] = "banana"
+    result = view._run(_element(view, "Move"))
+    assert result.is_refused
+    assert view.refusals[-1] and "Speed" in view.refusals[-1]
+    assert model.moved == []
+
+
+def test_a_successful_command_clears_the_status_line(view):
+    view._run(_element(view, "Move"))
+    assert view.refusals[-1] == ""
+
+
+def test_a_failed_command_shows_no_status_line_because_it_is_already_a_popup(view):
+    before = list(view.refusals)
+    result = view._run(_element(view, "Boom"))
+    assert result.is_failed
+    assert view.refusals == before
+
+
+# -- confirmation round trip ------------------------------------------------
+
+def test_a_confirmed_command_is_re_run_with_args_plus_true(view, station):
+    _, model = station
+    view.confirm_answer = True
+    result = view._run(_element(view, "Ask"))
+    assert view.prompts == ["Really move?"]
+    assert result.is_ok
+    assert model.moved == [("confirmed", "north")]
+
+
+def test_a_declined_confirmation_runs_nothing(view, station):
+    _, model = station
+    view.confirm_answer = False
+    result = view._run(_element(view, "Ask"))
+    assert result.needs_confirm
+    assert model.moved == []
+
+
+def test_the_confirmation_carries_its_own_inputs_not_the_widgets(view, station):
+    _, model = station
+    view.confirm_answer = True
+    view._run(_element(view, "Ask"))
+    assert model.speed == 12.0, (
+        "the re-run must use the inputs the model attached to the question")
+
+
+# -- toggles ----------------------------------------------------------------
+
+def test_a_toggle_sends_on_args_when_off_and_off_args_when_on(view, station):
+    _, model = station
+    auto = _element(view, "Auto")
+    view._run_toggle(auto)
+    assert model.mode == "auto"
+    view._run_toggle(auto)
+    assert model.mode == "idle"
+
+
+def test_a_toggle_reads_its_state_from_the_model_not_from_the_widget(view, station):
+    _, model = station
+    model.mode = "auto"
+    view._run_toggle(_element(view, "Auto"))
+    assert model.mode == "idle"
+
+
+def test_the_full_stop_toggle_latches_through_the_view(view, station):
+    _, model = station
+    view._run_toggle(_element(view, "Stop"))
+    assert model.is_estopped
+
+
+# -- refresh ----------------------------------------------------------------
+
+def test_refresh_does_not_overwrite_an_entry_the_operator_is_typing_in(view, station):
+    """PYSIDE-4 / the discard-unsaved family: a 100 ms redraw that stamps on a
+    half-typed number is how an operator loses a setpoint."""
+    _, model = station
+    view.entry_text["speed"] = "37"
+    view.dirty_entries.add("speed")
+    model.speed = 400.0
+    view._refresh()
+    assert view.entry_text["speed"] == "37"
+
+
+def test_refresh_updates_an_entry_nobody_is_editing(view, station):
+    _, model = station
+    model.speed = 400.0
+    view._refresh()
+    assert view.entry_text["speed"] == "400.0"
+
+
+def test_refresh_renders_readonly_and_dropdown_values(view, station):
+    _, model = station
+    model.mode = "auto"
+    model.port_name = "COM2"
+    view._refresh()
+    assert view.texts["mode"] == "auto"
+    assert view.texts["port_name"] == "COM2"
+
+
+def test_an_unset_dropdown_shows_nothing_not_the_word_none(view):
+    view._refresh()
+    assert view.texts["port_name"] == ""
+
+
+def test_refresh_lights_toggles_and_indicators_from_state(view, station):
+    _, model = station
+    model.estop()
+    model._fault("coil open")
+    view._refresh()
+    assert view.on_states["is_estopped"] is True
+    assert view.on_states["is_faulted"] is True
+    assert view.on_states["is_auto"] is False
+
+
+def test_refresh_pulls_plot_image_and_log_data_through_run(view, station):
+    _, model = station
+    view._refresh()
+    assert view.data["Trace"] == [1, 2, 3]
+    assert view.data["Log"] == ["one line"]
+    assert model.data_reads >= 1
+
+
+def test_refresh_gates_every_element_including_the_entries(view, station):
+    """"gating is part of every refresh, entries included" — the Web
+    `set_attr` hole was a gate that lived in one renderer only."""
+    _, model = station
+    model.mode = "running"
+    view._refresh()
+    assert view.enabled["speed"] is False
+    assert view.enabled["Move"] is False
+    assert view.enabled["note"] is True
+    assert view.enabled["is_estopped"] is True, (
+        "FULL STOP must never be greyed out")
+
+
+def test_gating_reopens_when_the_mode_leaves(view, station):
+    _, model = station
+    model.mode = "running"
+    view._refresh()
+    model.mode = "idle"
+    view._refresh()
+    assert view.enabled["speed"] is True and view.enabled["Move"] is True
+
+
+def test_sync_gates_is_the_same_pass_as_refresh():
+    assert PanelView._sync_gates is PanelView._refresh
+
+
+def test_a_stale_model_is_flagged_so_the_operator_can_see_it(view, station):
+    _, model = station
+    view._refresh()
+    assert view.stale is False
+    model._updated_at -= 10
+    view._refresh()
+    assert view.stale is True
+
+
+def test_running_a_command_refreshes_afterwards(view, station):
+    _, model = station
+    view._run(_element(view, "Move"))
+    assert view.texts["mode"] == "idle"
+
+
+def test_close_drops_the_elements_so_a_late_refresh_draws_nothing(view):
+    view.close()
+    assert view._elements == []
+    view._refresh()
+
+
+# -- Dashboard: the popup policy --------------------------------------------
+
+def test_open_subscribes_to_both_event_sources(station):
+    controller, _ = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    try:
+        assert dashboard._on_event in events._subscribers
+        assert dashboard._on_models_changed in controller._subscribers
+    finally:
+        events.unsubscribe(dashboard._on_event)
+        controller.unsubscribe(dashboard._on_models_changed)
+
+
+def test_an_acknowledged_event_becomes_a_popup(station):
+    controller, _ = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    try:
+        events.clear()
+        events.error("Fault", "coil open", source="Probe")
+        assert len(dashboard.popups) == 1
+        assert len(dashboard.shown) == 1
+    finally:
+        events.unsubscribe(dashboard._on_event)
+        controller.unsubscribe(dashboard._on_models_changed)
+
+
+def test_a_quiet_event_reaches_the_log_panel_and_raises_no_popup(station):
+    controller, _ = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    try:
+        events.clear()
+        events.info("Connected", "COM3")
+        events.warn("Slow", "poll late")
+        assert len(dashboard.shown) == 2 and dashboard.popups == []
+    finally:
+        events.unsubscribe(dashboard._on_event)
+        controller.unsubscribe(dashboard._on_models_changed)
+
+
+def test_no_popup_reaches_the_screen_once_close_has_begun(station):
+    """The modal that hung the Qt suite: an event lands, `_marshal` queues it
+    on the UI thread, and by the time it runs the window is tearing down."""
+    controller, _ = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    dashboard.defer = True
+    events.clear()
+    events.error("Fault", "coil open", source="Probe")
+    assert dashboard.popups == [], "not marshalled yet"
+
+    dashboard.close()
+    dashboard.flush()
+    assert dashboard.popups == [], "a modal opened from inside the close path"
+
+
+def test_close_unsubscribes_so_a_later_event_reaches_nothing(station):
+    controller, _ = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    dashboard.close()
+    events.clear()
+    events.error("Fault", "coil open")
+    assert dashboard.shown == [] and dashboard.popups == []
+    assert dashboard._on_event not in events._subscribers
+
+
+def test_close_closes_the_controller(station):
+    controller, model = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    dashboard.close()
+    assert controller.model_names == [] and model.is_estopped
+
+
+def test_closing_twice_is_safe(station):
+    controller, _ = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    dashboard.close()
+    dashboard.close()
+
+
+def test_a_close_path_publishes_nothing_that_wants_acknowledging(station):
+    controller, model = station
+    model.halt_blocks = True
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    try:
+        with EventRecorder() as log:
+            dashboard.close()
+        assert log.acknowledged == []
+    finally:
+        model.release()
+
+
+# -- Dashboard: models coming and going -------------------------------------
+
+def test_a_model_added_becomes_a_panel(station):
+    controller, _ = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    try:
+        controller.add("second", FakeModel())
+        assert dashboard.added_panels == ["second"]
+    finally:
+        dashboard.close()
+
+
+def test_a_model_removed_drops_its_panel(station):
+    controller, _ = station
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    try:
+        controller.remove("probe")
+        assert dashboard.removed_panels == ["probe"]
+    finally:
+        dashboard.close()
+
+
+def test_opening_and_closing_a_model_goes_through_the_controller(station):
+    controller, _ = station
+    controller.factory = lambda config: FakeModel()
+    dashboard = FakeDashboard(controller)
+    dashboard.open()
+    try:
+        dashboard.close_model("probe")
+        assert controller.model_names == []
+        dashboard.open_model("probe")
+        assert controller.model_names == ["probe"]
+    finally:
+        dashboard.close()
+
+
+def test_window_focus_gates_input_rather_than_stopping_anything(station):
+    controller, model = station
+
+    class Pad:
+        def __init__(self):
+            self.gates = []
+
+        def set_gate(self, is_open):
+            self.gates.append(is_open)
+
+    model.gamepad = Pad()
+    dashboard = FakeDashboard(controller)
+    dashboard._on_focus_change(False)
+    assert model.gamepad.gates == [False] and model.is_estopped is False
+
+
+# -- Dashboard: the global stop ---------------------------------------------
+
+def test_the_global_stop_latches_every_model(station):
+    controller, model = station
+    dashboard = FakeDashboard(controller)
+    assert dashboard.toggle_estop_all() == {"probe": True}
+    assert model.is_estopped
+
+
+def test_the_global_stop_asks_before_clearing_and_clears_on_yes(station):
+    controller, model = station
+    dashboard = FakeDashboard(controller)
+    dashboard.toggle_estop_all()
+    dashboard.confirm_answer = True
+    result = dashboard.toggle_estop_all()
+    assert dashboard.prompts and "probe" in dashboard.prompts[0]
+    assert result.is_ok and model.is_estopped is False
+
+
+def test_declining_the_clear_leaves_the_latch_alone(station):
+    controller, model = station
+    dashboard = FakeDashboard(controller)
+    dashboard.toggle_estop_all()
+    dashboard.confirm_answer = False
+    result = dashboard.toggle_estop_all()
+    assert result.needs_confirm and model.is_estopped
+
+
+# -- the toolkit contract ---------------------------------------------------
+
+@pytest.mark.parametrize("name", [
+    "_make_section", "_read_entry", "_entry_is_dirty", "_set_text", "_set_on",
+    "_set_data", "_set_enabled", "_set_stale", "_confirm", "_show_refused",
+    "_apply_theme"])
+def test_the_base_panel_view_refuses_to_guess_at_a_toolkit(name):
+    with pytest.raises(NotImplementedError):
+        getattr(PanelView, name)(object(), *([None] * (
+            getattr(PanelView, name).__code__.co_argcount - 1)))
+
+
+@pytest.mark.parametrize("name", ["_marshal", "_show_event", "_show_popup",
+                                  "_confirm", "_add_panel", "_remove_panel"])
+def test_the_base_dashboard_refuses_to_guess_at_a_toolkit(name):
+    with pytest.raises(NotImplementedError):
+        getattr(Dashboard, name)(object(), None)
+
+
+# -- G3: checkboxes and enabled_by -------------------------------------------
+
+def test_a_checkbox_sends_the_new_value_read_from_the_model(view, station):
+    _, model = station
+    box = _element(view, "Wanted")
+    view._run_checkbox(box)
+    assert model.is_wanted is True
+    view._run_checkbox(box)
+    assert model.is_wanted is False
+
+
+def test_refresh_lights_a_checkbox_from_state(view, station):
+    _, model = station
+    model.is_wanted = True
+    view._refresh()
+    assert view.on_states["is_wanted"] is True
+    model.is_wanted = False
+    view._refresh()
+    assert view.on_states["is_wanted"] is False
+
+
+def test_an_enabled_by_control_follows_its_checkbox(view, station):
+    _, model = station
+    view._refresh()
+    assert view.enabled["gated_port"] is False
+    assert view.enabled["port_name"] is True        # no enabled_by: untouched
+    model.is_wanted = True
+    view._refresh()
+    assert view.enabled["gated_port"] is True
+
+
+def test_the_panel_refuses_a_gated_command_the_view_would_have_greyed_out(view, station):
+    _, model = station
+    result = view._run(_element(view, "Gated port"), ("COM1",))
+    assert result.is_refused and "Launch box" in result.reason
+    assert model.gated_port is None
+    model.is_wanted = True
+    assert view._run(_element(view, "Gated port"), ("COM1",)).is_ok
+    assert model.gated_port == "COM1"
+
+
+# -- G4: a detached log stream is polled only while its window is open ------
+
+def test_a_detached_log_stream_is_polled_only_when_the_toolkit_wants_it(station):
+    controller, model = station
+
+    class Windowed(FakePanelView):
+        open_windows = set()
+
+        def _wants_data(self, element):
+            if element["type"] == "log_stream" and element.get("detached"):
+                return element["text"] in self.open_windows
+            return True
+
+    view = Windowed(controller, "probe")
+    view._build()
+    assert "Side log" not in view.data and model.detached_reads == 0
+    assert view.data["Log"] == ["one line"]          # the attached one is live
+    view.open_windows.add("Side log")
+    view._refresh()
+    assert view.data["Side log"] == ["aside"] and model.detached_reads == 1
+
+
+def test_the_base_view_wants_every_data_element_by_default(view):
+    assert all(view._wants_data(e) for e in view._elements)
+    assert view.data["Side log"] == ["aside"]
+
+
+# -- the words every view says about the stop (round 7) ----------------------
+
+def test_stop_words_while_nothing_is_latched():
+    from views.base import stop_words
+    words = stop_words({"latched": [], "unconfirmed": [], "every": False})
+    assert words == {"face": "Stop", "headline": "", "subline": "", "rail": "",
+                     "action": "stop"}
+
+
+def test_stop_words_for_one_models_own_stop_never_say_every():
+    from views.base import stop_words
+    words = stop_words({"latched": ["Stepper Probe"], "unconfirmed": [], "every": False})
+    assert words["face"] == "Stop" and words["action"] == "stop"
+    assert words["headline"] == ""
+    assert words["rail"] == "Stopped: Stepper Probe"
+
+
+def test_stop_words_when_every_model_confirmed():
+    from views.base import stop_words
+    words = stop_words({"latched": ["A", "B"], "unconfirmed": [], "every": True})
+    assert words["face"] == "Clear" and words["action"] == "clear"
+    assert words["headline"] == "Every model is stopped."
+    assert words["rail"] == "Stopped: every model latched"
+    assert words["subline"] == ""
+
+
+def test_stop_words_name_the_models_that_did_not_confirm():
+    from views.base import stop_words
+    words = stop_words({"latched": ["A", "B", "C"], "unconfirmed": ["B", "C"], "every": True})
+    assert words["face"] == "Clear"
+    assert words["headline"] == "Stopped. B and C did not confirm."
+    assert words["subline"] == "Treat them as live until you have checked them by hand."
+    assert words["rail"] == "Stopped: B and C did not confirm"
+    one = stop_words({"latched": ["A", "B"], "unconfirmed": ["B"], "every": True})
+    assert one["headline"] == "Stopped. B did not confirm."
+    assert one["subline"] == "Treat it as live until you have checked it by hand."
+
+
+def test_stop_words_for_a_partial_stop_with_an_unconfirmed_model():
+    from views.base import stop_words
+    words = stop_words({"latched": ["B"], "unconfirmed": ["B"], "every": False})
+    assert words["face"] == "Stop" and words["action"] == "stop"
+    assert words["rail"] == "Stopped: B did not confirm"
+    assert words["headline"] == ""
+
+
+def test_the_disc_press_stops_the_rest_while_only_one_model_is_latched(station):
+    """L1 (Tk CCR 2): with one model stopped from its own switch, the shared
+    toggle used to open the clear confirmation; it must stop the others."""
+    controller, _ = station
+    controller.add("second", FakeModel())
+    names = controller.model_names
+    assert len(names) >= 2
+    controller.run(names[0], "toggle_estop")
+    dashboard = FakeDashboard(controller)
+    dashboard.toggle_estop_all()
+    assert controller.stop_state["every"] is True, "the press did not stop the rest"
+    assert dashboard.prompts == [], "no clear confirmation over live models"
+    # Every model latched: now the press is the clear (asks first).
+    dashboard.confirm_answer = False
+    dashboard.toggle_estop_all()
+    assert dashboard.prompts, "clear asks first"
+    assert controller.stop_state["every"] is True
+
+
+def test_event_line_is_a_sentence_without_the_source_prefix():
+    from views.base import event_line
+    from events import Event
+    e = Event(7, "error", "Controller", "Stop Not Confirmed",
+              "Rotator did not confirm the stop within 1 s.", None, True, 0.0)
+    assert event_line(e) == "Stop not confirmed: Rotator did not confirm the stop within 1 s."
+    e.count = 3
+    assert event_line(e).endswith(" (x3)")
+    assert event_line({"title": "Port Unverified", "message": "x", "count": 1}) == "Port unverified: x"
+
+
+def test_gate_reason_reads_the_direction_from_the_element():
+    """Round 8 (IMP8-1): "Not in manual mode" was shown while the probe WAS in
+    manual mode. The direction comes from the element's own gate list."""
+    from views.base import gate_reason
+    step = {"disabled_when": ["manual", "latched"]}
+    assert gate_reason(step, "manual") == "In manual mode"
+    assert gate_reason(step, "latched") == "Stopped: clear the stop first"
+    assert gate_reason(step, "autonomous") == ""
+    launch = {"enabled_when": ["ready"]}
+    assert gate_reason(launch, "launched") == "Nothing to launch yet"
+    relaunch = {"enabled_when": ["launched"]}
+    assert gate_reason(relaunch, "ready") == "Nothing launched yet"
+    start = {"disabled_when": ["running", "latched", "no_region"]}
+    assert gate_reason(start, "no_region") == "Set a capture region first"
+    assert gate_reason({"disabled_when": ["odd"]}, "odd") == "In odd mode"
+
+
+# -- MOD-5 / CON-6: hardware links are declared, not matched by class name ---
+
+def test_mod5_a_state_names_its_hardware_links_and_a_new_class_counts():
+    state = {"devices": {"PiezoLink": "verified", "Gamepad": "bound",
+                         "SerialPort": "simulated"},
+             "hardware_devices": ["PiezoLink", "SerialPort"]}
+    assert hardware_links(state) == {"PiezoLink": "verified", "SerialPort": "simulated"}
+
+
+def test_mod5_an_empty_hardware_list_means_none_and_never_falls_back():
+    state = {"devices": {"SerialPort": "simulated", "SMC100": "verified"},
+             "hardware_devices": []}
+    assert hardware_links(state) == {}
+    assert hardware_links(state, fallback=None) == {}
+
+
+def test_mod5_a_state_without_the_key_falls_back_to_the_old_class_names():
+    state = {"devices": {"PiezoLink": "verified", "SerialPort": "simulated",
+                         "SMC100": "verified", "Screen": "capturing"}}
+    assert hardware_links(state) == {"SerialPort": "simulated", "SMC100": "verified"}
+    assert hardware_links(state, fallback=None) == state["devices"]
+    assert hardware_links({}) == {} and hardware_links(None) == {}
+
+
+def test_the_sample_maps_gate_words():
+    """flake-coords section 5.3: the Sample Map's two tokens. A control
+    that needs the frame is `disabled_when=("unregistered",)`, so the
+    sentence is the disabled-direction word (the `armed` convention)."""
+    from views.base import GATE_WORDS, gate_reason
+    assert GATE_WORDS["unregistered"] == ("Mark corners A and B first", None)
+    assert GATE_WORDS["no_source"] == ("No locating axes", None)
+    # The Rotator turns the chip (owner 2026-10-04): with its angle unknown the
+    # marks and the guidance wait, a disabled-direction word like the others.
+    assert GATE_WORDS["rotator_unknown"] == ("Rotator angle unknown: home or reconnect it", None)
+    assert gate_reason({"disabled_when": ["no_source", "rotator_unknown"]},
+                       "rotator_unknown") == "Rotator angle unknown: home or reconnect it"
+    assert gate_reason({"disabled_when": ["no_source", "unregistered"]},
+                       "unregistered") == "Mark corners A and B first"
+    assert gate_reason({"disabled_when": ["no_source"]}, "no_source") == "No locating axes"

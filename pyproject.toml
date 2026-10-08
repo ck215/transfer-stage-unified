@@ -1,0 +1,69 @@
+# The station as an installable project (PACKAGING_PLAN P2).
+#
+# `src/` is run as a script (`python3 src/app.py`), so its modules are
+# top-level: `app`, `events`, `schema` ... are modules, `controller`, `model`,
+# `devices`, `views` are packages. Installing keeps that shape, which is why
+# every module and package is listed by name below: a glob would sweep in
+# whatever else sits under `src/`, and `tests/` / `legacy/` must never ship.
+# `tests/test_packaging.py` fails if a module is added to `src/` and not here.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# The repository is transfer-stage-unified; the program calls itself
+# "station" (argparse prog, the log file name, the three launchers). The
+# distribution name carries both so it cannot be mistaken for anything on
+# PyPI and cannot be installed over by a `pip install station`.
+name = "transfer-stage-station"
+# NOT the version. The git tag `vMAJOR.MINOR.PATCH` is the truth (REL-1):
+# `packaging/release.py version` / `src/app.py --version` say what a tree is,
+# the build workflow patches this line from the tag in its own working copy
+# (`packaging/release.py pyproject <tag>`) and stamps the bundle's VERSION.
+# The file in git keeps 0.0.0, so a stale number here can never be mistaken
+# for a release.
+version = "0.0.0"
+description = "Transfer stage control: stepper and DC probes, chuck, temperature controller, rotator and Red Percent monitor, served as a Web dashboard (the Tk and Qt views are retired, frozen at 413f504)."
+readme = "README.md"
+requires-python = ">=3.13"
+# Pinned to the versions the station was verified with (main/.venv,
+# 2026-09-25). `gcodeparser` is `legacy/` only (scripts are purged from
+# `src/`) and is not a runtime dependency.
+dependencies = [
+    "pyserial==3.5",
+    "pygame==2.6.1",
+    "mss==10.2.0",
+    "Pillow==12.3.0",
+    "numpy==2.5.2",
+    "matplotlib==3.11.1",
+    # The trial video's H.264 encoder (a wheel carrying its own ffmpeg),
+    # imported lazily by src/devices/video.py only; without it a trial is
+    # recorded as JPEG frames (2026-09-28).
+    "imageio-ffmpeg==0.6.0",
+]
+
+[project.optional-dependencies]
+# Not installed by default: the Qt view was retired 2026-10-07 and is frozen
+# at 413f504. Only for re-running its frozen tests (`pip install -e .[qt,dev]`).
+qt = [
+    "PySide6==6.11.2",
+    "pytest-qt==4.5.0",
+]
+dev = [
+    "pytest==9.1.1",
+    "pyyaml==6.0.3",
+    "pyinstaller==6.22.3",
+]
+
+[project.scripts]
+station-web = "app:main_web"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["app", "events", "palette", "panel", "param", "result", "schema"]
+packages = ["controller", "devices", "model", "views", "views.web"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+"views.web" = ["static/*.html", "static/*.js", "static/*.css", "static/fonts/*.woff2", "static/fonts/*.txt", "static/tutorials/*.json"]
