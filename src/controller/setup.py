@@ -619,18 +619,6 @@ class Setup(PortProbe, Panel):
     IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
         "idle", "listing", "identifying", "done", "cancelled")
 
-    #: A3: the fields behind `open_map_store` / `new_map_store` (the
-    #: Transfer Map's Open/New, run on the open map or a stand-in). Not
-    #: drawn: Setup has no Trial store row; an operator chooses on the map's
-    #: own `new_store` prompt (`model.store_choice.StorePrompt`). The
-    #: backup folder is the account menu's (`model.user`).
-    PARAMS = {p.name: p for p in (
-        Param("map_store_path", "text", default="", label="Store file"),
-        Param("map_store_dir", "text", default="", label="Folder for a new store"),
-        Param("map_store_name", "text", default="transfer_map",
-              label="New store name"),
-    )}
-
     def __init__(self, controller, updater=None, firmware=None, restart=None,
                  stable_root=_UNSET, stable_firmware=None, launch_stable=None,
                  exit_app=None):
@@ -650,9 +638,6 @@ class Setup(PortProbe, Panel):
         self._stable_firmware = stable_firmware
         self._launch_stable = launch_stable or _launch_detached
         self._exit_app = exit_app
-        legacy = TransferMap.legacy_store_path()
-        if legacy is not None:
-            self.map_store_path = str(legacy)   # offered, never opened for them
         self.controller = controller
         # A Guest's refusal (`session_refusal`) is the Controller's own, so
         # every frontend inherits it; the Web adapter asks too, a second
@@ -1734,9 +1719,9 @@ class Setup(PortProbe, Panel):
     #: The section's title: the station's defaults, the accounts' one
     #: station-wide control (the user's own are on the account menu).
     ACCOUNT_SECTION = "Station defaults"
-    #: Merged with the Trial store fields above (A3): a second plain
-    #: `PARAMS =` here would replace them.
-    PARAMS = {**PARAMS,
+    #: The sign-in screen's two fields (`GATE_INPUTS`). Setup's only
+    #: Params: the A3 Trial-store fields are gone (arch audit #15).
+    PARAMS = {**Panel.PARAMS,
               "account_email": Param("account_email", "text", default="",
                                      label="Email"),
               "account_password": Param("account_password", "text", default="",
@@ -2947,49 +2932,6 @@ class Setup(PortProbe, Panel):
                        confirm=self.STABLE_CONFIRM),
             layout="row",
         )
-
-    # -- the trial store (A3) -----------------------------------------------
-    def _transfer_map(self):
-        """The open Transfer Map, if one is: it adopts a store chosen here."""
-        lookup = getattr(self.controller, "_model_or_none", None)
-        model = lookup(TransferMap.NAME) if callable(lookup) else None
-        return model if isinstance(model, TransferMap) else None
-
-    @property
-    def map_store_status(self):
-        model = self._transfer_map()
-        if model is not None:
-            return model.store_status
-        if os.environ.get("STATION_MAP_DB"):
-            return TransferMap.describe_store(TransferMap.default_db_path())
-        chosen = self._map_choices.read("map_store")
-        return TransferMap.describe_store(Path(chosen) if chosen else None)
-
-    def _map_target(self):
-        """The open map, or a stand-in that only validates and remembers;
-        either remembers through this session (`_SessionChoices`)."""
-        target = self._transfer_map() or TransferMap()
-        if PROFILES_ENABLED:
-            target.choices = self._map_choices
-        return target
-
-    def open_map_store(self, confirmed=False):
-        """Open store, from Setup: the Transfer Map's own command, on the
-        open map (which then records there) or on a stand-in that only
-        validates and remembers the choice - in the signed-in user's
-        settings, or the station's for a Guest. Its question (a drive copy
-        changed elsewhere) is asked as this command's."""
-        target = self._map_target()
-        target.store_path = self.map_store_path
-        try:
-            return target.open_store(confirmed)
-        except NeedsConfirm as ask:
-            raise NeedsConfirm(ask.prompt, "open_map_store")
-
-    def new_map_store(self):
-        target = self._map_target()
-        target.store_dir, target.store_name = self.map_store_dir, self.map_store_name
-        return target.new_store()
 
     #: The models whose store is chosen per user (2026-10-07: the Transfer
     #: Map's trials and the Sample DB's samples).

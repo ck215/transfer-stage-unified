@@ -655,16 +655,21 @@ def stores(tmp_path, monkeypatch):
 
 
 def test_a_signed_in_users_store_is_theirs_and_the_station_keeps_its_own(setup, stores):
+    """Through the map's own Open store (Setup's A3 copy is gone, arch
+    audit #15)."""
     from controller import user_config
     station, mine = stores
     create(setup)
-    setup.map_store_path = str(mine)
-    assert setup.open_map_store() == str(mine)
+    setup.build(CONFIGS)
+    result = setup.controller.run("Transfer Map", "open_store", {"store_path": str(mine)})
+    assert result.is_ok, result.reason
+    assert models(setup)["Transfer Map"].db_path == mine
     assert UserStore().setting(EMAIL, "map_store") == str(mine)
     assert user_config.read("map_store") == str(station), "a Guest keeps the station's"
-    assert setup.map_store_status == str(mine)
-    setup.run("sign_out")
-    assert setup.map_store_status == str(station)
+    assert setup.run("sign_out").is_ok
+    assert setup._map_choices.read("map_store") == str(station)
+    assert sign_in(setup).is_ok
+    assert setup._map_choices.read("map_store") == str(mine)
 
 
 def test_a_user_without_a_store_gets_the_prompt_and_their_choice_is_theirs(setup, stores):

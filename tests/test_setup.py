@@ -2561,52 +2561,37 @@ def test_setup_draws_no_trial_store_row(panel):
     assert not hasattr(panel, "_store_section")
 
 
-def test_the_store_row_says_nothing_is_chosen_then_what_was(store_choice, tmp_path):
+def test_setups_leftover_trial_store_commands_are_gone(panel):
+    """Arch audit #15: Setup's A3 Trial-store commands and fields survived
+    with no control; both maps choose their store on their own prompt. The
+    commands, their handlers and their fields are gone, so nothing can
+    reach them by name."""
+    for name in ("map_store_status", "open_map_store", "new_map_store",
+                 "_map_target", "_transfer_map"):
+        assert not hasattr(Setup, name), name
+    assert not {"map_store_path", "map_store_dir", "map_store_name"} & set(Setup.PARAMS)
+    for command in ("open_map_store", "new_map_store"):
+        assert panel.run(command).is_refused, command
+
+
+def test_a_maps_own_store_choice_is_remembered_for_the_session(store_choice, tmp_path):
+    """The per-session store choice (`_SessionChoices`), through the map's
+    own New store: a Guest's goes to the station's choices file. A map
+    built afresh never opens the station's store (owner ruling 2026-10-08,
+    data safety)."""
+    from controller import user_config
     from model.transfer_map import TransferMap
     panel = Setup(RecordingController())
-    assert panel.map_store_status.startswith("Not chosen")
-    panel.map_store_dir, panel.map_store_name = str(tmp_path / "trials"), "lab"
-    path = tmp_path / "trials" / "lab.sqlite"
-    assert panel.new_map_store() == str(path)
-    assert path.is_file()
-    assert panel.map_store_status == str(path)
-    from controller import user_config
-    assert user_config.read("map_store") == str(path)   # remembered (a Guest's)
-    # Owner ruling 2026-10-08 (data safety): with accounts on a map is a
-    # signed-in user's and never opens the station's remembered store.
-    assert TransferMap().db_path is None
-
-
-def test_opening_a_store_from_setup_moves_an_open_map_onto_it(store_choice, tmp_path):
-    from model.transfer_map import TransferMap, TrialStore
-    path = tmp_path / "kept.sqlite"
-    TrialStore(path).ensure()
-    controller = RecordingController()
     model = TransferMap()
-    controller.add(TransferMap.NAME, model, {"model": TransferMap.NAME})
-    try:
-        panel = Setup(controller)
-        assert model.state["store"]["chosen"] is False
-        panel.map_store_path = str(path)
-        assert panel.open_map_store() == str(path)
-        assert model.db_path == path and model.state["store"]["chosen"] is True
-    finally:
-        controller.reset()
-
-
-def test_setup_refuses_a_store_inside_the_install(store_choice):
-    panel = Setup(RecordingController())
-    panel.map_store_dir, panel.map_store_name = str(store_choice / "data"), "x"
-    assert "cannot live inside the station's own folder" in refused(panel.new_map_store)
-
-
-def test_setup_offers_the_store_an_earlier_build_left_in_the_install(store_choice):
-    from model.transfer_map import TrialStore
-    left = store_choice / "data" / "transfer_map.sqlite"
-    TrialStore(left).ensure()
-    panel = Setup(RecordingController())
-    assert panel.map_store_path == str(left)
-    assert panel.map_store_status.startswith("Not chosen")
+    model.choices = panel._map_choices
+    assert model.state["store"]["chosen"] is False
+    path = tmp_path / "trials" / "lab.sqlite"
+    result = model.run("new_store", {"store_dir": str(tmp_path / "trials"),
+                                     "store_name": "lab"})
+    assert result.is_ok, result.reason
+    assert path.is_file() and model.db_path == path
+    assert user_config.read("map_store") == str(path)   # remembered (a Guest's)
+    assert TransferMap().db_path is None
 
 
 # -- A4: Switch to stable (frozen bundles only; owner decision 3) ---------------
