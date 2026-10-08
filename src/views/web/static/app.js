@@ -21,6 +21,9 @@ const DATA_POLL_MS = 1000;
 const HEARTBEAT_MS = 2000;
 const STALE_AFTER_S = 1.0;
 const SETUP_NAME = '__setup__';
+//: The rail's first page, every launched model at a glance: "Dashboard" (owner
+//: 2026-10-08; K4 called it the Overview, and the code's names still do).
+const DASHBOARD_WORD = 'Dashboard';
 //: The account menu's sheet (`views.web.server.USER_NAME`): Setup's signed-in
 //: user, never a model (owner 2026-10-07).
 const USER_NAME = '__user__';
@@ -4527,7 +4530,7 @@ class Dashboard {
   }
 
   /** The launch, Setup to the station (owner 2026-10-07), as one move:
-   *  Setup slides away (240 ms), its steps showing "Station"; the Overview's
+   *  Setup slides away (240 ms), its steps showing "Dashboard"; the Dashboard's
    *  entries settle in behind it, starting as it clears (120 ms on, 60 ms
    *  apart); focus lands on the page, not on the rail's Settings key and
    *  never lost on the body. Reduced motion: the same states, at once
@@ -4713,7 +4716,8 @@ class Dashboard {
     }
   }
 
-  /** The rail's page list: "Overview" first, then the models by name only
+  /** The rail's page list: "Dashboard" (K4's Overview, renamed by the
+   *  owner 2026-10-08) first, then the models by name only
    *  (no value is said twice); the shown page is the current one. Rebuilt
    *  only when the set of models changes. */
   renderNav(models) {
@@ -4724,7 +4728,7 @@ class Dashboard {
       this.navKey = key;
       clear(this.dom.nav);
       if (names.length) {
-        const overview = make('button', 'model-link overview-link', 'Overview');
+        const overview = make('button', 'model-link overview-link', DASHBOARD_WORD);
         overview.type = 'button';
         overview.dataset.page = 'overview';
         overview.addEventListener('click', () => this.navigateTo(null));

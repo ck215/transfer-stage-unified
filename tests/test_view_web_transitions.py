@@ -1,6 +1,6 @@
 """The way in, sign-in screen -> Setup -> the station (owner 2026-10-07).
 
-1. A step indicator ("1 Sign in, 2 Setup, 3 Station") heads the sign-in
+1. A step indicator ("1 Sign in, 2 Setup, 3 Dashboard") heads the sign-in
    screen and pre-launch Setup, the shown step marked aria-current="step",
    and is gone after the launch. It sits in the screen's flow: it never
    covers the rail's Quit, and at phone width the page does not scroll
@@ -82,7 +82,7 @@ def test_the_steps_mark_the_way_in_and_go_after_the_launch(served, tmp_path):
     """ % {"steps": _STEPS}, tmp_path)
     sign_in = out["signIn"]
     assert sign_in["shown"] and sign_in["host"] == "gate-body", sign_in
-    assert sign_in["words"] == ["Sign in", "Setup", "Station"], sign_in
+    assert sign_in["words"] == ["Sign in", "Setup", "Dashboard"], sign_in
     assert sign_in["current"] == ["sign-in"] and sign_in["done"] == [], sign_in
     setup_l = out["setupL"]
     assert setup_l["shown"] and setup_l["host"] == "setup-drawer", setup_l
@@ -92,7 +92,7 @@ def test_the_steps_mark_the_way_in_and_go_after_the_launch(served, tmp_path):
         assert state["shown"], (name, state)
         assert not state["coversQuit"], f"the steps cover Quit ({name})"
         assert not state["sideways"], f"the page scrolls sideways ({name})"
-    # The launch lights "Station" while Setup slides away (or the list is
+    # The launch lights "Dashboard" while Setup slides away (or the list is
     # already gone under a slow poll); then it is gone for the session.
     assert out["leaving"]["current"] in (["station"], []), out["leaving"]
     assert out["launched"]["shown"] is False, out["launched"]
@@ -108,7 +108,7 @@ def test_without_accounts_the_steps_start_at_setup(served, tmp_path):
       await sleep(400);
       return await page.evaluate(%(steps)s);
     """ % {"steps": _STEPS}, tmp_path)
-    assert out["shown"] and out["words"] == ["Setup", "Station"], out
+    assert out["shown"] and out["words"] == ["Setup", "Dashboard"], out
     assert out["current"] == ["setup"], out
 
 

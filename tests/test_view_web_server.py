@@ -2505,7 +2505,7 @@ def test_the_stop_is_reachable_with_red_percents_details_open_at_900(sim_station
 # Tier K (2026-09-26): the disclosure sits where it opens (K3); two pages on
 # the sheet, Overview and the device page (K4)
 # --------------------------------------------------------------------------
-#: Press a page in the rail by its words ("Overview" or a model's name).
+#: Press a page in the rail by its words ("Dashboard" or a model's name).
 _PAGES = r"""
   const press = async (words) => {
     await page.evaluate((w) => Array.from(document.querySelectorAll('#model-nav button'))
@@ -2595,8 +2595,8 @@ def test_the_rail_leads_with_an_overview_of_every_model_with_no_wells(sim_statio
       return pages();
     """, tmp_path)
     names = _page_names(controller)
-    assert out["nav"][0] == "Overview" and out["nav"][1:] == names, out
-    assert out["current"] == ["Overview"], out
+    assert out["nav"][0] == "Dashboard" and out["nav"][1:] == names, out
+    assert out["current"] == ["Dashboard"], out
     assert sorted(out["shown"]) == sorted(names), out
     assert out["wells"] == 0 and out["disclosures"] == 0, out
     assert out["opens"] == [{"text": "Open", "name": "Open " + n} for n in out["shown"]], out
@@ -2622,7 +2622,7 @@ def test_a_device_page_shows_one_model_and_overview_brings_them_all_back(sim_sta
       r.text = await page.evaluate(() => cardOf('Stepper Probe').querySelector('.disclosure[data-tier="2"]').textContent);
       await page.evaluate(() => cardOf('Stepper Probe').querySelector('.disclosure[data-tier="2"]').click());
       await sleep(250);
-      await press('Overview');
+      await press('Dashboard');
       r.back = await pages();
       // Anywhere on the head: its title, not the Open word.
       const title = await page.evaluateHandle(() => Array.from(document.querySelectorAll('#cards .card-title'))
@@ -2632,7 +2632,7 @@ def test_a_device_page_shows_one_model_and_overview_brings_them_all_back(sim_sta
       r.byHead = await pages();
       r.remembered = await page.evaluate(() => cardOf('Stepper Probe')
         .querySelector('.disclosure[data-tier="2"]').getAttribute('aria-expanded'));
-      await press('Overview');
+      await press('Dashboard');
       await page.evaluate(() => cardOf('DC Probe').querySelector('.card-open').focus());
       await page.keyboard.press('Enter');
       await sleep(300);
@@ -2646,7 +2646,7 @@ def test_a_device_page_shows_one_model_and_overview_brings_them_all_back(sim_sta
         assert page["fullWidth"] and page["disclosures"] == 1 and page["opens"] == [None], page
     assert out["text"] == "Configure Stepper Probe", out
     assert sorted(out["back"]["shown"]) == sorted(names) and out["back"]["wells"] == 0, out["back"]
-    assert out["back"]["current"] == ["Overview"], out["back"]
+    assert out["back"]["current"] == ["Dashboard"], out["back"]
     assert out["remembered"] == "true", "the tier's open state did not survive the trip"
     assert out["byHead"]["wells"] == 1, out["byHead"]
     assert out["byKey"]["shown"] == ["DC Probe"] and out["byKey"]["current"] == ["DC Probe"], out
@@ -2673,7 +2673,7 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     """, tmp_path)
     assert out["device"]["shown"] == ["Rotator"], out
     after = out["after"]
-    assert after["current"] == ["Overview"] and "Rotator" not in after["nav"], after
+    assert after["current"] == ["Dashboard"] and "Rotator" not in after["nav"], after
     # Eight models (Tier S, the Sample DB), one closed; Red Percent is on
     # the Map's entry (D).
     assert len(after["shown"]) == 6 and after["wells"] == 0, after
@@ -4215,7 +4215,7 @@ def test_signature_the_rail_lamp_marks_the_shown_page_and_an_unconfirmed_model(s
       return r;
     """, tmp_path)
     overview, model = out["idle"]
-    assert overview["name"] == "Overview" and overview["lamp"] == out["ink"], out
+    assert overview["name"] == "Dashboard" and overview["lamp"] == out["ink"], out
     assert model["lamp"] == "" and model["w"] == "6px" and model["mark"] == "", out
     model = out["unconfirmed"][1]
     assert model["mark"] == out["signal"], out

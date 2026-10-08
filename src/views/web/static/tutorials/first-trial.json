@@ -4,7 +4,7 @@
   "requires": "sim",
   "steps": [
     {
-      "page": "Overview",
+      "page": "Dashboard",
       "anchor": {"selector": "#setup-link"},
       "say": "Open Setup, set every port to SIM and launch. Everything here runs on simulated hardware.",
       "wait": {"click": true}
