@@ -5,7 +5,9 @@ positioner, a Temperature Controller, an SMC100 Rotator, and a
 screen-capture RGB Analysis monitor (formerly Red Percent), plus the Transfer Map (the recorded-trial
 end goal) with its Sample DB (formerly the Sample Map), and user accounts (Guest = the station defaults). One frontend, the Web view (owner ruling
 2026-10-07; the Tk and PySide6 views are frozen at `413f504` and
-unregistered), over one Controller. Firmware is untouched;
+unregistered), over one Controller. The wire protocol is untouched (the 2026-10-07/08
+firmware guards - stepper and chuck runaway guards, the heater's host-gone
+watchdog - add no bytes; bench validation is the owner's);
 every byte on the wire is identical to the old app's (the repair tree
 the lab ran Aug 26–Sep 22, 2026; history: tag pre-root-cleanup-2026-10-07), pinned by `tests/golden/`.
 

@@ -294,6 +294,38 @@ def test_a_hard_reset_onto_a_new_port_confirms_the_heater_off_first(
     setup.controller.close()
 
 
+def test_a_forced_hard_reset_of_a_heating_heater_turns_it_off_first(monkeypatch):
+    """Owner ruling 2026-10-08 (A): Hard reset forces a reset. A heater that
+    is heating is asked about once, then its full stop path runs (the off
+    read back) before its port closes; the new model is fresh: not latched,
+    not heating, and the board was told 0."""
+    from controller import setup as station_setup
+    monkeypatch.setattr(SerialPort, "BOOTLOADER_WAIT", 0.05)
+    monkeypatch.setattr(Heater, "OFF_CONFIRM_SECONDS", 0.4)
+    board = FakeBoard()
+    monkeypatch.setattr(serial_port, "pyserial", SimpleNamespace(Serial=lambda **_kw: board))
+    setup = station_setup.Setup(Controller())
+    key = station_setup._key_for(Heater.NAME)
+    setup._ports[:] = ["/dev/fake-teensy"]
+    setup._found["/dev/fake-teensy"] = Heater.NAME
+    assert setup.run(f"set_{key}_port", args=("/dev/fake-teensy",)).is_ok
+    assert setup.run("launch", args=(True,)).is_ok
+    heater = setup.controller._model(Heater.NAME)
+    assert _wait(lambda: heater.temperature.endswith("°C")), heater.temperature
+    _heat(heater, board)
+    assert heater.is_active, "heating"
+    asked = setup.run(f"hard_reset_{key}")
+    assert asked.needs_confirm and asked.reason == (
+        f"{Heater.NAME} is energized: Hard reset stops it first. Reset?")
+    assert setup.run(f"hard_reset_{key}", args=(True,)).is_ok
+    assert off_confirmed_before_close(board.log), board.log[-12:]
+    assert heater.is_estopped, "the old model was stopped"
+    new = setup.controller._model(Heater.NAME)
+    assert new is not heater and not new.is_estopped and not new.is_active
+    assert board.endpoint == 0
+    setup.controller.close()
+
+
 def test_controller_close_confirms_the_heater_off_before_the_port_closes(
         board_factory):
     """Quit, Restart, Close every model (reset) and every signal end here."""
