@@ -1730,7 +1730,10 @@ span.value.is-word,
 .row.secondary { align-self: flex-start; }
 .row.secondary > .value { font-size: var(--statistic-size); font-weight: 500; color: var(--muted); line-height: 1.1; }
 .row.secondary > .unit { font-size: var(--caption-size); }
-.sheet.is-overview .row.secondary:not(.has-lead) { display: none; }
+.sheet.is-overview .row.secondary { display: none; }
+/* A readout with a lead stands in for a reading in its step: the tile
+   keeps it. */
+.sheet.is-overview .row.secondary.has-lead { display: grid; }
 /* "Now:" before the reading an entry overrides (the Transfer Map's Tilt
    and Speed in Setup): a caption's engraving, on the value's line. */
 .row.secondary.has-lead { grid-template-columns: auto auto auto; }
