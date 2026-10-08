@@ -17,9 +17,22 @@ Three tables, `PRAGMA user_version` 1:
   missing hash so the flag and the hash cannot disagree).
 - `preferences(email, model_name, param, value)`, one row per remembered
   parameter, the value JSON-encoded so an int stays an int.
-- `settings(email, key, value)`: kept for later, nothing reads it yet (the
-  GUI layout, default fields, per-user sample bases; see the handoff's design
-  note).
+- `settings(email, key, value)`: kept for later, nothing reads it yet. Three
+  keys are reserved (`RESERVED_SETTINGS`), each a JSON value, none of them a
+  Param and so none under the Q4 split:
+  `layout` - how the Web view is arranged for this person (open disclosures
+  by model and tier, collapsed sections, page order); the User sheet would
+  publish it in `state` and take it back through one internal command with
+  the JSON as its argument, so the view still holds only the Controller, and
+  a Guest has none (the view's defaults).
+  `default_fields` - `{model: {attr: value}}` for text fields that are not
+  preferences (a sample-ID prefix, the default figure, an export folder),
+  handed to each model by `User.load_into` through an optional duck-typed
+  hook, so a model without the hook is untouched.
+  `sample_base` - which Sample Map store this person works in: a path the
+  Sample Map opens on sign-in (as `TransferMap.choices` keeps the station's
+  trial store), or one shared store filtered by the `owner` column the
+  Sample Map already writes; which of the two is the owner's call.
 
 **Passwords** (supersedes Q1 of 2026-10-04, "no credential on a station", by
 the owner's request of 2026-10-07): `hashlib.scrypt` with a 16-byte salt per
@@ -69,6 +82,9 @@ _CREATE = tuple(
     + ", ".join([name + " " + kind for name, kind in cols]
                 + ([_KEYS[table]] if table in _KEYS else [])) + ")"
     for table, cols in _TABLES.items())
+#: `settings` keys kept for later (AC-4, 2026-10-07); see the module docstring.
+LAYOUT, DEFAULT_FIELDS, SAMPLE_BASE = "layout", "default_fields", "sample_base"
+RESERVED_SETTINGS = (LAYOUT, DEFAULT_FIELDS, SAMPLE_BASE)
 #: What a read hands back about an account: never the hash or the salt.
 PUBLIC = ("email", "name", "created_at", "last_sign_in", "note")
 

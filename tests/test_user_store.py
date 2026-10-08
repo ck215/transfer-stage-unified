@@ -268,3 +268,18 @@ def test_migration_runs_once_and_never_overwrites(store, tmp_path):
 def test_nothing_to_migrate_creates_no_file(store, tmp_path):
     assert store.migrate_profiles(pf.LocalFilesSource(tmp_path / "profiles")) == []
     assert not store.path.exists()
+
+
+def test_the_reserved_settings_keys_are_documented_hooks(store):
+    """AC-4: per-user GUI layout, default fields and sample bases are kept
+    for later under fixed `settings` keys; nothing reads them yet, and each
+    is described where the table is."""
+    assert us.RESERVED_SETTINGS == (us.LAYOUT, us.DEFAULT_FIELDS, us.SAMPLE_BASE) == (
+        "layout", "default_fields", "sample_base")
+    for key in us.RESERVED_SETTINGS:
+        assert f"`{key}`" in us.__doc__, key
+    store.create("ian@uci.edu", PASSWORD)
+    store.put_setting("ian@uci.edu", us.LAYOUT, {"open": {"Rotator": [2]}})
+    store.put_setting("ian@uci.edu", us.DEFAULT_FIELDS, {"Transfer Map": {"sample_id": "S"}})
+    store.put_setting("ian@uci.edu", us.SAMPLE_BASE, None)
+    assert set(store.settings("ian@uci.edu")) == set(us.RESERVED_SETTINGS)
