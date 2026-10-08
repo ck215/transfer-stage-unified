@@ -412,11 +412,11 @@ def gate():
         return f.read()
 
 
-def test_the_gate_runs_on_prs_and_pushes_to_main_and_the_integration_branch(gate):
+def test_the_gate_runs_on_prs_and_pushes_to_main(gate):
     import re
     on = gate.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
-    assert re.search(r"^  pull_request:\n    branches: \[main, mvc-refactor\]$", on, re.M)
-    assert re.search(r"^  push:\n    branches: \[main, mvc-refactor\]$", on, re.M)
+    assert re.search(r"^  pull_request:\n    branches: \[main\]$", on, re.M)
+    assert re.search(r"^  push:\n    branches: \[main\]$", on, re.M)
     assert "tags" not in on and "workflow_dispatch" not in on
     assert re.search(r"^permissions:\n  contents: read\n", gate, re.M)
     assert "contents: write" not in gate and "secrets." not in gate
@@ -461,7 +461,7 @@ def test_the_gate_parses_as_yaml():
     with open(GATE, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     on = data["on"] if "on" in data else data[True]
-    assert on["pull_request"]["branches"] == on["push"]["branches"] == ["main", "mvc-refactor"]
+    assert on["pull_request"]["branches"] == on["push"]["branches"] == ["main"]
     [job] = data["jobs"].values()
     assert job["timeout-minutes"] == 30 and job["runs-on"].startswith("ubuntu-")
 

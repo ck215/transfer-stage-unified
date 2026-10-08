@@ -1295,6 +1295,11 @@ class RgbAnalysis(Model):
                 elif verdict == "live":
                     now = time.monotonic()
                     self._remember(run, pixels, now)
+                    # The bank takes the frame BEFORE it is counted: a reader
+                    # that sees `frames_accepted` sees the bank's row for it
+                    # (`end_run` latches without joining, so the count must
+                    # never run ahead of the bank).
+                    self._update_estimators(run, now, frame)
                     run.note_frame(None if previous_frame is None
                                    else now - previous_frame)
                     previous_frame = now
@@ -1304,7 +1309,6 @@ class RgbAnalysis(Model):
                     rgb = self._measure_rgb(frame, threshold)
                     red = rgb[0]
                     self._rgb_state = rgb
-                    self._update_estimators(run, now, frame)
                     run.accepted_red = red
                     if run.baseline_red is None:
                         run.baseline_red = red
