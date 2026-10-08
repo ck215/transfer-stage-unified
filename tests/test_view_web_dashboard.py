@@ -1428,6 +1428,14 @@ def test_web5_a_file_open_forwards_its_declared_inputs(images_station, tmp_path)
     chosen = tmp_path / "tip.png"
     chosen.write_bytes(b"\x89PNG\r\n\x1a\nnot really")
     out = _browse(view, _PHASE_READ.split("const drawn")[0] + r"""
+      // Each Add image is done before the next goes: a press while one is
+      // in flight is "busy" by design (O10), and the assertion reads the
+      // model only after both answers, not after fixed sleeps (flaked under
+      // load, 2026-10-08).
+      let added = 0;
+      page.on('response', (r) => {
+        if (r.url().includes('/api/run') && (r.request().postData() || '').includes('"add_image"')) added += 1;
+      });
       const inputs = await page.$$('#cards .card-body input.input:not(.path-input)');
       for (const [box, text] of [[inputs[0], 'SEM'], [inputs[1], '250']]) {
         await box.evaluate((el) => { el.focus(); el.select(); });
@@ -1439,16 +1447,75 @@ def test_web5_a_file_open_forwards_its_declared_inputs(images_station, tmp_path)
       await page.type('.path-input', '/data/typed.png');
       await page.evaluate(() => Array.from(document.querySelectorAll('.file-open button'))
         .find((b) => b.textContent === 'Add image').click());
-      await sleep(700);
+      // Answered, and the run done with it (its refresh too): until then
+      // the card holds the command in flight and a second press is busy.
+      const idle = () => page.evaluate(() => window.station.cards.get('Fake Images').inFlight.size === 0);
+      const typed = await when(async () => added >= 1 && await idle(), 15000);
       const picker = await page.$('.file-picker');
       await picker.uploadFile(%s);
-      await sleep(1500);
-      return true;
+      const uploaded = await when(async () => added >= 2, 15000);
+      return { typed, uploaded };
     """ % json.dumps(str(chosen)), tmp_path)
-    assert out is True
+    assert out == {"typed": True, "uploaded": True}, out
     assert [(a[1], a[2]) for a in model.added] == [("SEM", 250.0), ("SEM", 250.0)], model.added
     assert model.added[0][0] == "/data/typed.png"
     assert model.added[1][0].endswith("uploads/tip.png"), model.added
+
+
+@needs_browser
+def test_a_state_asked_before_a_commit_never_puts_the_old_value_back(images_station, tmp_path):
+    """The race behind web5's flake (2026-10-08): a poll asked before a
+    commit and answered after it wrote the old value back into the box (the
+    box matched the just-accepted value, so it read as clean), and the next
+    command sent that old value. Held here on purpose: the stale poll is
+    released only after the commit's answer and its own refresh."""
+    view, controller, model = images_station
+    out = _browse(view, _PHASE_READ.split("const drawn")[0] + r"""
+      const box = () => page.evaluate(() =>
+        document.querySelectorAll('#cards .card-body input.input:not(.path-input)')[0].value);
+      const inputs = await page.$$('#cards .card-body input.input:not(.path-input)');
+      await inputs[0].evaluate((el) => { el.focus(); el.select(); });
+      await inputs[0].type('SEM');
+      // A held poll is answered as the station answered it when it was
+      // asked (read here, at once), and delivered late.
+      const held = [];
+      let holding = true, intercepting = true, committed = false, states = 0;
+      await page.setRequestInterception(true);
+      const onRequest = (r) => {
+        if (!intercepting) return;
+        if (r.url().includes('/api/run') && (r.postData() || '').includes('_commit')) holding = false;
+        if (holding && r.url().includes('/api/state')) {
+          held.push({ r, body: fetch(r.url()).then((a) => a.text()) });
+        } else r.continue();
+      };
+      page.on('request', onRequest);
+      page.on('response', (r) => {
+        if (r.url().includes('/api/run') && (r.request().postData() || '').includes('_commit')) committed = true;
+        if (r.url().includes('/api/state')) states += 1;
+      });
+      // A poll goes out (and is held) before the commit does.
+      await when(async () => held.length > 0, 5000);
+      const asked = held.length;
+      await Promise.all(held.map((h) => h.body));            // answered before the commit
+      await inputs[1].evaluate((el) => el.focus());          // the commit
+      await when(async () => committed, 5000);
+      await when(async () => states > 0, 5000);              // its own refresh
+      const before = states;
+      for (const h of held) {                                 // the stale answer lands
+        h.r.respond({ status: 200, contentType: 'application/json', body: await h.body });
+      }
+      await when(async () => states >= before + held.length, 5000);
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r())));
+      const after = await box();
+      const stale = JSON.parse(await held[0].body).models['Fake Images'].values.instrument;
+      intercepting = false;
+      page.off('request', onRequest);
+      await page.setRequestInterception(false);
+      return { asked, committed, stale, after };
+    """, tmp_path)
+    assert out["asked"] >= 1 and out["committed"] and out["stale"] == "", out
+    assert model.instrument == "SEM", "the commit did not land"
+    assert out["after"] == "SEM", f"a stale poll put the old value back: {out}"
 
 
 def test_web5_a_thumbnail_is_served_by_relative_path_under_the_output_root(images_station, tmp_path):

@@ -1111,12 +1111,25 @@ function renderEntry(panel, element) {
   });
   input.addEventListener('change', commit);
   if (slider) slider.onRelease(commit);
+  // A commit in flight, and when the last one was answered: a state asked
+  // for before that answer may predate the commit, and written into the box
+  // it put back the old value - which the next command then sent (two quick
+  // slider keys, or Tab out of a box while a poll was out; 2026-10-08).
+  let pending = 0;
+  let answeredAt = 0;
   const widget = {
     node,
     control: input,
     // Never overwrite what the operator is typing: focused, or edited away
-    // from the last value the server sent - by the box or by its slider.
-    isDirty: () => document.activeElement === input || input.value !== served,
+    // from the last value the server sent - by the box or by its slider -
+    // or committed and not yet seen in a state asked after the answer.
+    isDirty: () => pending > 0 || (panel.askedAt !== undefined && panel.askedAt < answeredAt)
+      || document.activeElement === input || input.value !== served,
+    /** PanelCard.commit: a commit of this box went out (true) or was answered. */
+    hold: (on) => {
+      if (on) pending += 1;
+      else { pending = Math.max(0, pending - 1); answeredAt = Date.now(); }
+    },
     // Typed and not committed (MOD-6): what travels with a command. Focus
     // alone is not an edit - a focused box is not refreshed, so its
     // unchanged text may be a value behind.
@@ -2707,13 +2720,17 @@ class PanelCard {
    *  and the box goes back to what the station holds. */
   async commit(element, value) {
     const widget = this.widgetFor(element);
+    const hold = (on) => { if (widget && widget.hold) widget.hold(on); };
     let result;
+    hold(true);
     try {
       result = await this.call('_commit', { [element.model_attr]: value }, []);
     } catch (err) {
       this.showRefused('The station did not answer (' + failureReason(err)
         + '), so ' + captionText(element).toLowerCase() + ' was not changed.', element);
       return { status: 'failed' };
+    } finally {
+      hold(false);
     }
     if (result.status === 'ok') {
       if (widget && widget.accept) widget.accept(value);
@@ -4631,6 +4648,9 @@ class Dashboard {
       const card = this.cards.get(name);
       if (card) {
         card.linkWords = this.linkWords[name] || null;
+        // When this state was asked for: an entry keeps a commit answered
+        // after it (renderEntry's isDirty).
+        card.askedAt = askedAt;
         card.refresh(models[name]);
       }
     }
@@ -4666,8 +4686,10 @@ class Dashboard {
     let setupState = null;
     if (this.setupCard) {
       try {
+        const setupAsked = Date.now();
         const setup = await apiGet('/api/setup');
         setupState = setup.state;
+        this.setupCard.askedAt = setupAsked;
         this.setupCard.refresh(setupState);
         this.decorateSetup(setupState);
       } catch (err) { /* the next cycle retries */ }
@@ -4813,6 +4835,10 @@ class Dashboard {
     if (card) card.close();
     this.cards.delete(name);
     this.hostOf.delete(name);
+    // The shown device went: the Dashboard is the page now, before the rail
+    // is drawn in this same poll (layoutSheet comes after renderNav there,
+    // so the rail had no current page for a poll; 2026-10-08).
+    if (this.opened === name) this.opened = null;
   }
 
   // -- a model drawn on another model's page (Model.HOST) ------------------
