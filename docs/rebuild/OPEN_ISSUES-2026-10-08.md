@@ -47,8 +47,9 @@ bench, ready to run these checks.
 
 ## 2. Owner questions
 
-1. **Settings order** is now Devices, Launch, Update/Firmware, Station
-   defaults. This reverses the 2026-09-28 "Update first" ruling. Keep?
+1. ~~**Settings order** is now Devices, Launch, Update/Firmware, Station
+   defaults. This reverses the 2026-09-28 "Update first" ruling. Keep?~~
+   **Decided:** keep (owner 2026-10-08: firmware moved down is fine).
 2. ~~**A store already remembered on the cloud drive** (a user setting or
    `STATION_MAP_DB`) still opens at sign-in; only the store prompt refuses
    the drive. Refuse at sign-in too, and prompt to move it?~~ **Decided**
@@ -107,8 +108,8 @@ Ranked. None blocks operation or safety.
 - ~~Return in a photo-path entry does nothing (a `file_open` widget).~~
   Fixed 482cbdb.
 - ~~Phone-width ports and the take-over key (#19 remainder).~~ Fixed
-  7ce23f6. Still open: Settings' Transfer Map / Sample DB rows (On / SIM,
-  "Sign in to use"), Setup's schema.
+  7ce23f6. ~~Still open: Settings' Transfer Map / Sample DB rows (On / SIM,
+  "Sign in to use"), Setup's schema.~~ Fixed e8b5895 (see section 6).
 - ~~Status-dot contrast and Rotator SIM false alarms (2026-10-07 audit
   proposals).~~ Fixed 38fa675 (an error dot is a diamond; every fill
   clears 3:1) and c56cf76 (a SIM Rotator is not stale, its stop confirms,
@@ -155,3 +156,36 @@ Ranked. None blocks operation or safety.
 - Heater: setpoint 0 confirmed by read-back on every close path.
 - Two audits (architecture, UI/UX) with their fixes; Controller add/remove/Quit
   races closed.
+
+## 6. Follow-up (2026-10-08 daytime)
+
+Merged to `main` during the day:
+
+- `b5a6c37` the backend items of section 4 (Arm held during a user switch,
+  trial-file and preview caching, the missing-picture fallback, Setup's dead
+  store commands).
+- `7db435c` heater readings per trial (`trial_heater`) and the local device
+  log for every device.
+- The UX open items: Tilt and Speed "Now:" lines in the Transfer Map's Setup
+  step, the store prompt's Folder width, Return in a photo-path entry adds
+  the photo, phone-width Settings rows and the take-over key, the error dot
+  as a diamond, Rotator SIM (no false stale or unconfirmed stop).
+- `1790d7f` flaky tests hardened under load, and the entry-box race fix (a
+  poll asked before a commit never puts the old value back).
+- `e05fe01` a store on the cloud drive is worked on through a local copy
+  (owner question 2).
+- `2328ac4` the Launcher flashes out-of-date boards before starting.
+- `bdf33ca` CI: the no-picture Dashboard test is marked `needs_browser`.
+
+And this follow-up:
+
+- `558b47e` test isolation: `test_wire_golden.py`'s heater scenarios close
+  their Heater at teardown, so no `reader-Temperature Controller` thread
+  leaks into `test_heater.py` (test-only; `Model.close()` already stopped it).
+- `e8b5895` Settings at phone width: the Transfer Map and Sample DB rows'
+  On/SIM choice is captioned "Run", not "Port", and its key is as wide as
+  its words; the wide table is unchanged.
+- `028f028` Arm: a stop during the stage-still grab wins even when it is
+  already cleared (or was a plain halt) by the re-check: the still is
+  discarded and Arm is refused with the guard's sentence (a stop counter,
+  like `Controller._stop_count`), never "Stage Taken" with nothing armed.

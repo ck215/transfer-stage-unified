@@ -219,6 +219,21 @@ def _build_heater(port):
     return heater
 
 
+@pytest.fixture
+def built_heater():
+    """A Heater wired to a RecordingPort, closed at teardown.
+
+    `open()` starts the heater's reader thread; a scenario that only opens
+    (open, apply_settings, stop) would leave it running into later test
+    files (test_heater.py checks that no `reader-` thread survives a test).
+    Teardown closes it after the scenario's bytes are asserted, so the extra
+    close frames never reach an assertion."""
+    port = RecordingPort()
+    heater = _build_heater(port)
+    yield heater, port
+    heater.close()
+
+
 def _build_smc(port, replies=()):
     module = importlib.import_module("devices.smc100")
     # The driver takes an already-built transport by keyword; a port NAME
@@ -352,12 +367,11 @@ def test_new_probe_is_byte_identical(scenario):
 @pytest.mark.transport
 @pytest.mark.parametrize("scenario", HEATER_SCENARIOS,
                          ids=_ids(HEATER_SCENARIOS))
-def test_new_heater_is_byte_identical(scenario):
+def test_new_heater_is_byte_identical(scenario, built_heater):
     """`open` -> the construction frame, `apply_settings` -> the settings
     frame, `_halt_hardware` -> the off frame, `close` -> the shutdown frame.
     """
-    port = RecordingPort()
-    heater = _build_heater(port)
+    heater, port = built_heater
     kind = scenario["id"].split(".", 1)[1]
 
     if kind == "open":

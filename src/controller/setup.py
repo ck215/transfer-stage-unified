@@ -3248,6 +3248,13 @@ class Setup(PortProbe, Panel):
             }
         return rows
 
+    #: The caption of a row's first dropdown when the row has no port (the
+    #: Transfer Map, the Sample DB): its choice is On or SIM, not a port. At
+    #: phone width each control shows its caption, and "Port On" read as a
+    #: port named On; a screen reader said "Port, Transfer Map". The wide
+    #: table's header still says Port over the column.
+    PORTLESS_CAPTION = "Run"
+
     def _build_schema(self):
         """One compact table: a Devices header row, one row per model type,
         and a Launch row (Addendum 2). Every section is `layout="row"`, which
@@ -3297,7 +3304,8 @@ class Setup(PortProbe, Panel):
             # No Launch tick (owner 2026-10-07): every connected device
             # launches, and the Status cell says which are.
             elements = [
-                sch.dropdown("Port", f"{key}_port", f"set_{key}_port",
+                sch.dropdown("Port" if row["needs_port"] else self.PORTLESS_CAPTION,
+                             f"{key}_port", f"set_{key}_port",
                              row["options_command"]),
             ]
             if row["needs_port"]:

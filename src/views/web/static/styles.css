@@ -3272,6 +3272,11 @@ label.row-title[for] { cursor: pointer; }
   .drawer .section-row:not(.section-span):not(.table-head) > .cell { flex: 1 0 100%; }
   .drawer .section-row:not(.section-span) > .cell:last-child { order: 1; flex: 1 1 10rem; }
   .drawer .section-row:not(.section-span) > .cell.hard-reset-cell { order: 2; flex: 0 0 auto; margin-left: auto; }
+  /* A row with no port (the Transfer Map, the Sample DB): "Run On" or
+     "Run SIM", the key as wide as its words like every other key; across
+     the line it read as a port named On. Its Status stays under it. */
+  .drawer .section-row.portless-row:not(.section-span) > .cell > .select-key,
+  .drawer .section-row.portless-row:not(.section-span) > .cell > .select-key > .select { flex: 0 0 auto; width: auto; }
   .tray-head, .tray-log { padding-left: var(--space-5); padding-right: var(--space-5); }
 }
 
