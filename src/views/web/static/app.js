@@ -2929,6 +2929,8 @@ class PanelCard {
     this.phase = phase;
     // A step that ends takes its prompt dialog with it; the sections go
     // back where they were before anything below reads their state.
+    const fromDialog = Boolean(this.dialog && typeof document !== 'undefined'
+      && this.dialog.contains(document.activeElement));
     this.closeDialog();
     // The options of every dropdown may depend on the step (W2-3).
     if (!first) this.queueOptions(this.widgets.filter((w) => w.reload));
@@ -2966,6 +2968,16 @@ class PanelCard {
         && before.closest('.is-phase-off')) {
       if (this.dashboard && this.dashboard.restoreFocus) this.dashboard.restoreFocus(null, this.node);
       else this.node.focus({ preventScroll: true });
+    }
+    // A prompt answered from the keyboard (Return on New store, Add sample)
+    // left focus on an entry that went back into a hidden section: the page
+    // fell to <body>. Focus moves to the new step's first control instead.
+    if (!first && fromDialog && !this.node.contains(document.activeElement)) {
+      const control = Array.from(this.node.querySelectorAll(
+        '.card-body input:not([type="hidden"]), .card-body select, .card-body button'))
+        .find((n) => !n.disabled && !n.closest('.is-phase-off') && n.getClientRects().length);
+      if (this.dashboard && this.dashboard.restoreFocus) this.dashboard.restoreFocus(control, this.node);
+      else (control || this.node).focus({ preventScroll: true });
     }
     if (isPromptStep(phase)) this.openDialog(phase);
   }

@@ -148,3 +148,30 @@ def test_a_dropdown_in_a_prompt_keeps_its_chevron_on_its_key(named_station, tmp_
     """ % _go("new_tip"), tmp_path)
     assert out["select"][0] <= out["glyph"][0] and out["glyph"][1] <= out["select"][1] + 1, \
         f"the chevron is drawn off its select: {out}"
+
+
+@needs_browser
+def test_focus_lands_on_the_next_steps_first_control_after_a_prompt(named_station, tmp_path):
+    """Return on a prompt's last entry closed it and dropped focus to <body>
+    (the entry went back into a hidden section). The brief: focus moves to
+    the step's first control."""
+    view, model = named_station
+    out = _browse(view, _READY + r"""
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(400);
+      // The prompt opens while focus is elsewhere (the store prompt opens
+      // at the launch, from the rail).
+      await page.focus('#model-nav button');
+      %s
+      await page.focus('.card-dialog input[name="tip_name"]');
+      await page.keyboard.type('T8');
+      await page.keyboard.press('Enter');
+      await sleep(1800);
+      return await page.evaluate(() => {
+        const a = document.activeElement;
+        return { tag: a.tagName, inCard: Boolean(a.closest('#cards .card')),
+                 words: (a.getAttribute('aria-label') || a.textContent || '').trim().slice(0, 40) };
+      });
+    """ % _go("new_tip"), tmp_path)
+    assert model.added == ["T8"]
+    assert out["tag"] != "BODY" and out["inCard"], f"focus fell out of the card: {out}"
