@@ -3064,6 +3064,22 @@ class PanelCard {
     this.node.appendChild(scrim);
     this.node.classList.add('has-dialog');
     this.dialog = scrim;
+    // The card is at least as tall as its prompt, so the prompt's keys are
+    // never cut off below a short card (a device page's store prompt hid
+    // New store and Cancel inside a 22rem box); re-measured as it changes.
+    const fit = () => {
+      const pad = getComputedStyle(scrim);
+      const own = getComputedStyle(this.node);
+      const need = box.scrollHeight + (box.offsetHeight - box.clientHeight)
+        + (parseFloat(pad.paddingTop) || 0) + (parseFloat(pad.paddingBottom) || 0)
+        + (parseFloat(own.borderTopWidth) || 0) + (parseFloat(own.borderBottomWidth) || 0);
+      this.node.style.setProperty('--dialog-need', `${Math.ceil(need)}px`);
+    };
+    fit();
+    if (typeof ResizeObserver !== 'undefined') {
+      this.dialogWatch = new ResizeObserver(fit);
+      for (const entry of mine) this.dialogWatch.observe(entry.node);
+    }
     this.dialogReturn = document.activeElement;
     scrim.addEventListener('keydown', (event) => this.dialogKey(event, box), true);
     const first = box.querySelector('input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled])')
@@ -3078,6 +3094,9 @@ class PanelCard {
       if (home.marker.parentNode) home.marker.parentNode.replaceChild(home.node, home.marker);
     }
     this.dialogHome = [];
+    if (this.dialogWatch) this.dialogWatch.disconnect();
+    this.dialogWatch = null;
+    this.node.style.removeProperty('--dialog-need');
     this.dialog.remove();
     this.dialog = null;
     for (const child of Array.from(this.node.children)) child.inert = false;
@@ -4913,6 +4932,18 @@ class Dashboard {
       let bottom = top;
       for (const child of node.children) {
         if (!child.getClientRects().length) continue;
+        if (child.classList.contains('card-dialog')) {
+          // A prompt's scrim is stretched over the tile (inset: 0), so its
+          // own bottom is the tile's: measuring it grew the tile a row per
+          // frame, without end. What it needs is its box's content height.
+          const box = child.querySelector('.dialog-box');
+          const pad = getComputedStyle(child);
+          if (box) {
+            bottom = Math.max(bottom, top + box.scrollHeight + (box.offsetHeight - box.clientHeight)
+              + (parseFloat(pad.paddingTop) || 0) + (parseFloat(pad.paddingBottom) || 0));
+          }
+          continue;
+        }
         bottom = Math.max(bottom, child.getBoundingClientRect().bottom);
       }
       const own = getComputedStyle(node);

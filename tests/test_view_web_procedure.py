@@ -277,6 +277,43 @@ def test_w22_prompt_phase_is_a_dialog_over_the_card(proc_station, tmp_path):
     assert out["closed"]["open"] is False and model.cancelled == 1
 
 
+@needs_browser
+def test_w22_a_prompt_tile_keeps_its_size_and_shows_its_keys(proc_station, tmp_path):
+    """UX audit 2026-10-08: on the Dashboard a tile with a prompt open grew a
+    grid row per frame without end (sizeTiles measured the scrim stretched
+    over the tile), and on a device page a prompt taller than 22rem hid its
+    last keys inside the card. The tile settles, and the prompt's box shows
+    every key without scrolling, on both pages."""
+    view, controller, model = proc_station
+    out = _browse(view, _READY + r"""
+      %s
+      // A tall prompt: a long note in the dialog, like the store prompts.
+      await page.evaluate(() => {
+        const box = document.querySelector('.dialog-box');
+        const p = document.createElement('p');
+        p.style.height = '30rem';
+        box.querySelector('.section').prepend(p);
+      });
+      const read = () => page.evaluate(() => {
+        const card = document.querySelector('#cards > .card');
+        const box = card.querySelector('.dialog-box');
+        return { rows: card.style.getPropertyValue('--tile-rows'),
+                 height: Math.round(card.getBoundingClientRect().height),
+                 fits: box.scrollHeight <= box.clientHeight + 1 };
+      });
+      await sleep(600);
+      const first = await read();
+      await sleep(1500);
+      const later = await read();
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(600);
+      return { first, later, page: await read() };
+    """ % _go("new_tip"), tmp_path)
+    assert out["first"]["rows"] == out["later"]["rows"], f"the prompt tile keeps growing: {out}"
+    assert out["first"]["fits"] and out["later"]["fits"], out
+    assert out["page"]["fits"], f"the prompt's keys are cut off on the device page: {out}"
+
+
 # ---------------------------------------------------------------- W2-3
 def test_w23_trigger_rule_is_static():
     watch = _method("watchOptions")
