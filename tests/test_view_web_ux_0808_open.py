@@ -42,7 +42,7 @@ def test_an_info_that_resolves_a_warning_says_which():
 
 def test_the_transfer_maps_store_choice_resolves_its_warning(tmp_path, monkeypatch):
     from controller import user_config
-    from model import transfer_map as tm_module
+    from model import store_choice
     from model.transfer_map import TransferMap
     monkeypatch.delenv("STATION_MAP_DB", raising=False)
     monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
@@ -50,7 +50,7 @@ def test_the_transfer_maps_store_choice_resolves_its_warning(tmp_path, monkeypat
     monkeypatch.setattr(TransferMap, "choices", user_config)
     install = tmp_path / "install"
     (install / "src").mkdir(parents=True)
-    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    monkeypatch.setattr(store_choice, "install_root", lambda: install)
     seen = []
     events.subscribe(seen.append)
     try:
