@@ -382,13 +382,14 @@ def test_the_setup_drawer_withdraws_when_the_first_model_appears():
     the instrument-console pass Setup is a left drawer rather than a card in
     the rack, so "minimised" is "slid out" - the same edge, the same rule."""
     collapse = _body(r"collapseSetupOnLaunch\(models, setupState\) \{(.*?)\n  \}")
-    # Updated (2026-10-07, the sign-in gate): a model appearing, but not the
-    # signed-in user's sheet - signing in in Setup withdrew the drawer and
-    # showed the User page, as if the station had launched.
-    assert "Object.keys(models || {}).some((name) => name !== sheet)" in collapse, (
+    # Updated (owner 2026-10-07): the signed-in user is Setup's, never a
+    # model, so any model appearing is a launch - no name is filtered out.
+    assert "Object.keys(models || {}).length > 0" in collapse, (
         "the collapse is not driven by a model appearing in the state")
-    assert "const sheet = accountSheet(setupState);" in collapse, (
-        "the User sheet counts as a launched device")
+    assert "accountSheet" not in CODE and "'User'" not in CODE, (
+        "the page still treats a model named User as the account")
+    # The drawer's words follow the launch edge: Setup before, Settings after.
+    assert "this.applySetupWords();" in collapse
     assert "setupState.is_launched" in collapse, (
         "the Setup panel's own is_launched must close it too - a launch "
         "that builds no model still leaves the wizard")
@@ -857,9 +858,15 @@ def test_consecutive_commands_are_one_action_group():
     # artboards), wrapping when it must.
     assert re.search(r"\n\.actions\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*wrap",
                      STYLES), "the commands of a group are not one line"
-    assert re.search(r"\.drawer \.section-span > \.actions:last-child\s*\{[^}]*"
-                     r"flex:\s*1 0 100%", STYLES), (
-        "Setup's Launch row crowds its summary and four commands onto one line")
+    # Updated (UX audit 2026-10-07): the `.actions:last-child` rule never
+    # matched the Launch row (its L3 notes come after its keys); it matched
+    # Account's keys and sent them to a line of their own. Every Setup
+    # section line now ends in its keys at the right edge, and the Launch
+    # row's note ("Nothing to launch yet") takes the line under its keys.
+    assert re.search(r"\.drawer \.section-span > \.actions\s*\{[^}]*margin-left:\s*auto",
+                     STYLES), "a Setup section's keys are not at its right edge"
+    assert re.search(r"\n\.gate-note\s*\{[^}]*flex:\s*1 0 100%", STYLES), (
+        "Setup's Launch row crowds its note and its commands onto one line")
 
 
 def test_a_detached_log_is_a_button_and_is_polled_only_while_open():
@@ -1021,6 +1028,42 @@ def test_the_heartbeat_goes_on_while_hidden_and_stops_when_the_tab_goes():
     send = _body(r"async sendHeartbeat\(\) \{(.*?)\n  \}")
     assert "document.hidden) return;" not in send
     assert "'/api/heartbeat'" in send
+
+
+def test_the_close_guard_is_always_armed_and_the_tab_says_it_is_leaving():
+    """Owner 2026-10-07: closing the last tab quits the station, so the
+    browser asks on every close while the station runs - not only while
+    something is energized (was N3) - and never after Quit or on the page's
+    own reload. The pagehide says so to /api/leave, with the page's id, as
+    a keepalive request that outlives the page."""
+    guard = re.search(r"window\.addEventListener\('beforeunload', \(event\) => \{(.*?)\n    \}\);",
+                      APP_JS, re.S).group(1)
+    assert "energized" not in guard, "the guard is keyed on energized again"
+    assert "if (this.isShutDown || this.isReloading || this.isElsewhere) return;" in guard
+    assert "event.preventDefault();" in guard
+    assert "this.isReloading = true;" in _body(r"reloadPage\(\) \{(.*?)\n  \}")
+    watch = _body(r"watchVisibility\(\) \{(.*?)\n  \}")
+    assert "window.addEventListener('pagehide', () => this.sayLeaving());" in watch
+    assert "this.pageId = newPageId();" in watch, "a bfcache-restored page kept its old id"
+    leaving = _body(r"sayLeaving\(\) \{(.*?)\n  \}")
+    assert "if (this.isShutDown) return;" in leaving
+    assert "'/api/leave'" in leaving and "keepalive: true" in leaving
+    assert "page: this.pageId" in leaving
+    assert "body: JSON.stringify({ hidden, page, tab })" in APP_JS, "the worker's beat has no page id"
+
+
+def test_one_live_page_the_tab_id_travels_and_a_refusal_shows_the_notice():
+    """Owner 2026-10-07: one live browser connection. The tab's id is kept in
+    sessionStorage (a reload is the same tab) and rides every request; a
+    409 that says `X-Station-Live: no` shows the notice; the guard does not
+    ask on a page that is not the live one."""
+    assert "window.sessionStorage" in APP_JS and "'station-tab'" in APP_JS
+    wrapper = _body(r"async function api\(path, options\) \{(.*?)\n\}")
+    assert "'X-Station-Tab': TAB_ID" in wrapper
+    assert "response.headers.get('X-Station-Live') === 'no'" in wrapper
+    assert "onNotLive = () => this.setElsewhere(true);" in APP_JS
+    assert "this.isElsewhere) return;" in APP_JS
+    assert "'/api/take_over'" in APP_JS
 
 
 def test_the_heartbeat_has_its_own_interval():

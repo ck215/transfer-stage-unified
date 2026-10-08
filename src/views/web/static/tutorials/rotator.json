@@ -96,7 +96,7 @@
     {
       "page": "Rotator",
       "anchor": {"text": "Fault reason"},
-      "say": "A move that does not finish, or a controller error, shows here: check the stage, then use Reset & configure. If the controller will not answer, use Hard reset on its row in Setup, or check its cable and power.",
+      "say": "A move that does not finish, or a controller error, shows here: check the stage, then use Reset & configure. If the controller will not answer, use Hard reset on its row in Settings, or check its cable and power.",
       "wait": null
     }
   ]

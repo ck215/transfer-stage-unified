@@ -32,6 +32,65 @@ except ImportError:
 from devices.device import Device
 from events import events
 
+try:                                  # POSIX only; Windows opens COM ports exclusively
+    import fcntl as _fcntl
+    import termios as _termios
+except ImportError:                   # pragma: no cover - Windows
+    _fcntl = _termios = None
+
+#: Bench 2026-10-07: a second station's scan opened the ports the running
+#: station held - the open toggles DTR, which resets an Arduino Mega, and the
+#: handshake stole the other process's replies (Position Stream Stalled,
+#: 0xFF garble, Rotator timeouts). Every port this station opens is held
+#: exclusively: pyserial's `exclusive=True` (an flock other pyserial users
+#: honour) plus TIOCEXCL, which makes the kernel refuse any later open() of
+#: the tty with EBUSY - before that open could touch DTR. Windows already
+#: refuses a second open of a COM port; nothing changes there.
+EXCLUSIVE = _fcntl is not None and hasattr(_termios, "TIOCEXCL")
+
+#: The words for "another program holds this port" (EBUSY, or the flock).
+BUSY_WORDS = "in use by another program"
+
+
+def is_busy_error(exc):
+    """True when an open failed because another process holds the port."""
+    seen = exc
+    while seen is not None:
+        if getattr(seen, "errno", None) == 16:         # EBUSY
+            return True
+        text = str(seen)
+        if "Device or resource busy" in text or "exclusively lock" in text \
+                or "Resource busy" in text or "Access is denied" in text:
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
+
+
+def _open_serial(**settings):
+    """`pyserial.Serial(**settings)`, held exclusively where the OS allows."""
+    if EXCLUSIVE:
+        settings["exclusive"] = True
+    handle = pyserial.Serial(**settings)
+    fd = getattr(handle, "fd", None)
+    if EXCLUSIVE and isinstance(fd, int):
+        try:
+            _fcntl.ioctl(fd, _termios.TIOCEXCL)
+        except OSError as exc:        # not a tty (a test double): the flock stands
+            events.debug("Exclusive Hold Not Set", f"{settings.get('port')}: {exc}",
+                         source="SerialPort")
+    return handle
+
+
+def _close_serial(handle):
+    """Give the exclusive hold back, then close. Never raises."""
+    fd = getattr(handle, "fd", None)
+    if EXCLUSIVE and isinstance(fd, int) and getattr(handle, "is_open", False):
+        try:
+            _fcntl.ioctl(fd, _termios.TIOCNXCL)
+        except OSError:
+            pass
+    handle.close()
+
 
 class ConnectionState(str, enum.Enum):
     """What the transport actually knows about the link.
@@ -142,8 +201,8 @@ def query(port, baud_rate, payload, *, wait=0.1, xonxoff=False, timeout=0.2):
         payload = payload.encode("utf-8")
     handle = None
     try:
-        handle = pyserial.Serial(port, baudrate=baud_rate, timeout=timeout,
-                                 write_timeout=0.2, xonxoff=xonxoff)
+        handle = _open_serial(port=port, baudrate=baud_rate, timeout=timeout,
+                              write_timeout=0.2, xonxoff=xonxoff)
         handle.reset_input_buffer()
         handle.reset_output_buffer()
         handle.write(payload)
@@ -154,7 +213,7 @@ def query(port, baud_rate, payload, *, wait=0.1, xonxoff=False, timeout=0.2):
     finally:
         if handle is not None:
             try:
-                handle.close()
+                _close_serial(handle)
             except Exception:
                 pass
 
@@ -227,6 +286,8 @@ class SerialPort(Device):
     #: forcing itself through. Short enough that FULL STOP is not held up by
     #: a transaction in flight, long enough that the ordinary case still
     #: serialises.
+    #: The last open failed because another program holds the port.
+    open_busy = False
     PRIORITY_LOCK_TIMEOUT = 0.05
     #: How long a priority write waits for a write already on the wire. A
     #: frame is a few ms, so this only runs out on a writer wedged inside
@@ -507,7 +568,7 @@ class SerialPort(Device):
                 self._read_buffer = b""
             if handle is not None and getattr(handle, "is_open", False):
                 try:
-                    handle.close()
+                    _close_serial(handle)
                 except Exception as exc:
                     close_error = exc
         finally:
@@ -525,7 +586,7 @@ class SerialPort(Device):
     def _open_handle(self):
         if pyserial is None:
             raise TransportError("pyserial is not installed")
-        return pyserial.Serial(
+        return _open_serial(
             port=self.port, baudrate=self.baud_rate, bytesize=8, parity="N",
             stopbits=1, xonxoff=self.xonxoff, timeout=self.read_timeout,
             write_timeout=self.write_timeout)
@@ -552,16 +613,29 @@ class SerialPort(Device):
         try:
             handle = self._open_handle()
         except Exception as exc:
+            busy = is_busy_error(exc)
             with self._state_lock:
                 is_current = self._is_current(generation)
                 if is_current:
                     self._state = ConnectionState.LOST
+                    self.open_busy = busy
             if is_current:
                 self._note_state(ConnectionState.CONNECTING, ConnectionState.LOST,
                                  f"the port would not open: {exc}")
-                events.warn("Port Open Failed", f"{self.port}: {exc}",
-                            source=self._source, exception=exc)
+                if busy and getattr(self, "probe", False):
+                    # The scan says so in its own words (Setup); not an alarm.
+                    events.debug("Port In Use", f"{self.port}: {exc}",
+                                 source=self._source)
+                elif busy:
+                    events.warn("Port In Use", f"{self.port} is {BUSY_WORDS} (another "
+                                f"station still running?): it was not opened, and "
+                                f"nothing was sent to it.", source=self._source,
+                                exception=exc)
+                else:
+                    events.warn("Port Open Failed", f"{self.port}: {exc}",
+                                source=self._source, exception=exc)
             return
+        self.open_busy = False
         events.debug("Handle Open", f"{self.port} opened in "
                      f"{time.monotonic() - started:.3f}s; "
                      f"{'starting handshake' if self.has_handshake else 'no handshake'}",
@@ -575,7 +649,7 @@ class SerialPort(Device):
             events.debug("Open Abandoned", "close() or a reopen got there "
                          "first; discarding the handle", source=self._source)
             try:
-                handle.close()
+                _close_serial(handle)
             except Exception:
                 pass
             return
@@ -833,7 +907,7 @@ class SerialPort(Device):
                 self._handle = None
         if handle is not None:
             try:
-                handle.close()
+                _close_serial(handle)
             except Exception as exc:
                 events.debug("Close After Loss Failed", str(exc),
                              source=self._source, exception=exc)
@@ -929,7 +1003,7 @@ class SerialPort(Device):
                 self._identity = None
         if not is_current:
             try:
-                handle.close()
+                _close_serial(handle)
             except Exception:
                 pass
             return None
@@ -963,7 +1037,7 @@ class SerialPort(Device):
             return None
         if verified is None:     # the reopened handle failed at once
             try:
-                handle.close()
+                _close_serial(handle)
             except Exception:
                 pass
             return False

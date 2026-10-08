@@ -249,6 +249,15 @@ for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
     register(_built_in)
 del _built_in
 
+#: Owner 2026-10-07: "guest users should have no access to transfer map or
+#: sample map, just tool controls." The classes (never their names, which
+#: are being renamed) of the models only a signed-in user gets, with
+#: accounts on; a model drawn on one of their pages (Model.HOST: RGB
+#: Analysis on the Transfer Map's) goes with it. A Guest's launch skips
+#: them, a sign-in adds them to a running station, and a switch back to
+#: Guest removes them - refused while a trial is open.
+SIGNED_IN_ONLY = (TransferMap, SampleMap)
+
 # A3: the Transfer Map remembers the operator's store choice in the one
 # choices file. Wired here, at the composition root: `model/` never imports
 # the controller.
@@ -256,6 +265,15 @@ TransferMap.choices = user_config
 # 2026-10-07: the Sample DB's store is chosen and remembered the same way
 # (`sample_store`); it no longer defaults to a file inside the install.
 SampleMap.choices = user_config
+
+
+def is_signed_in_only(name):
+    """`name` is a `SIGNED_IN_ONLY` model, or one drawn on such a model's
+    page (its `HOST`)."""
+    owners = {cls.NAME for cls in SIGNED_IN_ONLY}
+    if name in owners:
+        return True
+    return getattr(MODEL_TYPES.get(name), "HOST", None) in owners
 
 
 #: `Setup(stable_root=...)`'s "find it yourself" (None means "there is none").
@@ -275,6 +293,7 @@ class PortProbe:
         super().__init__()
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
+        self._busy_ports = set()    # held by another program, this scan
 
     def scan_ports(self):
         """Attached serial ports as the wizard shows them.
@@ -366,7 +385,7 @@ class PortProbe:
         # rotator does not have to burn through both firmware handshake
         # timeouts before reaching the check that identifies it.
         name = self._identify_by_class(port, aborted)
-        if name or aborted():
+        if name or aborted() or port in self._busy_ports:
             self._log_probe(port, name, started)
             return name
 
@@ -375,7 +394,7 @@ class PortProbe:
             if aborted():
                 break
             name = self._identify_firmware(port, baud, aborted)
-            if name:
+            if name or port in self._busy_ports:
                 break
         self._log_probe(port, name, started)
         return name
@@ -399,6 +418,9 @@ class PortProbe:
                 if hook(port, aborted):
                     return name
             except Exception as exc:
+                if serial_port_module.is_busy_error(exc):
+                    self._note_busy(port, exc)
+                    return None
                 self._warn_probe(port, exc)
         return None
 
@@ -409,7 +431,9 @@ class PortProbe:
             device.probe = True   # the scan asks; an unanswered port is information
             device.open()
             identity = self._wait_identity(device, aborted)
-            if self._status_of(device) == LOST:
+            if self._status_of(device) == LOST and getattr(device, "open_busy", False) is True:
+                self._note_busy(port, f"busy at {baud} baud")
+            elif self._status_of(device) == LOST:
                 # `wait_open()` answers False both for "still connecting" and
                 # for "the open failed"; the state is the honest answer, and
                 # a port that could not be opened at all is worth saying out
@@ -491,6 +515,24 @@ class PortProbe:
         events.debug("Probe", f"{port} -> {name or 'nothing'} in "
                      f"{(time.monotonic() - started) * 1000:.0f} ms",
                      source=self.NAME)
+
+    def _note_busy(self, port, exc):
+        """Another program holds `port` (bench 2026-10-07: a second station's
+        scan reset the running station's boards). Nothing was sent to it and
+        no further open is tried this scan; said once, plainly, not as a
+        failure."""
+        events.debug("Port In Use", f"{port}: {exc}", source=self.NAME)
+        if port in self._busy_ports:
+            return
+        self._busy_ports.add(port)
+        events.info("Port In Use", f"{port} is {serial_port_module.BUSY_WORDS} "
+                    f"(another station still running?), so it was not checked. "
+                    f"Quit that program, then press Refresh.", source=self.NAME)
+
+    @property
+    def busy_ports(self):
+        """The ports the last scan found held by another program."""
+        return sorted(self._busy_ports)
 
     def _warn_probe(self, port, exc):
         """One warning per port per scan; the rest go to the log file."""
@@ -603,6 +645,7 @@ class Setup(PortProbe, Panel):
         self._chosen = set()        # rows the operator set by hand
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
+        self._busy_ports = set()    # held by another program, this scan
         self._is_launched = False
         #: Rows whose board answered only after the launch: {key: port}. Not
         #: launched (owner 2026-10-07: a new device needs a restart).
@@ -789,7 +832,35 @@ class Setup(PortProbe, Panel):
         """What Launch builds: every row that is connected (its board
         answered on its port), every row set to SIM, and every row with no
         port. A row that is not connected is dropped here and nowhere else
-        (owner 2026-10-07; there is no Launch tick any more)."""
+        (owner 2026-10-07; there is no Launch tick any more). A Guest's
+        launch leaves out the signed-in-only models (`SIGNED_IN_ONLY`)."""
+        configs = self._all_configs()
+        if self.guest_locked:
+            configs = [c for c in configs if not is_signed_in_only(c["model"])]
+        return configs
+
+    @property
+    def guest_locked(self):
+        """True while a Guest works with accounts on: the Transfer Map and
+        the Sample Map (and what they host) are not theirs (owner
+        2026-10-07)."""
+        user = getattr(self, "user", None)
+        return bool(PROFILES_ENABLED) and (user is None or user.is_guest)
+
+    def session_refusal(self, name, command=""):
+        """Why `name`'s `command` is refused for this session, or "": a
+        signed-in-only model while a Guest works. The Web server asks
+        before it runs any model command (a belt under their absence). A
+        stop is never refused (`Panel.UNGATED_COMMANDS`)."""
+        if command in Panel.UNGATED_COMMANDS:
+            return ""
+        if self.guest_locked and is_signed_in_only(name):
+            return (f"{name} is for signed-in users: a Guest has the tool "
+                    "controls only. Sign in (the account menu, Switch user) "
+                    "to use it.")
+        return ""
+
+    def _all_configs(self):
         with self._lock:
             found = dict(self._found)
         configs = []
@@ -976,6 +1047,7 @@ class Setup(PortProbe, Panel):
                              "the Flashing cell is empty.")
             self._abort.clear()
             self._warned_ports.clear()
+            self._busy_ports.clear()
             # A port a launched model holds is never probed (opening it
             # again would reset its board under the model): what it
             # answered before stands.
@@ -1054,6 +1126,11 @@ class Setup(PortProbe, Panel):
                 detected = sum(1 for name in self._found.values() if name)
             self.scan_status = ("ready" if not detected else
                                 f"ready - {detected} device(s) detected")
+            busy = self.busy_ports
+            if busy:
+                self.scan_status += (f"; {', '.join(busy)} "
+                                     f"{'is' if len(busy) == 1 else 'are'} "
+                                     f"{serial_port_module.BUSY_WORDS}")
         events.debug("Scan", f"{self.scan_status}; {len(targets)} port(s) in "
                      f"{time.monotonic() - started:.1f} s", source=self.NAME)
         self._scan_settled = True
@@ -1358,6 +1435,10 @@ class Setup(PortProbe, Panel):
         them anywhere, and only a process restart recovered (MANAGER-5).
         """
         configs = self.configs if configs is None else list(configs)
+        if self.guest_locked:
+            # A Guest's station has no Transfer Map or Sample Map (owner
+            # 2026-10-07); a sign-in adds them (`_add_signed_in_only`).
+            configs = [c for c in configs if not is_signed_in_only(c.get("model"))]
         self.validate(configs)
         self._check_identities(configs)
 
@@ -1385,16 +1466,14 @@ class Setup(PortProbe, Panel):
         self._is_launched = True
         with self._lock:
             self._seen.clear()
-        self._keep_account_page()       # the reset above closed the User sheet
         self._refresh_rows()
         events.info("Launched", ", ".join(built), source=self.NAME)
         return built
 
     # -- the account (owner request 2026-10-07; was the Phase 1 profiles) ---------
-    #: The section's title. "Account" in the 2026-10-07 brief; still "Profile"
-    #: while `tests/test_launchers.py` and `tests/test_setup_registry.py` pin
-    #: it (outside the accounts write set; see handoff/fix-accounts.md).
-    ACCOUNT_SECTION = "Account"
+    #: The section's title: the station's defaults, the accounts' one
+    #: station-wide control (the user's own are on the account menu).
+    ACCOUNT_SECTION = "Station defaults"
     #: Merged with the Trial store row's fields above (A3): a second plain
     #: `PARAMS =` here would replace them.
     PARAMS = {**PARAMS,
@@ -1411,7 +1490,7 @@ class Setup(PortProbe, Panel):
     #: Account section; they stay commands of Setup, allowed by name here
     #: (`_allows`, `_apply_inputs`) exactly as the schema allowed them before.
     GATE_COMMANDS = frozenset({"sign_in", "create_account", "open_as_guest",
-                               "sign_out"})
+                               "sign_out", "switch_user"})
     GATE_INPUTS = ("account_email", "account_password")
 
     def _init_accounts(self):
@@ -1423,7 +1502,7 @@ class Setup(PortProbe, Panel):
         self.profiles = profiles_module.ProfileService(
             profiles_module.LocalFilesSource(root), self._params_of)
         self.users = UserStore(user_store_module.default_path())
-        self.user = User.guest()
+        self.user = self._user_for(None)
         self._account_lock = threading.RLock()
         # The sign-in gate: nobody has chosen how this session works yet.
         # With accounts off there is nothing to choose.
@@ -1537,7 +1616,8 @@ class Setup(PortProbe, Panel):
         """The station's defaults and nothing else. Signs out whoever is in."""
         self._take_password()
         if not self.user.is_guest:
-            self._become(User.guest())
+            self._refuse_guest_mid_trial()
+            self._become(self._user_for(None))
         self._chose_account()
         return self.account_status
 
@@ -1563,16 +1643,19 @@ class Setup(PortProbe, Panel):
         self._take_password()
         if self.user.is_guest:
             self._refuse("Nobody is signed in: the station is on its defaults.")
-        self._become(User.guest())
+        self._refuse_guest_mid_trial()
+        self._become(self._user_for(None))
         self._account_chosen = False
         return self.account_status
 
     def switch_user(self):
         """Switch user: back to the sign-in screen. A signed-in user is signed
-        out (as `sign_out`); a Guest just chooses again. Never refused."""
+        out (as `sign_out`); a Guest just chooses again. Refused only while
+        a trial is open (a Guest has no Transfer Map)."""
         self._take_password()
         if not self.user.is_guest:
-            self._become(User.guest())
+            self._refuse_guest_mid_trial()
+            self._become(self._user_for(None))
         self._account_chosen = False
         return self.account_status
 
@@ -1585,15 +1668,19 @@ class Setup(PortProbe, Panel):
 
     @property
     def account(self):
-        """The session, for a view's sign-in screen: whether a choice was
-        made, who is in, and the name of the signed-in user's sheet (a model
-        in the Controller that is not a launched device)."""
+        """The session, for a view's sign-in screen and its account menu:
+        whether a choice was made, who is in (`name`: the display name, or
+        "Guest"). The user's own sheet is `Setup.user`, never a model."""
         return {"enabled": bool(PROFILES_ENABLED),
                 "chosen": self._account_chosen,
                 "signed_in": not self.user.is_guest,
                 "email": "" if self.user.is_guest else self.user.email,
+                "name": self.user.user_name,
                 "status": self.account_status,
-                "sheet": User.NAME}
+                # What a Guest does not get (owner 2026-10-07): a view
+                # greys what needs them (the tutorials that use them).
+                "signed_in_only": sorted(n for n in MODEL_TYPES if is_signed_in_only(n))
+                if PROFILES_ENABLED else []}
 
     def _allows(self, command, args=()):
         """The sign-in screen's commands are Setup's though no control of the
@@ -1619,14 +1706,23 @@ class Setup(PortProbe, Panel):
             setattr(self, name, value)
 
     def _user_for(self, email):
-        return User(store=self.users, email=email, params_of=self._params_of,
-                    on_sign_out=self.sign_out)
+        """The session's `User` for `email` (None: a Guest), wired to this
+        Setup: the open models for "Remember current values", and Sign out
+        and Switch user. Never added to the Controller (owner 2026-10-07:
+        the user is a settings menu, not a device); a view reaches its sheet
+        through `Setup.user`."""
+        return User(store=self.users if email else None, email=email,
+                    params_of=self._params_of, models=self._models_open,
+                    on_sign_out=self.sign_out, on_switch_user=self.switch_user)
+
+    def _models_open(self):
+        return dict(self.controller.models) if self.controller is not None else {}
 
     def _become(self, user):
         """Switch the session: undo the previous user's config on every open
-        model (`User.revert`), load the new one's (`User.load_into`, which
-        stamps the operator), and keep the new user's sheet in the
-        Controller (a Guest has none)."""
+        model (`User.revert`) and load the new one's (`User.load_into`, which
+        stamps the operator). The user is Setup's, never a Controller
+        model."""
         with self._account_lock:
             previous, self.user = self.user, user
             models = self.controller.models if self.controller is not None else {}
@@ -1639,46 +1735,69 @@ class Setup(PortProbe, Panel):
                 events.info("Signed In", f"{user.user_name} ({user.email}).",
                             source=self.NAME)
             self._warn_not_applied(user.load_into(models, self.profiles))
-            self._show_account_page()
+            if PROFILES_ENABLED and user.is_guest and not previous.is_guest:
+                self._drop_signed_in_only()
             self._follow_store(previous)
+            if PROFILES_ENABLED and previous.is_guest and not user.is_guest:
+                self._add_signed_in_only()
+            self._refresh_rows()
 
-    def _show_account_page(self):
-        """One `User` page while someone is signed in, none for a Guest. A
-        fresh model each time: one the Controller closed is latched and done."""
+    # -- what a Guest does not get (owner 2026-10-07) -------------------------------
+    def _open_signed_in_only(self):
         if self.controller is None:
+            return {}
+        return {name: model for name, model in self.controller.models.items()
+                if is_signed_in_only(name)}
+
+    def _refuse_guest_mid_trial(self):
+        """Back to Guest takes the Transfer Map and the Sample Map away, so
+        not while one of them is busy (an armed trial, a recording)."""
+        if not PROFILES_ENABLED or self.user.is_guest:
             return
-        with self._account_lock:
-            if User.NAME in self.controller.model_names:
-                self.controller.remove(User.NAME)
-            if self.user.is_guest:
-                # A Guest has no sheet to reopen: the rail's Reopen list
-                # does not offer one (it would only be refused).
-                remembered = getattr(self.controller, "_remembered", None)
-                if isinstance(remembered, dict):
-                    with getattr(self.controller, "_lock", threading.RLock()):
-                        remembered.pop(User.NAME, None)
-                return
-            self.user = self._user_for(self.user.email)
-            self.controller.add(User.NAME, self.user,
-                                {"model": User.NAME, "sim": False})
+        busy = [name for name, model in self._open_signed_in_only().items()
+                if getattr(model, "is_active", False)]
+        if busy:
+            self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
+                         "open. Finish or abort it first: a Guest has no Transfer "
+                         "Map or Sample Map, so they close when you switch.")
 
-    def _keep_account_page(self):
-        """After a build: the Controller's reset closed the signed-in user's
-        sheet with everything else; it comes back with the station."""
-        try:
-            self._show_account_page()
-        except Exception as exc:
-            events.warn("User Sheet Not Reopened", f"{self.user.user_name}'s sheet "
-                        "could not be reopened after the launch; sign in again to "
-                        "get it back.", source=self.NAME, exception=exc)
+    def _drop_signed_in_only(self):
+        """A Guest's station: the signed-in-only models closed (stopped,
+        disconnected) - a guest first, so a host never closes over one."""
+        names = sorted(self._open_signed_in_only(),
+                       key=lambda n: getattr(MODEL_TYPES.get(n), "HOST", None) is None)
+        for name in names:
+            try:
+                self.controller.remove(name)
+            except Exception as exc:
+                events.warn("Model Not Closed", f"{name} did not close for the Guest "
+                            "session.", source=self.NAME, exception=exc)
+        if names:
+            events.info("Closed for Guest", f"{_and(names)}: for signed-in users.",
+                        source=self.NAME)
 
-    def _reopen_account_page(self):
-        """`Controller.reopen("User")`: the signed-in user's sheet again."""
-        if self.user.is_guest:
-            self._refuse("Nobody is signed in, so there is no User sheet to open. "
-                         "Sign in on the sign-in screen (Setup, Switch user).")
-        self.user = self._user_for(self.user.email)
-        return self.user
+    def _add_signed_in_only(self):
+        """A sign-in on a running station: the signed-in-only models the
+        launch left out, built now (they need no port), the user's config
+        and store on them. Nothing else restarts."""
+        if self.controller is None or not self._is_launched:
+            return
+        running = set(self.controller.model_names)
+        added = []
+        for config in self._all_configs():
+            name = config["model"]
+            if not is_signed_in_only(name) or name in running:
+                continue
+            try:
+                self.controller.add(name, self.model_from_config(config), config)
+            except Exception as exc:
+                events.warn("Model Not Opened", f"{name} could not be opened for "
+                            f"{self.user.user_name}; press Relaunch in Settings.",
+                            source=self.NAME, exception=exc)
+                continue
+            added.append(name)
+        if added:
+            events.info("Opened for Signed-in User", _and(added), source=self.NAME)
 
     def _apply_account(self, model):
         """At build and reopen: the station's defaults, the signed-in user's
@@ -1730,16 +1849,15 @@ class Setup(PortProbe, Panel):
         return sorted(values)
 
     def _account_section(self):
-        """First on the page (user-system section 2.4): who is in, the way
-        back to the sign-in screen, and the station's defaults. Signing in,
-        making an account and choosing Guest happen on the sign-in screen
-        before Setup (2026-10-07, the gate; `GATE_COMMANDS`). "Remember
-        current values as my defaults" is on the signed-in user's own sheet
-        (`model.user`)."""
+        """First on the page: the station-wide half of the accounts, the
+        station's defaults everyone starts from. Who is in, Switch user and
+        everything that is one user's own (name, password, "Remember current
+        values as my defaults") are on the user's sheet (`model.user`), the
+        rail's account menu (owner 2026-10-07). Signing in, making an
+        account and choosing Guest happen on the sign-in screen
+        (`GATE_COMMANDS`)."""
         return sch.section(
             self.ACCOUNT_SECTION,
-            sch.readonly("Signed in", "account_status", role="info"),
-            sch.button("Switch user", "switch_user", role="neutral"),
             sch.button("Save station settings", "save_station_settings",
                        role="neutral"),
             # 2026-10-07 (B): the signed-in user's backup of their stores.
@@ -1755,8 +1873,9 @@ class Setup(PortProbe, Panel):
         """One config -> one Model. `Controller.factory`, so `reopen(name)`
         reconstructs a closed tab's model from the remembered config."""
         model_class = MODEL_TYPES.get(config.get("model"))
-        if model_class is None and config.get("model") == User.NAME:
-            return self._reopen_account_page()      # not registered: no Setup row
+        refusal = self.session_refusal(config.get("model"))
+        if refusal:
+            raise Refused(refusal)      # a Guest's build or reopen of a map
         if model_class is None:
             raise Refused(f"{config.get('model')!r} is not a known model")
         is_sim = bool(config.get("sim"))
@@ -2930,6 +3049,8 @@ class Setup(PortProbe, Panel):
         if seen:
             return f"seen on {seen}: restart to launch"
         choice = getattr(self, f"{key}_port")
+        if self.guest_locked and is_signed_in_only(row["name"]):
+            return "sign in to use"
         if choice == SIM:
             return "simulated"
         if not row["needs_port"]:

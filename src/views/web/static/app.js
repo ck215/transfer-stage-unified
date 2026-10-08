@@ -21,6 +21,12 @@ const DATA_POLL_MS = 1000;
 const HEARTBEAT_MS = 2000;
 const STALE_AFTER_S = 1.0;
 const SETUP_NAME = '__setup__';
+//: The account menu's sheet (`views.web.server.USER_NAME`): Setup's signed-in
+//: user, never a model (owner 2026-10-07).
+const USER_NAME = '__user__';
+//: The event a side window owned by another script closes on (a press on a
+//: rail page, the account menu opening, the sign-in screen).
+const SIDE_WINDOWS_CLOSE = 'station-side-windows-close';
 //: rb-restart R4: after Restart the page asks for /api/state this often, for
 //: this long, and reloads itself once a NEW station (another `boot`) answers.
 const RESTART_POLL_MS = 2000;
@@ -74,6 +80,27 @@ const OPTION_CHARS = 22;
 // ==========================================================================
 // fetch, bounded. Overridable so a test can shrink it.
 // ==========================================================================
+//: One live page (owner 2026-10-07): this tab's id, kept in sessionStorage so
+//: a reload is the same tab and keeps (or regains) the live seat; another
+//: tab or window is another id. Null where there is no sessionStorage: the
+//: page then names no tab and is treated as it was before.
+const TAB_ID = (() => {
+  try {
+    const store = window.sessionStorage;
+    let id = store.getItem('station-tab');
+    if (!id) {
+      id = newPageId();
+      store.setItem('station-tab', id);
+    }
+    return id;
+  } catch (err) {
+    return null;
+  }
+})();
+//: Called when the station refuses a command because this page is not the
+//: live one (409, `X-Station-Live: no`): the dashboard shows its notice.
+let onNotLive = null;
+
 function fetchTimeoutMs() {
   return window.__FETCH_TIMEOUT_MS__ || 8000;
 }
@@ -82,7 +109,15 @@ async function api(path, options) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), fetchTimeoutMs());
   try {
-    return await fetch(path, Object.assign({}, options, { signal: controller.signal }));
+    const sent = Object.assign({}, options, { signal: controller.signal });
+    // One live page: every request names its tab (the server refuses a
+    // command from a tab that is not the live one).
+    if (TAB_ID) sent.headers = Object.assign({}, options && options.headers, { 'X-Station-Tab': TAB_ID });
+    const response = await fetch(path, sent);
+    if (response.status === 409 && response.headers.get('X-Station-Live') === 'no' && onNotLive) {
+      onNotLive();
+    }
+    return response;
   } finally {
     clearTimeout(timer);
   }
@@ -132,15 +167,15 @@ async function apiPostChecked(path, body) {
 //: fetch is bounded like every other (WEB-22).
 const HEARTBEAT_WORKER_SOURCE = [
   "'use strict';",
-  "let url = '', every = 0, bound = 8000, hidden = false, timer = null;",
+  "let url = '', every = 0, bound = 8000, hidden = false, page = '', tab = null, timer = null;",
   "async function beat() {",
   "  const controller = new AbortController();",
   "  const clock = setTimeout(() => controller.abort(), bound);",
   "  try {",
   "    const response = await fetch(url, { method: 'POST', signal: controller.signal,",
-  "      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden }) });",
+  "      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden, page, tab }) });",
   "    const answer = await response.json();",
-  "    postMessage({ ok: Boolean(answer && answer.status === 'ok') });",
+  "    postMessage({ ok: Boolean(answer && answer.status === 'ok'), live: !(answer && answer.live === false) });",
   "  } catch (err) {",
   "    postMessage({ ok: false });",
   "  } finally {",
@@ -151,7 +186,7 @@ const HEARTBEAT_WORKER_SOURCE = [
   "  const said = message.data || {};",
   "  if ('hidden' in said) hidden = Boolean(said.hidden);",
   "  if (said.start && !timer) {",
-  "    url = said.url; every = said.every; bound = said.bound || bound;",
+  "    url = said.url; every = said.every; bound = said.bound || bound; page = said.page || ''; tab = said.tab || null;",
   "    beat();",
   "    timer = setInterval(beat, every);",
   "  }",
@@ -172,6 +207,15 @@ function heartbeatWorker() {
   } finally {
     URL.revokeObjectURL(source);
   }
+}
+
+/** A fresh id for this page's heartbeats and its leave (owner 2026-10-07):
+ *  the server tells a reload (a new id checking in) from a beat that was
+ *  still in flight when this page went (the old id). */
+function newPageId() {
+  const c = typeof crypto !== 'undefined' ? crypto : null;
+  if (c && c.randomUUID) return c.randomUUID();
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
 // ==========================================================================
@@ -2175,8 +2219,12 @@ class PanelCard {
         const head = tableHead(sections, columns);
         if (head) this.body.appendChild(head);
       }
+      // A `group` section is a named group of controls (a probe's
+      // Autonomous and Manual, owner 2026-10-07): its title is drawn even
+      // in tier 1, where a section's title is otherwise unseen.
       const block = make('div', 'section' + (isRow ? ' section-row' : '')
-                         + (spans ? ' section-span' : ''));
+                         + (spans ? ' section-span' : '')
+                         + (!isRow && section.layout === 'group' ? ' section-group' : ''));
       // An untitled row claims no name column (the rule views/qt.py settled
       // on); a titled one's caption is the row's name. A well does not open
       // onto a heading that repeats its own disclosure ("Diagnostics" under
@@ -3237,13 +3285,6 @@ class PanelCard {
   }
 }
 
-/** The name of the signed-in user's sheet (`state.account.sheet` of Setup),
- *  which is never a launched device. "User" when Setup does not say. */
-function accountSheet(setupState) {
-  const account = setupState && setupState.account;
-  return (account && account.sheet) || 'User';
-}
-
 /** The label on a confirmation's yes-button: the action, not "OK". */
 function confirmLabel(result) {
   const command = String((result && result.command) || '');
@@ -3277,6 +3318,17 @@ class Dashboard {
     this.isPolling = false;
     this.heartbeatTimer = null;
     this.heartbeatWorker = null;
+    //: Another page is the live one (owner 2026-10-07): this one shows the
+    //: "open in another window" notice and only stops.
+    this.isElsewhere = false;
+    this.elsewhereGate = null;
+    onNotLive = () => this.setElsewhere(true);
+    //: This page's id on its heartbeats and its leave; a page restored from
+    //: the back-forward cache takes a new one.
+    this.pageId = newPageId();
+    //: The page is reloading itself (Restart, a new station run): the
+    //: browser's "Leave site?" must not ask about the page's own reload.
+    this.isReloading = false;
     this.setupCard = null;
     this.isLaunched = false;
     this.isEstopped = false;
@@ -3368,6 +3420,13 @@ class Dashboard {
       drawerClose: document.getElementById('drawer-close'),
       scrim: document.getElementById('scrim'),
       setupLink: document.getElementById('setup-link'),
+      drawerTitle: document.querySelector('#setup-drawer .drawer-title'),
+      settingsNote: document.getElementById('settings-note'),
+      accountLink: document.getElementById('account-link'),
+      accountName: document.querySelector('#account-link .account-name'),
+      accountDrawer: document.getElementById('account-drawer'),
+      accountBody: document.getElementById('account-body'),
+      accountClose: document.getElementById('account-close'),
       quitLink: document.getElementById('quit-link'),
       // The rail's other keys (not the stop, Setup or Quit): off while the
       // sign-in screen is up.
@@ -3411,7 +3470,23 @@ class Dashboard {
     this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true));
     this.dom.quitLink.addEventListener('click', () => this.quitStation());
     this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
-    this.dom.scrim.addEventListener('click', () => this.setDrawerOpen(false));
+    this.dom.scrim.addEventListener('click', () => {
+      this.setDrawerOpen(false);
+      this.setAccountOpen(false);
+    });
+    //: The account menu (owner 2026-10-07): the signed-in user's sheet,
+    //: Setup's `user` through `/api/user`, never a model.
+    this.isAccountOpen = false;
+    this.userCard = null;
+    this.userKey = null;
+    if (this.dom.accountLink) {
+      this.dom.accountLink.addEventListener('click', () => {
+        if (this.isAccountOpen) this.setAccountOpen(false);
+        else this.openAccount();
+      });
+      this.dom.accountClose.addEventListener('click', () => this.setAccountOpen(false));
+    }
+    this.applySetupWords();
     // One keyboard handler, in the capture phase so nothing on the page can
     // swallow it first. Ctrl+. stops every model from anywhere, a
     // text box included (F9). Escape answers the top-most thing over the page: a
@@ -3434,15 +3509,19 @@ class Dashboard {
       // does not also withdraw.
       if (document.activeElement && document.activeElement.closest
           && document.activeElement.closest('.log-window')) return;
+      if (this.isAccountOpen && this.dom.modal.hidden) { this.setAccountOpen(false); return; }
       if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false);
     }, true);
-    // Closing the tab silences the heartbeat, and the watchdog then stops
-    // the station: while anything is ENERGIZED - a probe merely in a mode
-    // included, not only one moving, heating or recording - the browser
-    // asks first (F24, WDG-12; N3 keys it on `state.energized`). After Quit
-    // there is nothing left to guard.
+    // Closing the last tab quits the station (owner 2026-10-07, as the Qt
+    // app asked "are you sure you want to exit" on close), so the browser
+    // asks first on every close, reload or navigation away while the station
+    // runs - not only while something is energized (was F24/N3). The words
+    // are the browser's own generic "Leave site?": no browser shows a page's
+    // text any more, and none asks for a page the operator never clicked or
+    // typed in. After Quit there is nothing left to guard, and the page's
+    // own reloads (Restart, a new station run) do not ask.
     window.addEventListener('beforeunload', (event) => {
-      if (!this.energized.length || this.isShutDown) return;
+      if (this.isShutDown || this.isReloading || this.isElsewhere) return;
       event.preventDefault();
       event.returnValue = '';
     });
@@ -3478,6 +3557,8 @@ class Dashboard {
     // Setup comes after the sign-in screen, never beside it.
     if (this.isGated) isOpen = false;
     const wasOpen = this.isDrawerOpen;
+    // One side window at a time: Settings replaces the account menu.
+    if (isOpen && !wasOpen) this.setAccountOpen(false, true);
     const active = document.activeElement;
     const hadFocus = this.dom.drawer.contains(active);
     this.isDrawerOpen = Boolean(isOpen);
@@ -3486,8 +3567,9 @@ class Dashboard {
     }
     this.dom.drawer.classList.toggle('open', this.isDrawerOpen);
     // The scrim dims what the drawer is covering. At boot it is covering an
-    // empty rack, so there is nothing to dim and no scrim.
-    this.dom.scrim.hidden = !(this.isDrawerOpen && this.cards.size > 0);
+    // empty rack, so there is nothing to dim and no scrim. The account menu
+    // dims what it covers too.
+    this.dom.scrim.hidden = !this.wantsScrim();
     this.dom.setupLink.hidden = this.isDrawerOpen || this.isGated;
     this.dom.drawer.setAttribute('aria-hidden', this.isDrawerOpen ? 'false' : 'true');
     // While the drawer is open the rack behind it is inert, so Tab walks the
@@ -3500,10 +3582,150 @@ class Dashboard {
     // that brings it back).
     if (this.isDrawerOpen && !wasOpen) {
       this.dom.drawer.focus({ preventScroll: true });
-    } else if (!this.isDrawerOpen && wasOpen
+    } else if (!this.isDrawerOpen && wasOpen && !this.isNavigating
                && (hadFocus || document.activeElement === document.body)) {
       this.restoreFocus(this.drawerReturn, this.dom.setupLink);
     }
+  }
+
+  wantsScrim() {
+    return (this.isDrawerOpen && this.cards.size > 0) || this.isAccountOpen;
+  }
+
+  /** "Setup" before the launch, "Settings" after it (owner 2026-10-07): once
+   *  the station runs the devices are fixed for the session, and what is
+   *  left - Hard reset, Restart, the update and firmware rows, the
+   *  station's defaults - is settings, not set-up. The note at the top of
+   *  the drawer says so. Escape and Close behave the same under both. */
+  applySetupWords() {
+    const word = this.isLaunched ? 'Settings' : 'Setup';
+    if (this.setupWord === word) return;
+    this.setupWord = word;
+    putText(this.dom.setupLink, word);
+    this.dom.setupLink.title = this.isLaunched
+      ? 'Open Settings: Hard reset, Restart, updates, firmware and the station\'s defaults'
+      : 'Open Setup: ports, devices and launch';
+    this.dom.drawer.setAttribute('aria-label', word);
+    if (this.dom.drawerTitle) putText(this.dom.drawerTitle, word);
+    this.dom.drawerClose.title = 'Close ' + word + ' (Escape). The ' + word
+      + ' button on the rail brings it back.';
+    if (this.dom.settingsNote) this.dom.settingsNote.hidden = !this.isLaunched;
+  }
+
+  // -- the account menu (owner 2026-10-07) ------------------------------------
+  //
+  // The signed-in user is a settings menu, not a device: the rail's account
+  // key at the top of the page list opens the user's sheet beside the rail,
+  // as Settings opens, and never over the stop. One side window at a time.
+  async openAccount() {
+    if (this.isGated || this.isShutDown) return;
+    this.setAccountOpen(true);
+    await this.refreshUser();
+  }
+
+  setAccountOpen(isOpen, quietly) {
+    if (!this.dom.accountDrawer) return;
+    if (this.isGated) isOpen = false;
+    const wasOpen = this.isAccountOpen;
+    if (Boolean(isOpen) === wasOpen) return;
+    if (isOpen) {
+      this.setDrawerOpen(false);
+      this.closeOtherSideWindows();
+    }
+    const hadFocus = this.dom.accountDrawer.contains(document.activeElement);
+    this.isAccountOpen = Boolean(isOpen);
+    this.dom.accountDrawer.classList.toggle('open', this.isAccountOpen);
+    this.dom.accountDrawer.setAttribute('aria-hidden', this.isAccountOpen ? 'false' : 'true');
+    this.dom.accountLink.setAttribute('aria-expanded', this.isAccountOpen ? 'true' : 'false');
+    this.dom.scrim.hidden = !this.wantsScrim();
+    this.updateInert();
+    if (this.isAccountOpen) {
+      this.dom.accountDrawer.focus({ preventScroll: true });
+    } else if (!quietly && !this.isNavigating
+               && (hadFocus || document.activeElement === document.body)) {
+      this.restoreFocus(this.dom.accountLink, this.dom.cards);
+    }
+  }
+
+  /** A side window another script owns (one marked `data-side-window`,
+   *  such as the step-by-step guides' list) is asked to close by an event
+   *  it listens for; this page does not reach into it. */
+  hasOtherSideWindow() {
+    return Boolean(document.querySelector('[data-side-window]:not([hidden])'));
+  }
+
+  closeOtherSideWindows() {
+    window.dispatchEvent(new CustomEvent(SIDE_WINDOWS_CLOSE));
+  }
+
+  /** The rail's account key: the signed-in name (or Guest), from Setup's
+   *  `state.account`. Hidden with accounts off and on the sign-in screen. */
+  renderAccountLink(setupState) {
+    const link = this.dom.accountLink;
+    if (!link) return;
+    const account = setupState && setupState.account;
+    const show = Boolean(account && account.enabled !== false && account.chosen !== false);
+    if (link.hidden !== !show) link.hidden = !show;
+    if (!show) { if (this.isAccountOpen) this.setAccountOpen(false); return; }
+    const name = String(account.name || (account.signed_in ? account.email : 'Guest') || 'Guest');
+    putText(this.dom.accountName, name);
+    putAttr(link, 'aria-label', 'Account: ' + name);
+    putAttr(link, 'title', account.signed_in
+      ? 'Your account: name, password, your defaults, Switch user and Sign out'
+      : 'Guest: the station\'s defaults. Sign in or switch user here');
+    link.classList.toggle('is-guest', !account.signed_in);
+    if (this.isAccountOpen) this.refreshUser();
+  }
+
+  /** The account sheet, fetched while the menu is open: rebuilt when who it
+   *  is for changes (a Guest's sheet and a user's differ), else refreshed. */
+  async refreshUser() {
+    if (!this.dom.accountBody || this.isUserLoading) return;
+    this.isUserLoading = true;
+    try {
+      const sheet = await apiGet('/api/user');
+      if (!sheet || !sheet.schema || !sheet.schema.sections) return;
+      const state = sheet.state || {};
+      const key = (state.is_guest ? 'guest' : 'user:' + (state.email || ''))
+        + '\n' + sheet.schema.sections.map((s) => s.title).join('|');
+      if (key !== this.userKey || !this.userCard) {
+        if (this.userCard) this.userCard.close();
+        this.userKey = key;
+        this.userCard = new PanelCard(this, USER_NAME, sheet.schema, { title: 'Account' });
+        this.userCard.node.classList.add('account-card');
+        this.dom.accountBody.appendChild(this.userCard.node);
+      }
+      this.userCard.refresh(state);
+    } catch (err) {
+      /* the next poll retries */
+    } finally {
+      this.isUserLoading = false;
+    }
+  }
+
+  /** Owner 2026-10-07: a press on a page in the rail closes whatever side
+   *  window is open (Settings, the account menu, any `data-side-window`) and
+   *  shows that page, focus on the page. Not while the sign-in screen is up
+   *  (the list is inert then), and an open confirmation or acknowledgement
+   *  keeps priority: the press is not taken, the dialog keeps focus. */
+  navigateTo(name) {
+    if (this.isGated || this.isShutDown) return;
+    if (this.confirmPending) { this.dom.confirmNo.focus({ preventScroll: true }); return; }
+    if (!this.dom.modal.hidden) { this.dom.modalOk.focus({ preventScroll: true }); return; }
+    if (!this.dom.picker.hidden) return;
+    const hadWindow = this.isDrawerOpen || this.isAccountOpen || this.hasOtherSideWindow();
+    this.isNavigating = true;
+    try {
+      this.setDrawerOpen(false);
+      this.setAccountOpen(false);
+      this.closeOtherSideWindows();
+    } finally {
+      this.isNavigating = false;
+    }
+    this.showPage(name);
+    // A device page took focus (showPage); the Overview takes it too when a
+    // side window had it, so it never falls back onto that window's key.
+    if (!this.opened && hadWindow) this.dom.cards.focus({ preventScroll: true });
   }
 
   /** What may take focus right now: the rail never goes inert - the stop
@@ -3517,12 +3739,15 @@ class Dashboard {
     const setInert = (node, flag) => { if (node && node.inert !== flag) node.inert = flag; };
     const gone = this.isShutDown;
     // The sign-in screen: everything but it and the rail's stop and Quit.
-    const gated = this.isGated;
-    setInert(this.dom.cards, covered || this.isDrawerOpen || gated || gone);
+    // Another page is the live one: everything but the notice and the stop.
+    const gated = this.isGated || this.isElsewhere;
+    setInert(this.dom.cards, covered || this.isDrawerOpen || this.isAccountOpen || gated || gone);
     setInert(this.dom.logPanel, covered || gated || gone);
     setInert(this.dom.drawer, covered || !this.isDrawerOpen || gated || gone);
+    setInert(this.dom.accountDrawer, covered || !this.isAccountOpen || gated || gone);
     setInert(this.dom.nav, gated);
-    setInert(this.dom.gate, covered || !gated || gone);
+    setInert(this.dom.gate, covered || !this.isGated || this.isElsewhere || gone);
+    setInert(this.elsewhereGate, covered || !this.isElsewhere || gone);
     for (const layer of overlays) setInert(layer, layer !== top);
     for (const win of this.floating) setInert(win, covered || gated || gone);
   }
@@ -3537,6 +3762,7 @@ class Dashboard {
     if (!setupState) return;
     const account = setupState.account;
     this.setGated(Boolean(account && account.enabled !== false && account.chosen === false));
+    this.renderAccountLink(setupState);
   }
 
   setGated(flag) {
@@ -3545,10 +3771,12 @@ class Dashboard {
     this.isGated = isGated;
     this.dom.gate.hidden = !isGated;
     document.body.classList.toggle('is-gated', isGated);
-    for (const key of this.dom.railExtras) key.disabled = isGated;
+    for (const key of this.dom.railExtras) key.disabled = isGated || this.isElsewhere;
     if (isGated) {
       putText(this.dom.gateError, '');
       this.setDrawerOpen(false);
+      this.setAccountOpen(false, true);
+      this.closeOtherSideWindows();
       this.dom.setupLink.hidden = true;
       this.updateInert();
       if (!this.confirmPending) this.dom.gateEmail.focus({ preventScroll: true });
@@ -3662,7 +3890,12 @@ class Dashboard {
     const rail = document.querySelector('.rail');
     if (!rail) return;
     const box = rail.getBoundingClientRect();
-    const isColumn = box.height > box.width;
+    // Which shape the stylesheet gave it, not which side is longer: on a
+    // phone the bar grows taller than it is wide once alert lines and the
+    // page list wrap in it, and was then taken for a column - every layer,
+    // Setup and the tray among them, moved one screen width to the right
+    // (UX audit 2026-10-07).
+    const isColumn = getComputedStyle(rail).flexDirection === 'column';
     const left = (isColumn ? Math.round(box.width) : 0) + 'px';
     const top = (isColumn ? 0 : Math.round(box.height)) + 'px';
     if (root.getPropertyValue('--rail-left') !== left) root.setProperty('--rail-left', left);
@@ -3744,9 +3977,11 @@ class Dashboard {
     const hidden = typeof document !== 'undefined' && Boolean(document.hidden);
     const worker = heartbeatWorker();
     if (worker) {
-      worker.onmessage = (message) => this.heardBeat(message.data && message.data.ok);
+      worker.onmessage = (message) => this.heardBeat(message.data && message.data.ok,
+                                                     !(message.data && message.data.live === false));
       worker.postMessage({ start: true, every: HEARTBEAT_MS, bound: fetchTimeoutMs(),
-        url: new URL('/api/heartbeat', window.location.href).href, hidden });
+        url: new URL('/api/heartbeat', window.location.href).href, hidden,
+        page: this.pageId, tab: TAB_ID });
       this.heartbeatWorker = worker;
       return;
     }
@@ -3769,16 +4004,18 @@ class Dashboard {
   async sendHeartbeat() {
     try {
       const hidden = typeof document !== 'undefined' && Boolean(document.hidden);
-      const answer = await apiPost('/api/heartbeat', { hidden });
-      this.heardBeat(Boolean(answer && answer.status === 'ok'));
+      const answer = await apiPost('/api/heartbeat', { hidden, page: this.pageId, tab: TAB_ID });
+      this.heardBeat(Boolean(answer && answer.status === 'ok'), !(answer && answer.live === false));
     } catch (err) {
       // Nothing to recover: a missed heartbeat is the signal itself.
     }
   }
 
   /** A heartbeat landed (or did not). */
-  heardBeat(isOk) {
+  heardBeat(isOk, isLive) {
     if (!isOk || this.isShutDown) return;
+    // One live page: the station says on every beat whether this is it.
+    this.setElsewhere(isLive === false);
     this.lastBeatOk = Date.now();
     // O12 (PM8-3): the browser is back, so the watchdog's warning is
     // over: the tray takes it back (the log keeps it).
@@ -3790,12 +4027,90 @@ class Dashboard {
     document.addEventListener('visibilitychange', () => {
       if (this.heartbeatWorker) this.heartbeatWorker.postMessage({ hidden: Boolean(document.hidden) });
     });
-    // The tab going is the silence the watchdog exists for. A tab restored
-    // from the back-forward cache is a browser that came back.
+    // The tab going is the silence the watchdog exists for, and it says so
+    // (owner 2026-10-07): the station quits unless a page checks in within
+    // its grace, which a reload does. A tab restored from the back-forward
+    // cache is a browser that came back, under a new id.
     window.addEventListener('pagehide', () => this.stopHeartbeat());
+    window.addEventListener('pagehide', () => this.sayLeaving());
     window.addEventListener('pageshow', (event) => {
-      if (event.persisted && !this.isShutDown) this.startHeartbeat();
+      if (event.persisted && !this.isShutDown) {
+        this.pageId = newPageId();
+        this.startHeartbeat();
+      }
     });
+  }
+
+  /** Tell the station this page is going. A keepalive request outlives the
+   *  page (what sendBeacon is, but with the JSON type and Origin every POST
+   *  here must carry); nothing waits on its answer, and a lost one is what
+   *  the server's backstop is for. */
+  sayLeaving() {
+    if (this.isShutDown) return;
+    api('/api/leave', { method: 'POST', keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: this.pageId, tab: TAB_ID }) }).catch(() => {});
+  }
+
+  // -- one live page (owner 2026-10-07) ------------------------------------
+  //
+  // The station serves one live page. Another tab or window shows this
+  // notice beside the rail - the rail's Stop stays in reach and always
+  // works from any page; nothing else does - until the operator takes over
+  // here, which turns the other page into the one showing the notice.
+
+  /** Show or withdraw the "open in another window" notice. */
+  setElsewhere(flag) {
+    const isElsewhere = Boolean(flag) && !this.isShutDown;
+    if (isElsewhere === this.isElsewhere) return;
+    this.isElsewhere = isElsewhere;
+    const gate = this.elsewhereGate || this.buildElsewhereGate();
+    gate.hidden = !isElsewhere;
+    document.body.classList.toggle('is-elsewhere', isElsewhere);
+    for (const key of this.dom.railExtras) key.disabled = isElsewhere || this.isGated;
+    // Quit too: the live page quits the station, not this one.
+    const quit = document.getElementById('quit-link');
+    if (quit) quit.disabled = isElsewhere;
+    if (isElsewhere) {
+      this.answerConfirm(false);
+      this.setDrawerOpen(false);
+      this.dom.setupLink.hidden = true;
+    } else {
+      this.dom.setupLink.hidden = this.isDrawerOpen || this.isGated;
+    }
+    this.updateInert();
+    if (isElsewhere) gate.querySelector('button').focus({ preventScroll: true });
+  }
+
+  buildElsewhereGate() {
+    const gate = make('section', 'gate elsewhere-gate');
+    gate.id = 'elsewhere-gate';
+    gate.hidden = true;
+    gate.setAttribute('aria-labelledby', 'elsewhere-title');
+    const body = make('div', 'gate-body');
+    const title = make('h2', 'gate-title', 'Open in another window');
+    title.id = 'elsewhere-title';
+    const text = make('p', 'gate-note', 'This station is open in another window. '
+      + 'Use that one, or take over here.');
+    const stop = make('p', 'gate-note', 'The Stop on the left works from every window.');
+    const take = make('button', 'button role-go', 'Take over here');
+    take.type = 'button';
+    take.id = 'take-over';
+    take.addEventListener('click', () => this.takeOver());
+    body.append(title, text, take, stop);
+    gate.append(body);
+    document.body.append(gate);
+    this.elsewhereGate = gate;
+    return gate;
+  }
+
+  async takeOver() {
+    try {
+      const answer = await apiPostChecked('/api/take_over', { page: this.pageId, tab: TAB_ID });
+      if (answer && answer.live) this.setElsewhere(false);
+    } catch (err) {
+      // Still elsewhere: the notice stays, and the next beat says so again.
+    }
   }
 
   // -- polling ------------------------------------------------------------
@@ -3861,8 +4176,8 @@ class Dashboard {
 
   // -- Quit (G2) -----------------------------------------------------------
   //
-  // The only way the console ends the program: closing the tab leaves the
-  // station running for the next tab, with the watchdog as its guard. Quit
+  // The console's way to end the program; closing the last tab ends it the
+  // same way a few seconds later (owner 2026-10-07; `sayLeaving`). Quit
   // is allowed while active - the server's close path stops every model
   // before it closes anything. The server answers first and then exits, so
   // after the answer nothing here polls, beats or reconnects: there is no
@@ -3902,6 +4217,7 @@ class Dashboard {
     this.answerConfirm(false);
     this.closeRegionPicker();
     this.setDrawerOpen(false);
+    this.setAccountOpen(false, true);
     for (const win of this.floating.slice()) {
       if (win.closeFloating) win.closeFloating();
     }
@@ -4126,17 +4442,16 @@ class Dashboard {
    *  would slam the card shut 250 ms after every re-open. */
   collapseSetupOnLaunch(models, setupState) {
     if (!this.setupCard) return;
-    // The signed-in user's sheet is a model in the Controller but not a
-    // launched device: signing in in Setup must not read as a launch and
-    // withdraw the drawer (2026-10-07).
-    const sheet = accountSheet(setupState);
-    const hasModels = Object.keys(models || {}).some((name) => name !== sheet);
+    // The signed-in user is Setup's, never a model (owner 2026-10-07), so
+    // every model here is a launched one.
+    const hasModels = Object.keys(models || {}).length > 0;
     // No setup state and no models: the setup poll failed, which is not an
     // edge and must not be read as "stopped".
     if (!hasModels && !setupState) return;
     const isLaunched = hasModels || Boolean(setupState.is_launched);
     if (isLaunched === this.isLaunched) return;
     this.isLaunched = isLaunched;
+    this.applySetupWords();
     // A launch lands on the Overview (K4), whatever page was shown before.
     if (isLaunched && this.opened) {
       this.opened = null;
@@ -4302,7 +4617,7 @@ class Dashboard {
         const overview = make('button', 'model-link overview-link', 'Overview');
         overview.type = 'button';
         overview.dataset.page = 'overview';
-        overview.addEventListener('click', () => this.showPage(null));
+        overview.addEventListener('click', () => this.navigateTo(null));
         this.dom.nav.appendChild(overview);
       }
       for (const name of names) {
@@ -4329,7 +4644,7 @@ class Dashboard {
         link.type = 'button';
         link.dataset.model = name;
         link.setAttribute('translate', 'no');
-        link.addEventListener('click', () => this.showPage(name));
+        link.addEventListener('click', () => this.navigateTo(name));
         this.dom.nav.appendChild(link);
       }
       if (this.latched) this.setUnconfirmed(Array.from(this.latched), Array.from(this.unconfirmed));
@@ -4637,6 +4952,7 @@ class Dashboard {
       // full-screen Setup no longer opens only to slide away on the first
       // poll, under a press meant for it.
       if (setup.state && setup.state.is_launched) this.isLaunched = true;
+      this.applySetupWords();
       if (!this.isLaunched) this.setDrawerOpen(true);        // Setup is where a run begins
     } catch (err) { /* setup is optional once models are built */ }
   }
@@ -5012,6 +5328,7 @@ class Dashboard {
   }
 
   reloadPage() {
+    this.isReloading = true;
     window.location.reload();
   }
 

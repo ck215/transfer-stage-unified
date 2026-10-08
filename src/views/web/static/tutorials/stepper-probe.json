@@ -17,20 +17,20 @@
     },
     {
       "page": "Stepper Probe",
+      "anchor": {"text": "Target X dist"},
+      "say": "Control system 1 is the Autonomous group. Target X, Y and Z dist are the move one Step makes, relative to where the probe is now, in step-size units. The sign picks the direction; 0 leaves that axis still.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
       "anchor": {"text": "Autonomous speed"},
       "say": "Autonomous speed is how fast a Step moves, as a percent of the board's 3200 steps/s ceiling; the steps/s figure with it is what is sent. It is locked while the probe is in a mode.",
       "wait": null
     },
     {
       "page": "Stepper Probe",
-      "anchor": {"text": "Manual speed"},
-      "say": "Manual speed is the gamepad's jog speed, on the same scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
-      "wait": null
-    },
-    {
-      "page": "Stepper Probe",
       "anchor": {"text": "Configure Stepper Probe"},
-      "say": "The step sizes and the targets of a Step sit one level down. Press Configure Stepper Probe to open them.",
+      "say": "The step sizes sit one level down: both control systems use them. Press Configure Stepper Probe to open them.",
       "wait": {"click": true}
     },
     {
@@ -41,14 +41,8 @@
     },
     {
       "page": "Stepper Probe",
-      "anchor": {"text": "Target X dist"},
-      "say": "Target X, Y and Z dist are the move one Step makes, relative to where the probe is now, in step-size units. The sign picks the direction; 0 leaves that axis still.",
-      "wait": null
-    },
-    {
-      "page": "Stepper Probe",
       "anchor": {"text": "Enter autonomous mode"},
-      "say": "Control system 1, autonomous: press Enter autonomous mode. It powers the motors but moves nothing; the probe then waits for Step.",
+      "say": "Now press Enter autonomous mode. It powers the motors but moves nothing; the probe then waits for Step.",
       "wait": {"state": {"name": "Stepper Probe", "key": "model_mode", "equals": "autonomous"}}
     },
     {
@@ -66,7 +60,13 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Gamepad"},
-      "say": "Control system 2, manual: a gamepad drives the probe. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "say": "Control system 2 is the Manual group: a gamepad drives the probe. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "wait": null
+    },
+    {
+      "page": "Stepper Probe",
+      "anchor": {"text": "Manual speed"},
+      "say": "Manual speed is the gamepad's jog speed, on the autonomous speed's scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
       "wait": null
     },
     {
@@ -126,7 +126,7 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Position age (s)"},
-      "say": "A board that has stopped answering cannot be armed. Use Hard reset on its row in Setup, or cut its power and reconnect, then clear the stop. A lost cable reconnects by itself; enter the mode again after.",
+      "say": "A board that has stopped answering cannot be armed. Use Hard reset on its row in Settings, or cut its power and reconnect, then clear the stop. A lost cable reconnects by itself; enter the mode again after.",
       "wait": null
     },
     {

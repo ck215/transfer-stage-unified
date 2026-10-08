@@ -8,6 +8,9 @@
 #                                      is well; if it fails, its last lines are
 #                                      shown in a dialog and kept in
 #                                      ~/transfer-stage-runs/launcher.log.
+#                                      With a station already running, the
+#                                      app opens that station's page and
+#                                      exits 0: no second server, no dialog.
 #   dev/launch_desktop.sh classic      "Transfer Stage Classic": the stable app
 #                                      on `main` through dev/swap_branch.sh, in
 #                                      a terminal (its flash step talks).

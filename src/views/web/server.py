@@ -26,6 +26,13 @@ Two things live here and nowhere else:
   It used to be a private copy inside `BaseProbe`, plus a mixin bolted onto
   the heater and the rotator - three watchdogs, three sets of timings, and
   a Tk session that carried them for no reason. One station, one watchdog.
+* **Closing the last tab quits the station** (owner, 2026-10-07: "make sure
+  closing the browser/tab also closes the server"). A page going away posts
+  `POST /api/leave`; if no page checks in within `LEAVE_GRACE_SECONDS` the
+  station quits by the Quit control's own path. A reload or a second tab
+  checks in well inside the grace and cancels it. As a backstop, once any
+  page has checked in, `QUIT_AFTER_SILENCE_SECONDS` of silence from every
+  page quits the same way (a crashed browser sends no leave).
 """
 import base64
 import errno
@@ -41,7 +48,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import schema as sch
 from events import events
-from result import Refused
+from result import Refused, Result
 from views import theme
 from views import base as view_base
 from views.base import stop_words
@@ -49,6 +56,10 @@ from views.base import stop_words
 #: `name` that targets the Setup panel instead of a model (`events.SETUP_PANEL`,
 #: the name an acknowledgement's action carries too).
 SETUP_NAME = events.SETUP_PANEL
+#: `name` that targets the signed-in user's sheet, the rail's account menu
+#: (owner 2026-10-07: a settings menu, not a device). It is `Setup.user`,
+#: Setup's own session object, and never a model in the Controller.
+USER_NAME = "__user__"
 
 #: This process's run, as the page sees it (rb-restart R4): a restart keeps
 #: the pid (`execv`), so the token is the start time and random bits. A page
@@ -64,6 +75,25 @@ SOURCE = "Web"
 #: while the station is fine, and what the operator does about it.
 SILENT_HINT = ("If this tab is in the background, the browser may be throttling "
                "or sleeping it: keep the station in its own window.")
+
+
+def _page_id(raw):
+    """The id a page names itself by on its heartbeats and its leave, or
+    None for a page that sent none (an older page, a test). Bounded: it is
+    a dict key and a log word, nothing more."""
+    if isinstance(raw, str) and 0 < len(raw) <= 64:
+        return raw
+    return None
+
+
+def _env_seconds(name, default):
+    """A positive number of seconds from the environment, else `default`."""
+    raw = os.environ.get(name)
+    try:
+        value = float(raw) if raw not in (None, "") else None
+    except ValueError:
+        value = None
+    return value if value is not None and value > 0 else default
 
 
 def link_words(models):
@@ -187,6 +217,12 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             name = self._one(query, "name")
             if name == SETUP_NAME:
                 return self._send_json(200, self.view.setup.schema)
+            if name == USER_NAME:
+                user = self._user_panel()
+                if user is None:
+                    return self._send_json(404, {"status": "error",
+                                                 "reason": "no account menu"})
+                return self._send_json(200, user.schema)
             if name not in self.controller.model_names:
                 return self._send_json(404, {"status": "error",
                                              "reason": f"{name} is not open"})
@@ -204,6 +240,14 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         if route == "/api/setup":
             return self._send_json(200, {"schema": self.view.setup.schema,
                                          "state": self.view.setup.state})
+
+        if route == "/api/user":
+            # The account menu: the signed-in user's sheet (a Guest's too).
+            user = self._user_panel()
+            if user is None:
+                return self._send_json(404, {"status": "error",
+                                             "reason": "no account menu"})
+            return self._send_json(200, {"schema": user.schema, "state": user.state})
 
         if route == "/api/events":
             since = self._int(self._one(query, "since"), 0)
@@ -242,6 +286,8 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             return self._send_data(self._one(query, "name"),
                                    self._one(query, "command"))
 
+        if route == "/api/file" and not self._is_live_tab():
+            return None
         if route == "/api/file":
             # A save command may declare inputs like any other, so the entry
             # values travel with this one too (D-5) - as JSON in the query,
@@ -277,6 +323,8 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             return self._send_json(400, {"status": "error",
                                          "reason": "body must be a JSON object"})
+        if route in self.LIVE_ONLY and not self._is_live_tab():
+            return None
 
         if route == "/api/run":
             inputs = body.get("inputs") or {}
@@ -330,9 +378,29 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             # F (2026-09-28): the page says whether its tab is hidden. It
             # still checks in while hidden; this is for the log only.
             hidden = body.get("hidden")
-            self.view.beat(hidden=hidden if isinstance(hidden, bool) else None)
+            tab = self._tab(body)
+            self.view.beat(hidden=hidden if isinstance(hidden, bool) else None,
+                           page=_page_id(body.get("page")), tab=tab)
+            # Owner 2026-10-07: one live page. A page that is not the live
+            # one hears so here, every beat, and shows the "open in another
+            # window" notice; its beat does not count as the station's page.
             return self._send_json(200, {"status": "ok",
-                                         "age": self.view.heartbeat_age})
+                                         "age": self.view.heartbeat_age,
+                                         "live": self.view.is_live(tab)})
+
+        if route == "/api/leave":
+            # A tab is going (its pagehide): the station quits unless the
+            # live page checks in within the grace - a reload does (owner
+            # 2026-10-07). A page that is not the live one changes nothing.
+            grace = self.view.leave(page=_page_id(body.get("page")),
+                                    tab=self._tab(body))
+            return self._send_json(200, {"status": "ok", "quit_in": grace})
+
+        if route == "/api/take_over":
+            # "Take over here": this page becomes the live one; the old one
+            # hears it on its next beat or command.
+            self.view.take_over(self._tab(body), page=_page_id(body.get("page")))
+            return self._send_json(200, {"status": "ok", "live": True})
 
         if route == "/api/upload":
             return self._receive_upload(body)
@@ -358,6 +426,35 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         return self._send_json(404, {"status": "error",
                                      "reason": f"no route {route}"})
 
+    #: What only the live page may do (owner 2026-10-07: one live browser
+    #: connection). Never the stop: `/api/estop_all` is answered from any
+    #: page, live or not - a stop always wins. Reads stay open too.
+    LIVE_ONLY = frozenset({"/api/run", "/api/clear_estop_all", "/api/close_model",
+                           "/api/open_model", "/api/upload", "/api/quit"})
+
+    def _tab(self, body=None):
+        """The browser tab this request names: the `X-Station-Tab` header,
+        or `tab` in the body; None for a client that names none."""
+        raw = self.headers.get("X-Station-Tab")
+        if raw is None and isinstance(body, dict):
+            raw = body.get("tab")
+        return _page_id(raw)
+
+    def _is_live_tab(self):
+        """True when this request may command the station; otherwise answers
+        it with the refusal (409) and returns False."""
+        tab = self._tab()
+        if self.view.is_live(tab):
+            return True
+        events.debug("Refused Not Live", f"{self.command} {self.path} from tab "
+                     f"{tab}, which is not the live page", source=SOURCE, every=1.0)
+        self._send_json(409, {
+            "status": "refused", "not_live": True,
+            "reason": "This station is open in another window; this one can only "
+                      "stop. Take over here to use it."},
+            headers={"X-Station-Live": "no"})
+        return False
+
     def _receive_ack(self, body):
         """R7: the page answered an acknowledgement. The log file says so,
         as the desktop views' own "Alert Acknowledged" line does; nothing
@@ -378,10 +475,29 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         return self._send_json(200, {"status": "ok"})
 
     # -- the three calls a view makes -------------------------------------
+    def _user_panel(self):
+        """Setup's current `User` (the account menu's sheet), or None for a
+        Setup without accounts."""
+        return getattr(self.view.setup, "user", None)
+
     def _run(self, name, command, inputs=None, args=()):
-        """`__setup__` targets the Setup panel; anything else is a model."""
+        """`__setup__` targets the Setup panel, `__user__` the signed-in
+        user's sheet; anything else is a model."""
         if name == SETUP_NAME:
             return self.view.setup.run(command, inputs, args)
+        if name == USER_NAME:
+            user = self._user_panel()
+            if user is None:
+                return Result(Result.REFUSED, reason="This station has no account menu.")
+            return user.run(command, inputs, args)
+        # Owner 2026-10-07: a Guest's session has no Transfer Map or Sample
+        # Map. Setup does not launch them for a Guest; this refuses their
+        # commands too, whatever is open, so hiding is never the only guard.
+        refusal_of = getattr(self.view.setup, "session_refusal", None)
+        refusal = refusal_of(name, command) if callable(refusal_of) else ""
+        if refusal:
+            events.info("Refused", refusal, source=SOURCE)
+            return Result(Result.REFUSED, reason=refusal)
         return self.controller.run(name, command, inputs, args)
 
     @staticmethod
@@ -469,6 +585,7 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         element in `name`'s schema (Setup's included)."""
         try:
             schema = (self.view.setup.schema if name == SETUP_NAME
+                      else self._user_panel().schema if name == USER_NAME
                       else self.controller.schema(name))
         except Exception:
             return False
@@ -756,11 +873,11 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         return {f"{n}:{port}" for n in names} | names
 
     # -- responses ---------------------------------------------------------
-    def _send_json(self, status, data):
+    def _send_json(self, status, data, headers=None):
         # default=str: a route handing back something exotic degrades to its
         # string form instead of taking the response down from inside dumps.
         self._send_bytes(status, "application/json",
-                         json.dumps(data, default=str).encode("utf-8"))
+                         json.dumps(data, default=str).encode("utf-8"), headers)
 
     def _send_bytes(self, status, content_type, payload, headers=None):
         self.send_response(status)
@@ -902,6 +1019,21 @@ class WebView:
     #: D-8a, PROVISIONAL until measured at the bench (WEB-19, WEB-23).
     WARN_SECONDS = 5.0
     STOP_SECONDS = 15.0
+    #: Owner 2026-10-07: closing the last tab quits the station. After a
+    #: page's leave, this long with no page checking in quits it. The page
+    #: beats every 2 s and a reload's first beat lands within a second or
+    #: two of its pagehide, so 8 s is a reload on a slow bench PC plus three
+    #: missed beats of margin - and still well inside STOP_SECONDS, so the
+    #: orderly quit (heater-off read back, ports closed) comes before the
+    #: latch would. Environment: STATION_LEAVE_GRACE_SECONDS.
+    LEAVE_GRACE_SECONDS = 8.0
+    #: The backstop for a tab that went without a leave (a crashed or killed
+    #: browser, a lost leave request): once any page has checked in, this
+    #: long with no page checking in quits the same way, energized or not.
+    #: Four times STOP_SECONDS, so the FULL STOP stays the first answer to a
+    #: silence while energized, and a network blip or a hung page has a
+    #: minute to come back. Environment: STATION_QUIT_AFTER_SILENCE_SECONDS.
+    QUIT_AFTER_SILENCE_SECONDS = 60.0
     #: How often the watchdog looks. Not a safety threshold.
     WATCH_SECONDS = 0.5
     #: How many consecutive ports to try before giving up (WEB-16).
@@ -926,6 +1058,22 @@ class WebView:
         # Quit is the same answer and stops nothing again.
         self._quit_lock = threading.Lock()
         self._quit_answer = None
+        # Closing the last tab (owner 2026-10-07). Read here, not at import,
+        # so a test (or a bench session) can set them per process.
+        self.leave_grace = _env_seconds("STATION_LEAVE_GRACE_SECONDS",
+                                        self.LEAVE_GRACE_SECONDS)
+        self.quit_after_silence = _env_seconds("STATION_QUIT_AFTER_SILENCE_SECONDS",
+                                               self.QUIT_AFTER_SILENCE_SECONDS)
+        self._leaving_since = None    # when a page last said it was going
+        self._leaving_page = None
+        self._left = set()            # pages that said they went; their late beats do not count
+        self._pages = {}              # page id -> when it last checked in (the log's tab count)
+        # One live page (owner 2026-10-07). A tab names itself by an id kept
+        # in its sessionStorage, so a reload is the same tab (a new page id,
+        # the same tab id); a second tab or window is another.
+        self._live_tab = None
+        self._tabs = {}               # tab id -> when it last checked in
+        self._leaving_tab = None
 
     # -- the address the operator opens ------------------------------------
     @property
@@ -1040,18 +1188,35 @@ class WebView:
                     "unconfirmed": [str(k) for k, v in stopped.items() if not v]}
             return dict(self._quit_answer)
 
-    def request_quit(self):
+    def request_quit(self, why="Quit from the Web console"):
         """The console's Quit (G2): release `wait()`, which then runs
         `close()` on the launching thread. Idempotent; returns True the first
-        time. Closing the tab never calls this - only the Quit control does."""
+        time. The Quit control calls it, and so does the last tab closing
+        (`_quit_unattended`), after the same stop."""
         if self._halt.is_set():
             events.debug("Quit Requested Again", "already shutting down",
                          source=SOURCE)
             return False
-        events.info("Quit", "Quit from the Web console: stopping every model, "
+        events.info("Quit", f"{why}: stopping every model, "
                     "closing every port and exiting.", source=SOURCE)
         self._halt.set()
         return True
+
+    def _quit_unattended(self, why):
+        """No page is left: quit exactly as the Quit control does - every
+        model stopped (`quit_answer`), then `wait()` released, which runs
+        `close()` on the launching thread (the heater's off read back, every
+        port closed) and the process exits. Once."""
+        if self._halt.is_set():
+            return False
+        events.warn("No Browser Left", f"{why} The station quits now.", source=SOURCE)
+        answer = self.quit_answer()
+        if answer.get("unconfirmed"):
+            events.error("Stop Not Confirmed At Quit",
+                         f"{', '.join(answer['unconfirmed'])} did not confirm the stop "
+                         f"before the station quit. Check by hand.", source=SOURCE,
+                         ack=False)
+        return self.request_quit(why.rstrip(". "))
 
     def close(self):
         """Watchdog, server, then the Controller. Runs at most once."""
@@ -1070,19 +1235,68 @@ class WebView:
         self.controller.close()
 
     # -- browser liveness (D-8 / WEB-19 / WEB-23) --------------------------
-    def beat(self, hidden=None):
+    def beat(self, hidden=None, page=None, tab=None):
         """A browser tab checked in. "Now" is read here, so a slow request
         cannot backdate the deadline.
 
         `hidden` is what the page said about its tab (None: it said
         nothing). A hidden tab is a present browser - it counts exactly like
-        a shown one; the change is logged once, for the bench log (F)."""
+        a shown one; the change is logged once, for the bench log (F).
+
+        `page` is the page's own id (None: it sent none). A beat from a page
+        that already said it left is one that was in flight at its pagehide:
+        it is not a page coming back, so it neither re-arms anything nor
+        cancels the quit (a reload, or a page restored from the back-forward
+        cache, beats under a new id).
+
+        `tab` is the page's tab id (owner 2026-10-07, one live page): the
+        first tab to check in is the live one, and a reload of it stays
+        live; another tab's beat is recorded but does not count - it is a
+        page showing "open in another window" - until it takes over, or the
+        live tab has gone silent for the grace without a leave."""
+        claimed = None
         with self._lock:
-            previous, self._last_beat = self._last_beat, self._clock()
-            self._warned = self._stopped = False
-            changed = hidden is not None and hidden != self._hidden
-            if changed:
-                self._hidden = hidden
+            now = self._clock()
+            if tab is not None and not (page is not None and page in self._left):
+                # A tab first heard while the live page is closing is the
+                # operator opening the station again (a new tab or window):
+                # it takes the seat. A tab that was already showing the
+                # notice does not - closing the live page quits.
+                is_new = tab not in self._tabs
+                self._tabs[tab] = now
+                if self._live_tab != tab and (self._live_lapsed(now) or (
+                        is_new and self._leaving_since is not None)):
+                    claimed, self._live_tab = self._live_tab, tab
+            if page is not None and page in self._left:
+                late = True
+            elif tab is not None and tab != self._live_tab:
+                late = None             # a page that is not the live one
+            else:
+                late = False
+                previous, self._last_beat = self._last_beat, now
+                self._warned = self._stopped = False
+                if page is not None:
+                    self._pages[page] = now
+                leaving, self._leaving_since = self._leaving_since, None
+                self._leaving_tab = None
+                changed = hidden is not None and hidden != self._hidden
+                if changed:
+                    self._hidden = hidden
+        if late:
+            events.debug("Heartbeat After Leave", f"page {page} beat after it "
+                         f"left; not counted", source=SOURCE, every=1.0)
+            return None
+        if late is None:
+            events.debug("Heartbeat Not Live", f"tab {tab} checked in; tab "
+                         f"{self._live_tab} is the live page", source=SOURCE, every=5.0)
+            return None
+        if claimed is not None:
+            events.info("Live Page", f"tab {tab} is the live page now; tab {claimed} "
+                        f"had gone silent without closing.", source=SOURCE)
+        if leaving is not None:
+            events.info("Quit Cancelled", f"the live page checked in again "
+                        f"{now - leaving:.1f} s after it left (a reload): the "
+                        f"station keeps running.", source=SOURCE)
         if changed:
             events.debug("Browser Hidden" if hidden else "Browser Shown",
                          "the tab is hidden; it keeps checking in" if hidden
@@ -1099,6 +1313,70 @@ class WebView:
             seen = self._last_beat
         return None if seen is None else round(self._clock() - seen, 3)
 
+    def leave(self, page=None, tab=None):
+        """A page said it is going (its pagehide: a closed tab, a reload, a
+        navigation away). For the live page (or a page that names no tab)
+        the station quits `leave_grace` seconds from now unless the live
+        page checks in first - a reload does. A page that is not the live
+        one changes nothing (owner 2026-10-07). Returns the grace in
+        seconds, or None when nothing was started."""
+        with self._lock:
+            now = self._clock()
+            if page is not None:
+                self._left.add(page)
+                self._pages.pop(page, None)
+            is_live = tab is None or self._live_tab is None or tab == self._live_tab
+            if is_live:
+                self._leaving_since, self._leaving_page = now, page
+                self._leaving_tab = tab
+        if not is_live:
+            events.info("Tab Closed", f"a station page that was not the live one "
+                        f"closed (tab {tab}); nothing changes.", source=SOURCE)
+            return None
+        events.info("Tab Closed", f"the live station page closed, reloaded or "
+                    f"navigated away (page {page or 'unnamed'}, tab {tab or 'unnamed'}). "
+                    f"The station quits in {self.leave_grace:g} s unless it checks "
+                    f"in again.", source=SOURCE)
+        return self.leave_grace
+
+    def is_live(self, tab):
+        """May this tab command the station? A request naming no tab (an
+        older page, a script on this computer) and any tab before the first
+        has checked in may; after that, only the live one."""
+        if tab is None:
+            return True
+        with self._lock:
+            return self._live_tab is None or self._live_tab == tab
+
+    def take_over(self, tab, page=None):
+        """"Take over here": `tab` becomes the live page. The one it
+        replaces learns on its next beat or command, and shows the notice."""
+        with self._lock:
+            now = self._clock()
+            old, self._live_tab = self._live_tab, tab
+            if tab is not None:
+                self._tabs[tab] = now
+            self._last_beat = now
+            self._warned = self._stopped = False
+            if self._leaving_tab is not None and self._leaving_tab != tab:
+                self._leaving_since = self._leaving_tab = None
+        events.info("Taken Over", f"the station page in tab {tab} took over from "
+                    f"tab {old}; that one now only stops.", source=SOURCE)
+        return True
+
+    def _live_lapsed(self, now):
+        """The live tab went silent without a leave (a crashed or killed tab)
+        for longer than the grace: another tab may claim the station.
+        Under `_lock`."""
+        if self._live_tab is None:
+            return True
+        if self._leaving_since is not None:
+            return False        # the live page is closing: it quits, not hands over
+        last = self._tabs.get(self._live_tab)
+        # Never shorter than the watchdog's warning: a live page beats every
+        # 2 s, and a short test grace must not hand the seat between beats.
+        return last is None or now - last > max(self.leave_grace, self.WARN_SECONDS)
+
     def _watch_loop(self):
         while not self._halt.wait(self.WATCH_SECONDS):
             try:
@@ -1106,6 +1384,35 @@ class WebView:
             except Exception as exc:
                 events.debug("Watchdog Check Failed", str(exc), source=SOURCE,
                              exception=exc, every=1.0)
+
+    def _check_last_tab(self):
+        """Quit when no page is left (owner 2026-10-07). Two rules, both
+        idle or energized alike, both the Quit control's own path:
+
+        * **a tab left and none checked in within `leave_grace`** - a closed
+          last tab; a reload or another open tab beats inside the grace and
+          `beat()` cancels it;
+        * **the backstop**: a page had checked in, and none has for
+          `quit_after_silence` - a browser that crashed or was killed sends
+          no leave. Never before the first check-in: a launch whose page
+          never opened is not a station whose page went away.
+
+        Returns True when it quit."""
+        if self._halt.is_set():
+            return False
+        with self._lock:
+            now = self._clock()
+            leaving, seen = self._leaving_since, self._last_beat
+        if leaving is not None and now - leaving >= self.leave_grace:
+            return self._quit_unattended(
+                f"A station tab closed and no page has checked in for "
+                f"{now - leaving:.1f} s since (grace {self.leave_grace:g} s): "
+                f"no station tab is open.")
+        if seen is not None and now - seen >= self.quit_after_silence:
+            return self._quit_unattended(
+                f"No station page has checked in for {now - seen:.1f} s "
+                f"(backstop {self.quit_after_silence:g} s): no station tab is open.")
+        return False
 
     def _check_heartbeat(self):
         """Warn, then FULL STOP, on browser silence.
@@ -1121,6 +1428,8 @@ class WebView:
           written still reads as heating, and without the flag this would
           re-stop and re-report every tick.
         """
+        if self._check_last_tab():
+            return
         with self._lock:
             seen, warned, stopped = self._last_beat, self._warned, self._stopped
         if seen is None or stopped:
