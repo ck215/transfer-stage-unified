@@ -3443,7 +3443,13 @@ class Dashboard {
       gateError: document.getElementById('gate-error'),
       gateCreate: document.getElementById('gate-create'),
       gateGuest: document.getElementById('gate-guest'),
+      gateBody: document.querySelector('#sign-in-gate .gate-body'),
+      steps: document.getElementById('steps'),
     };
+    //: The way in, said as three steps (renderSteps): accounts on or off
+    //: (Setup's `state.account`), and the launch's moment while Setup leaves.
+    this.hasAccounts = false;
+    this.isStepsLeaving = false;
     //: The sign-in screen is up (Setup's `account.chosen` is false): only
     //: it, the rail's stop and Quit are usable (2026-10-07).
     this.isGated = false;
@@ -3590,6 +3596,44 @@ class Dashboard {
                && (hadFocus || document.activeElement === document.body)) {
       this.restoreFocus(this.drawerReturn, this.dom.setupLink);
     }
+    this.renderSteps();
+  }
+
+  /** The way in, as three steps: "Sign in", "Setup", "Station" (owner
+   *  2026-10-07). One list, moved to the head of the screen that is up -
+   *  the sign-in screen, then Setup - with the shown step marked
+   *  (aria-current="step") and the ones behind it done. Without accounts
+   *  there is no sign-in step and the list numbers from Setup. At the launch
+   *  "Station" lights while Setup slides away; then the list is gone for
+   *  the session (a later Switch user is not the way in). It sits in the
+   *  screen's own flow, so it covers nothing - least of all the rail. */
+  renderSteps() {
+    const list = this.dom.steps;
+    if (!list) return;
+    let step = null;
+    let host = null;
+    if (this.isStepsLeaving) {
+      step = 'station';
+      host = this.dom.drawer;
+    } else if (!this.isLaunched && this.isGated) {
+      step = 'sign-in';
+      host = this.dom.gateBody;
+    } else if (!this.isLaunched) {
+      step = 'setup';
+      host = this.dom.drawer;
+    }
+    if (list.hidden !== !step) list.hidden = !step;
+    if (!step || !host) return;
+    if (list.parentNode !== host) host.insertBefore(list, host.firstChild);
+    const items = Array.from(list.children);
+    const at = items.findIndex((item) => item.dataset.step === step);
+    items.forEach((item, index) => {
+      const skipped = item.dataset.step === 'sign-in' && !this.hasAccounts;
+      if (item.hidden !== skipped) item.hidden = skipped;
+      if (index === at) putAttr(item, 'aria-current', 'step');
+      else if (item.hasAttribute('aria-current')) item.removeAttribute('aria-current');
+      item.classList.toggle('is-done', index < at);
+    });
   }
 
   wantsScrim() {
@@ -3765,6 +3809,11 @@ class Dashboard {
   applyAccount(setupState) {
     if (!setupState) return;
     const account = setupState.account;
+    const hasAccounts = Boolean(account && account.enabled !== false);
+    if (hasAccounts !== this.hasAccounts) {
+      this.hasAccounts = hasAccounts;
+      this.renderSteps();
+    }
     this.setGated(Boolean(account && account.enabled !== false && account.chosen === false));
     this.renderAccountLink(setupState);
   }
@@ -3791,6 +3840,7 @@ class Dashboard {
       this.setDrawerOpen(!this.isLaunched);
       this.dom.setupLink.hidden = this.isDrawerOpen;
     }
+    this.renderSteps();
   }
 
   /** One of the screen's three choices, as Setup's command with the typed
@@ -4472,7 +4522,53 @@ class Dashboard {
       this.layoutSheet();
       this.renderNav(Object.fromEntries(Array.from(this.cards.keys()).map((n) => [n, {}])));
     }
-    this.setDrawerOpen(!isLaunched);
+    if (isLaunched) this.landOnSheet();
+    else this.setDrawerOpen(true);
+  }
+
+  /** The launch, Setup to the station (owner 2026-10-07), as one move:
+   *  Setup slides away (240 ms), its steps showing "Station"; the Overview's
+   *  entries settle in behind it, starting as it clears (120 ms on, 60 ms
+   *  apart); focus lands on the page, not on the rail's Settings key and
+   *  never lost on the body. Reduced motion: the same states, at once
+   *  (the stylesheet zeroes every duration and delay). Focus stays put when
+   *  the operator is elsewhere - a dialog, the sign-in screen, the rail. */
+  landOnSheet() {
+    const active = document.activeElement;
+    const takeFocus = !active || active === document.body
+      || this.dom.drawer.contains(active);
+    this.isStepsLeaving = true;
+    this.isNavigating = true;
+    try {
+      this.setDrawerOpen(false);
+    } finally {
+      this.isNavigating = false;
+    }
+    clearTimeout(this.stepsTimer);
+    this.stepsTimer = setTimeout(() => {
+      this.isStepsLeaving = false;
+      this.renderSteps();
+    }, 240);
+    this.settleSheet();
+    const covered = this.confirmPending || !this.dom.modal.hidden
+      || !this.dom.picker.hidden || this.isGated || this.isElsewhere;
+    if (takeFocus && !covered) this.dom.cards.focus({ preventScroll: true });
+  }
+
+  /** The entries' arrival, played again from the launch so it is seen: they
+   *  were added under Setup, where their first run went unseen. */
+  settleSheet() {
+    const sheet = this.dom.cards;
+    sheet.classList.add('is-settling');
+    for (const card of this.cards.values()) {
+      const node = card.node;
+      if (!node.classList.contains('is-entering')) continue;
+      node.classList.remove('is-entering');
+      void node.offsetWidth;            // restart the animation
+      node.classList.add('is-entering');
+    }
+    clearTimeout(this.settleTimer);
+    this.settleTimer = setTimeout(() => sheet.classList.remove('is-settling'), 1200);
   }
 
   async addCard(name) {
@@ -4970,6 +5066,7 @@ class Dashboard {
         this.revealStop(false);          // already running: there at once
       }
       this.applySetupWords();
+      this.renderSteps();
       if (!this.isLaunched) this.setDrawerOpen(true);        // Setup is where a run begins
     } catch (err) { /* setup is optional once models are built */ }
   }

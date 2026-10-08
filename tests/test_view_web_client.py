@@ -393,7 +393,14 @@ def test_the_setup_drawer_withdraws_when_the_first_model_appears():
     assert "setupState.is_launched" in collapse, (
         "the Setup panel's own is_launched must close it too - a launch "
         "that builds no model still leaves the wizard")
-    assert "this.setDrawerOpen(!isLaunched)" in collapse
+    # Updated (owner 2026-10-07): the launch side is one move, landOnSheet -
+    # Setup slides away, the entries settle, focus lands on the page - and it
+    # still closes the drawer; the stop side still opens it.
+    assert "if (isLaunched) this.landOnSheet();" in collapse
+    assert "else this.setDrawerOpen(true);" in collapse
+    land = _body(r"landOnSheet\(\) \{(.*?)\n  \}")
+    assert "this.setDrawerOpen(false);" in land
+    assert "this.dom.cards.focus(" in land
     assert "if (isLaunched === this.isLaunched) return;" in collapse, (
         "the collapse must be edge-triggered: a level-triggered version "
         "slams the drawer shut 250 ms after every re-open, and never opens "

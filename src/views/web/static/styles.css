@@ -2865,6 +2865,89 @@ label.row-title[for] { cursor: pointer; }
    guest notice runs the form's full width, like the fields above it. */
 .gate .gate-note { font-size: var(--t-md); color: var(--muted); }
 
+/* -- the way in: three steps (owner 2026-10-07) ---------------------------- */
+/* "1 Sign in - 2 Setup - 3 Station" at the head of the sign-in screen and of
+   pre-launch Setup (app.js renderSteps moves the one list between them). In
+   the screen's flow, never fixed, so it covers nothing and wraps rather than
+   scrolls at phone width. Quiet: muted words, the shown step in ink with an
+   ink-filled number, the steps behind it with an ink ring. No trace (it is
+   not a number that changes), no signal (it is not a stop). */
+.steps {
+  counter-reset: step;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--t-sm);
+  color: var(--muted);
+}
+
+.steps[hidden], .step[hidden] { display: none; }
+
+.step {
+  counter-increment: step;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.step::before {
+  content: counter(step);
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.375rem;
+  height: 1.375rem;
+  border: var(--line) solid currentColor;
+  border-radius: 50%;
+  font-family: var(--numeral-family);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* The rule between two steps: on the step before it, so a hidden sign-in
+   step (accounts off) takes its rule with it. */
+.step:not(:last-child)::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 0;
+  margin-left: var(--space-1);
+  border-top: 1px solid var(--edge);
+}
+
+.step.is-done { color: var(--text); }
+.step.is-done::before { border-color: var(--text); }
+
+.step[aria-current="step"] { color: var(--text); font-weight: 600; }
+.step[aria-current="step"]::before {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--bg);
+}
+
+/* Pre-launch Setup: the steps above its headline, in the drawer's column. */
+.drawer > .steps { padding: var(--space-7) var(--setup-pad) 0; }
+.drawer > .steps:not([hidden]) + .drawer-head { padding-top: var(--space-4); }
+
+@media (max-width: 40rem) {
+  .drawer > .steps { padding: var(--space-5) var(--space-5) 0; }
+  .drawer > .steps:not([hidden]) + .drawer-head { padding-top: var(--space-3); }
+}
+
+/* The launch (app.js landOnSheet): the entries settle in as Setup clears -
+   120 ms after it starts to slide, then 60 ms apart, 240 ms each. Reduced
+   motion zeroes all of it (the rule at the end of this sheet). */
+.sheet.is-settling > .card.is-entering {
+  animation-delay: calc(120ms + var(--stagger, 0) * 60ms);
+}
+
 .dialog {
   max-width: 34rem;
   display: flex;
