@@ -2288,6 +2288,7 @@ _TIERED = r"""
 
 
 @needs_browser
+@pytest.mark.usefixtures("test_routes")
 def test_tier_two_opens_on_demand_holds_tier_three_and_is_remembered(tiered_station, tmp_path):
     """E: tier-2 content is hidden until its disclosure is pressed; tier 3
     sits inside the tier-2 well behind its own disclosure; the open state is
@@ -2681,6 +2682,7 @@ def test_a_device_page_shows_one_model_and_overview_brings_them_all_back(sim_sta
 
 
 @needs_browser
+@pytest.mark.usefixtures("test_routes")
 def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path):
     """K4: the device page's model is closed; the sheet goes back to the
     overview of the models that remain, and the rail says so."""
