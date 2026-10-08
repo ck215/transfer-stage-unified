@@ -25,7 +25,7 @@ original app's packaging ref. `.github/workflows/gate.yml` runs the fast gate,
 golden and a Web launch on every PR and push to main and mvc-refactor. The
 version is the git tag (`station --version`, `packaging/release.py version`);
 `pyproject.toml` says 0.0.0. The lab deploys by git today (`git fetch && git
-checkout main` or `mvc-refactor`, `pip install -e .`, `run.sh`); the first
+checkout main` or a fresh `git clone --branch main <url>`, `pip install -e .`, `run.sh`); the first
 installed release comes after v1.0.0. Branch model detail: `packaging/README.md`.
 
 Agent reports live in `handoff/` INSIDE each worktree (git-ignored; each
