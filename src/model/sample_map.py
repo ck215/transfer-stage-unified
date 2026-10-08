@@ -356,7 +356,7 @@ class SampleMap(store_choice.StorePrompt, Model):
             raise Refused("Type the path of an existing sample database under "
                           "Existing store file.")
         path = Path(typed).expanduser().resolve()
-        self._refuse_inside_install(path)
+        self._refuse_store_place(path)
         if not path.is_file():
             raise Refused(f"{path}: no file there. Check the path, or press New "
                           "store to make one.")
@@ -388,7 +388,7 @@ class SampleMap(store_choice.StorePrompt, Model):
         if not name.endswith(".sqlite"):
             name += ".sqlite"
         path = (Path(folder).expanduser() / name).resolve()
-        self._refuse_inside_install(path)
+        self._refuse_store_place(path)
         return path
 
     def copy_legacy_store(self):
@@ -403,7 +403,7 @@ class SampleMap(store_choice.StorePrompt, Model):
         if not folder:
             raise Refused("Type or choose the folder to copy it to.")
         dest = (Path(folder).expanduser() / legacy.name).resolve()
-        self._refuse_inside_install(dest)
+        self._refuse_store_place(dest)
         if dest.exists():
             raise Refused(f"{dest} already exists. Type it under Existing "
                           "store file and press Open store to use it.")

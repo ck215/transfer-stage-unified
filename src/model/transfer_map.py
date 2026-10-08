@@ -1083,7 +1083,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             raise Refused("Type the path of an existing store under Existing "
                           "store file.")
         path = Path(typed).expanduser().resolve()
-        self._refuse_inside_install(path)
+        self._refuse_store_place(path)
         if not path.is_file():
             raise Refused(f"{path}: no file there. Check the path, or press "
                           "New store to make one.")
@@ -1109,7 +1109,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         if not name.endswith(".sqlite"):
             name += ".sqlite"
         path = (Path(folder).expanduser() / name).resolve()
-        self._refuse_inside_install(path)
+        self._refuse_store_place(path)
         if path.exists():
             raise Refused(f"{path} already exists. Type it under Existing store "
                           "file and press Open store to use it.")

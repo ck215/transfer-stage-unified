@@ -278,3 +278,78 @@ def test_the_quit_backup_wait_is_one_budget_for_every_store(monkeypatch):
     Setup._on_models_changed(stub, "removed", "Sample DB")
     assert len(waited) == 2
     assert sum(waited) <= 15.0, f"Quit waited {sum(waited):g} s for backups"
+
+
+# -- a live store is never on the cloud drive (audit 2026-10-08 item 7) -----
+
+def _fake_mounts(tmp_path, monkeypatch, rows):
+    """A private mount table (`/proc/mounts` format) and a private home, so
+    nothing here looks at the real drive."""
+    table = tmp_path / "mounts"
+    table.write_text("".join(f"{src} {point} {kind} rw 0 0\n"
+                             for src, point, kind in rows))
+    monkeypatch.setattr(store_choice, "MOUNTS", str(table))
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def test_a_store_under_the_drive_folder_is_refused_even_unmounted(tmp_path, monkeypatch):
+    """`~/QMDL_Drive/...` is refused by its path alone: mounted it is the
+    rclone drive (live SQLite over FUSE), unmounted it is the bare
+    mountpoint (files there hide under the drive once it mounts)."""
+    home = _fake_mounts(tmp_path, monkeypatch, [("/dev/sda1", "/", "ext4")])
+    reason = store_choice.remote_reason(home / "QMDL_Drive" / "stores" / "x.sqlite")
+    assert reason and "QMDL_Drive" in reason
+    assert "local" in reason and "backup" in reason
+    assert store_choice.remote_reason(home / "stores" / "x.sqlite") is None
+
+
+def test_a_store_on_a_fuse_or_network_mount_is_refused(tmp_path, monkeypatch):
+    cloud, sshfs, nfs = tmp_path / "cloud", tmp_path / "ssh", tmp_path / "nfs"
+    disk = tmp_path / "data"
+    _fake_mounts(tmp_path, monkeypatch, [
+        ("/dev/sda1", "/", "ext4"),
+        ("remote:", str(cloud), "fuse.rclone"),
+        ("me@host:", str(sshfs), "fuse.sshfs"),
+        ("srv:/x", str(nfs), "nfs4"),
+        ("/dev/sdb1", str(disk), "fuseblk")])            # NTFS on a local disk
+    for where in (cloud, sshfs, nfs):
+        reason = store_choice.remote_reason(where / "a" / "x.sqlite")
+        assert reason and str(where) in reason, where
+    assert store_choice.remote_reason(disk / "x.sqlite") is None
+    assert store_choice.remote_reason(tmp_path / "cloudy" / "x.sqlite") is None
+    # No mount table (not Linux): only the path rule.
+    monkeypatch.setattr(store_choice, "MOUNTS", str(tmp_path / "no-such-file"))
+    assert store_choice.remote_reason(cloud / "x.sqlite") is None
+
+
+def test_both_maps_refuse_new_and_open_store_on_the_drive(tmp_path, monkeypatch):
+    from controller import user_config
+    from model.transfer_map import TransferMap
+    from result import Refused
+    home = _fake_mounts(tmp_path, monkeypatch, [("/dev/sda1", "/", "ext4")])
+    drive = home / "QMDL_Drive" / "stores"
+    existing = _db(drive / "old.sqlite")
+    monkeypatch.delenv("STATION_SAMPLE_DB", raising=False)
+    monkeypatch.delenv("STATION_MAP_DB", raising=False)
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
+    user_config.forget()
+    monkeypatch.setattr(SampleMap, "choices", None)
+    monkeypatch.setattr(TransferMap, "choices", user_config)
+    try:
+        for model in (SampleMap(), TransferMap()):
+            model.store_dir, model.store_name = str(drive), "new"
+            with pytest.raises(Refused, match="cannot be on the cloud drive"):
+                model.new_store()
+            model.store_path = str(existing)
+            with pytest.raises(Refused, match="cannot be on the cloud drive"):
+                model.open_store()
+            assert not model.has_store
+            assert not (drive / "new.sqlite").exists()
+            model.store_dir = str(home / "local" / model.NAME)   # local works
+            assert Path(model.new_store()).is_file() and model.has_store
+            model.close()
+    finally:
+        user_config.forget()
