@@ -28,12 +28,12 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 | 1 | P1 | Two concurrent Hard resets can orphan an open model | Fixed `cfee241` |
 | 2 | P1 | A backup folder that is a store's own folder replaces the live database | Fixed `c7e2c51` |
 | 3 | P1 | A backup folder set under an unmounted `~/QMDL_Drive` is written into the bare mountpoint | Fixed `c7e2c51` |
-| 4 | P1 | The Quit backup wait (up to 20 s) sits inside the Controller's close loop | Documented |
+| 4 | P1 | The Quit backup wait (up to 20 s) sits inside the Controller's close loop | Fixed `c05fb7c` |
 | 5 | P1 | Changed firmware (chuck, temperature controller) is offered by the flash prompt before bench validation | Documented (owner) |
 | 6 | P1 | Backups of stores with the same file name overwrite each other | Fixed `04a6f97` |
 | 7 | P1 | A live store may be chosen on the rclone drive | Fixed `ffe5ab3` |
-| 8 | P2 | The picture preview opens SQLite 12 times per Transfer Map state poll (48/s), in every phase | Documented |
-| 9 | P2 | `Controller.add` does not refuse after `close()` began; `remove` drops before it stops | Documented (core) |
+| 8 | P2 | The picture preview opens SQLite 12 times per Transfer Map state poll (48/s), in every phase | Fixed `d7aa310` |
+| 9 | P2 | `Controller.add` does not refuse after `close()` began; `remove` drops before it stops | Fixed `979d177`, `d08a732`, `901150e` |
 | 10 | P2 | `/api/open_model` and `/api/close_model` kept for tests bypass Setup's rules | Fixed `f88942f` |
 | 11 | P2 | Guest session gating is enforced in the Web adapter, not below it | Fixed `1740189` |
 | 12 | P2 | The Transfer Map duplicates `store_choice`'s install-folder rules | Fixed `02a264d` |
@@ -44,7 +44,7 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 | 17 | P3 | "Export/Import sample map" in operator text | Fixed `ffa978b` |
 | 18 | P3 | `isinstance(model, User)` filters that can no longer match | Fixed `c706f3c` |
 | 19 | P3 | MODEL_CONTRACT, STATUS, DESIGN_BRIEF, RECORDING_A_TRIAL, `user_store` docstring drift | Fixed `cc61d1d` |
-| 20 | P3 | CLAUDE.md / `station-map` / `heater.py` say "firmware untouched" / "no watchdog" | Documented (lead) |
+| 20 | P3 | CLAUDE.md / `station-map` / `heater.py` say "firmware untouched" / "no watchdog" | Fixed `df52be1` (CLAUDE.md, station-map); the `heater.py` comment stays true until the sketch is flashed |
 | 21 | P3 | "Overview" remains in code comments and CSS | Fixed `f1bed83` |
 
 ## P1: correctness and data safety
