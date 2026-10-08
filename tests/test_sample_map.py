@@ -1413,6 +1413,36 @@ def test_an_unchanged_state_poll_opens_no_trial_file(images, tmp_path, monkeypat
     assert len(opened) <= 2, "one read per change, not per poll"
 
 
+def test_a_missing_picture_file_falls_back_and_the_shown_line_agrees(images, tmp_path):
+    """Open issues 2026-10-08 section 4: the picked picture's file was
+    gone, so the frame said "No picture" while the Shown line named it.
+    The preview falls back to the next picture on disk by the same rule
+    (100x, 50x, then lower, newest); with none on disk the Shown line says
+    which file is missing."""
+    from pathlib import Path
+    from PIL import Image
+    _tree(images, tmp_path)
+    images.select_sample("4oct26")
+    images.select_chip("2")
+    images.select_flake_id("F1")
+    for mag, colour in (("10x", (0, 0, 200)), ("100x", (200, 0, 0))):
+        source = tmp_path / f"{mag}.png"
+        Image.new("RGB", (64, 48), colour).save(source)
+        images.run("set_image_magnification", None, (mag,))
+        assert images.run("add_image", None, (str(source),)).is_ok
+    rows = {int(r["magnification"]): r for r in images._store.images("4oct26", "2", "F1")}
+    assert images.preview_text.startswith("100x picture")
+    images._store.image_file(rows[100]).unlink()           # gone from disk
+    assert images.preview_text.startswith("10x picture"), images.preview_text
+    assert images.preview_magnification == "10x"
+    assert images.preview_key.startswith(f"{rows[10]['id']}:")
+    assert images.preview_picture != b""
+    images._store.image_file(rows[10]).unlink()
+    missing = Path(str(rows[100]["path"])).name
+    assert images.preview_text == f"No picture (file missing: {missing})"
+    assert images.preview_picture == b"" and images.preview_key == ""
+
+
 def test_the_pictures_section_previews_the_100x_picture_and_can_switch(images, tmp_path):
     """Owner 2026-10-08: a preview of the picked level's picture, 100x by
     default; the operator may pick another magnification on offer."""
