@@ -5,11 +5,12 @@
 #                                  vX.Y.Z, commit that, tag it; print the pushes
 #   dev/release.sh vX.Y.Z --push   the same, then push the branch and the tag
 #
-# Run it on a clean, pushed mvc-refactor (it releases whatever branch is
-# checked out, in the checkout it lives in). It refuses, changing nothing: a
-# tag that is not vMAJOR.MINOR.PATCH, one that exists here or on origin, one
-# not newer than the latest release, local edits, a detached HEAD, a HEAD that
-# is not exactly origin's copy of the branch, and an empty Unreleased section.
+# Run it on a clean `main`, level with origin/main: releases are tags on main
+# (packaging/README.md, "Branches"), in the checkout this script lives in. It
+# refuses, changing nothing: a tag that is not vMAJOR.MINOR.PATCH, one that
+# exists here or on origin, one not newer than the latest release, any branch
+# but main, local edits, a HEAD that is not exactly origin/main, and an empty
+# Unreleased section.
 # Nothing is pushed without --push. Pushing the tag starts
 # .github/workflows/package.yml, which builds every bundle and publishes the
 # release when all of them are on it (packaging/README.md, "Cutting a release").
@@ -24,7 +25,7 @@ PUSH=0
 for arg in "$@"; do
     case "$arg" in
         --push) PUSH=1 ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         -*) fail "unknown option '$arg' (try --help)" ;;
         *) [ -z "$TAG" ] || fail "one tag at a time ('$TAG' and '$arg')"; TAG="$arg" ;;
     esac
@@ -43,7 +44,9 @@ fi
 
 # 1. What is being released, and from where.
 BRANCH="$(git symbolic-ref --short -q HEAD)" \
-    || fail "HEAD is detached. Check out the branch to release (mvc-refactor) first."
+    || fail "HEAD is detached. Releases are cut on main: git switch main"
+[ "$BRANCH" = main ] \
+    || fail "Releases are cut on main only, and this is $BRANCH. Merge it into main first (its pull request, or mvc-refactor's merge), then run this on main."
 if ! git diff --quiet || ! git diff --cached --quiet; then
     fail "There are local edits (git status). Commit and push them, or discard them, first."
 fi

@@ -188,20 +188,42 @@ bundle says the tag it was built from. `CHANGELOG.md` at the repository root
 holds what changed, in the operator's words; a release's notes on GitHub are
 its section there.
 
+### Branches
+
+| Branch | What it is |
+|---|---|
+| `main` | The pre-release line. It receives merges from `mvc-refactor` (a merge commit whenever the integration branch is ready; main keeps its own history, and the first such merge takes the branch's tree) and from feature pull requests. **Releases are tags on main**; `dev/release.sh` runs on main only. |
+| `mvc-refactor` | The integration branch for agent worktree rounds; merged into main when it is ready. |
+| `feat/<topic>`, `fix/<topic>`, `agent/<topic>` | Short-lived branches that open a pull request into main (or into mvc-refactor during a round). |
+| `legacy` | The lab's original Tk app (the old main), frozen. |
+| `stable` | The original app's packaging ref: what `package.yml` freezes as `stable/` (`stable_ref`) and `dev/swap_branch.sh` runs. Unchanged. |
+
+`.github/workflows/gate.yml` runs on every pull request into, and every
+push to, main and mvc-refactor: the fast suite, the golden wire gate and a
+launch of the Web view, on Ubuntu, within 30 minutes.
+
+A checkout's Update row, `update.sh` and `update.bat` take releases (tags on
+main) from the remote of the branch the checkout tracks, and their
+developers' line compares the checkout with that branch. A checkout on
+mvc-refactor still updates to any release that descends from it, but the
+lab PC should follow main: once its own work is pushed (step 1 below), run
+`git switch main` and then `update.bat`, which fast-forwards main to the
+latest release. From then on both lines speak of the release line.
+
 ### Cutting a release
 
-From a clean checkout of the release branch, level with GitHub:
+On a clean `main`, level with origin/main:
 
 ```
 dev/release.sh v1.0.0            # checks, cuts CHANGELOG.md, commits, tags; pushes nothing
-git push origin <branch>         # the two commands it prints, branch first
+git push origin main             # the two commands it prints, branch first
 git push origin v1.0.0
 ```
 
 `dev/release.sh` refuses, changing nothing, a tag that is not
 `vMAJOR.MINOR.PATCH`, one that exists (here or on GitHub) or is not newer
-than the latest release, local edits, a detached HEAD, a HEAD that is not
-exactly GitHub's copy of the branch, and an empty Unreleased section. It
+than the latest release, any branch but main, local edits, a HEAD that is
+not exactly origin/main, and an empty Unreleased section. It
 moves Unreleased under `## [1.0.0] - <date>`, commits that alone ("Release
 v1.0.0") and makes an annotated tag whose message is the section.
 `dev/release.sh v1.0.0 --push` runs the two pushes too.
@@ -257,8 +279,9 @@ this order:
    git push -u origin bench/2026-10
    ```
 
-   Tell the lead the branch's name: it is merged before the first release
-   the lab installs. The checkout itself stays as it is.
+   Tell the lead the branch's name: it is merged (into mvc-refactor, then
+   main) before the first release the lab installs. Then switch the checkout
+   to main once ("Branches" above).
 2. **Wait for a release that holds that work.** The lab's Transfer Map
    stores are newer than the repository's store code (v7/v8 against v6, as
    of 2026-10-07): do not point an installed release at them until its notes

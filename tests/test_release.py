@@ -208,7 +208,7 @@ RELEASE_FILES = ("dev/release.sh", "packaging/release.py", "packaging/release.js
 
 
 class ReleaseRepo:
-    """A checkout of `mvc-refactor` holding dev/release.sh and its helpers,
+    """A checkout of `main` holding dev/release.sh and its helpers,
     pushed to a bare `origin` beside it. Git sees only the config written
     here (identity, no signing): never the user's own."""
 
@@ -224,9 +224,9 @@ class ReleaseRepo:
         self.tmp = tmp_path
         self.origin = tmp_path / "origin.git"
         self.work = tmp_path / "work"
-        self.git(tmp_path, "init", "-q", "--bare", "-b", "mvc-refactor", str(self.origin))
+        self.git(tmp_path, "init", "-q", "--bare", "-b", "main", str(self.origin))
         self.work.mkdir()
-        self.git(self.work, "init", "-q", "-b", "mvc-refactor")
+        self.git(self.work, "init", "-q", "-b", "main")
         for rel in RELEASE_FILES:
             (self.work / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(os.path.join(ROOT, rel), self.work / rel)
@@ -234,7 +234,7 @@ class ReleaseRepo:
         (self.work / "README.md").write_text("station\n")
         self.commit_all("first")
         self.git(self.work, "remote", "add", "origin", str(self.origin))
-        self.git(self.work, "push", "-q", "-u", "origin", "mvc-refactor")
+        self.git(self.work, "push", "-q", "-u", "origin", "main")
 
     def git(self, cwd, *args):
         done = subprocess.run(["git", *args], cwd=cwd, env=self.env, capture_output=True,
@@ -297,7 +297,7 @@ def test_release_sh_cuts_commits_and_tags_and_pushes_nothing(release_repo):
     assert repo.git(repo.work, "status", "--porcelain") == ""
     # nothing went to origin; the two pushes are printed, branch first
     assert repo.state()["origin"] == origin_before
-    branch_push = done.stdout.index("git push origin mvc-refactor\n")
+    branch_push = done.stdout.index("git push origin main\n")
     assert branch_push < done.stdout.index("git push origin v1.0.0\n")
 
 
@@ -306,7 +306,7 @@ def test_release_sh_push_sends_the_branch_and_the_tag(release_repo):
     done = repo.release("v1.0.0", "--push")
     assert done.returncode == 0, done.stderr
     head = repo.git(repo.work, "rev-parse", "HEAD")
-    assert repo.git(repo.origin, "rev-parse", "refs/heads/mvc-refactor") == head
+    assert repo.git(repo.origin, "rev-parse", "refs/heads/main") == head
     assert repo.git(repo.origin, "cat-file", "-t", "refs/tags/v1.0.0") == "tag"
     assert repo.git(repo.origin, "rev-parse", "refs/tags/v1.0.0^{commit}") == head
 
@@ -341,7 +341,7 @@ def _behind_origin(repo):
     (other / "theirs.txt").write_text("theirs\n")
     repo.git(other, "add", "theirs.txt")
     repo.git(other, "commit", "-q", "-m", "theirs")
-    repo.git(other, "push", "-q", "origin", "mvc-refactor")
+    repo.git(other, "push", "-q", "origin", "main")
 
 
 def _detached(repo):
@@ -352,8 +352,13 @@ def _pushed_changelog(text):
     def setup(repo):
         (repo.work / "CHANGELOG.md").write_text(text)
         repo.commit_all("changelog")
-        repo.git(repo.work, "push", "-q", "origin", "mvc-refactor")
+        repo.git(repo.work, "push", "-q", "origin", "main")
     return setup
+
+
+def _on_the_integration_branch(repo):
+    repo.git(repo.work, "switch", "-q", "-c", "mvc-refactor")
+    repo.git(repo.work, "push", "-q", "-u", "origin", "mvc-refactor")
 
 
 def _a_newer_release(repo):
@@ -372,6 +377,8 @@ def _a_newer_release(repo):
     (_unpushed, "v1.0.0", "HEAD is not on origin"),
     (_behind_origin, "v1.0.0", "commits this checkout lacks"),
     (_detached, "v1.0.0", "HEAD is detached"),
+    (_on_the_integration_branch, "v1.0.0",
+     "Releases are cut on main only, and this is mvc-refactor."),
     (_pushed_changelog(SEED.replace(
         "### Added\n\n- **Faster jog.** The probes jog faster.\n\n"
         "### Fixed\n\n- The stop is never late.\n\n", "### Added\n\n")),
@@ -380,7 +387,8 @@ def _a_newer_release(repo):
      "no '## [Unreleased]'"),
     (_a_newer_release, "v1.0.0", "v1.0.0 is not newer than the latest release, v1.2.0."),
 ], ids=["two-part", "no-v", "pre-release", "dirty", "staged", "tag-here",
-        "tag-on-origin", "unpushed", "behind-origin", "detached", "empty-unreleased",
+        "tag-on-origin", "unpushed", "behind-origin", "detached", "not-main",
+        "empty-unreleased",
         "no-unreleased", "not-newer"])
 def test_release_sh_refuses_and_changes_nothing(release_repo, setup, tag, words):
     repo = release_repo
@@ -391,3 +399,77 @@ def test_release_sh_refuses_and_changes_nothing(release_repo, setup, tag, words)
     assert done.returncode == 1, (done.stdout, done.stderr)
     assert words in done.stderr, done.stderr
     assert repo.state() == before
+
+
+# -- REL-6: the gate on pull requests and pushes ---------------------------------
+
+GATE = os.path.join(ROOT, ".github", "workflows", "gate.yml")
+
+
+@pytest.fixture(scope="module")
+def gate():
+    with open(GATE, encoding="utf-8") as f:
+        return f.read()
+
+
+def test_the_gate_runs_on_prs_and_pushes_to_main_and_the_integration_branch(gate):
+    import re
+    on = gate.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert re.search(r"^  pull_request:\n    branches: \[main, mvc-refactor\]$", on, re.M)
+    assert re.search(r"^  push:\n    branches: \[main, mvc-refactor\]$", on, re.M)
+    assert "tags" not in on and "workflow_dispatch" not in on
+    assert re.search(r"^permissions:\n  contents: read\n", gate, re.M)
+    assert "contents: write" not in gate and "secrets." not in gate
+
+
+def test_the_gate_runs_the_verify_gates_on_ubuntu_in_30_minutes(gate):
+    assert "runs-on: ubuntu-" in gate and "macos" not in gate and "windows" not in gate
+    assert "timeout-minutes: 30" in gate
+    assert 'python-version: "3.13"' in gate
+    assert 'pip install -e ".[dev]"' in gate
+    for needle in ('STATION_NO_WINDOWS: "1"', "QT_QPA_PLATFORM: offscreen",
+                   'STATION_NO_UPDATE_CHECK: "1"',
+                   'python -m pytest tests -q -p no:cacheprovider -m "not qt"',
+                   "python -m pytest tests/test_wire_golden.py -q -p no:cacheprovider",
+                   "python src/app.py --web --no-browser --port 8081",
+                   "http://127.0.0.1:8081/api/setup", '[ "$code" != 200 ]'):
+        assert needle in gate, needle
+    order = [gate.index(n) for n in ("pip install", "-m \"not qt\"", "test_wire_golden",
+                                     "src/app.py --web")]
+    assert order == sorted(order)
+
+
+def test_the_gate_pins_its_actions_and_keeps_expressions_out_of_scripts(gate):
+    import re
+    uses = re.findall(r"uses:\s*(\S+)", gate)
+    assert uses and all(re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", u) for u in uses)
+    seen_key = False
+    for number, line in enumerate(gate.splitlines(), 1):
+        if "${{" in line and not line.lstrip().startswith("#"):
+            assert re.match(r"^\s*(- )?[\w-]+:\s", line), line
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if line[0] != " ":
+            assert re.match(r"^[\w-]+:(\s|$)", line), (number, line)
+            seen_key = True
+        else:
+            assert seen_key, (number, line)
+
+
+def test_the_gate_parses_as_yaml():
+    yaml = pytest.importorskip("yaml")
+    with open(GATE, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    on = data["on"] if "on" in data else data[True]
+    assert on["pull_request"]["branches"] == on["push"]["branches"] == ["main", "mvc-refactor"]
+    [job] = data["jobs"].values()
+    assert job["timeout-minutes"] == 30 and job["runs-on"].startswith("ubuntu-")
+
+
+def test_package_yml_names_no_integration_branch():
+    """Releases are tags on main; the packaging workflow names no branch but
+    the stable ref it freezes."""
+    with open(os.path.join(ROOT, ".github", "workflows", "package.yml"), encoding="utf-8") as f:
+        text = f.read()
+    assert "mvc-refactor" not in text
+    assert "default: stable" in text

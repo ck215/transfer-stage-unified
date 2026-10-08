@@ -126,7 +126,7 @@ fi
 
 if changed firmware; then
     say "firmware changed: the Setup page's Firmware row flashes the boards that are out of date"
-    say "(dev/swap_branch.sh when you run main's app)."
+    say "(dev/swap_branch.sh when you run the original app)."
     git --no-pager diff --name-only "$OLD" "$NEW" -- firmware | sed 's/^/    /'
 fi
 
