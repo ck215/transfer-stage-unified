@@ -284,6 +284,7 @@ function gateWords(mode, direction) {
 function gateReason(element, mode, values) {
   const by = element.enabled_by;
   if (by && values !== null && values !== undefined && !values[by]) {
+    if (element.enabled_by_reason) return String(element.enabled_by_reason);
     return /_enabled$/.test(by) ? 'Tick Launch on this row first' : 'Not available yet';
   }
   const word = String(mode || '');
@@ -1449,7 +1450,7 @@ function renderFileOpen(panel, element) {
   path.type = 'text';
   path.autocomplete = 'off';
   path.spellcheck = false;
-  path.placeholder = 'Path to a saved run';
+  path.placeholder = element.placeholder ? String(element.placeholder) : 'Path to a saved run';
   path.setAttribute('aria-label', nameFor(label + ': path on the station', ownerOf(panel)));
   path.addEventListener('input', () => { path.title = path.value; });
   const extensions = (element.extensions || []).map((e) => '.' + String(e).replace(/^\./, ''));

@@ -1593,7 +1593,7 @@ class RgbAnalysis(Model):
 
     def _settled_once(self, read, same):
         """The settle gate for a grab OUTSIDE the run loop (Arm's capture
-        check, the whole-screen pictures, the Sample Map's photos): read
+        check, the whole-screen pictures, the Sample DB's photos): read
         until two reads at least SETTLE_S apart show the same picture, at
         most SETTLE_READS reads, and return the later one; None when a read
         returned nothing or the reads ran out. A one-off read can land

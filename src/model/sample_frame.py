@@ -1,4 +1,4 @@
-"""The Sample Map's frame math (proposal-flake-coordinates.md section 3).
+"""The Sample DB's frame math (proposal-flake-coordinates.md section 3).
 
 Pure functions, like `transfer_map_analysis`: no model, no store, no
 matplotlib, so every rule is testable on synthetic corners.

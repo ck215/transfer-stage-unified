@@ -238,12 +238,16 @@ def checkbox(text, model_attr, command, *, tooltip=None,
 
 
 def dropdown(text, model_attr, command, options_command, *,
-             enabled_when=None, disabled_when=None, enabled_by=None):
+             enabled_when=None, disabled_when=None, enabled_by=None,
+             enabled_by_reason=None):
     """A selection. `command` is **required**.
 
     `enabled_by` names a boolean `model_attr` (a checkbox's) that must be
     true for the control to be live; the one gating rule in `is_enabled`
-    reads it, so the three views and the Panel agree.
+    reads it, so the three views and the Panel agree. `enabled_by_reason`
+    is the short sentence a view shows on the greyed control and the Panel
+    refuses with ("Choose a sample first"); without it, the Setup row's
+    "Tick Launch" words.
 
     A dropdown with `model_attr` and no `command` reached
     `getattr(self.model, None)` in PySide and raised `TypeError` (PYSIDE-7).
@@ -257,6 +261,10 @@ def dropdown(text, model_attr, command, options_command, *,
         "command": command, "options_command": options_command,
         "writable": False, "role": "neutral",
     }
+    if enabled_by_reason:
+        if not enabled_by:
+            raise ValueError(f"dropdown {model_attr!r}: enabled_by_reason needs enabled_by")
+        element["enabled_by_reason"] = str(enabled_by_reason)
     return _gate(element, enabled_when, disabled_when, enabled_by)
 
 
@@ -283,12 +291,18 @@ def file_save(text, command, *, extensions=("csv",), role="neutral"):
     }
 
 
-def file_open(text, command, *, extensions=("csv",), role="neutral"):
-    """Choose an existing file; its path is passed to `command`."""
-    return {
+def file_open(text, command, *, extensions=("csv",), role="neutral",
+              placeholder=None):
+    """Choose an existing file; its path is passed to `command`.
+    `placeholder` is the path box's hint ("Path to a saved microscope
+    image"); a view without it says its own default."""
+    element = {
         "type": "file_open", "text": text, "command": command,
         "extensions": list(extensions), "writable": False, "role": role,
     }
+    if placeholder:
+        element["placeholder"] = str(placeholder)
+    return element
 
 
 def image(text, data_command, *, role="neutral", empty="No image yet."):

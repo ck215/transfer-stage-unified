@@ -19,7 +19,7 @@ the moment the row is taken:
   value. (The EventLog folds a repeat inside its dedupe window into the
   first line's count; a repeat is not a new line.)
 - Polled at `poll_hz`, from every model the Controller holds, found by what
-  it exposes (never by class, as the Transfer Map and Sample Map find their
+  it exposes (never by class, as the Transfer Map and Sample DB find their
   peers): a stage (`position`, `position_time`, `velocity`) gives x, y, z,
   vx, vy, vz, position_time, mode, full_speed, man_full_speed; a pad holder
   (`gamepad`, `gamepad_name`) gives gamepad_connected, gamepad_held; a
@@ -153,7 +153,7 @@ def _read_red(model):
 
 def _readers(model):
     """[(reader name, reader)] for what `model` exposes; [] for a model with
-    nothing this records (the Transfer Map, the Sample Map)."""
+    nothing this records (the Transfer Map, the Sample DB)."""
     found = []
     if all(_has(model, a) for a in ("position", "position_time", "velocity")):
         found.append(("position", _read_stage))

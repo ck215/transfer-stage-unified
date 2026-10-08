@@ -24,7 +24,7 @@ Owner answers of 2026-10-04:
   hold a credential (`put_user_record` refuses one).
 - **Q4, what a user may keep**: `USER_PARAMS` (step sizes, manual and
   autonomous speed, the rotator step); `STATION_PARAMS` are station-only
-  (the heater's PID and offset, Red Percent's `red_min`, the Sample Map's
+  (the heater's PID and offset, Red Percent's `red_min`, the Sample DB's
   um per count); `NEVER_PARAMS` (the brake fields) are never a preference.
   Anything else (a setpoint, a target) is the operator's live value, not a
   preference. Validation runs on the effective document against each
@@ -104,19 +104,26 @@ def merge(layers):
     return effective, provenance
 
 
-RENAMED_MODELS = {"Red Percent": "RGB Analysis"}
+#: Model names the operator once saw, and the name each is now: Red Percent
+#: became RGB Analysis (RG-3, 2026-10-07) and the Sample Map became the
+#: Sample DB (owner, 2026-10-07). A station profile or a user's preferences
+#: (`users.sqlite`, keyed by model name) saved under the old key keep working.
+RENAMED_MODELS = {"Red Percent": "RGB Analysis", "Sample Map": "Sample DB"}
 
 
 def validate_model_params(scope, body, params_of):
     """Keep what `scope` may set and its Param accepts; return `(clean,
     problems)`, each problem one sentence naming the value."""
     clean, problems = {}, []
-    for model_name, values in (body or {}).items():
+    # Old keys first, so a value saved under the new name (the newer one)
+    # wins when a document holds both: `users.sqlite` lists preferences by
+    # name, and "Sample DB" sorts before "Sample Map".
+    items = sorted((body or {}).items(), key=lambda kv: kv[0] not in RENAMED_MODELS)
+    for model_name, values in items:
         params = params_of(model_name) or {}
         if not params and model_name in RENAMED_MODELS:
-            # Red Percent became RGB Analysis on 2026-10-07; a profile saved
-            # under the old key keeps working and is written back under the
-            # new one when the station knows only the new name.
+            # A profile saved under the old key keeps working and is written
+            # back under the new one when the station knows only the new name.
             model_name = RENAMED_MODELS[model_name]
             params = params_of(model_name) or {}
         if not isinstance(values, dict):

@@ -216,6 +216,9 @@ class Panel:
             label = str(element.get("text", command)).rstrip(":")
             by = element.get("enabled_by")
             if by and not getattr(self, by, None):
+                if element.get("enabled_by_reason"):
+                    raise Refused(f"{label} is not available yet: "
+                                  f"{element['enabled_by_reason']}.")
                 raise Refused(f"{label} is not available until the row's "
                               "Launch box is ticked.")
             raise Refused(f"{label} is not available: {self._gate_reason()}")

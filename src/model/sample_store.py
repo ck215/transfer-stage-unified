@@ -1,4 +1,4 @@
-"""The Sample Map's store: `data/sample_map.sqlite` (flake-coords section 4).
+"""The Sample DB's store: `data/sample_map.sqlite` (flake-coords section 4).
 
 Owner ruling 2026-10-04: a separate file, following the Transfer Map
 store's conventions exactly (`PRAGMA user_version` from 1, `_CREATE` with
