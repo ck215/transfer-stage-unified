@@ -961,6 +961,13 @@ function renderReadonly(panel, element) {
     ? make('div', 'row stat secondary')
     : row(element, 'stat');
   if (element.model_attr) node.dataset.attr = element.model_attr;
+  // A secondary readout with a `lead` says it before its value ("Now:
+  // 6.50 deg" under Tilt for this trial, UX audit 2026-10-08 #15).
+  const lead = element.secondary && element.lead ? String(element.lead) : '';
+  if (lead) {
+    node.classList.add('has-lead');
+    node.appendChild(make('span', 'lead', lead));
+  }
   const isStatusLine = panel.name === SETUP_NAME && /_status$/.test(element.model_attr || '');
   const value = make('span', 'value is-empty ' + roleClass(element.role), '--');
   value.setAttribute('translate', 'no');
@@ -991,7 +998,7 @@ function renderReadonly(panel, element) {
       // state is still read on purpose. A model's key reading (`rail: true`)
       // is never hidden: unknown is information, drawn "--" muted at the
       // reading's own size (L10, IMP7-6).
-      const hide = widget.tier === 1 && !element.rail && isQuiet(text, shown);
+      const hide = widget.tier === 1 && !element.rail && !lead && isQuiet(text, shown);
       if (node.hidden !== hide) node.hidden = hide;
       value.classList.toggle('is-dash', shown === '--');
       if (value.textContent === shown) return;

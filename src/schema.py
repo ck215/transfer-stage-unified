@@ -118,13 +118,16 @@ def schema(*sections):
 
 
 def readonly(text, model_attr, *, param=None, format=None, role="neutral",
-             rail=False, unit=None, secondary=False):
+             rail=False, unit=None, secondary=False, lead=None):
     """A value the operator reads and cannot write. `rail=True` marks one of
     the few numbers the operator watches constantly: the opened model's
     focal readings. `unit` is drawn small beside the number (a `param`
     carries its own unit; this is for readouts without one). `secondary=True`
     draws the readout small, under the control declared just before it (the
-    steps/s under a percent speed dial, owner ruling 2026-10-07)."""
+    steps/s under a percent speed dial, owner ruling 2026-10-07). `lead` is
+    a short word a secondary readout says before its value ("Now:", the
+    reading under the entry that overrides it, UX audit 2026-10-08 #15); a
+    readout with a lead is shown even while it has nothing to report."""
     element = {
         "type": "readonly", "text": text, "model_attr": model_attr,
         "writable": False, "role": role,
@@ -133,6 +136,10 @@ def readonly(text, model_attr, *, param=None, format=None, role="neutral",
         element["rail"] = True
     if secondary:
         element["secondary"] = True
+    if lead:
+        if not secondary:
+            raise ValueError(f"readonly {text!r}: a lead belongs to a secondary readout")
+        element["lead"] = str(lead)
     if param is not None:
         element.update(param.to_schema())
     if format is not None:

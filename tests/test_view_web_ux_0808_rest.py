@@ -95,6 +95,86 @@ def test_return_in_a_prompts_photo_path_presses_its_add_photo_key(photo_station,
     assert out["open"] is True, out
 
 
+# ------------------------------------- #15 Tilt and Speed beside their entries
+class TiltProc(FakeProc):
+    """The Transfer Map's shape: Tilt read in every step but Setup; in Setup
+    under the entry that overrides it."""
+    PARAMS = {"typed_tilt": Param("typed_tilt", "text", default="",
+                                  label="Tilt for this trial (deg)"),
+              "tilt_now": Param("tilt_now", "float", default=0.0, decimals=2,
+                                unit="deg", label="Tilt")}
+
+    def __init__(self):
+        super().__init__()
+        self.typed_tilt = ""
+        self.tilt_now = None
+
+    @property
+    def schema(self):
+        P = self.PARAMS
+        return sch.schema(
+            sch.section("Trial", sch.phased(
+                sch.readonly("Tilt", "tilt_now", rail=True, param=P["tilt_now"]),
+                "live", "new_tip")),
+            sch.section("Start",
+                        sch.entry("Tilt for this trial (deg)", "typed_tilt", P["typed_tilt"]),
+                        sch.readonly("Tilt now", "tilt_now", param=P["tilt_now"],
+                                     secondary=True, lead="Now:"),
+                        sch.button("To live", "go", args=("live",)),
+                        phases=("setup",)))
+
+
+@pytest.fixture
+def tilt_station():
+    controller = Controller()
+    model = TiltProc()
+    controller.add("Fake Proc", model, {"kind": "Fake Proc"})
+    view = WebView(controller, FakeSetup(), port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, model
+    finally:
+        view.close()
+
+
+_TILT = r"""() => {
+  const card = Array.from(document.querySelectorAll('#cards > .card'))
+    .find((c) => c.querySelector('.card-title') && c.querySelector('.card-title').textContent === 'Fake Proc');
+  const shown = (n) => Boolean(n && n.getClientRects().length);
+  const entry = card.querySelector('input[name="typed_tilt"]');
+  const line = card.querySelector('.row.secondary.has-lead[data-attr="tilt_now"]');
+  const reading = card.querySelector('.reading[data-attr="tilt_now"]');
+  const under = shown(line) && shown(entry)
+    && line.getBoundingClientRect().top >= entry.getBoundingClientRect().bottom - 1
+    && entry.closest('.row').contains(line);
+  return { line: shown(line) ? line.innerText.replace(/\s+/g, ' ').trim() : null,
+           under, reading: shown(reading) };
+}"""
+
+
+@needs_browser
+def test_in_setup_the_tilt_reading_is_a_now_line_under_its_entry(tilt_station, tmp_path):
+    view, model = tilt_station
+    out = _browse(view, _READY + r"""
+      await sleep(600);
+      const dashboard = await page.evaluate(%s);
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(600);
+      const setup = await page.evaluate(%s);
+      await api('/api/run', { name: 'Fake Proc', command: 'go', inputs: {}, args: ['live'] });
+      await sleep(1700);
+      const live = await page.evaluate(%s);
+      return { dashboard, setup, live };
+    """ % (_TILT, _TILT, _TILT), tmp_path)
+    for where in ("dashboard", "setup"):
+        got = out[where]
+        assert got["line"] and got["line"].startswith("Now:"), out
+        assert "--" in got["line"], out                 # unknown is said, not hidden
+        assert got["under"] is True, out
+        assert got["reading"] is False, out             # not a second Tilt in Setup
+    assert out["live"]["reading"] is True and out["live"]["line"] is None, out
+
+
 # ------------------------------------------------ #17 the Folder entry's width
 LONG_FOLDER = "/home/transfer-stage-user/transfer-stage-runs/stores/op@lab.test"
 
