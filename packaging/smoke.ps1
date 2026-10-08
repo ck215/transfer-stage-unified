@@ -75,7 +75,7 @@ foreach ($f in "VERSION", "release.json") {
     Check "$f beside the launchers" (Test-Path (Join-Path $Bundle $f))
 }
 $Stamp = @(Get-Content (Join-Path $Bundle "VERSION") -ErrorAction SilentlyContinue)
-$ExpectedVersion = if ($Stamp.Count -ge 3) { "$($Stamp[0]), $($Stamp[2].Substring(0, 10))" } else { "(no VERSION)" }
+$ExpectedVersion = if ($Stamp.Count -ge 1) { "$($Stamp[0])" } else { "(no VERSION)" }
 foreach ($sketch in $Sketches) {
     Check "firmware\$sketch\$sketch.ino" (Test-Path (Join-Path $Bundle "firmware\$sketch\$sketch.ino"))
     Check "stable\firmware\$sketch\$sketch.ino" (Test-Path (Join-Path $Bundle "stable\firmware\$sketch\$sketch.ino"))

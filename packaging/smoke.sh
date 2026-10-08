@@ -111,7 +111,7 @@ for f in VERSION release.json; do
 done
 TAG="$(sed -n 1p "$BUNDLE/VERSION" 2>/dev/null)"
 BUILT="$(sed -n 3p "$BUNDLE/VERSION" 2>/dev/null)"
-EXPECTED_VERSION="$TAG, ${BUILT:0:10}"
+EXPECTED_VERSION="$TAG"
 for sketch in $SKETCHES; do
     check "firmware/$sketch/$sketch.ino" test -f "$BUNDLE/firmware/$sketch/$sketch.ino"
     check "stable/firmware/$sketch/$sketch.ino" test -f "$BUNDLE/stable/firmware/$sketch/$sketch.ino"

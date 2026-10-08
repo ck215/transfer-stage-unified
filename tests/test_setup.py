@@ -2042,7 +2042,7 @@ def test_the_login_never_reaches_the_station_log(fake_types, checking, tmp_path,
         panel = _ready(Setup(RecordingController(), updater=updater))
         assert panel.run("apply_update", args=(True,)).is_ok
         wait_idle(panel)
-        assert panel.station_version == "v1.2.0, 2026-09-20"
+        assert panel.station_version == "v1.2.0"
         assert (install / "VERSION").read_text().startswith("v1.3.0")
         events.flush_file()
         text = open(log, encoding="utf-8").read()
