@@ -15,8 +15,8 @@ chips and their flakes are one tree in the store (`sample_store` v4). The
 sheet is a short procedure (`PHASES`): "browse" holds three cascading
 dropdowns (sample, its chips, that chip's flakes), the pictures and the
 trials of the picked level; "new_sample", "new_chip" and "new_flake" are the
-prompts, each drawing only its own section. A sample and a flake need at
-least one photo, a chip may have none. The Panel refuses a command whose
+prompts, each drawing only its own section. A flake needs at least one
+photo; a sample and a chip may have none (owner 2026-10-07). The Panel refuses a command whose
 control the current step hides.
 
 Where on the chip each flake is (proposal-flake-coordinates.md).
@@ -1535,7 +1535,7 @@ class SampleMap(Model):
             raise Refused(f"Sample {sample} is already in the store.")
         if not self._new_material:
             raise Refused("Pick the material first.")
-        self._check_staged("sample", True)
+        self._check_staged("sample", False)
         try:
             self._store.add_sample(sample, self._new_material, self.new_sample_note)
         except ss.StoreRefused as refusal:

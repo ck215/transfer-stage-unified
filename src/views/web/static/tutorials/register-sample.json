@@ -12,7 +12,7 @@
     {
       "page": "Sample Map",
       "anchor": {"text": "Add photo…"},
-      "say": "Type the sample ID and pick its material. A photo is optional; press Add photo to attach one, or press Next.",
+      "say": "Type the sample ID and pick its material. A photo is optional for a sample (a flake needs one); press Add photo to attach one, or press Next.",
       "wait": null
     },
     {
