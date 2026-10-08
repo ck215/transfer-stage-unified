@@ -233,6 +233,30 @@ PROFILE_COLUMNS = ("trial_id", "t_s", "red", "z", "x", "y") + PROFILE_ADDED
 _PROFILE_WIDTH = 5 + len(PROFILE_ADDED)
 _PROFILE_INSERT = ("INSERT INTO profile (" + ", ".join(PROFILE_COLUMNS)
                    + ") VALUES (" + ", ".join("?" for _ in PROFILE_COLUMNS) + ")")
+#: The Temperature Controller's readings while the trial was live (owner
+#: ruling 2026-10-08: the heater's log is kept with the trial). One row per
+#: reading the heater published (`Heater.subscribe_readings`): `t_s` on the
+#: profile's clock (seconds since the trial's time zero), the wall clock,
+#: the board's own timer, the temperature, the board's ramped setpoint, and
+#: the frame in force (endpoint, ramp, gains, offset, heater_on). The board
+#: reports no output duty, so there is none. `source` is the heater's name.
+#: The table is made BY PRESENCE (an older store gains it at its first
+#: write, empty, at its version; a read of one without it answers empty).
+HEATER_COLUMNS = ("trial_id", "t_s", "wall_epoch_s", "board_t_s", "temp_c",
+                  "setpoint_c", "endpoint_c", "ramp_s_per_c", "kp", "ki",
+                  "kd", "offset_c", "heater_on", "source")
+_HEATER_KINDS = {"trial_id": "INTEGER NOT NULL REFERENCES trials(id)",
+                 "t_s": "REAL NOT NULL", "heater_on": "INTEGER",
+                 "source": "TEXT"}
+_HEATER_INSERT = ("INSERT INTO trial_heater (" + ", ".join(HEATER_COLUMNS)
+                  + ") VALUES (" + ", ".join("?" for _ in HEATER_COLUMNS) + ")")
+#: The record fields (`Heater.READING_FIELDS`) each stored column is read
+#: from, after `trial_id` and `t_s`.
+_HEATER_FROM = (("wall_epoch_s", "wall_epoch_s"), ("board_t_s", "board_timer_s"),
+                ("temp_c", "temperature_c"), ("setpoint_c", "setpoint_c"),
+                ("endpoint_c", "endpoint_c"), ("ramp_s_per_c", "ramp_s_per_c"),
+                ("kp", "kp"), ("ki", "ki"), ("kd", "kd"),
+                ("offset_c", "offset_c"), ("heater_on", "heater_on"))
 #: The tips table (version 3): one record per tip, created on demand (the
 #: first Arm on a tip it has not seen, or an import naming one). Usage is
 #: derived from `trials.tip_id`, never stored twice: `TrialStore.tip`
@@ -287,6 +311,11 @@ _CREATE = (
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
     # The tip models to pick from (owner, 2026-10-07), by presence.
     "CREATE TABLE IF NOT EXISTS tip_models (name TEXT PRIMARY KEY)",
+    # The heater's readings per trial (owner, 2026-10-08), by presence.
+    "CREATE TABLE IF NOT EXISTS trial_heater ("
+    + ", ".join(f"{name} {_HEATER_KINDS.get(name, 'REAL')}"
+                for name in HEATER_COLUMNS) + ")",
+    "CREATE INDEX IF NOT EXISTS trial_heater_trial ON trial_heater(trial_id)",
 )
 
 #: A version-2 (or older) file's tips, from its trials: first and last
@@ -308,6 +337,12 @@ VIDEO_FPS = 15
 #: The telemetry sidecar beside the video (until part 2 gives it a table).
 TELEMETRY_NAME = "telemetry.csv"
 TELEMETRY_COLUMNS = ("t", "stream", "value")
+#: The trial's heater readings beside its other files (the `trial_heater`
+#: rows, `HEATER_COLUMNS`); written only when there are some.
+HEATER_NAME = "heater.csv"
+#: Heater readings kept per trial: at the board's ~1.7 a second, a day and
+#: more; past this the rest are counted (`heater_dropped`), not kept.
+MAX_HEATER_ROWS = 200_000
 #: The display the stage still is taken of (an index into the capture
 #: library's monitors: 1 is the primary; `TransferMap(monitor=...)`).
 STAGE_MONITOR = 1
@@ -466,6 +501,12 @@ class TrialStore:
             if name not in have:
                 db.execute(f"ALTER TABLE profile ADD COLUMN {name} REAL")
                 added.append(name)
+        have = {row[1] for row in db.execute("PRAGMA table_info(trial_heater)")}
+        for name in HEATER_COLUMNS:
+            if name not in have:
+                db.execute(f"ALTER TABLE trial_heater ADD COLUMN {name} "
+                           f"{_HEATER_KINDS.get(name, 'REAL')}")
+                added.append("trial_heater." + name)
         have = {row[1] for row in db.execute("PRAGMA table_info(tips)")}
         modelled = "model" in have
         for name, kind in TIP_COLUMNS:
@@ -530,7 +571,9 @@ class TrialStore:
                + ", ".join("?" for _ in names) + ")")
         return self.write(lambda db: db.execute(sql, [fields[n] for n in names]).lastrowid)
 
-    def update(self, trial_id, fields, profile=None):
+    def update(self, trial_id, fields, profile=None, heater=None):
+        """The trial's columns, plus its profile rows and its heater rows
+        (`(t_s, *HEATER_COLUMNS[2:])` each), in one transaction."""
         names = _checked(fields)
         sql = ("UPDATE trials SET " + ", ".join(n + " = ?" for n in names)
                + " WHERE id = ?")
@@ -544,6 +587,11 @@ class TrialStore:
                 db.executemany(_PROFILE_INSERT, [
                     (trial_id, *(tuple(row) + (None,) * _PROFILE_WIDTH)
                      [:_PROFILE_WIDTH]) for row in profile])
+            if heater:
+                width = len(HEATER_COLUMNS) - 1
+                db.executemany(_HEATER_INSERT, [
+                    (trial_id, *(tuple(row) + (None,) * width)[:width])
+                    for row in heater])
         return self.write(_do)
 
     def delete(self, trial_id):
@@ -553,6 +601,7 @@ class TrialStore:
             row = db.execute("SELECT tip_id FROM trials WHERE id = ?",
                              (trial_id,)).fetchone()
             db.execute("DELETE FROM profile WHERE trial_id = ?", (trial_id,))
+            db.execute("DELETE FROM trial_heater WHERE trial_id = ?", (trial_id,))
             db.execute("DELETE FROM trials WHERE id = ?", (trial_id,))
             if row is not None and row["tip_id"]:
                 tip = row["tip_id"]
@@ -727,6 +776,16 @@ class TrialStore:
     def profile_rows(self):
         return self.read("SELECT * FROM profile ORDER BY trial_id, t_s, rowid")
 
+    def heater(self, trial_id):
+        """The trial's heater readings (dicts by `HEATER_COLUMNS`), by
+        time; [] for none, or a store that has no heater table yet."""
+        return self.read("SELECT * FROM trial_heater WHERE trial_id = ? "
+                         "ORDER BY t_s, rowid", (trial_id,))
+
+    def heater_rows(self):
+        return self.read("SELECT * FROM trial_heater ORDER BY trial_id, t_s, "
+                         "rowid")
+
     def given_definitions(self):
         names = []
         for row in self.read("SELECT force_given FROM trials WHERE "
@@ -836,6 +895,11 @@ class _Trial:
         self.shade_dropped = 0
         #: (monotonic t, shade) per frame, for the telemetry sidecar.
         self.shades = []
+        #: The heater's readings while live (`_on_heater_reading`, on the
+        #: heater's reader thread: one append), as stored rows after
+        #: `trial_id`; the ones past MAX_HEATER_ROWS are counted.
+        self.heater = []
+        self.heater_dropped = 0
 
 
 class TransferMap(store_choice.StorePrompt, Model):
@@ -981,6 +1045,9 @@ class TransferMap(store_choice.StorePrompt, Model):
         self._tilts = {}               # name -> model with position_deg
         self._probes = {}              # name -> model with position + mode
         self._peers = {}               # name -> every other open model
+        #: name -> (heater, its hook): the models whose readings an armed
+        #: trial keeps (`subscribe_readings`, the Temperature Controller).
+        self._heaters = {}
         self._figure_type = next(iter(FIGURES))
         self._definition = next(iter(analysis.FORCE_DEFINITIONS))
         self._band = plot_data.FORCE_BANDS[0]
@@ -1340,6 +1407,52 @@ class TransferMap(store_choice.StorePrompt, Model):
                 and hasattr(model, "mode_name"):
             self._probes[name] = model
         self._peers[name] = model          # what the telemetry records
+        if model is not self and callable(getattr(model, "subscribe_readings", None)):
+            self._hook_heater(name, model)
+
+    def _hook_heater(self, name, model):
+        """Keep `model`'s readings while a trial is live (owner 2026-10-08).
+        Subscribed once, for as long as it is open; the hook itself checks
+        for a live trial."""
+        old = self._heaters.pop(name, None)
+        if old is not None:
+            self._unhook_heater(*old)
+
+        def hook(record, _name=name):
+            self._on_heater_reading(_name, record)
+        try:
+            model.subscribe_readings(hook)
+        except Exception as exc:
+            events.debug("Heater Not Hooked", repr(exc), source=self.NAME,
+                         exception=exc)
+            return
+        self._heaters[name] = (model, hook)
+
+    def _unhook_heater(self, model, hook):
+        try:
+            model.unsubscribe_readings(hook)
+        except Exception as exc:
+            events.debug("Heater Not Unhooked", repr(exc), source=self.NAME)
+
+    def _on_heater_reading(self, source, record):
+        """One heater reading, on the heater's reader thread: appended to the
+        live trial and nothing else (no lock, no I/O, never raises into the
+        reader). Written with the profile at Finish or Abort."""
+        try:
+            trial = self._trial or self._arming
+            if trial is None or trial.closed or trial.ended:
+                return
+            if len(trial.heater) >= MAX_HEATER_ROWS:
+                trial.heater_dropped += 1
+                return
+            when = record.get("monotonic_s")
+            when = time.monotonic() if when is None else when
+            trial.heater.append((when - trial.armed,
+                                 *(record.get(field) for _col, field in _HEATER_FROM),
+                                 source))
+        except Exception as exc:
+            events.debug("Heater Reading Not Kept", repr(exc), source=self.NAME,
+                         every=5.0)
 
     def on_model_removed(self, name, model=None):
         if name == self.SAMPLE_MAP:
@@ -1351,6 +1464,9 @@ class TransferMap(store_choice.StorePrompt, Model):
         self._tilts.pop(name, None)
         self._probes.pop(name, None)
         self._peers.pop(name, None)
+        hooked = self._heaters.pop(name, None)
+        if hooked is not None:
+            self._unhook_heater(*hooked)
 
     def _end_own_run(self, trial):
         """End the Red Percent run this trial started, and no other: a run
@@ -2067,6 +2183,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         if mark.is_file():
             fields["mark_full_path"] = str(mark)
         for write in (lambda: self._write_telemetry(trial, store),
+                      lambda: self._write_heater(trial, store),
                       lambda: store.update(trial.id, fields) if fields else None):
             try:
                 write()
@@ -2106,6 +2223,21 @@ class TransferMap(store_choice.StorePrompt, Model):
             writer.writerow(TELEMETRY_COLUMNS)
             for t, stream, value in rows:
                 writer.writerow([f"{float(t):.6f}", stream, value])
+
+    def _write_heater(self, trial, store):
+        """`heater.csv` (`HEATER_COLUMNS`) beside the video and the
+        telemetry: the trial's heater readings, when it has any. The same
+        rows go to the store's `trial_heater` at Finish or Abort."""
+        rows = list(trial.heater)
+        if not rows:
+            return
+        folder = self._folder_of(trial, store)
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / HEATER_NAME, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(HEATER_COLUMNS)
+            for row in rows:
+                writer.writerow([trial.id, *row])
 
     def _want_mark_still(self, trial):
         """Ask for the still at the Mark; start its worker if none runs."""
@@ -2207,7 +2339,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         # Mark decides it; all NULL with no contact before the Mark, or no
         # frames (`tip_shade.columns`).
         fields.update(tip_shade.columns(trial.shade))
-        self._store.update(trial.id, fields, samples)
+        self._store.update(trial.id, fields, samples, heater=list(trial.heater))
         self._store.use_tip(trial.tip, trial.id, _now())
         self._indices.pop(trial.id, None)
         self._changed()
@@ -2215,6 +2347,10 @@ class TransferMap(store_choice.StorePrompt, Model):
             events.warn("Empty Trial", f"Trial {trial.id} has no red-percent "
                         "samples. Check that Red Percent was recording while "
                         "you lowered the tip.", source=self.NAME)
+        if trial.heater_dropped:
+            events.debug("Heater Readings Dropped", f"trial {trial.id}: kept "
+                         f"{MAX_HEATER_ROWS}, {trial.heater_dropped} more not "
+                         "stored", source=self.NAME)
         if trial.dropped:
             events.warn("Trial Too Long", f"Trial {trial.id} kept its first "
                         f"{MAX_SAMPLES} samples; {trial.dropped} more were not "
@@ -2277,7 +2413,8 @@ class TransferMap(store_choice.StorePrompt, Model):
             samples = self._profile_rows(trial)
             store.update(trial.id, {
                 "status": "aborted", "mark_operator_t": trial.operator_t,
-                "z_contact": trial.z_mark, "broke": int(trial.broke)}, samples)
+                "z_contact": trial.z_mark, "broke": int(trial.broke)}, samples,
+                heater=list(trial.heater))
             self._indices.pop(trial.id, None)
             self._changed()
             events.info("Trial Aborted", f"Trial {trial.id} was aborted; its "
@@ -3536,6 +3673,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         trials_path = folder / f"transfer_map_{stamp}_trials.csv"
         profile_path = folder / f"transfer_map_{stamp}_profile.csv"
         tips_path = folder / f"transfer_map_{stamp}_tips.csv"
+        heater_path = folder / f"transfer_map_{stamp}_heater.csv"
         names = list(analysis.FORCE_DEFINITIONS)
         names += [n for n in self._store.given_definitions() if n not in names]
         columns = [name for name, _kind in TRIAL_COLUMNS]
@@ -3558,9 +3696,15 @@ class TransferMap(store_choice.StorePrompt, Model):
             for tip in self._store.tips():
                 writer.writerow([tip.get(c) for c in tip_columns]
                                 + [tip["count"], " ".join(map(str, tip["trials"]))])
+        with open(heater_path, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(HEATER_COLUMNS)
+            for row in self._store.heater_rows():
+                writer.writerow([row.get(c) for c in HEATER_COLUMNS])
         events.info("Map Exported", f"{_count(len(rows), 'trial')} written to {folder}",
                     source=self.NAME)
-        return str(trials_path), str(profile_path), str(tips_path)
+        return (str(trials_path), str(profile_path), str(tips_path),
+                str(heater_path))
 
     def export_csv(self):
         """Both tables under `output_root/exports/`; the trials file's path
@@ -3575,6 +3719,11 @@ class TransferMap(store_choice.StorePrompt, Model):
         """The same export; the tips file's path (one row per tip record,
         with its trial count and trial ids)."""
         return self._export()[2]
+
+    def export_heater_csv(self):
+        """The same export; the heater file's path (`HEATER_COLUMNS`: every
+        trial's Temperature Controller readings while it was live)."""
+        return self._export()[3]
 
     def import_csv(self, path):
         """Trials measured elsewhere: the speed (and the tilt, when the file
@@ -4174,6 +4323,8 @@ class TransferMap(store_choice.StorePrompt, Model):
                 sch.file_save("Export profiles", "export_profile_csv",
                               extensions=("csv",)),
                 sch.file_save("Export tips", "export_tips_csv",
+                              extensions=("csv",)),
+                sch.file_save("Export heater readings", "export_heater_csv",
                               extensions=("csv",)),
                 sch.file_open("Import trials", "import_csv", extensions=("csv",)),
                 # Back-fill a trial recorded before its flake was asked: the
