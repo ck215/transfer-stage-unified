@@ -1,11 +1,16 @@
-"""User-system Phase 1: local profiles (proposal-user-system.md sections 2-3).
+"""User-system Phase 1: local profiles (proposal-user-system.md sections 2-3),
+as they stand since the accounts (owner request 2026-10-07): the station
+scope, the merge and the Q4 split stay here; who is signed in is the User
+model's (`tests/test_user.py`, `tests/test_user_store.py`).
 
-Owner answers of 2026-10-04: sign in by name (+ PIN); with no lab server a
-session is `offline-unverified`; no PIN hash is ever cached on a station
-(Q1). The user/station split of Q4: users may keep step sizes, manual and
-autonomous speeds and the rotator step; heater PID and offset, Red
-Percent's red_min and the um-per-count table are station-only; the brake
-fields are never a preference. Local JSON files only; no network.
+Owner answers of 2026-10-04: sign in by name (+ PIN), `offline-unverified`
+with no lab server, no PIN hash cached on a station (Q1) - superseded by the
+accounts of 2026-10-07 (scrypt-hashed passwords in `users.sqlite`); the JSON
+files below still never hold a credential. The user/station split of Q4
+stands: users may keep step sizes, manual and autonomous speeds and the
+rotator step; heater PID and offset, Red Percent's red_min and the
+um-per-count table are station-only; the brake fields are never a
+preference. Local files only; no network.
 """
 import json
 
@@ -13,6 +18,7 @@ import pytest
 
 from events import events
 from model import profile as pf
+from panel import Panel
 from param import Param
 
 PARAMS = {
@@ -39,10 +45,7 @@ def root(tmp_path):
 
 @pytest.fixture
 def service(root):
-    source = pf.LocalFilesSource(root)
-    source.add_user("ialbinog", "Ian")
-    source.add_user("trainee1", "A trainee")
-    return pf.ProfileService(source, params_of)
+    return pf.ProfileService(pf.LocalFilesSource(root), params_of)
 
 
 # -- the merge (pure) -----------------------------------------------------------------
@@ -138,70 +141,94 @@ def test_no_pin_or_hash_is_ever_written(root):
     assert "pin_hash" not in text
 
 
-# -- the service ---------------------------------------------------------------------------
+# -- the service: the station scope and the merge (accounts, 2026-10-07) -----------------
+#
+# Who is signed in moved to the accounts (`model.user`, `model.user_store`):
+# Phase 1's sign-in by name (offline-unverified, Q1) is superseded by the
+# owner's request of 2026-10-07, and its tests by `tests/test_user.py` and
+# `tests/test_setup_profile.py`. The service keeps the station's defaults
+# and layers a user's config over them.
 
-def test_nobody_signed_in_is_the_station_profile(service):
-    assert service.current_user == "station" and service.auth == "station"
-    assert service.users[0] == {"username": "station", "display_name": "Station"}
-    assert [u["username"] for u in service.users[1:]] == ["ialbinog", "trainee1"]
-
-
-def test_sign_in_is_offline_unverified_and_the_pin_goes_nowhere(service, root):
-    since = events.latest_id
-    session = service.sign_in("ialbinog", pin="4821")
-    assert session["username"] == "ialbinog"
-    assert session["auth"] == service.auth == "offline-unverified"
-    assert service.current_user == "ialbinog"
-    assert "4821" not in json.dumps(session)
-    assert all("4821" not in (e.message or "") for e in events.since(since))
-    assert all("4821" not in p.read_text() for p in root.rglob("*") if p.is_file())
-    assert "unverified" in service.status
-    service.sign_out()
-    assert service.current_user == "station"
+def test_the_service_holds_no_session(service):
+    """A signed-in person is the User model's; the service only merges."""
+    for gone in ("sign_in", "sign_out", "current_user", "remember", "add_profile"):
+        assert not hasattr(service, gone), gone
 
 
-def test_an_unknown_name_is_refused(service):
-    with pytest.raises(pf.ProfileError, match="No profile"):
-        service.sign_in("nobody")
-
-
-def test_effective_model_params_follow_the_signed_in_user(service):
+def test_effective_model_params_layer_a_users_config_over_the_station(service):
     service.save_station({"Stepper Probe": {"man_full_speed": 250},
                           "Red Percent": {"red_min": 140}})
-    service.sign_in("ialbinog")
-    service.remember({"Stepper Probe": {"x_step": 8, "man_full_speed": 280}})
-    effective, provenance = service.effective_model_params()
+    mine = {"Stepper Probe": {"x_step": 8, "man_full_speed": 280}}
+    effective, provenance = service.effective_model_params(mine, "ian@uci.edu")
     assert effective["Stepper Probe"] == {"x_step": 8, "man_full_speed": 280}
     assert effective["Red Percent"] == {"red_min": 140}
     assert provenance["Stepper Probe.x_step"] == "user"
     assert provenance["Red Percent.red_min"] == "station"
-    service.sign_out()
     effective, _ = service.effective_model_params()
     assert effective["Stepper Probe"] == {"man_full_speed": 250}
 
 
-def test_remember_refuses_station_only_params_and_the_station_profile(service):
-    with pytest.raises(pf.ProfileError, match="Sign in"):
-        service.remember({"Stepper Probe": {"x_step": 8}})
-    service.sign_in("trainee1")
-    with pytest.raises(pf.ProfileError, match="station"):
-        service.remember({"Red Percent": {"red_min": 120}})
+def test_a_users_config_never_sets_a_station_only_or_brake_value(service):
+    service.save_station({"Temperature Controller": {"p_term": 1.5}})
+    effective, provenance = service.effective_model_params(
+        {"Temperature Controller": {"p_term": 9.0},
+         "Stepper Probe": {"slow_speed": 10, "x_step": 3}}, "ian@uci.edu")
+    assert effective["Temperature Controller"] == {"p_term": 1.5}
+    assert effective["Stepper Probe"] == {"x_step": 3}
+    assert provenance["Temperature Controller.p_term"] == "station"
 
 
-def test_a_hand_edited_bad_value_falls_back_and_warns_once(service, root):
+def test_a_hand_edited_bad_value_falls_back_and_warns_once(service):
     service.save_station({"Stepper Probe": {"man_full_speed": 250}})
-    (root / "users").mkdir(parents=True, exist_ok=True)
-    (root / "users" / "ialbinog.json").write_text(json.dumps(
-        {"model_params": {"Stepper Probe": {"man_full_speed": 99999}}}))
-    service.sign_in("ialbinog")
+    bad = {"Stepper Probe": {"man_full_speed": 99999}}
     events.forget("Profile Value Ignored")
     since = events.latest_id
-    effective, provenance = service.effective_model_params()
+    effective, provenance = service.effective_model_params(bad, "ialbinog")
     assert effective["Stepper Probe"]["man_full_speed"] == 250
     assert provenance["Stepper Probe.man_full_speed"] == "station"
-    service.effective_model_params()
+    service.effective_model_params(bad, "ialbinog")
     warned = [e for e in events.since(since) if e.title == "Profile Value Ignored"]
     assert len(warned) == 1 and "man_full_speed" in warned[0].message
+    assert "ialbinog" in warned[0].message
+
+
+# -- apply_defaults' inverse, and the Params' own defaults ---------------------------------
+
+class Probe(Panel):
+    NAME = "Stepper Probe"
+    PARAMS = {"x_step": Param("x_step", "int", default=4, minimum=1, maximum=3200),
+              "man_full_speed": Param("man_full_speed", "int", default=300, minimum=1),
+              "slow_speed": Param("slow_speed", "int", default=50, minimum=1),
+              "note": Param("note", "text", default=""),
+              "reading": Param("reading", "float", default=0.0)}
+
+    @property
+    def reading(self):              # a derived readout: declared, never stored
+        return 1.5
+
+    @property
+    def schema(self):
+        return {"version": 2, "sections": []}
+
+
+def test_current_params_is_the_inverse_of_apply_defaults():
+    probe = Probe()
+    probe.x_step, probe.slow_speed = 9, 33
+    assert pf.current_params(probe) == {"x_step": 9, "man_full_speed": 300,
+                                        "slow_speed": 33}      # blank and read-only left out
+    assert pf.current_params(probe, pf.USER_PARAMS) == {"x_step": 9, "man_full_speed": 300}
+    other = Probe()
+    assert other.apply_defaults(pf.current_params(probe)) == {}
+    assert pf.current_params(other) == pf.current_params(probe)
+
+
+def test_param_defaults_rebuild_what_the_code_declares():
+    probe = Probe()
+    probe.x_step, probe.man_full_speed = 9, 280
+    assert pf.param_defaults(probe, pf.USER_PARAMS) == {"x_step": 4, "man_full_speed": 300}
+    assert probe.apply_defaults(pf.param_defaults(probe, pf.USER_PARAMS)) == {}
+    assert (probe.x_step, probe.man_full_speed) == (4, 300)
+    assert "reading" not in pf.param_defaults(probe)
 
 
 def test_the_profiles_root_follows_the_environment(monkeypatch, tmp_path):

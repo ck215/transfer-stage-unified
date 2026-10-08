@@ -947,7 +947,8 @@ function renderEntry(panel, element) {
   // the current value - which is what reclassified a cleared box as text.
   const isInt = element.value_type === 'int';
   const numeric = isInt || element.value_type === 'float';
-  input.type = numeric ? 'number' : 'text';
+  // A secret entry (a password) is masked and never echoes back (2026-10-07).
+  input.type = element.secret ? 'password' : (numeric ? 'number' : 'text');
   if (isInt) {
     input.step = '1';
     input.inputMode = 'numeric';

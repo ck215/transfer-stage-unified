@@ -32,8 +32,9 @@ def _probe(env_extra=None):
 
 
 def test_by_default_the_sample_map_is_on_and_there_are_no_profiles():
+    # Accounts (owner 2026-10-07) are on by default; Guest keeps the defaults.
     got = _probe()
-    assert got["sample"] is True and got["profiles"] is False
+    assert got["sample"] is True and got["profiles"] is True
     assert got["models"][-2:] == ["Transfer Map", "Sample Map"]
 
 
@@ -45,8 +46,11 @@ def test_the_flags_turn_profiles_on_and_the_sample_map_off():
 
 
 def test_only_the_exact_values_flip_a_flag():
+    # Accounts (2026-10-07) are on unless STATION_PROFILES is exactly "0".
     got = _probe({"STATION_SAMPLE_MAP": "false", "STATION_PROFILES": "yes"})
-    assert got["sample"] is True and got["profiles"] is False
+    assert got["sample"] is True and got["profiles"] is True
+    got = _probe({"STATION_PROFILES": "0"})
+    assert got["profiles"] is False
 
 
 def _titles_and_commands(monkeypatch, on):
@@ -62,30 +66,33 @@ def _titles_and_commands(monkeypatch, on):
 
 def test_setup_has_no_profile_row_or_sign_in_when_profiles_are_off(monkeypatch):
     titles, commands = _titles_and_commands(monkeypatch, False)
-    assert titles[0] == "Update" and "Profile" not in titles
+    assert titles[0] == "Update" and "Account" not in titles and "Profile" not in titles
     assert not commands & {"sign_in", "sign_out", "add_profile", "remember_settings"}
 
 
 def test_the_profile_row_returns_when_profiles_are_on(monkeypatch):
     titles, commands = _titles_and_commands(monkeypatch, True)
-    assert titles[0] == "Profile" and "sign_in" in commands
+    assert titles[0] == "Account" and "sign_in" in commands
 
 
 def test_a_model_is_not_given_an_operator_when_profiles_are_off(monkeypatch):
+    """Accounts off (STATION_PROFILES=0): a model keeps what it was built with.
+    On: the Guest stamps it (guest/guest) until someone signs in."""
     from controller import setup as station_setup
+    from test_setup_registry import RecordingController
 
     class Model:
         NAME = "X"
         operator_id = operator_auth = "station"
 
-    class Fake:
-        profiles = type("P", (), {"current_user": "someone", "auth": "offline-unverified",
-                                  "effective_model_params": lambda self: ({}, {})})()
-        NAME = "Setup"
+        def apply_defaults(self, values):
+            return {}
+
     monkeypatch.setattr(station_setup, "PROFILES_ENABLED", False)
+    panel = station_setup.Setup(RecordingController())
     model = Model()
-    station_setup.Setup._apply_profile(Fake(), model)
+    panel._apply_account(model)
     assert (model.operator_id, model.operator_auth) == ("station", "station")
     monkeypatch.setattr(station_setup, "PROFILES_ENABLED", True)
-    station_setup.Setup._apply_profile(Fake(), model)
-    assert (model.operator_id, model.operator_auth) == ("someone", "offline-unverified")
+    panel._apply_account(model)
+    assert model.operator_auth == "guest"

@@ -1,17 +1,27 @@
-"""Profiles: who is at the station, and the preferences that follow them
-(proposal-user-system.md sections 2-3, Phase 1: local files, no server).
+"""Profiles: the station's defaults and the preferences that follow a person
+(proposal-user-system.md sections 2-3; Phase 1: local files, no server).
 
 Scopes merge `lab < station < user < session`, later wins (section 2.3).
 The lab scope is the code's own `Param` defaults, so it is never written;
-the station and user scopes are JSON files under the profiles root.
+the station scope is `station.json` under the profiles root; the user scope
+is the signed-in account's remembered values.
+
+**Accounts (owner request 2026-10-07).** Who is signed in is no longer kept
+here: an account is a row in `users.sqlite` (`model.user_store`) and the
+signed-in person is the `User` model (`model.user`), which owns their config.
+This module keeps what both need: the merge, the Q4 split, the station scope
+(`ProfileService`), and the two helpers a config is applied and collected
+with (`current_params`, `param_defaults`). Phase 1's name-only profiles
+(`users.json`, `users/<name>.json`) are read once more, to migrate each into
+an account (`UserStore.migrate_profiles`), and are left in place.
 
 Owner answers of 2026-10-04:
 
-- **Q1, signing in**: by name, with a PIN once a lab server can check one.
-  With no server (all of Phase 1) a session is `offline-unverified`, and no
-  PIN or PIN hash is ever stored, logged or compared on a station: a PIN
-  passed to `sign_in` is dropped on the floor. Records written in such a
-  session say so (`operator_auth` / `owner_auth`).
+- **Q1, signing in**: by name, with a PIN once a lab server can check one,
+  `offline-unverified` until then, no PIN hash on a station. **Superseded**
+  by the accounts of 2026-10-07: a password, kept on the station as a
+  salted scrypt hash in `users.sqlite`. The JSON files here still never
+  hold a credential (`put_user_record` refuses one).
 - **Q4, what a user may keep**: `USER_PARAMS` (step sizes, manual and
   autonomous speed, the rotator step); `STATION_PARAMS` are station-only
   (the heater's PID and offset, Red Percent's `red_min`, the Sample Map's
@@ -34,8 +44,10 @@ from events import events
 
 STATION = "station"
 STATION_DISPLAY = "Station"
-#: How a session's identity was established: nobody signed in, signed in
-#: with nothing to check the PIN against (Phase 1), and (Phase 2) checked.
+#: How a record's operator was established, in records written before the
+#: accounts (2026-10-07): nobody signed in, signed in with nothing to check
+#: a PIN against (Phase 1), and (never built) checked by a lab server. The
+#: accounts write "guest" and "password" (`model.user`).
 AUTH_STATION, AUTH_OFFLINE, AUTH_VERIFIED = "station", "offline-unverified", "verified"
 
 #: Q4 (owner 2026-10-04).
@@ -136,6 +148,42 @@ def validate_model_params(scope, body, params_of):
     return clean, problems
 
 
+# -- applying and collecting a config (the accounts, 2026-10-07) ---------------------
+
+def _stored_params(panel, names=None):
+    """`{name: Param}` the panel stores: declared, not a read-only property
+    (a derived readout is declared for its type and unit only), narrowed
+    to `names` when given."""
+    params = getattr(panel, "PARAMS", None) or {}
+    out = {}
+    for name in sorted(params if names is None else set(params) & set(names)):
+        found = getattr(type(panel), name, None)
+        if isinstance(found, property) and found.fset is None:
+            continue
+        out[name] = params[name]
+    return out
+
+
+def current_params(panel, names=None):
+    """The inverse of `Panel.apply_defaults`: `{param: value}` as the panel
+    holds its stored Params now, the blank ones left out. What "Remember
+    current values as my defaults" and "Save station settings" collect;
+    `names` narrows it (Q4's `USER_PARAMS` for a user)."""
+    out = {}
+    for name in _stored_params(panel, names):
+        value = getattr(panel, name, None)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        out[name] = value
+    return out
+
+
+def param_defaults(panel, names=None):
+    """`{param: Param.default}` for the panel's stored Params: what a model
+    is rebuilt to when a user signs out (never a restart)."""
+    return {name: param.default for name, param in _stored_params(panel, names).items()}
+
+
 # -- local files (Phase 1's PrefsSource) --------------------------------------------
 
 def _check_username(username):
@@ -219,66 +267,18 @@ class LocalFilesSource:
 # -- the service ----------------------------------------------------------------
 
 class ProfileService:
-    """Who is signed in, and their effective preferences. `params_of(name)`
-    returns a model class's PARAMS (Setup passes the registry's)."""
+    """The station scope and the merge. `params_of(name)` returns a model
+    class's PARAMS (Setup passes the registry's).
+
+    Holds no session (accounts, 2026-10-07): a signed-in user's config is
+    the `User` model's and is handed in, so one service serves every user."""
 
     def __init__(self, source, params_of):
         self.source = source
         self.params_of = params_of
-        self._user = STATION
-        self._auth = AUTH_STATION
         self._warned = set()
 
-    @property
-    def users(self):
-        return [{"username": STATION, "display_name": STATION_DISPLAY},
-                *self.source.users()]
-
-    @property
-    def current_user(self):
-        return self._user
-
-    @property
-    def auth(self):
-        return self._auth
-
-    def sign_in(self, username, pin=None):
-        """Phase 1: there is no lab server to check `pin` against and no PIN
-        hash may be cached (Q1), so the session is `offline-unverified` and
-        the PIN is not stored, compared or logged."""
-        del pin
-        if username in (STATION, STATION_DISPLAY):
-            self.sign_out()
-            return self.session
-        known = {u["username"]: u for u in self.source.users()}
-        if username not in known:
-            raise ProfileError(f"No profile named {username} on this station.")
-        self._user, self._auth = username, AUTH_OFFLINE
-        self._warned.clear()
-        events.info("Signed In", f"{username} (offline: no lab server checked a "
-                    "PIN; records say offline-unverified).", source="Profile")
-        return self.session
-
-    def sign_out(self):
-        if self._user != STATION:
-            events.info("Signed Out", f"{self._user}; the Station profile is active.",
-                        source="Profile")
-        self._user, self._auth = STATION, AUTH_STATION
-        self._warned.clear()
-
-    @property
-    def session(self):
-        return {"username": self._user, "auth": self._auth}
-
-    @property
-    def status(self):
-        if self._user == STATION:
-            return "Station profile (nobody signed in): the station's defaults."
-        return (f"{self._user}, signed in offline, unverified (no lab server "
-                "yet): records name you with that mark.")
-
-    def _layer(self, scope, scope_id):
-        body = self.source.documents(scope, scope_id).get("model_params", {})
+    def _layer(self, scope, scope_id, body):
         clean, problems = validate_model_params(scope, body, self.params_of)
         for problem in problems:
             key = (scope, scope_id, problem)
@@ -290,27 +290,20 @@ class ProfileService:
                             source="Profile")
         return clean
 
-    def effective_model_params(self):
-        """`(effective, provenance)` over station and (signed in) user
-        scopes; the lab scope is the models' own defaults, already set."""
-        layers = [("station", self._layer("station", ""))]
-        if self._user != STATION:
-            layers.append(("user", self._layer("user", self._user)))
-        return merge(layers)
+    def station_layer(self):
+        """The station's saved defaults, validated (Q4: station and user
+        parameters, never the brakes)."""
+        body = self.source.documents("station", "").get("model_params", {})
+        return self._layer("station", "", body)
 
-    def remember(self, model_params):
-        """Write `{model: {param: value}}` into the signed-in user's profile
-        ("Remember for me"); refuses station-only and never parameters."""
-        if self._user == STATION:
-            raise ProfileError("Sign in first: the Station profile keeps no "
-                               "personal settings.")
-        clean, problems = validate_model_params("user", model_params, self.params_of)
-        if problems:
-            raise ProfileError(" ".join(problems))
-        current = self.source.documents("user", self._user).get("model_params", {})
-        merged, _ = merge([("user", current), ("user", clean)])
-        self.source.put("user", self._user, "model_params", merged)
-        return clean
+    def effective_model_params(self, user_config=None, user_id=""):
+        """`(effective, provenance)`: the station scope, then `user_config`
+        (`{model: {param: value}}`, a signed-in User's) over it, each
+        validated; the lab scope is the models' own defaults, already set."""
+        layers = [("station", self.station_layer())]
+        if user_config:
+            layers.append(("user", self._layer("user", user_id, user_config)))
+        return merge(layers)
 
     def save_station(self, model_params):
         """Write the station's defaults (station-only and user parameters;
@@ -322,6 +315,3 @@ class ProfileService:
         merged, _ = merge([("station", current), ("station", clean)])
         self.source.put("station", "", "model_params", merged)
         return clean
-
-    def add_profile(self, username, display_name=None):
-        return self.source.add_user(username, display_name)
