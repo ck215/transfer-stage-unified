@@ -643,9 +643,14 @@ def map_station(tmp_path, monkeypatch):
     from controller.setup import Setup
     controller = Controller()
     setup = Setup(controller)
+    # Past the sign-in screen (2026-10-07) signed in: a Guest's launch leaves
+    # out the Transfer Map and its guest (owner 2026-10-07, "guest users
+    # should have no access to transfer map"), and this is the pair.
+    setup.users.create("sim@uci.edu", "correct-horse-4821", name="sim")
+    signed = setup.run("sign_in", {"account_email": "sim@uci.edu",
+                                   "account_password": "correct-horse-4821"})
+    assert signed.is_ok, signed.reason
     launched = setup.launch()
-    # Past the sign-in screen (2026-10-07) as Guest, as an operator would be.
-    assert setup.run("open_as_guest").is_ok
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open()
     try:
@@ -1237,7 +1242,12 @@ def test_web2_the_picker_draws_on_the_models_still_and_maps_to_source_pixels(sti
       const open = async () => {
         await page.evaluate(() => Array.from(document.querySelectorAll('#cards button'))
           .find((b) => /capture region/i.test(b.textContent)).click());
-        await until(() => document.getElementById('region-canvas').width > 800);
+        // Drawn: the dialog drops aria-busy once the still is on the canvas.
+        // The canvas keeps the first opening's width, so on the reopen its
+        // width alone said nothing, and a 3584x2746 PNG made and sent in
+        // over 300 ms (a loaded machine) left the fields still empty.
+        await until(() => document.getElementById('region-canvas').width > 800
+          && !document.querySelector('#region-picker .dialog').hasAttribute('aria-busy'));
         await sleep(300);
       };
       await open();

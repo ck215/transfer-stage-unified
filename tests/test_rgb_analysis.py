@@ -2009,6 +2009,11 @@ def test_the_registry_builds_rgb_analysis_under_its_new_name_on_the_map(
     assert "Red Percent" not in station_setup.MODEL_TYPES
     controller = Controller()
     setup = station_setup.Setup(controller)
+    # Signed in: a Guest's station has no Transfer Map, so nothing hosted on
+    # it (owner 2026-10-07: guests get the tool controls only).
+    setup.users.create("sim@uci.edu", "correct-horse-4821", name="sim")
+    assert setup.run("sign_in", {"account_email": "sim@uci.edu",
+                                 "account_password": "correct-horse-4821"}).is_ok
     try:
         assert not any(row["name"] == "RGB Analysis" for row in setup._rows.values()), \
             "a hosted model has no Setup row"
