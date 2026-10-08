@@ -33,6 +33,7 @@ it is cheap, then the custom firmware at 500000 and 115200), and the same
 Setup is the one place besides the models allowed to import
 `devices.*` and the model classes: it is the composition root.
 """
+import contextlib
 import os
 import re
 import subprocess
@@ -618,18 +619,6 @@ class Setup(PortProbe, Panel):
     IDLE, LISTING, IDENTIFYING, DONE, CANCELLED = (
         "idle", "listing", "identifying", "done", "cancelled")
 
-    #: A3: the fields behind `open_map_store` / `new_map_store` (the
-    #: Transfer Map's Open/New, run on the open map or a stand-in). Not
-    #: drawn: Setup has no Trial store row; an operator chooses on the map's
-    #: own `new_store` prompt (`model.store_choice.StorePrompt`). The
-    #: backup folder is the account menu's (`model.user`).
-    PARAMS = {p.name: p for p in (
-        Param("map_store_path", "text", default="", label="Store file"),
-        Param("map_store_dir", "text", default="", label="Folder for a new store"),
-        Param("map_store_name", "text", default="transfer_map",
-              label="New store name"),
-    )}
-
     def __init__(self, controller, updater=None, firmware=None, restart=None,
                  stable_root=_UNSET, stable_firmware=None, launch_stable=None,
                  exit_app=None):
@@ -649,9 +638,6 @@ class Setup(PortProbe, Panel):
         self._stable_firmware = stable_firmware
         self._launch_stable = launch_stable or _launch_detached
         self._exit_app = exit_app
-        legacy = TransferMap.legacy_store_path()
-        if legacy is not None:
-            self.map_store_path = str(legacy)   # offered, never opened for them
         self.controller = controller
         # A Guest's refusal (`session_refusal`) is the Controller's own, so
         # every frontend inherits it; the Web adapter asks too, a second
@@ -1733,9 +1719,9 @@ class Setup(PortProbe, Panel):
     #: The section's title: the station's defaults, the accounts' one
     #: station-wide control (the user's own are on the account menu).
     ACCOUNT_SECTION = "Station defaults"
-    #: Merged with the Trial store fields above (A3): a second plain
-    #: `PARAMS =` here would replace them.
-    PARAMS = {**PARAMS,
+    #: The sign-in screen's two fields (`GATE_INPUTS`). Setup's only
+    #: Params: the A3 Trial-store fields are gone (arch audit #15).
+    PARAMS = {**Panel.PARAMS,
               "account_email": Param("account_email", "text", default="",
                                      label="Email"),
               "account_password": Param("account_password", "text", default="",
@@ -1840,7 +1826,8 @@ class Setup(PortProbe, Panel):
         elif not self.users.verify(email, self._take_password()):
             self._refuse("That email and password do not match an account on this "
                          "station.")
-        self._become(self._user_for(email))
+        with self._held_for_other_user(email):
+            self._become(self._user_for(email))
         self._chose_account()
         return self.account_status
 
@@ -1869,7 +1856,8 @@ class Setup(PortProbe, Panel):
         except AccountError as refusal:
             self._refuse(str(refusal))
         events.info("Account Created", f"{email}.", source=self.NAME)
-        self._become(self._user_for(email))
+        with self._held_for_other_user(email):
+            self._become(self._user_for(email))
         self._chose_account()
         return self.account_status
 
@@ -1877,8 +1865,8 @@ class Setup(PortProbe, Panel):
         """The station's defaults and nothing else. Signs out whoever is in."""
         self._take_password()
         if not self.user.is_guest:
-            self._refuse_guest_mid_trial()
-            self._become(self._user_for(None))
+            with self._held_for_guest():
+                self._become(self._user_for(None))
         self._chose_account()
         return self.account_status
 
@@ -1904,8 +1892,8 @@ class Setup(PortProbe, Panel):
         self._take_password()
         if self.user.is_guest:
             self._refuse("Nobody is signed in: the station is on its defaults.")
-        self._refuse_guest_mid_trial()
-        self._become(self._user_for(None))
+        with self._held_for_guest():
+            self._become(self._user_for(None))
         self._account_chosen = False
         return self.account_status
 
@@ -1915,8 +1903,8 @@ class Setup(PortProbe, Panel):
         a trial is open (a Guest has no Transfer Map)."""
         self._take_password()
         if not self.user.is_guest:
-            self._refuse_guest_mid_trial()
-            self._become(self._user_for(None))
+            with self._held_for_guest():
+                self._become(self._user_for(None))
         self._account_chosen = False
         return self.account_status
 
@@ -2025,29 +2013,72 @@ class Setup(PortProbe, Panel):
                 if getattr(model, "is_active", False)
                 or getattr(model, "is_arming", False)]
 
-    def _refuse_guest_mid_trial(self):
+    def _guest_refusal(self, busy):
+        self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
+                     "open. Finish or abort it first: a Guest has no Transfer "
+                     "Map or Sample DB, so they close when you switch.")
+
+    def _other_user_refusal(self, busy):
+        self._take_password()
+        self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
+                     f"open for {self.user.user_name}. Finish or abort it before "
+                     "someone else signs in: their stores replace this user's.")
+
+    @contextlib.contextmanager
+    def _held_for_switch(self, refuse):
+        """The busy check and the switch as one step (arch audit #13): each
+        signed-in-only model that can (`hold_arm`, the Transfer Map) checks
+        for an open or arming trial under its own lock and, when idle,
+        refuses Arm until the switch is over, so no Arm lands between the
+        check and the map's removal or store change. `refuse(busy)` raises
+        when one is busy. The holds are always released; no lock is held
+        across the switch, so a FULL STOP never waits on it."""
+        held, busy = [], []
+        try:
+            for name, model in self._open_signed_in_only().items():
+                hold = getattr(model, "hold_arm", None)
+                if callable(hold):
+                    if hold():
+                        held.append(model)
+                    else:
+                        busy.append(name)
+                elif getattr(model, "is_active", False) \
+                        or getattr(model, "is_arming", False):
+                    busy.append(name)
+            if busy:
+                refuse(busy)
+            yield
+        finally:
+            for model in held:
+                try:
+                    model.release_arm()
+                except Exception as exc:
+                    events.debug("Arm Not Released", repr(exc), source=self.NAME,
+                                 exception=exc)
+
+    def _held_for_guest(self):
         """Back to Guest takes the Transfer Map and the Sample Map away, so
-        not while one of them is busy (an armed trial, a recording)."""
+        not while one of them is busy (an armed trial, a recording), and no
+        Arm meanwhile."""
         if not PROFILES_ENABLED or self.user.is_guest:
-            return
-        busy = self._busy_signed_in_only()
-        if busy:
-            self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
-                         "open. Finish or abort it first: a Guest has no Transfer "
-                         "Map or Sample DB, so they close when you switch.")
+            return contextlib.nullcontext()
+        return self._held_for_switch(self._guest_refusal)
 
     def _refuse_other_user_mid_trial(self, email):
         """Signing in as someone else closes the previous user's stores
         (owner ruling 2026-10-08), so not while a trial is being recorded
-        into one of them."""
+        into one of them. The early check, before the password is read;
+        `_held_for_other_user` repeats it atomically around the switch."""
         if not PROFILES_ENABLED or self.user.is_guest or email == self.user.email:
             return
         busy = self._busy_signed_in_only()
         if busy:
-            self._take_password()
-            self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
-                         f"open for {self.user.user_name}. Finish or abort it before "
-                         "someone else signs in: their stores replace this user's.")
+            self._other_user_refusal(busy)
+
+    def _held_for_other_user(self, email):
+        if not PROFILES_ENABLED or self.user.is_guest or email == self.user.email:
+            return contextlib.nullcontext()
+        return self._held_for_switch(self._other_user_refusal)
 
     def _drop_signed_in_only(self):
         """A Guest's station: the signed-in-only models closed (stopped,
@@ -2901,49 +2932,6 @@ class Setup(PortProbe, Panel):
                        confirm=self.STABLE_CONFIRM),
             layout="row",
         )
-
-    # -- the trial store (A3) -----------------------------------------------
-    def _transfer_map(self):
-        """The open Transfer Map, if one is: it adopts a store chosen here."""
-        lookup = getattr(self.controller, "_model_or_none", None)
-        model = lookup(TransferMap.NAME) if callable(lookup) else None
-        return model if isinstance(model, TransferMap) else None
-
-    @property
-    def map_store_status(self):
-        model = self._transfer_map()
-        if model is not None:
-            return model.store_status
-        if os.environ.get("STATION_MAP_DB"):
-            return TransferMap.describe_store(TransferMap.default_db_path())
-        chosen = self._map_choices.read("map_store")
-        return TransferMap.describe_store(Path(chosen) if chosen else None)
-
-    def _map_target(self):
-        """The open map, or a stand-in that only validates and remembers;
-        either remembers through this session (`_SessionChoices`)."""
-        target = self._transfer_map() or TransferMap()
-        if PROFILES_ENABLED:
-            target.choices = self._map_choices
-        return target
-
-    def open_map_store(self, confirmed=False):
-        """Open store, from Setup: the Transfer Map's own command, on the
-        open map (which then records there) or on a stand-in that only
-        validates and remembers the choice - in the signed-in user's
-        settings, or the station's for a Guest. Its question (a drive copy
-        changed elsewhere) is asked as this command's."""
-        target = self._map_target()
-        target.store_path = self.map_store_path
-        try:
-            return target.open_store(confirmed)
-        except NeedsConfirm as ask:
-            raise NeedsConfirm(ask.prompt, "open_map_store")
-
-    def new_map_store(self):
-        target = self._map_target()
-        target.store_dir, target.store_name = self.map_store_dir, self.map_store_name
-        return target.new_store()
 
     #: The models whose store is chosen per user (2026-10-07: the Transfer
     #: Map's trials and the Sample DB's samples).

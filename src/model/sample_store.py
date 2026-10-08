@@ -1191,6 +1191,9 @@ class PicturePreview:
         self._choice = (None, None)          # (level, magnification)
         self._cache = {}
         self._rows = (None, [])              # ((token, level), rows)
+        #: The store the rows were last read from: a picture is shown only
+        #: when its file is there (`preview_file`).
+        self._store = None
 
     def rows(self, store, level):
         """The picked level's own pictures, else everything under it (a
@@ -1198,6 +1201,7 @@ class PicturePreview:
         every readout of a state poll asks, and the store is read again
         only after `change_token` moved (audit 2026-10-08 item 8: 6-12
         SQLite opens per poll). A read that raises is not cached."""
+        self._store = store
         if store is None or not level[0]:
             return []
         path = getattr(store, "path", None)
@@ -1213,7 +1217,53 @@ class PicturePreview:
         return self._choice[1] if self._choice[0] == level else None
 
     def pick(self, level, rows):
-        return pick_preview(rows, self._wanted(level))
+        """(the picture shown, the magnifications on offer): `pick_preview`'s
+        choice when its file is there, else the next by the same rule (the
+        chosen magnification's other pictures newest first, then 100x, 50x,
+        lower) whose file is; None when no file is on disk."""
+        return self._pick(level, rows)[:2]
+
+    def _pick(self, level, rows):
+        """(row, order, the missing file's name or None). Stats files in
+        preference order only until one is there (one stat when nothing is
+        missing)."""
+        wanted = self._wanted(level)
+        row, order = pick_preview(rows, wanted)
+        if row is None or self._on_disk(row):
+            return row, order, None
+        missing = Path(str(row["path"])).name
+        for candidate in self._ranked(rows, wanted, order):
+            if self._on_disk(candidate):
+                return candidate, order, None
+        return None, order, missing
+
+    @staticmethod
+    def _ranked(rows, wanted, order):
+        """Every row in `pick_preview`'s preference: the chosen magnification
+        first, then `order`; newest first within each."""
+        by = {}
+        for row in rows:
+            magnification = _int_or_none(row["magnification"])
+            if magnification is not None:
+                by.setdefault(magnification, []).append(row)
+        try:
+            wanted = int(str(wanted).strip().lower().rstrip("x"))
+        except (TypeError, ValueError):
+            wanted = None
+        first = [wanted] if wanted in by else []
+        for magnification in first + [m for m in order if m not in first]:
+            yield from sorted(by[magnification], reverse=True,
+                              key=lambda r: (str(r["captured_at"] or ""), r["id"] or 0))
+
+    def _on_disk(self, row):
+        """The picture's file is there (inside the store). No store known
+        (a caller that never read rows through `rows`): assumed there."""
+        if self._store is None:
+            return True
+        try:
+            return preview_file(self._store, row) is not None
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
 
     def choose(self, level, rows, magnification):
         """The operator's magnification for this level: one on offer."""
@@ -1244,9 +1294,9 @@ class PicturePreview:
         return "" if row is None else f"{row['id']}:{row['path']}"
 
     def text(self, level, rows):
-        row, order = self.pick(level, rows)
+        row, order, missing = self._pick(level, rows)
         if row is None:
-            return self.NONE
+            return f"{self.NONE} (file missing: {missing})" if missing else self.NONE
         mag = int(row["magnification"])
         same = sum(1 for r in rows if _int_or_none(r["magnification"]) == mag)
         when = str(row["captured_at"] or "")[:16].replace("T", " ")

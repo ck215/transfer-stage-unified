@@ -975,6 +975,10 @@ class TransferMap(store_choice.StorePrompt, Model):
         #: so the run's first row is its own; numbered and made `_trial` once
         #: its row is written, dropped if the start fails.
         self._arming = None
+        #: Setup is switching the user (`hold_arm`): Arm is refused until
+        #: `release_arm`, so no Arm lands between Setup's busy check and the
+        #: map's removal or store change (arch audit #13).
+        self._arm_held = False
         self._persisting = []          # abort writers the stop started
         self._red = None
         self._red_name = None
@@ -1254,6 +1258,27 @@ class TransferMap(store_choice.StorePrompt, Model):
         Setup refuses a Guest switch on it: removing the map would discard
         the Arm (arch audit #13)."""
         return self._pending is not None or self._arming is not None
+
+    #: Arm while Setup switches the user (`hold_arm`).
+    ARM_HELD = ("The user is being switched on this station: nothing was "
+                "armed. Arm again once the switch is done.")
+
+    def hold_arm(self):
+        """Setup's Guest switch (and a sign-in as someone else), atomically
+        under the map's lock: -> False when a trial is open or being armed
+        (the switch is refused), else True and Arm is refused until
+        `release_arm`. Holds the lock only for the check, never across the
+        switch, so a FULL STOP never waits on it."""
+        with self._lock:
+            if self.is_active or self.is_arming:
+                return False
+            self._arm_held = True
+            return True
+
+    def release_arm(self):
+        """The switch is over (done or refused): Arm is allowed again."""
+        with self._lock:
+            self._arm_held = False
 
     @property
     def mode_name(self):
@@ -1595,6 +1620,8 @@ class TransferMap(store_choice.StorePrompt, Model):
         those when the region lands)."""
         self._need_store()
         self._guard("Arm")
+        if self._arm_held:
+            raise Refused(self.ARM_HELD)
         if self.is_armed or self._pending is not None:
             raise Refused("A trial is already armed. Finish or abort it first.")
         red = self._red
@@ -1653,14 +1680,19 @@ class TransferMap(store_choice.StorePrompt, Model):
         still, size = self._take_still()
         pending = _Pending(tip, still, size, self._display_bounds(), where)
         with self._lock:
+            held = self._arm_held          # a switch began during the grab
             if self.is_estopped:           # a stop inside the grab wins
                 stopped = True
             else:
                 stopped = False
-                self._pending = pending
-        if stopped:
+                if not held:
+                    self._pending = pending
+        if stopped or held:
             self._discard_still(pending)
-            self._guard("Arm")
+            if stopped:
+                self._guard("Arm")
+            if held:
+                raise Refused(self.ARM_HELD)
         self._touch()
         events.info("Stage Taken", f"Pick the capture region on the picture "
                     f"of the stage to start the trial on tip {tip}.",

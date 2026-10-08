@@ -1381,6 +1381,68 @@ def test_the_preview_readouts_open_no_sqlite_while_nothing_changed(
     assert any(o.startswith("9sep26") for o in images.sample_options)
 
 
+def test_an_unchanged_state_poll_opens_no_trial_file(images, tmp_path, monkeypatch):
+    """Open issues 2026-10-08 section 4: the sample picker read the Transfer
+    Map's trial file on every state poll for its trial labels (and the
+    trials readouts for the picked sample). Read once per change of that
+    file (its stat, as `change_token` does), never on an unchanged poll."""
+    from model import sample_map as sm_module
+    path = _trial_file(tmp_path / "trials.sqlite", [
+        {"started_at": "2026-10-01T10:00:00", "status": "complete",
+         "sample_id": "4oct26", "chip_id": "2"}])
+    images.on_model_added("Transfer Map", FakeTransferMap(path))
+    images.select_sample("4oct26")
+    values = images.state["values"]
+    assert "4oct26" in images.sample_options
+    real, opened = sm_module.sqlite3.connect, []
+    monkeypatch.setattr(sm_module.sqlite3, "connect",
+                        lambda *a, **k: opened.append(a) or real(*a, **k))
+    for _ in range(3):
+        assert images.state["values"] == values
+    assert opened == [], f"{len(opened)} trial-file opens in 3 unchanged polls"
+    db = real(str(path))                     # the Transfer Map records a trial
+    db.execute("INSERT INTO trials (started_at, status, sample_id) VALUES "
+               "('2026-10-02T10:00:00', 'complete', '9sep26')")
+    db.commit()
+    db.close()
+    assert "9sep26" in images.sample_options, "a change is read at the next poll"
+    assert images.trials_text.startswith("2 trials") or "1 trial" in images.trials_text
+    del opened[:]
+    images.state
+    images.state
+    assert len(opened) <= 2, "one read per change, not per poll"
+
+
+def test_a_missing_picture_file_falls_back_and_the_shown_line_agrees(images, tmp_path):
+    """Open issues 2026-10-08 section 4: the picked picture's file was
+    gone, so the frame said "No picture" while the Shown line named it.
+    The preview falls back to the next picture on disk by the same rule
+    (100x, 50x, then lower, newest); with none on disk the Shown line says
+    which file is missing."""
+    from pathlib import Path
+    from PIL import Image
+    _tree(images, tmp_path)
+    images.select_sample("4oct26")
+    images.select_chip("2")
+    images.select_flake_id("F1")
+    for mag, colour in (("10x", (0, 0, 200)), ("100x", (200, 0, 0))):
+        source = tmp_path / f"{mag}.png"
+        Image.new("RGB", (64, 48), colour).save(source)
+        images.run("set_image_magnification", None, (mag,))
+        assert images.run("add_image", None, (str(source),)).is_ok
+    rows = {int(r["magnification"]): r for r in images._store.images("4oct26", "2", "F1")}
+    assert images.preview_text.startswith("100x picture")
+    images._store.image_file(rows[100]).unlink()           # gone from disk
+    assert images.preview_text.startswith("10x picture"), images.preview_text
+    assert images.preview_magnification == "10x"
+    assert images.preview_key.startswith(f"{rows[10]['id']}:")
+    assert images.preview_picture != b""
+    images._store.image_file(rows[10]).unlink()
+    missing = Path(str(rows[100]["path"])).name
+    assert images.preview_text == f"No picture (file missing: {missing})"
+    assert images.preview_picture == b"" and images.preview_key == ""
+
+
 def test_the_pictures_section_previews_the_100x_picture_and_can_switch(images, tmp_path):
     """Owner 2026-10-08: a preview of the picked level's picture, 100x by
     default; the operator may pick another magnification on offer."""
