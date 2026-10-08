@@ -1282,9 +1282,16 @@ class Setup(PortProbe, Panel):
         Controller's own remove: estop, then close - the heater's off is
         read back before its port lets go), then built again and opened:
         opening the port pulses DTR, which resets the board, and the
-        identity handshake runs again. Refused while the model is energized
-        or running; asked first. A reset that did not come back can be
-        pressed again: the config is remembered.
+        identity handshake runs again. Asked first. A reset that did not
+        come back can be pressed again: the config is remembered.
+
+        Owner ruling 2026-10-08 (A): "Hard reset should force a device to
+        clear state, disconnect, reconnect." It is never refused for being
+        energized or in a mode: the one question says it stops it first, and
+        the model's full stop path (estop, then close: halt, de-energize, the
+        heater's off read back) runs before its port lets go. The model is
+        built fresh, so its latch, fault, mode and pending steps are gone.
+        Refused while a scan runs (the scan may be probing ports).
 
         Owner ruling 2026-10-08: the no-relaunch rule only keeps devices
         from being enabled or disabled outside Settings; it never meant a
@@ -1300,11 +1307,12 @@ class Setup(PortProbe, Panel):
         if name not in self._running_names() and \
                 name not in list(getattr(controller, "closed_names", ()) or ()):
             self._refuse(f"{name} is not launched, so there is nothing to reset.")
+        if self.is_scanning:
+            self._refuse("A scan is running. Wait for it, or press Cancel scan, "
+                         "then Hard reset.")
         model = controller._model_or_none(name)
-        if model is not None and (getattr(model, "is_energized", False)
-                                  or getattr(model, "is_active", False)):
-            self._refuse(f"{name} is energized. Stop it and put it out of its "
-                         "mode first, then hard reset.")
+        energized = model is not None and (getattr(model, "is_energized", False)
+                                           or getattr(model, "is_active", False))
         launched = controller.config(name)
         wanted = self._pending_config(key)
         where = self._where(launched)
@@ -1314,7 +1322,11 @@ class Setup(PortProbe, Panel):
         if not confirmed:
             latched = (" It is stopped now; the reset clears that."
                        if getattr(model, "is_estopped", False) else "")
-            if wanted is None:
+            if energized:
+                # One question (the pattern of the retired Relaunch's
+                # `_ask_before_taking_down`): it is stopped first.
+                question = f"{name} is energized: Hard reset stops it first. Reset?"
+            elif wanted is None:
                 question = (f"Hard reset {name}? It is stopped and disconnected, "
                             f"its board is reset, and it is opened again on "
                             f"{where}.{latched}")
@@ -1346,9 +1358,7 @@ class Setup(PortProbe, Panel):
             events.info("Hard Reset", f"{name}: closing on {where}, then opening "
                         f"on {target}.", source=self.NAME)
         if model is not None:
-            # The stop path, then the old port closes: `remove` is estop,
-            # then close, before anything is built on the new choice.
-            controller.remove(name)
+            self._stop_for_reset(name, model)
         try:
             if wanted is None:
                 controller.reopen(name)
@@ -1367,6 +1377,36 @@ class Setup(PortProbe, Panel):
                          "station.")
         self._refresh_rows()
         return name
+
+    def _stop_for_reset(self, name, model):
+        """The forced reset's stop path. The estop runs FIRST, while the
+        model is still registered, so a FULL STOP pressed meanwhile still
+        reaches it (architecture audit 2026-10-08: `Controller.remove` drops
+        a model before it stops it). Then `remove`: estop again, then close
+        (halt, de-energize, the heater's off read back), and the port lets
+        go. Whatever raises on the way, the model ends stopped and closed
+        and the row can be reset again (its config is remembered)."""
+        try:
+            if not model.estop():
+                events.warn("Stop Not Confirmed", f"{name} did not confirm its "
+                            "stop before the hard reset; it is closed now. "
+                            "Treat it as live until it is back.", source=self.NAME)
+        except Exception as exc:
+            events.debug("Hard Reset Stop Failed", f"{name}: {exc!r}",
+                         source=self.NAME, exception=exc)
+        try:
+            self.controller.remove(name)
+        except Exception as exc:
+            events.debug("Hard Reset Failed", f"{name} remove: {exc!r}",
+                         source=self.NAME, exception=exc)
+            try:
+                model.close()       # isolated steps: halt, disable, ports
+            except Exception as close_exc:
+                events.debug("Close Failed", repr(close_exc), source=self.NAME,
+                             exception=close_exc)
+            self._refresh_rows()
+            self._refuse(f"{name} was stopped and closed, but its reset did not "
+                         "finish. Press Hard reset again, or restart the station.")
 
     @staticmethod
     def _where(config):
@@ -3099,7 +3139,7 @@ class Setup(PortProbe, Panel):
             ]
             if row["needs_port"]:
                 # Its board reset and the model opened again on the same
-                # port; asks first, refused while energized (`_hard_reset`).
+                # port; asks first; an energized one is stopped first (`_hard_reset`).
                 # Right after Port, so a row without it (no port) or without
                 # a Gamepad still lines up: a view pads before the Status.
                 elements.append(sch.button("Hard reset", f"hard_reset_{key}",

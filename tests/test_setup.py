@@ -1049,43 +1049,89 @@ def test_hard_reset_asks_then_reopens_the_same_device_on_the_same_port(panel):
     assert panel.is_launched and "Screen" in panel.controller.model_names
 
 
-def test_hard_reset_is_refused_while_the_device_is_energized(panel):
+# Owner ruling 2026-10-08 (A): "Hard reset should force a device to clear
+# state, disconnect, reconnect." It is never refused for being energized: the
+# model's full stop path runs first (estop, then close: halt, de-energize,
+# the heater's off read back), then the port closes, and a fresh model (no
+# latch, no mode) is built and identified. One question while energized.
+
+@pytest.mark.parametrize("busy", ["is_energized", "is_active"])
+def test_hard_reset_of_an_energized_device_asks_once_then_stops_it_first(
+        panel, fake_types, monkeypatch, busy):
+    log = []
     old = _launch_alpha_on(panel)
-    old.is_energized = True     # this file's fake is a plain class
-    result = panel.run("hard_reset_alpha", args=(True,))
-    assert result.is_refused and "energized" in result.reason
+    setattr(old, busy, True)            # this file's fake is a plain class
+    old.is_estopped = True              # a latched stop, cleared by the reset
+    _record_order(monkeypatch, fake_types["Alpha"], log)
+    asked = panel.run("hard_reset_alpha")
+    assert asked.needs_confirm and asked.command == "hard_reset_alpha"
+    assert asked.reason == "Alpha is energized: Hard reset stops it first. Reset?"
+    assert log == [] and panel.controller._model("Alpha") is old
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert log[0] == ("estop", "/dev/ttyUSB0"), "the stop path before anything else"
+    assert log.index(("estop", "/dev/ttyUSB0")) < log.index(("close", "/dev/ttyUSB0")) \
+        < log.index(("build", "/dev/ttyUSB0", None)) < log.index(("open", "/dev/ttyUSB0"))
+    new = panel.controller._model("Alpha")
+    assert new is not old and new.is_open and not old.is_open
+    for cleared in ("is_energized", "is_active", "is_estopped"):
+        assert not getattr(new, cleared, False), cleared
+
+
+def test_the_forced_reset_stops_the_model_while_full_stop_still_reaches_it(
+        panel, fake_types, monkeypatch):
+    """Architecture audit 2026-10-08: `Controller.remove` drops a model
+    before it stops it, so a FULL STOP pressed then would miss it. The
+    reset's stop runs while the model is still registered."""
+    old = _launch_alpha_on(panel)
+    old.is_energized = True
+    registered = []
+    original = fake_types["Alpha"].estop
+
+    def estop(self):
+        registered.append("Alpha" in panel.controller.model_names)
+        return original(self)
+    monkeypatch.setattr(fake_types["Alpha"], "estop", estop)
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert registered and registered[0] is True
+
+
+def test_hard_reset_is_refused_while_a_scan_runs(panel):
+    old = _launch_alpha_on(panel)
+
+    class Alive:
+        def is_alive(self):
+            return True
+    panel._scan_thread = Alive()
+    result = panel.run("hard_reset_alpha", args=(True,))   # the gate
+    assert result.is_refused and "scan" in result.reason.lower()
+    # ... and the command itself, for a caller that is not gated.
+    with pytest.raises(Refused, match="scan"):
+        panel.hard_reset_alpha(True)
     assert panel.controller._model("Alpha") is old and old.closed == 0
+    panel._scan_thread = None
 
 
-def test_a_second_hard_reset_while_one_runs_is_refused(panel, monkeypatch):
-    """Architecture audit 2026-10-08: Setup commands are not serialised (the
-    Web server is threaded) and `Controller.add` opens outside its lock, so
-    two confirmed resets could both build and open the model, the second
-    overwriting the first: an open port and threads no stop could reach.
-    One reset at a time; the second is refused in words."""
-    import threading
-    _launch_alpha_on(panel)
-    entered, gate = threading.Event(), threading.Event()
-    real = panel.controller.reopen
+def test_a_hard_reset_that_fails_mid_way_leaves_the_device_stopped_and_retryable(
+        panel, fake_types, monkeypatch):
+    """A peer that raises while the old model is being taken out must never
+    leave it registered nowhere and still energized."""
+    log = []
+    old = _launch_alpha_on(panel)
+    old.is_energized = True
+    _record_order(monkeypatch, fake_types["Alpha"], log)
 
-    def slow(name):
-        entered.set()
-        gate.wait(5)
-        return real(name)
+    falls = [True]
 
-    monkeypatch.setattr(panel.controller, "reopen", slow)
-    results = []
-    first = threading.Thread(
-        target=lambda: results.append(panel.run("hard_reset_alpha", args=(True,))))
-    first.start()
-    assert entered.wait(5)
-    second = panel.run("hard_reset_alpha", args=(True,))
-    gate.set()
-    first.join(5)
-    assert second.is_refused and "already running" in second.reason
-    assert results and results[0].is_ok
-    assert panel.controller.calls.count("add:Alpha") == 2     # launch + one reset
-    assert panel.run("hard_reset_alpha", args=(True,)).is_ok   # free again
+    def boom(self, name, model):
+        if falls.pop() if falls else False:
+            raise RuntimeError("a peer fell over")
+    monkeypatch.setattr(fake_types["Screen"], "on_model_removed", boom)
+    result = panel.run("hard_reset_alpha", args=(True,))
+    assert result.is_refused and "Hard reset again" in result.reason
+    assert ("estop", "/dev/ttyUSB0") in log and ("close", "/dev/ttyUSB0") in log
+    assert not old.is_open, "stopped and its port let go"
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert panel.controller._model("Alpha") is not old
 
 
 def test_hard_reset_of_a_row_that_did_not_launch_is_refused(panel):
@@ -1174,7 +1220,11 @@ def test_hard_reset_applies_a_changed_port_stop_path_first(
     assert panel.run("hard_reset_alpha", args=(True,)).is_ok
     # The stop path ran on the old port, then the old port closed, and only
     # then was the model built and opened on the new one.
-    assert log == [("estop", "/dev/ttyUSB0"), ("close", "/dev/ttyUSB0"),
+    # 2026-10-08 (A): the reset's own estop runs while the model is still
+    # registered (a FULL STOP still reaches it), then `remove` estops again
+    # and closes.
+    assert log == [("estop", "/dev/ttyUSB0"), ("estop", "/dev/ttyUSB0"),
+                   ("close", "/dev/ttyUSB0"),
                    ("build", "/dev/ttyUSB1", None), ("open", "/dev/ttyUSB1")]
     assert panel.controller.config("Alpha")["port"] == "/dev/ttyUSB1"
     assert panel.controller._model("Alpha").port == "/dev/ttyUSB1"
