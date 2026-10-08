@@ -166,3 +166,15 @@ def test_switching_user_mid_trial_is_refused(setup, disk, monkeypatch):
     assert not result.is_ok
     assert setup.user.email == A
     assert models(setup)["Transfer Map"].db_path == disk["a", "map"]
+
+
+def test_the_suggested_folder_follows_the_data_root(monkeypatch, tmp_path):
+    """Audit 2026-10-08: a SIM run that pressed New store at the suggested
+    folder created stores in the operator's real ~/transfer-stage-runs. With
+    TRANSFER_STAGE_DATA_ROOT set, the suggestion lives under it."""
+    monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path))
+    assert store_choice.suggested_dir("Op@Lab.test") == tmp_path / "stores" / "op@lab.test"
+    assert store_choice.suggested_dir() == tmp_path / "stores"
+    monkeypatch.delenv("TRANSFER_STAGE_DATA_ROOT")
+    from pathlib import Path
+    assert store_choice.suggested_dir("a@b.c") == Path.home() / "transfer-stage-runs" / "stores" / "a@b.c"

@@ -3303,6 +3303,26 @@ label.row-title[for] { cursor: pointer; }
   .account-drawer { --setup-pad: var(--space-5); }
 }
 
+/* -- picture previews (owner 2026-10-08) ---------------------------------- */
+/* A preview is a still of the picked sample, chip or flake: scaled down,
+   never wider than its column or a phone, never taller than a third of a
+   laptop screen; the picture keeps its own proportions. */
+.row.wide.is-preview { flex: 1 0 100%; min-width: 0; max-width: 100%; }
+.plot-frame.is-preview { max-width: 100%; }
+.picture.is-preview {
+  width: auto;
+  max-width: min(100%, 30rem);
+  max-height: min(22.5rem, 40vh);
+  background: var(--surface);
+}
+
+/* -- text that would spill (owner 2026-10-08) ----------------------------- */
+/* Sample IDs, notes and store paths are long free text: a log line breaks
+   anywhere (a Drive path has no spaces to break at) instead of pushing the
+   sheet wider than a phone. */
+.feed { overflow-wrap: anywhere; }
+.row.stat > .value.is-word { min-width: 0; max-width: 100%; }
+
 /* -- tutorial ------------------------------------------------------------ */
 /* The coach: a card beside the control a step is about, a ring on the
    control, and a panel that lists the tutorials. Beside the rail, above the
@@ -3376,23 +3396,3 @@ label.row-title[for] { cursor: pointer; }
   border-radius: var(--radius-key);
   box-shadow: 0 0 0 2px var(--bg);
 }
-
-/* -- picture previews (owner 2026-10-08) ---------------------------------- */
-/* A preview is a still of the picked sample, chip or flake: scaled down,
-   never wider than its column or a phone, never taller than a third of a
-   laptop screen; the picture keeps its own proportions. */
-.row.wide.is-preview { flex: 1 0 100%; min-width: 0; max-width: 100%; }
-.plot-frame.is-preview { max-width: 100%; }
-.picture.is-preview {
-  width: auto;
-  max-width: min(100%, 30rem);
-  max-height: min(22.5rem, 40vh);
-  background: var(--surface);
-}
-
-/* -- text that would spill (owner 2026-10-08) ----------------------------- */
-/* Sample IDs, notes and store paths are long free text: a log line breaks
-   anywhere (a Drive path has no spaces to break at) instead of pushing the
-   sheet wider than a phone. */
-.feed { overflow-wrap: anywhere; }
-.row.stat > .value.is-word { min-width: 0; max-width: 100%; }

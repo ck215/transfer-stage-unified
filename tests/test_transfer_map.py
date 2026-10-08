@@ -422,6 +422,8 @@ def test_the_prompt_suggests_the_users_folder_and_makes_the_store_there(
     (Setup's suggestion at a sign-in); New store makes `<folder>/<name>.sqlite`
     and the page goes to setup."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The home default (a data root, as the test env sets, takes precedence).
+    monkeypatch.delenv("TRANSFER_STAGE_DATA_ROOT", raising=False)
     model = TransferMap()
     assert model.store_dir == str(tmp_path / "home" / "transfer-stage-runs" / "stores")
     model.suggest_store_dir(store_choice.suggested_dir("ialbinog@uci.edu"))

@@ -58,8 +58,12 @@ def user_folder(email):
 
 def suggested_dir(email=None):
     """`~/transfer-stage-runs/stores/<email>/` for a signed-in user, the
-    `stores/` folder itself for nobody in particular."""
-    base = Path.home().joinpath(*SUGGESTED_PARTS)
+    `stores/` folder itself for nobody in particular. Under
+    `TRANSFER_STAGE_DATA_ROOT` when it is set (a test or SIM run must never
+    suggest the operator's real data folder; audit 2026-10-08)."""
+    root = os.environ.get("TRANSFER_STAGE_DATA_ROOT", "").strip()
+    base = (Path(root).expanduser() / SUGGESTED_PARTS[-1] if root
+            else Path.home().joinpath(*SUGGESTED_PARTS))
     name = user_folder(email)
     return base / name if name else base
 
