@@ -92,13 +92,18 @@ Ranked. None blocks operation or safety.
   audit #15).
 
 **P2, UX (proposals in `docs/ux-audit-2026-10-08.md`)**
-- Transfer Map Setup step: Tilt and Speed readouts beside their entries
-  (layout decision).
-- Store prompt: the Folder entry is narrow.
-- Return in a photo-path entry does nothing (a `file_open` widget).
-- Phone-width ports, Settings rows and the take-over key (#19 remainder).
-- Status-dot contrast and Rotator SIM false alarms (2026-10-07 audit
-  proposals) not re-checked tonight.
+- ~~Transfer Map Setup step: Tilt and Speed readouts beside their entries
+  (layout decision).~~ Fixed 473d2c8 ("Now:" under each entry in Setup).
+- ~~Store prompt: the Folder entry is narrow.~~ Fixed fe8f9fd.
+- ~~Return in a photo-path entry does nothing (a `file_open` widget).~~
+  Fixed 482cbdb.
+- ~~Phone-width ports and the take-over key (#19 remainder).~~ Fixed
+  7ce23f6. Still open: Settings' Transfer Map / Sample DB rows (On / SIM,
+  "Sign in to use"), Setup's schema.
+- ~~Status-dot contrast and Rotator SIM false alarms (2026-10-07 audit
+  proposals).~~ Fixed 38fa675 (an error dot is a diamond; every fill
+  clears 3:1) and c56cf76 (a SIM Rotator is not stale, its stop confirms,
+  the rail lists it as simulated).
 
 **Tests**
 - Known flakes under load (pass alone): `test_web5_a_file_open_…`,
