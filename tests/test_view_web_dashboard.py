@@ -1783,6 +1783,7 @@ def test_a_picture_preview_renders_scaled_and_is_fetched_once_per_key(tmp_path):
     assert model.fetched <= 2, model.fetched
 
 
+@needs_browser
 def test_no_picture_is_the_caption_and_never_a_broken_image(tmp_path):
     """UX audit #19: with no picture the frame says "No picture"; the img
     is hidden, so no broken-image icon (or its alt) is drawn."""
