@@ -383,6 +383,26 @@ def test_the_version_never_takes_the_index_lock(repos):
     assert seen and all(env["GIT_OPTIONAL_LOCKS"] == "0" for env in seen)
 
 
+def test_one_failed_describe_is_retried_with_a_tree_sized_budget(repos):
+    """`describe --dirty` looks at every tracked file, so it gets far more
+    time than the other local calls; and one failure (a cold cache on a busy
+    machine, a ref being repacked by another git) is tried once more, since
+    Setup reads the version once per run and "unknown" would stick."""
+    _, station, _ = repos
+    seen = []
+
+    def flaky(argv, **kwargs):
+        if argv[1:2] == ["describe"]:
+            seen.append(kwargs["timeout"])
+            if len(seen) == 1:
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return subprocess.run(argv, **kwargs)
+
+    assert Updater(root=station, run=flaky).version() == f"0.0.0+{head(station)[:7]}"
+    assert seen == [updater_module.DESCRIBE_SECONDS] * 2
+    assert updater_module.DESCRIBE_SECONDS > updater_module.LOCAL_SECONDS
+
+
 @pytest.mark.parametrize("described, version", [
     ("v1.3.0", "v1.3.0"),
     ("v1.3.0-dirty", "1.3.0+dirty"),

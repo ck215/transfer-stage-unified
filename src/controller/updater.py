@@ -86,6 +86,9 @@ LOG_LINES = 8
 PIP_SECONDS = 600
 #: Local git commands (rev-parse, log, diff) are quick; a stuck one is not.
 LOCAL_SECONDS = 15
+#: `describe --dirty` looks at every tracked file: on a cold cache, a big
+#: tree or a busy machine it takes far longer than the other local calls.
+DESCRIBE_SECONDS = 60
 
 UP_TO_DATE, BEHIND, DIVERGED, DIRTY = "up_to_date", "behind", "diverged", "dirty"
 OFFLINE, NOT_GIT, BUNDLE, ERROR = "offline", "not_git", "bundle", "error"
@@ -178,10 +181,14 @@ class Updater:
         if _is_frozen():
             stamp = self._stamp()
             return stamp["tag"] if stamp is not None else "bundle"
-        ok, out = self._git(*DESCRIBE)
-        if not ok or not out:
-            return "unknown"
-        return render_version(out)
+        # Tried twice: Setup reads the version once per run, and one failed
+        # read (a ref repacked by another git, a timeout under load) would
+        # leave "unknown" on the Station row until the next start.
+        for _ in range(2):
+            ok, out = self._git(*DESCRIBE, timeout=DESCRIBE_SECONDS)
+            if ok and out:
+                return render_version(out)
+        return "unknown"
 
     def check(self, timeout=10.0):
         """How this checkout stands against the latest release.
