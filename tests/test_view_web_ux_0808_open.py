@@ -50,7 +50,8 @@ def test_the_transfer_maps_store_choice_resolves_its_warning(tmp_path, monkeypat
     monkeypatch.setattr(TransferMap, "choices", user_config)
     install = tmp_path / "install"
     (install / "src").mkdir(parents=True)
-    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    from model import store_choice
+    monkeypatch.setattr(store_choice, "install_root", lambda: install)
     seen = []
     events.subscribe(seen.append)
     try:
