@@ -5,6 +5,10 @@
   named exactly "Add".
 - After the launch Setup is called Settings, so the words that send the
   operator there say Settings.
+- A dashboard tile with a prompt open keeps its size (see also
+  test_view_web_procedure); a prompt's dropdown keeps its chevron; focus
+  lands on the next step after a prompt; Tutorials takes focus and its
+  end key is not a second "Stop"; the skip link says "main content".
 
 Headless Chrome through the harness in test_view_web_server.py (skipped
 where node or puppeteer is absent).
@@ -17,7 +21,7 @@ from param import Param
 from views import base
 from views.web.server import WebView
 
-from test_view_web_client import APP_JS
+from test_view_web_client import APP_JS, INDEX
 from test_view_web_procedure import FakeProc, _READY, _go
 from test_view_web_server import FakeSetup, _browse, needs_browser
 
@@ -175,3 +179,9 @@ def test_focus_lands_on_the_next_steps_first_control_after_a_prompt(named_statio
     """ % _go("new_tip"), tmp_path)
     assert model.added == ["T8"]
     assert out["tag"] != "BODY" and out["inCard"], f"focus fell out of the card: {out}"
+
+
+def test_the_skip_link_does_not_say_models():
+    """The page list says Dashboard and device names; "models" is the code's
+    word, not the operator's."""
+    assert "Skip to the main content" in INDEX and "Skip to the models" not in INDEX
