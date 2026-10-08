@@ -3047,8 +3047,7 @@ class PanelCard {
   }
 
   /** L3: under a row whose `go` command is disabled, one muted caption says
-   *  why - unless another `go` in the row can go (Setup's Launch and
-   *  Relaunch take turns), or the model already says what unblocks it in
+   *  why - unless another `go` in the row can go, or the model already says what unblocks it in
    *  the row (a model's "Next step"), or the reason is the latch (the
    *  headline and the entry's head say that once). One caption per row. */
   sayWhyNotGo(mode) {
@@ -3283,6 +3282,10 @@ class Dashboard {
     this.heartbeatWorker = null;
     this.setupCard = null;
     this.isLaunched = false;
+    //: Owner 2026-10-07: the rail's Stop is drawn from the launch on, for
+    //: the rest of the session (never hidden again once shown).
+    this.stopShown = false;
+    this.sawState = false;
     this.isEstopped = false;
     this.isDrawerOpen = false;
     this.isConnected = null;
@@ -3828,6 +3831,9 @@ class Dashboard {
       await this.pollEvents(state.latest_event);
     } catch (err) {
       this.setConnected(false);
+      // Fail safe: a page that has never read the station cannot know that
+      // nothing runs, so it shows the Stop.
+      if (!this.sawState) this.revealStop();
     } finally {
       this.isPolling = false;
     }
@@ -4099,6 +4105,14 @@ class Dashboard {
       } catch (err) { /* the next cycle retries */ }
     }
     this.collapseSetupOnLaunch(models, setupState);
+    this.sawState = true;
+    // The rail's Stop arrives with the launch (owner 2026-10-07), and is
+    // never withheld while anything could move: a device model, a launched
+    // Setup, anything energized or active. The account sheet is not one.
+    const sheetName = accountSheet(setupState);
+    const devices = Object.keys(models).some((name) => name !== sheetName);
+    if (devices || this.energized.length || this.isActive
+        || (setupState && setupState.is_launched)) this.revealStop();
     // After the launch edge, so leaving the sign-in screen knows whether
     // the station is running (then its sheet, else Setup).
     this.applyAccount(setupState);
@@ -4127,7 +4141,7 @@ class Dashboard {
    *  first time a model exists, the wizard gives way to it. The desktop
    *  views hear `added`; the browser polls, so the same signal is "models
    *  exist" - or the Setup panel's own `is_launched`, which it flips inside
-   *  `build()` and clears in `stop_system()`.
+   *  `build()` (nothing clears it but a station restart).
    *
    *  Edge-triggered, deliberately: the card is collapsed as the station
    *  launches and opened again when it is stopped, and in between the
@@ -4645,9 +4659,25 @@ class Dashboard {
       // A station already running (a reload) shows its sheet at once: the
       // full-screen Setup no longer opens only to slide away on the first
       // poll, under a press meant for it.
-      if (setup.state && setup.state.is_launched) this.isLaunched = true;
+      if (setup.state && setup.state.is_launched) {
+        this.isLaunched = true;
+        this.revealStop(false);          // already running: there at once
+      }
       if (!this.isLaunched) this.setDrawerOpen(true);        // Setup is where a run begins
     } catch (err) { /* setup is optional once models are built */ }
+  }
+
+  /** The rail's Stop and its chord hint, from the launch on (owner
+   *  2026-10-07). One way only: once drawn it stays for the session. The
+   *  chord (Ctrl+.) works whether or not it is drawn. */
+  revealStop(animate = true) {
+    if (this.stopShown) return;
+    this.stopShown = true;
+    const body = document.body;
+    if (animate) body.classList.add('is-stop-arriving');
+    body.classList.remove('is-prelaunch');
+    this.reserveLogSpace();
+    if (animate) setTimeout(() => body.classList.remove('is-stop-arriving'), 400);
   }
 
   /** A line the page itself has to say, on the tray. */

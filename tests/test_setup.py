@@ -251,11 +251,14 @@ def test_the_header_row_offers_refresh_the_scan_status_and_cancel(panel):
     assert "scan" not in {e.get("command") for e in _elements(panel)}
 
 
-def test_the_launch_row_is_launch_relaunch_and_stop(panel):
+def test_the_launch_row_is_launch_alone(panel):
+    """Owner 2026-10-07: no Relaunch and no Close every model. A device is
+    recovered with its row's Hard reset; changing devices is a Restart."""
     row = panel.schema["sections"][-1]
     assert row["title"] == "Launch"
-    assert [e.get("text") for e in row["elements"]] == [
-        "Launch", "Relaunch", "Close every model"]
+    assert [e.get("text") for e in row["elements"]] == ["Launch"]
+    commands = {e.get("command") for e in _elements(panel)}
+    assert "stop_system" not in commands and not hasattr(panel, "stop_system")
     # I4: no sentence in the Launch row; `summary` is state only.
     assert "summary" not in {e.get("model_attr") for e in row["elements"]}
 
@@ -514,32 +517,26 @@ def test_a_successful_launch_is_what_tells_a_view_to_collapse_the_panel(panel):
     assert panel.mode_name == "launched"
 
 
-def test_launch_gives_way_to_relaunch_once_the_system_is_up(panel):
+def test_launch_runs_once_and_a_second_launch_is_refused(panel):
+    """Owner 2026-10-07: Launch is once per run of the station. A second
+    press is refused with the way forward and leaves the models alone."""
     select(panel, "alpha", "port", SIM)
-    launch, relaunch = [e for e in _elements(panel)
-                        if e.get("command") == "launch"]
+    [launch] = [e for e in _elements(panel) if e.get("command") == "launch"]
     import schema as sch
+    from views.base import gate_reason
     assert sch.is_enabled(launch, "ready") and not sch.is_enabled(launch, "launched")
-    assert sch.is_enabled(relaunch, "launched")
-    panel.run("launch")
-    # Both buttons carry the one command, and it stays runnable: a relaunch
-    # resets the Controller first, like any build.
+    assert gate_reason(launch, "launched") == "Launched: restart the station to change devices"
     assert panel.run("launch").is_ok
-    assert panel.controller.model_names == ["Alpha", "Screen"]
-
-
-def test_stop_system_takes_everything_down_and_offers_launch_again(panel):
-    select(panel, "alpha", "port", SIM)
-    panel.run("launch")
     model = panel.controller._model("Alpha")
-    assert panel.run("stop_system").is_ok
-    assert panel.controller.model_names == [] and model.closed == 1
-    assert panel.is_launched is False and panel.mode_name == "ready"
-
-
-def test_stop_system_refuses_when_nothing_is_running(panel):
-    result = panel.run("stop_system")
-    assert result.is_refused and "Nothing is running" in result.reason
+    # The panel's gate refuses the command (the button is disabled), and a
+    # direct call is refused by `launch()` itself with the way forward.
+    again = panel.run("launch", args=(True,))
+    assert again.is_refused and "launched" in again.reason
+    from result import Refused
+    with pytest.raises(Refused, match="Hard reset.*Restart the station"):
+        panel.launch(True)
+    assert panel.controller.model_names == ["Alpha", "Screen"]
+    assert panel.controller._model("Alpha") is model and model.closed == 0
 
 
 # -- selection and auto-assign --------------------------------------------
@@ -965,29 +962,15 @@ def _energize_first_model(panel):
     return name
 
 
-def test_close_every_model_asks_first_while_something_is_energized(panel):
-    """Round 8 (PM8-6): one press took a heating heater down with no question."""
+def test_an_energized_station_is_never_taken_down_by_launch(panel):
+    """Round 8 (PM8-6) asked before a relaunch tore energized models down;
+    since 2026-10-07 there is no relaunch, so a confirmed Launch over a
+    running, energized station is refused and closes nothing."""
     _launch_alpha(panel)
     name = _energize_first_model(panel)
-    result = panel.run("stop_system")
-    assert result.needs_confirm, result
-    assert name in result.reason and "energized" in result.reason
-    assert panel.controller.model_names, "nothing was closed by the question"
-    assert panel.run("stop_system", args=(True,)).is_ok
-    assert panel.controller.model_names == []
-
-
-def test_relaunch_asks_first_while_something_is_energized(panel):
-    _launch_alpha(panel)
-    _energize_first_model(panel)
-    result = panel.run("launch")
-    assert result.needs_confirm and "Relaunch?" in result.reason
-    assert panel.run("launch", args=(True,)).is_ok
-
-
-def test_close_every_model_does_not_ask_when_nothing_is_energized(panel):
-    _launch_alpha(panel)
-    assert panel.run("stop_system").is_ok
+    result = panel.run("launch", args=(True,))
+    assert result.is_refused
+    assert name in panel.controller.model_names
 
 
 # -- a host's row launches the models drawn on its page (Model.HOST) --------
@@ -1132,10 +1115,6 @@ def test_a_board_plugged_in_after_the_launch_is_seen_not_launched(
     assert said[0].action["command"] == "restart_station"
     _scan_with(panel, monkeypatch, answers)       # seen again: said once
     assert len([e for e in warnings if e.title == events.RESTART_NEEDED]) == 1
-    # Close every model: the board is a row like any other again.
-    assert panel.run("stop_system").is_ok
-    assert panel.beta_port == "/dev/ttyUSB1" and panel.beta_enabled is True
-    assert panel.state["rows"][1]["seen_after_launch"] is None
 
 
 # -- the update check (owner, 2026-09-28) ------------------------------------
@@ -1323,14 +1302,9 @@ def test_update_now_refuses_while_the_station_is_launched(fake_types, checking):
     assert panel.run("launch").is_ok
     result = panel.run("apply_update", args=(True,))
     assert result.status == "refused"
-    assert result.reason == ("Close every model first: an update must not "
+    assert result.reason == ("Restart the station first: an update must not "
                              "land under running devices.")
     assert updater.applies == 0
-    # Closed, the same press goes through.
-    assert panel.run("stop_system").is_ok
-    assert panel.run("apply_update", args=(True,)).is_ok
-    wait_idle(panel)
-    assert updater.applies == 1
 
 
 def test_update_now_asks_first(fake_types, checking):
@@ -1812,11 +1786,8 @@ def test_flash_refuses_while_the_station_is_launched(fake_types):
     panel = checked(firmware)
     connect(panel, "alpha")
     assert panel.run("launch").is_ok
-    assert refused(lambda: panel.flash_firmware(True)).startswith("Close every model first")
-    assert panel.run("stop_system").is_ok
-    assert panel.flash_firmware(True)
-    wait_firmware(panel)
-    assert firmware.flashes == [["Stepper Probe"]]
+    assert refused(lambda: panel.flash_firmware(True)).startswith("Restart the station first")
+    assert firmware.flashes == []
 
 
 def test_flash_refuses_while_the_scan_holds_the_ports(fake_types, monkeypatch):
@@ -1890,9 +1861,6 @@ def test_launch_warns_once_when_a_launched_board_is_out_of_date(board_types):
     assert result.reason == "Stepper Probe's firmware is out of date. Launch anyway?"
     assert panel.controller.model_names == []
     assert panel.run("launch", args=(True,)).is_ok
-    assert panel.run("stop_system").is_ok
-    # Asked once: the same boards, still behind, launch without a second question.
-    assert panel.run("launch").is_ok
 
 
 def test_launch_names_every_out_of_date_board_it_opens(board_types):
@@ -1923,17 +1891,18 @@ def test_launch_does_not_wait_on_an_unchecked_firmware(board_types):
     assert panel.run("launch").is_ok
 
 
-def test_a_relaunch_over_energized_models_asks_one_question_not_two(board_types):
+def test_a_launch_over_energized_models_is_refused_before_any_question(board_types):
+    """Was: a relaunch over energized models asked one combined question.
+    Owner 2026-10-07: no relaunch - a running station refuses Launch before
+    the firmware question, and its energized model stays up."""
     panel = checked(FakeFirmware())
     connect(panel, "dc_probe")
     assert panel.run("launch").is_ok
     panel.controller._model_or_none("DC Probe").is_energized = True
     on_port(panel, "stepper_probe", "/dev/ttyACM0")
-    result = panel.run("launch")
-    assert result.status == "needs_confirm"
-    assert result.reason.startswith("Relaunch? DC Probe is energized")
-    assert result.reason.endswith("Stepper Probe's firmware is out of date. Launch anyway?")
-    assert panel.run("launch", args=(True,)).is_ok
+    result = panel.run("launch", args=(True,))
+    assert result.is_refused and "launched" in result.reason
+    assert "DC Probe" in panel.controller.model_names
 
 
 def test_the_web_address_is_empty_until_the_web_view_serves(panel):

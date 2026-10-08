@@ -307,7 +307,8 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         # No page control calls these two (owner 2026-10-07: devices are not
         # added or removed after the launch; Setup's Hard reset recovers one).
         # Kept for the browser tests, which drive a model's removal (what
-        # Close every model, a Relaunch and a sign-out do) through them.
+        # a sign-out does) through them. Setup no longer offers Close every
+        # model or Relaunch (owner 2026-10-07).
         if route == "/api/close_model":
             name = body.get("name")
             closed = self.controller.remove(name)
