@@ -373,6 +373,29 @@ def test_close_stops_every_model_before_it_closes_any(controller):
     assert first.halt_latched_at_call[0] is True
 
 
+def test_close_closes_every_model_before_any_view_hears_removed(controller):
+    """Audit 2026-10-08 item 4: Setup's "removed" subscriber waits up to
+    20 s for a store's final backup at Quit. Inside the close loop that
+    wait delayed the next model's close, so after a Hard reset (which
+    re-adds its device last) the heater's off read-back and port release
+    could run past the 30 s SIGTERM window. Every model closes first."""
+    store, heater = FakeModel(), FakeModel(devices=[FakeDevice("port")])
+    controller.add("Transfer Map", store)
+    controller.add("Temperature Controller", heater)
+    seen = []
+
+    def _slow_subscriber(event, name):
+        if event == "removed":
+            seen.append((name, heater.disable_calls, heater.devices[0].is_open))
+            time.sleep(0.05)       # the backup wait
+
+    controller.subscribe(_slow_subscriber)
+    controller.close()
+    assert [name for name, *_ in seen] == ["Transfer Map", "Temperature Controller"]
+    assert all(disabled == 1 and not port_open for _n, disabled, port_open in seen), \
+        f"a view's removed handler ran before the heater was closed: {seen}"
+
+
 def test_close_is_idempotent(controller):
     model = FakeModel()
     controller.add("probe", model)

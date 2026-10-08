@@ -254,12 +254,25 @@ class Controller:
             events.error("Stop Not Confirmed", "Shutdown could not confirm the stop "
                          f"of: {', '.join(unconfirmed)}. Treat them as live.",
                          source="Controller", ack=False)
-        for name, model in models.items():
+        # Every model closes before any subscriber hears "removed", and the
+        # models that own devices (ports, the heater's off read-back) close
+        # first: at Quit Setup's "removed" handler waits for a store's final
+        # backup, and that wait used to sit between two closes (audit
+        # 2026-10-08 item 4), delaying a heater's teardown past the 30 s a
+        # SIGTERM close waits.
+        def _has_devices(model):
             try:
-                model.close()
+                return bool(getattr(model, "devices", None))
+            except Exception:
+                return True
+        order = sorted(models, key=lambda n: not _has_devices(models[n]))
+        for name in order:
+            try:
+                models[name].close()
             except Exception as exc:
                 events.warn("Close Failed", f"{name}: {exc}", source="Controller",
                             exception=exc)
+        for name in models:
             self._notify("removed", name)
 
     # -- what views call ---------------------------------------------------
