@@ -297,6 +297,43 @@ def _magnification(value):
     return number
 
 
+#: Writes through any `SampleStore` in this process, per resolved file: a
+#: reader's cache (the pictures' preview) compares `change_token`, so a
+#: write from another model's store object shows at its next read.
+_writes = {}
+_writes_lock = threading.Lock()
+
+
+def _file_key(path):
+    try:
+        return str(Path(path).resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return str(path)
+
+
+def _wrote(path):
+    key = _file_key(path)
+    with _writes_lock:
+        _writes[key] = _writes.get(key, 0) + 1
+
+
+def change_token(path):
+    """Changes whenever the store at `path` may have: a write through this
+    process (`_wrote`), or the file, its journal or its WAL changed on disk
+    (another process). Costs a few `stat` calls, never a SQLite open."""
+    key = _file_key(path)
+    files = []
+    for suffix in ("", "-journal", "-wal"):
+        try:
+            st = os.stat(key + suffix)
+            files.append((st.st_mtime_ns, st.st_size, st.st_ino))
+        except OSError:
+            files.append(None)
+    with _writes_lock:
+        written = _writes.get(key, 0)
+    return (key, written, tuple(files))
+
+
 def _newer(theirs, ours):
     epoch = "1970-01-01T00:00:00+00:00"
     return _stamp(theirs.get("updated_at") or epoch) > _stamp(ours.get("updated_at") or epoch)
@@ -351,6 +388,7 @@ class SampleStore:
                     return fn(db)
             finally:
                 db.close()
+                _wrote(self.path)
 
     @staticmethod
     def _migrate(db):
@@ -1152,6 +1190,24 @@ class PicturePreview:
     def __init__(self):
         self._choice = (None, None)          # (level, magnification)
         self._cache = {}
+        self._rows = (None, [])              # ((token, level), rows)
+
+    def rows(self, store, level):
+        """The picked level's own pictures, else everything under it (a
+        sample's chips' and flakes'). Read once per (store change, level):
+        every readout of a state poll asks, and the store is read again
+        only after `change_token` moved (audit 2026-10-08 item 8: 6-12
+        SQLite opens per poll). A read that raises is not cached."""
+        if store is None or not level[0]:
+            return []
+        path = getattr(store, "path", None)
+        key = (change_token(path), level) if path is not None else None
+        if key is not None and self._rows[0] == key:
+            return self._rows[1]
+        rows = store.images(*level) or store.images(*level, any=True)
+        if key is not None:
+            self._rows = (key, rows)
+        return rows
 
     def _wanted(self, level):
         return self._choice[1] if self._choice[0] == level else None
