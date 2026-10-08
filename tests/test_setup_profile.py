@@ -100,9 +100,12 @@ def test_the_account_section_comes_first_with_who_is_in_switch_user_and_save(set
     elements = _section(setup)["elements"]
     assert [(e["type"], e.get("command") or e.get("model_attr")) for e in elements] == [
         ("readonly", "account_status"), ("button", "switch_user"),
-        ("button", "save_station_settings")]
+        ("button", "save_station_settings"),
+        # 2026-10-07 (B): the backup of the user's stores.
+        ("readonly", "backup_status"), ("entry", "backup_dir"),
+        ("button", "set_backup_dir"), ("button", "back_up_now")]
     assert [e["text"] for e in elements if e["type"] == "button"] == [
-        "Switch user", "Save station settings"]
+        "Switch user", "Save station settings", "Set backup folder", "Back up now"]
     assert "account_password" in Setup.SECRET_INPUTS
     for gone in ("set_profile_user", "add_profile", "remember_settings"):
         assert gone not in {e.get("command") for e in elements}

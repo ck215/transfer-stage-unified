@@ -949,12 +949,13 @@ def _titles(model):
 
 
 def test_the_sheet_declares_its_phases_and_starts_in_browse(images):
-    assert images.PHASES == ("browse", "new_sample", "new_chip", "new_flake")
+    assert images.PHASES == ("browse", "new_sample", "new_chip", "new_flake",
+                             "new_store")
     assert images.phase == "browse"
     assert images.state["phase"] == "browse" and images.state["phases"] == list(images.PHASES)
     assert images.schema["sections"][-1] == images._safety_section()
     assert _titles(images) == ["Sample", "Pictures", "Trials on this sample",
-                               "Sample details", "Data", "Diagnostics", "Safety"]
+                               "Sample details", "Data", "Store", "Diagnostics", "Safety"]
 
 
 def test_the_cascade_filters_and_a_new_sample_pick_clears_the_rest(images, tmp_path):

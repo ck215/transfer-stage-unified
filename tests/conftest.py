@@ -256,6 +256,12 @@ def _transfer_map_db_in_tmp(monkeypatch, tmp_path):
     monkeypatch.setenv("STATION_SAMPLE_DB", str(tmp_path / "map" / "sample_map.sqlite"))
     # And the profiles (user-system Phase 1): never the operator's real ones.
     monkeypatch.setenv("STATION_PROFILES_DIR", str(tmp_path / "profiles"))
+    # And the stores' backup (2026-10-07): off, so no test ever writes to
+    # ~/QMDL_Drive; a test of the backup sets its own folder.
+    monkeypatch.setenv("STATION_BACKUP_DIR", "off")
+    # And the station's choices file (a Guest's store choices): never the
+    # operator's ~/transfer-stage-runs/station.json.
+    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
 
 
 @pytest.fixture(autouse=True)

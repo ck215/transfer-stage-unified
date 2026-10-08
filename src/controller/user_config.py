@@ -5,7 +5,8 @@ chosen by the operator ... the choice is remembered").
     ~/transfer-stage-runs/station.json      ($STATION_CONFIG overrides)
 
 It holds `map_store` (the Transfer Map's SQLite file, an absolute path, or
-null) and nothing else yet. Outside the install on purpose: an update
+null) and `sample_store` (the Sample DB's, 2026-10-07): a Guest's choices;
+a signed-in user's are in their account settings. Outside the install on purpose: an update
 replaces the install folder, and a choice kept there would go with it.
 
 Read once per file and cached; every write goes straight through to disk
@@ -21,7 +22,7 @@ from pathlib import Path
 ENV = "STATION_CONFIG"
 DEFAULT = Path.home() / "transfer-stage-runs" / "station.json"
 #: The keys this file may hold; anything else is refused, not stored.
-KEYS = ("map_store",)
+KEYS = ("map_store", "sample_store")
 
 _lock = threading.Lock()
 _cache = {}                 # resolved path -> the dict read from it
