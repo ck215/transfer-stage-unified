@@ -500,6 +500,19 @@ def test_clearing_the_latch_asks_first(station):
     assert done["status"] == "ok" and probe.is_estopped is False
 
 
+def test_the_close_and_open_routes_are_test_only(station):
+    """Architecture audit 2026-10-08 item 10: the two routes close and
+    reopen a launched model past Setup's rules (no relaunch, the Hard
+    reset lock). No page uses them; without STATION_TEST_ROUTES=1 they are
+    not there, and nothing is closed."""
+    view, controller, probe = station
+    for route in ("/api/close_model", "/api/open_model"):
+        status, data = _post(view, route, {"name": "Fake Probe"})
+        assert status == 404 and data["status"] == "error", (route, status, data)
+    assert probe.is_open is True and "Fake Probe" in controller.model_names
+
+
+@pytest.mark.usefixtures("test_routes")
 def test_closing_a_model_destructs_it_and_reopening_brings_it_back(station):
     view, controller, probe = station
     status, data = _post(view, "/api/close_model", {"name": "Fake Probe"})
@@ -511,12 +524,14 @@ def test_closing_a_model_destructs_it_and_reopening_brings_it_back(station):
     assert status == 200 and "Fake Probe" in controller.model_names
 
 
+@pytest.mark.usefixtures("test_routes")
 def test_closing_a_model_that_is_not_open_is_a_404(station):
     view, _, _ = station
     status, data = _post(view, "/api/close_model", {"name": "Ghost"})
     assert status == 404 and data["status"] == "error"
 
 
+@pytest.mark.usefixtures("test_routes")
 def test_reopening_something_never_configured_is_reported_not_raised(station):
     view, _, _ = station
     status, data = _post(view, "/api/open_model", {"name": "Ghost"})

@@ -70,6 +70,10 @@ BOOT_ID = f"{time.time():.6f}-{os.urandom(4).hex()}"
 ACK_ANSWERS = frozenset({"understood", "later", "action"})
 
 SOURCE = "Web"
+#: Routes that exist only for the tests (they close and reopen a launched
+#: model past Setup's rules); answered only with `TEST_ROUTES_ENV`=1.
+TEST_ROUTES = frozenset({"/api/close_model", "/api/open_model"})
+TEST_ROUTES_ENV = "STATION_TEST_ROUTES"
 
 #: The watchdog warning's recovery hint (V4): what makes a tab go silent
 #: while the station is fine, and what the operator does about it.
@@ -356,7 +360,13 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         # added or removed after the launch; Setup's Hard reset recovers one).
         # Kept for the browser tests, which drive a model's removal (what
         # a sign-out does) through them. Setup no longer offers Close every
-        # model or Relaunch (owner 2026-10-07).
+        # model or Relaunch (owner 2026-10-07). They bypass Setup's rules
+        # (no relaunch, the Hard reset lock), so they exist only with
+        # STATION_TEST_ROUTES=1, set by the tests' `test_routes` fixture
+        # (architecture audit 2026-10-08 item 10); otherwise "no route".
+        if route in TEST_ROUTES and os.environ.get(TEST_ROUTES_ENV, "") != "1":
+            return self._send_json(404, {"status": "error",
+                                         "reason": f"no route {route}"})
         if route == "/api/close_model":
             name = body.get("name")
             closed = self.controller.remove(name)
