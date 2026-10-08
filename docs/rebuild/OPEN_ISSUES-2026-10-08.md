@@ -49,9 +49,15 @@ bench, ready to run these checks.
 
 1. **Settings order** is now Devices, Launch, Update/Firmware, Station
    defaults. This reverses the 2026-09-28 "Update first" ruling. Keep?
-2. **A store already remembered on the cloud drive** (a user setting or
+2. ~~**A store already remembered on the cloud drive** (a user setting or
    `STATION_MAP_DB`) still opens at sign-in; only the store prompt refuses
-   the drive. Refuse at sign-in too, and prompt to move it?
+   the drive. Refuse at sign-in too, and prompt to move it?~~ **Decided**
+   (owner, 2026-10-08 morning): "Store on cloud is fine, just make a local
+   copy for stability of db ops." A store on the drive (New, Open, remembered,
+   or `--map-db` / `--sample-db`) is now worked on through a local working
+   copy that syncs back to the drive after saves and at Quit; nothing on the
+   drive is refused any more, and neither copy is ever silently overwritten
+   (`RECORDING_A_TRIAL.md`, "Backups").
 
 ## 3. Housekeeping (owner)
 

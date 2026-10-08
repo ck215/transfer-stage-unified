@@ -177,3 +177,78 @@ def test_the_suggested_folder_follows_the_data_root(monkeypatch, tmp_path):
     monkeypatch.delenv("TRANSFER_STAGE_DATA_ROOT")
     from pathlib import Path
     assert store_choice.suggested_dir("a@b.c") == Path.home() / "transfer-stage-runs" / "stores" / "a@b.c"
+
+
+# -- a remembered store on the drive (owner ruling 2026-10-08 morning: "Store
+# on cloud is fine, just make a local copy for stability of db ops") --------
+
+@pytest.fixture
+def drive(tmp_path, monkeypatch):
+    """A temporary "drive" folder `remote_reason` calls remote; the working
+    copies go under a temporary data root."""
+    from pathlib import Path
+    where = tmp_path / "drive"
+    where.mkdir()
+    monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path / "data"))
+
+    def remote(path):
+        path = Path(path).expanduser()
+        return "on the drive" if (path == where or where in path.parents) else None
+
+    monkeypatch.setattr(store_choice, "remote_reason", remote)
+    return where
+
+
+def _drive_stores(drive):
+    stores = {"map_store": drive / "trials.sqlite", "sample_store": drive / "samples.sqlite"}
+    TrialStore(stores["map_store"]).ensure()
+    SampleStore(stores["sample_store"]).ensure()
+    return stores
+
+
+def test_a_remembered_store_on_the_drive_opens_a_local_working_copy(setup, disk, drive):
+    from pathlib import Path
+    homes = _drive_stores(drive)
+    create(setup, A)
+    for key, home in homes.items():
+        UserStore().put_setting(A, key, str(home))      # remembered before tonight
+    setup.build(CONFIGS)
+    local = store_choice.suggested_dir(A)
+    for name, key in zip(NAMES, ("map_store", "sample_store")):
+        model = models(setup)[name]
+        assert model.has_store and local in Path(model.db_path).parents, name
+        assert UserStore().setting(A, key) == str(model.db_path)
+        assert UserStore().setting(A, key + "_home") == str(homes[key])
+        assert model.store_home == homes[key]
+
+
+def test_a_drive_copy_changed_elsewhere_is_never_replaced_at_sign_in(setup, disk, drive):
+    import os
+    import time
+    homes = _drive_stores(drive)
+    create(setup, A)
+    for key, home in homes.items():
+        UserStore().put_setting(A, key, str(home))
+    setup.build(CONFIGS)
+    working = models(setup)["Transfer Map"].db_path
+    before = working.read_bytes()
+    setup.run("sign_out")
+    later = time.time() + 60
+    os.utime(homes["map_store"], (later, later))         # edited elsewhere
+    assert sign_in(setup, A).is_ok
+    tmap = models(setup)["Transfer Map"]
+    assert not tmap.has_store and tmap.phase == "new_store"
+    assert tmap.store_path == str(working)                # Open store asks
+    assert UserStore().setting(A, "map_store") == str(working)
+    assert working.read_bytes() == before                 # untouched
+
+
+def test_a_lost_working_copy_is_made_again_from_its_home(setup, disk, drive, tmp_path):
+    homes = _drive_stores(drive)
+    create(setup, A)
+    UserStore().put_setting(A, "map_store", str(tmp_path / "gone" / "trials.sqlite"))
+    UserStore().put_setting(A, "map_store_home", str(homes["map_store"]))
+    setup.build(CONFIGS)
+    tmap = models(setup)["Transfer Map"]
+    assert tmap.has_store and tmap.store_home == homes["map_store"]
+    assert store_choice.suggested_dir(A) in tmap.db_path.parents

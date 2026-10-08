@@ -296,7 +296,9 @@ def test_the_sample_store_is_remembered_and_opened(monkeypatch, tmp_path):
     model = SampleMap()
     model.store_dir = str(tmp_path / "s")
     path = model.new_store()
-    assert choices.data == {"sample_store": path}
+    # A local store has no cloud home (2026-10-08: a store on the drive
+    # is a local working copy whose home is remembered beside it).
+    assert choices.data == {"sample_store": path, "sample_store_home": None}
     again = SampleMap()
     assert again.has_store and str(again.db_path) == path
 
@@ -339,14 +341,16 @@ def test_the_quit_backup_wait_is_one_budget_for_every_store(monkeypatch):
     stub = types.SimpleNamespace(
         backup=_HungBackup(), controller=types.SimpleNamespace(_closed=True),
         _closing_store_models={"Transfer Map": object(), "Sample DB": object()},
-        _backup_job=lambda models: object(), NAME="Setup")
+        _request_backups=lambda models: True, NAME="Setup")
     Setup._on_models_changed(stub, "removed", "Transfer Map")
     Setup._on_models_changed(stub, "removed", "Sample DB")
     assert len(waited) == 2
     assert sum(waited) <= 15.0, f"Quit waited {sum(waited):g} s for backups"
 
 
-# -- a live store is never on the cloud drive (audit 2026-10-08 item 7) -----
+# -- what counts as remote: a live store is never on the cloud drive (audit
+# 2026-10-08 item 7; since the owner ruling of 2026-10-08 morning such a store
+# is worked on through a local copy, below) -----------------------------------
 
 def _fake_mounts(tmp_path, monkeypatch, rows):
     """A private mount table (`/proc/mounts` format) and a private home, so
@@ -361,7 +365,7 @@ def _fake_mounts(tmp_path, monkeypatch, rows):
     return home
 
 
-def test_a_store_under_the_drive_folder_is_refused_even_unmounted(tmp_path, monkeypatch):
+def test_a_store_under_the_drive_folder_is_remote_even_unmounted(tmp_path, monkeypatch):
     """`~/QMDL_Drive/...` is refused by its path alone: mounted it is the
     rclone drive (live SQLite over FUSE), unmounted it is the bare
     mountpoint (files there hide under the drive once it mounts)."""
@@ -372,7 +376,7 @@ def test_a_store_under_the_drive_folder_is_refused_even_unmounted(tmp_path, monk
     assert store_choice.remote_reason(home / "stores" / "x.sqlite") is None
 
 
-def test_a_store_on_a_fuse_or_network_mount_is_refused(tmp_path, monkeypatch):
+def test_a_store_on_a_fuse_or_network_mount_is_remote(tmp_path, monkeypatch):
     cloud, sshfs, nfs = tmp_path / "cloud", tmp_path / "ssh", tmp_path / "nfs"
     disk = tmp_path / "data"
     _fake_mounts(tmp_path, monkeypatch, [
@@ -391,31 +395,218 @@ def test_a_store_on_a_fuse_or_network_mount_is_refused(tmp_path, monkeypatch):
     assert store_choice.remote_reason(cloud / "x.sqlite") is None
 
 
-def test_both_maps_refuse_new_and_open_store_on_the_drive(tmp_path, monkeypatch):
-    from controller import user_config
-    from model.transfer_map import TransferMap
-    from result import Refused
-    home = _fake_mounts(tmp_path, monkeypatch, [("/dev/sda1", "/", "ext4")])
-    drive = home / "QMDL_Drive" / "stores"
-    existing = _db(drive / "old.sqlite")
+# -- a store on the drive is worked on through a local copy (owner ruling
+# 2026-10-08 morning: "Store on cloud is fine, just make a local copy for
+# stability of db ops") ------------------------------------------------------
+
+class _DictChoices(dict):
+    """`choices` for a model: what it remembers, in a dict."""
+
+    def read(self, key, default=None):
+        return self.get(key, default)
+
+    def write(self, key, value):
+        self[key] = value
+        return value
+
+
+def _drive_setup(tmp_path, monkeypatch):
+    """A temporary "drive" folder that `remote_reason` calls remote, and a
+    local stores folder; nothing real is touched."""
+    drive = tmp_path / "drive"
+    drive.mkdir()
+    local = tmp_path / "local"
+
+    def remote(path):
+        path = Path(path).expanduser()
+        return "on the drive" if (path == drive or drive in path.parents) else None
+
+    monkeypatch.setattr(store_choice, "remote_reason", remote)
     monkeypatch.delenv("STATION_SAMPLE_DB", raising=False)
     monkeypatch.delenv("STATION_MAP_DB", raising=False)
-    monkeypatch.setenv("STATION_CONFIG", str(tmp_path / "choices" / "station.json"))
-    user_config.forget()
-    monkeypatch.setattr(SampleMap, "choices", None)
-    monkeypatch.setattr(TransferMap, "choices", user_config)
+    return drive, local
+
+
+def _models(local):
+    from model.transfer_map import TransferMap
+    out = []
+    for cls in (SampleMap, TransferMap):      # the class's `choices` is None
+        model = cls()
+        model.choices = _DictChoices()
+        model.suggested_store_dir = str(local)
+        out.append(model)
+    return out
+
+
+def _side(model):
+    """A side folder of `model`'s kind, relative to its database folder."""
+    return "images" if isinstance(model, SampleMap) else "exports"
+
+
+def _rows(path, table="t"):
+    db = sqlite3.connect(path)
     try:
-        for model in (SampleMap(), TransferMap()):
-            model.store_dir, model.store_name = str(drive), "new"
-            with pytest.raises(Refused, match="cannot be on the cloud drive"):
-                model.new_store()
-            model.store_path = str(existing)
-            with pytest.raises(Refused, match="cannot be on the cloud drive"):
-                model.open_store()
-            assert not model.has_store
-            assert not (drive / "new.sqlite").exists()
-            model.store_dir = str(home / "local" / model.NAME)   # local works
-            assert Path(model.new_store()).is_file() and model.has_store
-            model.close()
+        return db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     finally:
-        user_config.forget()
+        db.close()
+
+
+def test_open_store_on_the_drive_opens_a_local_working_copy(tmp_path, monkeypatch):
+    from model.transfer_map import TransferMap
+    drive, local = _drive_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(TransferMap, "choices", None)
+    monkeypatch.setattr(SampleMap, "choices", None)
+    said = []
+    monkeypatch.setattr(store_choice.events, "info",
+                        lambda title, text, **k: said.append(text))
+    for model in _models(local):
+        home = _db(drive / model.NAME.replace(" ", "_") / "store.sqlite", rows=3)
+        (home.parent / _side(model)).mkdir()
+        (home.parent / _side(model) / "a.png").write_bytes(b"pic")
+        model.store_path = str(home)
+        opened = Path(model.open_store())
+        assert local in opened.parents and opened.name == "store.sqlite"
+        assert model.db_path == opened and model.has_store
+        assert _rows(opened) == 3                      # the drive's data
+        assert (opened.parent / _side(model) / "a.png").read_bytes() == b"pic"
+        key = model.STORE_KEY
+        assert model.choices[key] == str(opened)       # the setting is local
+        assert model.choices[key + "_home"] == str(home)   # the cloud home
+        assert model.store_home == home
+        assert any(str(opened) in t and str(home) in t for t in said)
+        model.close()
+
+
+def test_the_backup_writes_the_working_copy_back_to_its_home(tmp_path, monkeypatch):
+    from model.transfer_map import TransferMap
+    drive, local = _drive_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(TransferMap, "choices", None)
+    monkeypatch.setattr(SampleMap, "choices", None)
+    warned = []
+    monkeypatch.setattr(backup.events, "warn",
+                        lambda title, *a, **k: warned.append(title))
+    for model in _models(local):
+        home = _db(drive / model.NAME.replace(" ", "_") / "store.sqlite", rows=2)
+        _age(home)
+        model.store_path = str(home)
+        working = Path(model.open_store())
+        fresh = backup.BackupService()
+        assert fresh.run(backup.home_jobs([model])[0])    # the schema it added
+        again = backup.BackupService()                     # a restart
+        assert again.run(backup.home_jobs([model])[0])
+        assert "store.sqlite" not in again.copied          # the two are the same
+        _db(working, rows=5)                          # a save on this computer
+        side = working.parent / _side(model)
+        side.mkdir(exist_ok=True)
+        (side / "new.png").write_bytes(b"new")
+        _age(side / "new.png")
+        jobs = backup.home_jobs([model])
+        assert len(jobs) == 1 and jobs[0].target.folder == home.parent
+        service = backup.BackupService()
+        assert service.run(jobs[0])
+        assert _rows(home) == 7                       # 2 + 5, written back
+        assert (home.parent / _side(model) / "new.png").read_bytes() == b"new"
+        assert not list(home.parent.rglob("*.part"))
+        # Edited elsewhere since: never overwritten by the write-back.
+        _db(home, rows=100)
+        _db(working, rows=1)
+        assert not service.run(backup.home_jobs([model])[0])
+        assert _rows(home) == 107 and "Backup Failed" in warned
+        model.close()
+
+
+def test_a_newer_local_working_copy_is_kept(tmp_path, monkeypatch):
+    from model.transfer_map import TransferMap
+    drive, local = _drive_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(TransferMap, "choices", None)
+    monkeypatch.setattr(SampleMap, "choices", None)
+    for model in _models(local):
+        home = _db(drive / model.NAME.replace(" ", "_") / "store.sqlite", rows=2)
+        _age(home, seconds=600)
+        model.store_path = str(home)
+        working = Path(model.open_store())
+        _db(working, rows=4)                          # newer here
+        model.store_path = str(home)
+        assert Path(model.open_store()) == working    # no question asked
+        assert _rows(working) == 6 and _rows(home) == 2
+        model.store_path = str(working)               # the remembered setting
+        assert Path(model.open_store()) == working
+        model.close()
+
+
+def test_a_newer_drive_copy_asks_before_replacing_the_local_one(tmp_path, monkeypatch):
+    from model.transfer_map import TransferMap
+    from result import NeedsConfirm
+    drive, local = _drive_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(TransferMap, "choices", None)
+    monkeypatch.setattr(SampleMap, "choices", None)
+    for model in _models(local):
+        home = _db(drive / model.NAME.replace(" ", "_") / "store.sqlite", rows=2)
+        _age(home, seconds=600)
+        model.store_path = str(home)
+        working = Path(model.open_store())
+        _age(working, seconds=300)
+        _db(home, rows=10)                            # edited elsewhere
+        for typed in (home, working):                 # Open, or the setting
+            model.store_path = str(typed)
+            with pytest.raises(NeedsConfirm) as ask:
+                model.open_store()
+            assert "drive" in ask.value.prompt and ask.value.command == "open_store"
+            assert _rows(working) == 2                # untouched until asked
+        assert Path(model.open_store(True)) == working
+        assert _rows(working) == 12                   # the drive's copy
+        kept = [p for p in working.parent.glob("store.local-*.sqlite")]
+        assert len(kept) == 1 and _rows(kept[0]) == 2   # the old one is kept
+        model.close()
+
+
+def test_new_store_on_the_drive_is_made_locally_and_synced(tmp_path, monkeypatch):
+    from model.transfer_map import TransferMap
+    drive, local = _drive_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(TransferMap, "choices", None)
+    monkeypatch.setattr(SampleMap, "choices", None)
+    for model in _models(local):
+        folder = drive / model.NAME.replace(" ", "_")
+        model.store_dir, model.store_name = str(folder), "fresh"
+        made = Path(model.new_store())
+        assert local in made.parents and made.is_file()
+        assert not (folder / "fresh.sqlite").exists()     # not live on the drive
+        assert model.choices[model.STORE_KEY] == str(made)
+        assert model.choices[model.STORE_KEY + "_home"] == str(folder / "fresh.sqlite")
+        assert backup.BackupService().run(backup.home_jobs([model])[0])
+        assert store_choice.is_sqlite(folder / "fresh.sqlite")
+        # A local store has no home and nothing to write back.
+        model.store_dir, model.store_name = str(tmp_path / "plain" / model.NAME), "x"
+        model.new_store()
+        assert model.store_home is None and backup.home_jobs([model]) == []
+        assert model.choices[model.STORE_KEY + "_home"] is None
+        model.close()
+
+
+def test_install_folder_is_still_refused(tmp_path, monkeypatch):
+    from model.transfer_map import TransferMap
+    from result import Refused
+    drive, local = _drive_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(store_choice, "install_root", lambda: tmp_path / "install")
+    monkeypatch.setattr(TransferMap, "choices", None)
+    monkeypatch.setattr(SampleMap, "choices", None)
+    for model in _models(local):
+        model.store_dir, model.store_name = str(tmp_path / "install" / "data"), "x"
+        with pytest.raises(Refused, match="station's own folder"):
+            model.new_store()
+        model.close()
+
+
+def test_an_env_store_on_the_drive_opens_through_a_working_copy(tmp_path, monkeypatch):
+    """`--map-db` / `--sample-db` naming a file on the drive: never opened
+    live there, its working copy is (under the stores folder)."""
+    from model.transfer_map import TransferMap
+    drive, local = _drive_setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path / "data"))
+    for cls, env in ((SampleMap, "STATION_SAMPLE_DB"), (TransferMap, "STATION_MAP_DB")):
+        home = _db(drive / env / "store.sqlite", rows=3)
+        monkeypatch.setenv(env, str(home))
+        model = cls()
+        assert model.has_store and store_choice.suggested_dir() in model.db_path.parents
+        assert model.store_home == home and _rows(model.db_path) == 3
+        model.close()

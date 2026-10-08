@@ -951,7 +951,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         #: The display the stills and the video are taken of.
         self.monitor = monitor
         self._lock = threading.Lock()
-        path = Path(db_path) if db_path else self.default_db_path()
+        path = self._startup_store(Path(db_path) if db_path else self.default_db_path())
         if path is None:
             self._no_store()
         else:
@@ -1060,9 +1060,11 @@ class TransferMap(store_choice.StorePrompt, Model):
     def store_status(self):
         return self.describe_store(self.db_path if self._store_chosen else None)
 
-    def open_store(self):
+    def open_store(self, confirmed=False):
         """Open store: the SQLite file typed in Store file becomes the
-        trial store, and is remembered."""
+        trial store, and is remembered. One on the cloud drive is worked on
+        through a local copy (`StorePrompt._working_store`; `confirmed`
+        answers its question about a drive copy changed elsewhere)."""
         typed = (self.store_path or "").strip()
         if not typed:
             raise Refused("Type the path of an existing store under Existing "
@@ -1080,7 +1082,8 @@ class TransferMap(store_choice.StorePrompt, Model):
         if magic != _SQLITE_MAGIC:
             raise Refused(f"{path} is not a trial store (not a "
                           "database file).")
-        return self._choose(path, created=False)
+        self._refuse_store_change()
+        return self._choose(self._working_store(path, confirmed), created=False)
 
     def new_store(self):
         """New store: `<folder>/<name>.sqlite`, created now with its schema
@@ -1098,7 +1101,18 @@ class TransferMap(store_choice.StorePrompt, Model):
         if path.exists():
             raise Refused(f"{path} already exists. Type it under Existing store "
                           "file and press Open store to use it.")
-        return self._choose(path, created=True)
+        self._refuse_store_change()
+        local = self._new_working_store(path)
+        try:
+            return self._choose(local, created=True)
+        except Refused:
+            if local != path:
+                store_choice.forget_home(local)
+            raise
+
+    def _side_names(self, db):
+        """The pictures and videos (`<name>/`) and `exports/`."""
+        return (Path(db).stem, "exports")
 
     def _refuse_store_change(self):
         if self.is_armed or self._pending is not None:
@@ -1135,6 +1149,7 @@ class TransferMap(store_choice.StorePrompt, Model):
                 events.warn("Store Not Remembered", f"Trials go to {path}, but "
                             f"the choice could not be saved ({exc}); the station "
                             "will ask again next time.", source=self.NAME)
+        self._remember_home()
         events.info("Trial Store", f"Trials go to {path}: "
                     f"{_count(store.count(), 'trial')}.", source=self.NAME,
                     resolves=events.TRIAL_STORE_NOT_CHOSEN)
