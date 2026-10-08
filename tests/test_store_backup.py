@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,13 @@ def _db(path, rows=1):
     db.commit()
     db.close()
     return path
+
+
+def _age(*paths, seconds=60):
+    """Make files look written `seconds` ago (past `BackupService.SETTLE_S`)."""
+    when = time.time() - seconds
+    for path in paths:
+        os.utime(path, (when, when))
 
 
 def _titled(title, since):
@@ -109,6 +117,7 @@ def test_backup_writes_a_valid_sqlite_via_rename_and_copies_new_files_only(tmp_p
     pics = store.parent / "transfer_map" / "1"
     pics.mkdir(parents=True)
     (pics / "a.png").write_bytes(b"one")
+    _age(pics / "a.png")                    # settled (`SETTLE_S`)
     dest = tmp_path / "backup"
     service = backup.BackupService()
     job = backup.Job(backup.Target(dest), [(store, [store.parent / "transfer_map"])])
@@ -127,6 +136,7 @@ def test_backup_writes_a_valid_sqlite_via_rename_and_copies_new_files_only(tmp_p
     assert service.run(job) and service.copied == []
     # one new file: only it
     (pics / "b.png").write_bytes(b"two")
+    _age(pics / "b.png")
     assert service.run(job) and service.copied == [f"{sub}/transfer_map/1/b.png"]
     # a fresh service (a restart) reads the manifest: nothing again
     again = backup.BackupService()
@@ -146,6 +156,7 @@ def test_stores_with_the_same_name_never_share_a_backup(tmp_path):
         store = _db(tmp_path / who / "transfer_map.sqlite", rows=rows)
         (store.parent / "exports").mkdir()
         (store.parent / "exports" / "trials.csv").write_text(who)
+        _age(store.parent / "exports" / "trials.csv")
         stores.append(store)
     service = backup.BackupService()
     job = backup.Job(backup.Target(dest), [(s, [s.parent / "exports"]) for s in stores])
@@ -158,6 +169,32 @@ def test_stores_with_the_same_name_never_share_a_backup(tmp_path):
         db.close()
         assert (dest / sub / "exports" / "trials.csv").read_text() == who
     assert (dest / "transfer_map.sqlite").read_bytes() == b"an older version's copy"
+
+
+def test_a_file_still_being_written_waits_for_the_next_backup(tmp_path):
+    """Architecture audit 2026-10-08 item 14: a file modified in the last
+    `SETTLE_S` seconds (a video still recording, a picture being saved) is
+    not copied half-written; it is not marked done either, so the next run
+    copies it."""
+    store = _db(tmp_path / "live" / "transfer_map.sqlite")
+    pics = store.parent / "transfer_map" / "7"
+    pics.mkdir(parents=True)
+    old, busy = pics / "before.png", pics / "trial.mp4"
+    old.write_bytes(b"settled")
+    _age(old)
+    busy.write_bytes(b"half a vid")                 # written just now
+    dest = tmp_path / "backup"
+    service = backup.BackupService()
+    job = backup.Job(backup.Target(dest), [(store, [store.parent / "transfer_map"])])
+    assert service.run(job)
+    sub = backup.store_subfolder(store)
+    assert (dest / sub / "transfer_map" / "7" / "before.png").is_file()
+    assert not (dest / sub / "transfer_map" / "7" / "trial.mp4").exists()
+    busy.write_bytes(b"the whole video")
+    _age(busy)                                      # the recording ended
+    assert service.run(job)
+    assert service.copied == [f"{sub}/transfer_map/7/trial.mp4"]
+    assert (dest / sub / "transfer_map" / "7" / "trial.mp4").read_bytes() == b"the whole video"
 
 
 def test_requests_coalesce(tmp_path, monkeypatch):

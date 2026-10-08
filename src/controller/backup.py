@@ -28,7 +28,10 @@ backup: a reader never sees half a database, and SQLite never runs on the
 (slow, rclone-mounted) drive. Other files are copied when their size or
 modification time changed since the last copy (`.backup-manifest.json` in the
 backup folder remembers them), so nothing on the drive is ever scanned
-beyond one stat of a file the manifest does not know yet.
+beyond one stat of a file the manifest does not know yet. A file modified
+in the last `BackupService.SETTLE_S` seconds is still being written and waits
+for the next run (and the Transfer Map hands over its database only while a
+trial is open).
 
 One background thread does the work; a request while it runs schedules one
 more run after it (requests coalesce per backup folder). A run stops at
@@ -191,6 +194,10 @@ class BackupService:
     RUN_BUDGET_S = 300.0
     #: How long Quit waits for the final backup.
     QUIT_WAIT_S = 20.0
+    #: A file modified less than this long ago is still being written (a
+    #: trial video recording, a picture being saved): not copied, and not
+    #: marked done, so the next run copies it (audit 2026-10-08 item 14).
+    SETTLE_S = 5.0
 
     def __init__(self):
         self._cond = threading.Condition()
@@ -358,6 +365,8 @@ class BackupService:
                     continue                  # gone while we walked
                 if manifest.get(key) == signature:
                     continue
+                if time.time() - signature[1] / 1e9 < self.SETTLE_S:
+                    continue                  # still being written: next run
                 dest = folder / relative
                 if key not in manifest and _same(dest, signature):
                     manifest[key] = signature   # there from an earlier run

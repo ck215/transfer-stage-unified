@@ -1123,9 +1123,13 @@ class TransferMap(store_choice.StorePrompt, Model):
     def backup_sources(self):
         """`[(database, [folders beside it])]` for the backup: the database's
         pictures and videos (`pictures_root`) and the exports; [] with no
-        store."""
+        store. While a trial is open (Arm to Finish or Abort) the database
+        only: its video is still being written (audit 2026-10-08 item 14);
+        the folders go with the backup after the trial is saved."""
         if not self._store_chosen:
             return []
+        if self._trial is not None or self._pending is not None:
+            return [(self.db_path, [])]
         return [(self.db_path, [self.pictures_root, self.output_root / "exports"])]
 
     def _choose(self, path, created):

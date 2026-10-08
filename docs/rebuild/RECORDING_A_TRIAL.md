@@ -190,7 +190,10 @@ mirrors the store folder: `transfer_map.sqlite` with its `transfer_map/`
 store moved to another folder gets a new subfolder (the old one stays). Copies
 an earlier version wrote flat into the backup folder (before 2026-10-08) are
 left exactly where they are; nothing is moved or deleted. Each database is a consistent SQLite snapshot (online backup API),
-renamed into place, so it is never half written. The account menu shows "Last backup
+renamed into place, so it is never half written. Nothing is copied while it
+is still being written: while a trial is open (Arm to Finish or Abort) a
+backup takes the Transfer Map's database only, and any file modified in the
+last 5 s is left for the next backup (audit 2026-10-08). The account menu shows "Last backup
 23:41 → <folder>" and has Back up now. A failure (drive not mounted, read-only)
 is one warning per streak. A backup folder under `~/QMDL_Drive` is used only
 while the drive is mounted, and a backup folder that is a store's own folder
