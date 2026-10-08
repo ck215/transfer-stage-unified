@@ -24,10 +24,20 @@ silently loses its tail: that is refused too.
 The firmware has NO host watchdog. Whatever was last commanded persists for
 as long as the board has power, which is why a heater-off that cannot be
 confirmed is an `events.error`, not a shrug.
+
+Every reading also goes to a per-session CSV, `<data root>/heater/heater-
+<stamp>.csv`, flushed line by line, so a second person or an agent can watch a
+run another process is driving (`tools/heater_plot.py --follow`). Each row
+carries the settings IN FORCE — those of the last frame that reached the wire,
+not what is typed in a box. The log never touches the port and never stops
+the reader (Tier P1).
 """
+import csv
 import math
+import os
 import threading
 import time
+from pathlib import Path
 
 import schema as sch
 from devices.serial_port import SerialPort
@@ -128,6 +138,17 @@ class Heater(Model):
     #: out anyway, unchecked.
     CONNECT_CHECK_SECONDS = BOOT_GRACE_SEC + OFF_CONFIRM_SECONDS
 
+    #: P1: the live reading log. One row per reading; the header is the
+    #: contract `tools/heater_plot.py` reads by name.
+    READING_LOG_FOLDER = "heater"
+    READING_LOG_COLUMNS = ("wall_time", "wall_epoch_s", "elapsed_s",
+                           "board_timer_s", "temperature_c", "setpoint_c",
+                           "endpoint_c", "ramp_s_per_c", "kp", "ki", "kd",
+                           "offset_c", "heater_on")
+    #: The frame fields, in wire order, as the log names them.
+    _IN_FORCE_COLUMNS = ("endpoint_c", "ramp_s_per_c", "kp", "ki", "kd",
+                         "offset_c")
+
     def __init__(self, port=None, gamepad=None, sim=False, clock=time.monotonic):
         """was TemperatureSystem.__init__
 
@@ -172,6 +193,15 @@ class Heater(Model):
         # Has a frame ever had somewhere to go? Decides whether a failed
         # heater-off on the way out is news or a port that never opened.
         self._was_reachable = False
+        # P1. `_in_force`: the fields of the last frame that reached the
+        # wire, None until one has. The log is opened on the first reading,
+        # so a model that never reads never leaves an empty file behind.
+        self._in_force = None
+        self._reading_log = None
+        self._reading_log_writer = None
+        self._reading_log_path = ""
+        self._reading_log_failed = False
+        self._reading_log_started = None
 
         # The reader waits on the base's `_threads_stop` (MOD-2): an Event,
         # not a bool, so a reader parked in a 2 s backoff leaves the moment
@@ -358,6 +388,7 @@ class Heater(Model):
             if is_written:
                 self._commanded_setpoint = setpoint or None
                 self._was_reachable = True
+                self._record_in_force(frame)
         events.debug("Settings Write",
                      f"written={is_written} in "
                      f"{(time.monotonic() - started) * 1000:.1f} ms", source=self.NAME)
@@ -508,6 +539,7 @@ class Heater(Model):
         if is_written:
             self._commanded_setpoint = None
             self._was_reachable = True
+            self._record_in_force(frame)
         return is_written
 
     # -- the read-back: the board's own word that the heater is off -----------
@@ -868,7 +900,8 @@ class Heater(Model):
                 return
         with self._write_lock:
             if self._commanded_setpoint is None:
-                self.port.write(self.RESET_FRAME)
+                if self.port.write(self.RESET_FRAME):
+                    self._record_in_force(self.RESET_FRAME)
                 events.debug("Reset Frame",
                              f"{self.RESET_FRAME.hex(' ')}  ({self.RESET_FRAME!r})",
                              source=self.NAME)
@@ -912,6 +945,93 @@ class Heater(Model):
             self._off_pending = None
             pending["landed"].set()
         self._touch()
+        self._log_reading(seconds, temperature, setpoint)
         events.debug("Reading", f"t={seconds:g}s temp={temperature:.2f}C "
                      f"sp={setpoint:.2f}C", source=self.NAME, every=5.0)
         return setpoint
+
+    # -- the live reading log (P1) -------------------------------------------
+    @property
+    def reading_log_path(self):
+        """The CSV this session's readings go to; "" until the first reading
+        opens it, and "" when it could not be opened."""
+        return self._reading_log_path
+
+    def _record_in_force(self, frame):
+        """Remember the fields of a frame that reached the wire. Parsed back
+        from the bytes themselves, so the log says what the board was sent."""
+        try:
+            fields = frame.decode("ascii").strip("<>").split(",")
+            self._in_force = dict(zip(self._IN_FORCE_COLUMNS,
+                                      (float(f) for f in fields)))
+        except (ValueError, UnicodeDecodeError):
+            self._in_force = None
+
+    @staticmethod
+    def _log_root():
+        """`TRANSFER_STAGE_DATA_ROOT`, or `~/transfer-stage-runs`: the same
+        root the event log and the Red Percent runs use."""
+        configured = os.environ.get("TRANSFER_STAGE_DATA_ROOT")
+        root = (Path(configured).expanduser() if configured
+                else Path.home() / "transfer-stage-runs")
+        return root / Heater.READING_LOG_FOLDER
+
+    def _open_reading_log(self):
+        folder = self._log_root()
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path, n = folder / f"heater-{stamp}.csv", 1
+        while path.exists():
+            n += 1
+            path = folder / f"heater-{stamp}-{n}.csv"
+        handle = open(path, "x", newline="", encoding="utf-8")
+        writer = csv.writer(handle)
+        writer.writerow(self.READING_LOG_COLUMNS)
+        handle.flush()
+        self._reading_log, self._reading_log_writer = handle, writer
+        self._reading_log_path = str(path)
+        self._reading_log_started = time.monotonic()
+        events.info("Temperature Log", f"Readings are being written to {path}. "
+                    "Plot them with tools/heater_plot.py.", source=self.NAME)
+
+    def _log_reading(self, seconds, temperature, setpoint):
+        """Append one row and flush it. Never raises: a log that cannot be
+        written is one warning, and the reader carries on without it."""
+        if self._reading_log_failed:
+            return
+        try:
+            if self._reading_log is None:
+                self._open_reading_log()
+            now = time.time()
+            in_force = self._in_force
+            settings = ([in_force[c] for c in self._IN_FORCE_COLUMNS]
+                        + [int(bool(in_force["endpoint_c"] and in_force["kp"]
+                                    + in_force["ki"] + in_force["kd"]))]
+                        if in_force else [""] * (len(self._IN_FORCE_COLUMNS) + 1))
+            self._reading_log_writer.writerow(
+                [time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+                 + f".{int(now % 1 * 1000):03d}",
+                 f"{now:.3f}",
+                 f"{time.monotonic() - self._reading_log_started:.3f}",
+                 seconds, temperature, setpoint, *settings])
+            self._reading_log.flush()
+        except (OSError, ValueError) as exc:
+            self._reading_log_failed = True
+            self._reading_log_path = ""
+            events.debug("Temperature Log Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+            events.warn("Temperature Log Failed", "Readings can no longer be "
+                        "written to the temperature log. The controller is "
+                        "unaffected; the plot in this window still works.",
+                        source=self.NAME, exception=exc)
+            self._close_reading_log()
+
+    def _close_reading_log(self):
+        handle, self._reading_log = self._reading_log, None
+        self._reading_log_writer = None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError as exc:
+                events.debug("Temperature Log Close Failed", repr(exc),
+                             source=self.NAME, exception=exc)
