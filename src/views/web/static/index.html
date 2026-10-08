@@ -68,11 +68,22 @@
     <!-- N3: while anything is energized, what closing this tab does. Ink,
          not red: it is a caution, not a stop. -->
     <p id="energized-line" class="rail-energized" hidden></p>
+    <!-- Owner 2026-10-07: who is signed in, at the top of the page list -
+         a menu (the account sheet opens beside the rail like Settings),
+         not a device: no dot, no stop switch. Hidden with accounts off. -->
+    <button id="account-link" type="button" class="account-link"
+            aria-controls="account-drawer" aria-expanded="false" hidden>
+      <span class="account-glyph" aria-hidden="true"></span>
+      <span class="account-name" translate="no"></span>
+    </button>
     <nav id="model-nav" class="model-nav" aria-label="Pages"></nav>
     <div class="rail-foot">
       <button id="tutorials-link" type="button" class="ghost rail-control"
               title="Step-by-step tutorials that point at the controls">Tutorials</button>
+      <!-- "Setup" before the launch, "Settings" after it (the devices are
+           fixed then); the client keeps the words in step (applySetupWords). -->
       <button id="setup-link" type="button" class="ghost rail-control"
+              aria-controls="setup-drawer"
               title="Open Setup: ports, devices and launch">Setup</button>
       <!-- Closing the tab never quits: the station keeps running for the
            next tab, and the watchdog guards it. This is the only exit. -->
@@ -106,7 +117,20 @@
       <button id="drawer-close" type="button" class="ghost rail-control"
               title="Close Setup (Escape). The Setup button on the rail brings it back.">Close</button>
     </header>
-    <div id="drawer-body" class="drawer-body"></div>
+    <div id="drawer-body" class="drawer-body">
+      <p id="settings-note" class="settings-note" hidden>Devices are fixed while the station runs: Hard reset recovers one, and a changed port takes effect only at Relaunch or Restart.</p>
+    </div>
+  </aside>
+
+  <!-- The account menu (owner 2026-10-07): the signed-in user's sheet, a
+       side window beside the rail like Settings, never over the stop. -->
+  <aside id="account-drawer" class="drawer account-drawer" aria-label="Account" tabindex="-1">
+    <header class="drawer-head">
+      <h2 class="drawer-title">Account</h2>
+      <button id="account-close" type="button" class="ghost rail-control"
+              title="Close the account menu (Escape)">Close</button>
+    </header>
+    <div id="account-body" class="drawer-body"></div>
   </aside>
 
   <!-- The sign-in screen (2026-10-07): before Setup, until the operator

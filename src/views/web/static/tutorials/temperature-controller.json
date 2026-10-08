@@ -96,7 +96,7 @@
     {
       "page": "Temperature Controller",
       "anchor": {"text": "Connection"},
-      "say": "Connection is the link's state. After a few failed readings the station warns and keeps retrying; check the cable and power. If the board stays silent, use Hard reset on its row in Setup.",
+      "say": "Connection is the link's state. After a few failed readings the station warns and keeps retrying; check the cable and power. If the board stays silent, use Hard reset on its row in Settings.",
       "wait": null
     },
     {

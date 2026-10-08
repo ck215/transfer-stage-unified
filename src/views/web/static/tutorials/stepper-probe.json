@@ -126,7 +126,7 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Position age (s)"},
-      "say": "A board that has stopped answering cannot be armed. Use Hard reset on its row in Setup, or cut its power and reconnect, then clear the stop. A lost cable reconnects by itself; enter the mode again after.",
+      "say": "A board that has stopped answering cannot be armed. Use Hard reset on its row in Settings, or cut its power and reconnect, then clear the stop. A lost cable reconnects by itself; enter the mode again after.",
       "wait": null
     },
     {

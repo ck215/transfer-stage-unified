@@ -182,7 +182,15 @@
         if (node.dataset.model === name) { link = node; break; }
       }
     }
-    if (link && link.getAttribute('aria-current') !== 'page') link.click();
+    if (!link || link.getAttribute('aria-current') === 'page') return;
+    // The page itself, not a press on its rail key: a press closes every
+    // side window (owner 2026-10-07), and a step about Settings keeps it.
+    const station = window.station;
+    if (station && typeof station.showPage === 'function') {
+      station.showPage(name === 'Overview' ? null : name);
+    } else {
+      link.click();
+    }
   }
 
   /** Where the card may sit: right of the rail on a side rail, under it on
@@ -406,6 +414,19 @@
       text.appendChild(make('p', 'tutorial-row-meta', meta));
       row.appendChild(text);
       const actions = make('div', 'tutorial-row-actions');
+      if (needsSignIn(t)) {
+        // Owner 2026-10-07: a Guest has no Transfer Map or Sample Map, so a
+        // tutorial on one is listed, greyed, with the way to it.
+        const start = button('Sign in to use', 'button role-neutral', () => {});
+        start.disabled = true;
+        start.title = 'This tutorial uses a page only signed-in users have. '
+          + 'Sign in from the account menu (Switch user).';
+        actions.appendChild(start);
+        row.classList.add('is-locked');
+        row.appendChild(actions);
+        list.appendChild(row);
+        continue;
+      }
       if (saved !== null && saved > 0 && saved < t.steps.length) {
         actions.appendChild(button('Resume at step ' + (saved + 1), 'button role-neutral',
           () => start(t, saved)));
@@ -416,10 +437,28 @@
     }
   }
 
-  function openPanel() {
+  /** Setup's `state.account`: who works, and which pages a Guest lacks. */
+  let account = null;
+
+  async function readAccount() {
+    try {
+      const setup = await getJson('/api/setup');
+      account = (setup && setup.state && setup.state.account) || null;
+    } catch (err) { /* keep the last */ }
+  }
+
+  function needsSignIn(t) {
+    if (!account || account.enabled === false || account.signed_in) return false;
+    const locked = Array.isArray(account.signed_in_only) ? account.signed_in_only : [];
+    return t.steps.some((step) => locked.indexOf(step.page) !== -1);
+  }
+
+  async function openPanel() {
     ui.panel.hidden = false;
     ui.link.setAttribute('aria-expanded', 'true');
     renderList();
+    await readAccount();
+    if (!ui.panel.hidden) renderList();
   }
 
   function closePanel() {
@@ -433,6 +472,7 @@
     const panel = make('aside', 'tutorial-panel');
     panel.id = 'tutorial-panel';
     panel.setAttribute('aria-label', 'Tutorials');
+    panel.dataset.sideWindow = '';
     panel.hidden = true;
     const head = make('header', 'tutorial-panel-head');
     head.appendChild(make('h2', 'tutorial-panel-title', 'Tutorials'));
@@ -482,6 +522,9 @@
     ui.link.setAttribute('aria-expanded', 'false');
     ui.link.addEventListener('click', () => { if (ui.panel.hidden) openPanel(); else closePanel(); });
     document.addEventListener('keydown', onKey);
+    // A side window (owner 2026-10-07): the page closes it when a rail page
+    // is pressed, by this event (app.js SIDE_WINDOWS_CLOSE).
+    window.addEventListener('station-side-windows-close', () => { if (!ui.panel.hidden) closePanel(); });
     return true;
   }
 

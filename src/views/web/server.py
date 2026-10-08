@@ -41,7 +41,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import schema as sch
 from events import events
-from result import Refused
+from result import Refused, Result
 from views import theme
 from views import base as view_base
 from views.base import stop_words
@@ -49,6 +49,10 @@ from views.base import stop_words
 #: `name` that targets the Setup panel instead of a model (`events.SETUP_PANEL`,
 #: the name an acknowledgement's action carries too).
 SETUP_NAME = events.SETUP_PANEL
+#: `name` that targets the signed-in user's sheet, the rail's account menu
+#: (owner 2026-10-07: a settings menu, not a device). It is `Setup.user`,
+#: Setup's own session object, and never a model in the Controller.
+USER_NAME = "__user__"
 
 #: This process's run, as the page sees it (rb-restart R4): a restart keeps
 #: the pid (`execv`), so the token is the start time and random bits. A page
@@ -187,6 +191,12 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             name = self._one(query, "name")
             if name == SETUP_NAME:
                 return self._send_json(200, self.view.setup.schema)
+            if name == USER_NAME:
+                user = self._user_panel()
+                if user is None:
+                    return self._send_json(404, {"status": "error",
+                                                 "reason": "no account menu"})
+                return self._send_json(200, user.schema)
             if name not in self.controller.model_names:
                 return self._send_json(404, {"status": "error",
                                              "reason": f"{name} is not open"})
@@ -204,6 +214,14 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         if route == "/api/setup":
             return self._send_json(200, {"schema": self.view.setup.schema,
                                          "state": self.view.setup.state})
+
+        if route == "/api/user":
+            # The account menu: the signed-in user's sheet (a Guest's too).
+            user = self._user_panel()
+            if user is None:
+                return self._send_json(404, {"status": "error",
+                                             "reason": "no account menu"})
+            return self._send_json(200, {"schema": user.schema, "state": user.state})
 
         if route == "/api/events":
             since = self._int(self._one(query, "since"), 0)
@@ -378,10 +396,29 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         return self._send_json(200, {"status": "ok"})
 
     # -- the three calls a view makes -------------------------------------
+    def _user_panel(self):
+        """Setup's current `User` (the account menu's sheet), or None for a
+        Setup without accounts."""
+        return getattr(self.view.setup, "user", None)
+
     def _run(self, name, command, inputs=None, args=()):
-        """`__setup__` targets the Setup panel; anything else is a model."""
+        """`__setup__` targets the Setup panel, `__user__` the signed-in
+        user's sheet; anything else is a model."""
         if name == SETUP_NAME:
             return self.view.setup.run(command, inputs, args)
+        if name == USER_NAME:
+            user = self._user_panel()
+            if user is None:
+                return Result(Result.REFUSED, reason="This station has no account menu.")
+            return user.run(command, inputs, args)
+        # Owner 2026-10-07: a Guest's session has no Transfer Map or Sample
+        # Map. Setup does not launch them for a Guest; this refuses their
+        # commands too, whatever is open, so hiding is never the only guard.
+        refusal_of = getattr(self.view.setup, "session_refusal", None)
+        refusal = refusal_of(name, command) if callable(refusal_of) else ""
+        if refusal:
+            events.info("Refused", refusal, source=SOURCE)
+            return Result(Result.REFUSED, reason=refusal)
         return self.controller.run(name, command, inputs, args)
 
     @staticmethod
@@ -469,6 +506,7 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         element in `name`'s schema (Setup's included)."""
         try:
             schema = (self.view.setup.schema if name == SETUP_NAME
+                      else self._user_panel().schema if name == USER_NAME
                       else self.controller.schema(name))
         except Exception:
             return False
