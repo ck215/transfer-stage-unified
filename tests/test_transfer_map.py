@@ -1295,7 +1295,9 @@ def test_the_sheet_declares_no_plot_and_finish_still_writes_the_profile(
     model, red, *_ = station
     for panel in (model, red):
         plots = [e for e in sch.elements(panel.schema) if e["type"] == "plot"]
-        assert plots == [], (panel.NAME, plots)
+        # 2026-10-07: the red trace is never plotted live; the analysis's
+        # fixed-interval estimator comparison is the one plot allowed.
+        assert [p["data_command"] for p in plots] in ([], ["estimator_series"]), (panel.NAME, plots)
     assert model.run("live_series").is_refused     # no longer a data source
     trial = _record(model, red)
     samples = _rows(private_db, "SELECT COUNT(*) AS n FROM profile WHERE "

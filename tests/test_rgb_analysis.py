@@ -1030,9 +1030,13 @@ def test_the_series_of_a_model_with_no_run_is_empty(monitor):
 def test_rgb_analysis_declares_no_live_plot(monitor):
     """TM-2 (2026-10-07): the live plots left the live view (RGB analysis is
     drawn on the Transfer Map's page; redrawing a whole run each refresh
-    slowed it, CAP-5). `series` stays a property; nothing polls it."""
+    slowed it, CAP-5). `series` stays a property; nothing polls it. The
+    estimator bank's comparison plot (owner ruling 2026-10-07, a fixed-interval
+    buffer plot, hosted on the trial page) is a different data source and is
+    declared below; the per-row red series is still not drawn live."""
     import schema as sch
-    assert not [e for e in sch.elements(monitor.schema) if e["type"] == "plot"]
+    plots = [e for e in sch.elements(monitor.schema) if e["type"] == "plot"]
+    assert [e["data_command"] for e in plots] == ["estimator_series"]
     assert monitor.run("series").is_refused
 
 
@@ -1061,8 +1065,14 @@ def test_every_editable_field_travels_with_start(monitor):
     start = next(element for element in sch.elements(monitor.schema)
                  if element.get("command") == "start_run")
 
-    assert entries <= set(start["inputs"]), (
-        f"not carried by Start: {sorted(entries - set(start['inputs']))}")
+    # The estimator plot's curve list and custom crop apply on change and may
+    # be edited mid-run: nothing about them is frozen into a run, and a bad
+    # curve name must not be able to refuse Start.
+    live = {"estimator_keys", "custom_left", "custom_top", "custom_width",
+            "custom_height"}
+    assert entries - live <= set(start["inputs"]), (
+        f"not carried by Start: {sorted(entries - live - set(start['inputs']))}")
+    assert not live & set(start["inputs"])
 
 
 def test_start_is_gated_off_and_stop_gated_on_while_running(monitor):
@@ -1221,7 +1231,8 @@ def test_the_analysis_image_is_empty_until_a_run_is_loaded(monitor):
     `empty` sentence, which a view draws as one caption line."""
     import schema as sch
     assert monitor.figure == b""
-    image = next(e for e in sch.elements(monitor.schema) if e["type"] == "image")
+    image = next(e for e in sch.elements(monitor.schema)
+                 if e["type"] == "image" and e["data_command"] == "figure")
     assert image["empty"].startswith("No analysis yet")
 
 
@@ -1971,3 +1982,318 @@ def test_label_run_renames_the_active_run_until_something_is_saved(tmp_path):
         assert model.label_run("later") is None
     finally:
         model.close()
+
+
+# ---------------------------------------------------------------------
+# the estimator bank (owner ruling 2026-10-07)
+# ---------------------------------------------------------------------
+
+from model import estimators as bank_module          # noqa: E402
+import schema as _schema                              # noqa: E402
+
+
+def _lit(rgb=(120, 140, 60), height=10, width=10):
+    frame = numpy.empty((height, width, 3), dtype=numpy.uint8)
+    frame[:, :] = rgb
+    return frame
+
+
+class _Steady:
+    """Every read is the same picture, so every read settles."""
+
+    def __init__(self, script):
+        self.script, self.grabs = list(script), 0
+        self._lock = threading.Lock()
+
+    def grab(self, region):
+        with self._lock:
+            index = min(self.grabs, len(self.script) - 1)
+            self.grabs += 1
+        return self.script[index].copy()
+
+    def close(self):
+        pass
+
+
+def _stopped(model, timeout=3.0):
+    model.end_run()
+    assert _wait_for(lambda: not model.is_running, timeout)
+
+
+def _bank_model(tmp_path, script):
+    model = RgbAnalysis(screen=Screen(factory=lambda: _Steady(script)))
+    model.output_root = tmp_path / "runs"
+    model.run_name = "EST"
+    model.open()
+    return model
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_every_accepted_frame_is_measured_by_the_bank(tmp_path):
+    model = _bank_model(tmp_path, [_lit((120, 140, 60))])
+    try:
+        _started(model)
+        assert _wait_for(lambda: model.frames_accepted >= 3)
+        _stopped(model)
+        bank = model.estimator_bank
+        assert len(bank) == model.frames_accepted >= 3
+        row = bank.latest()
+        assert row["full.g_mean"] == 140.0
+        assert row["right_half.shade_g_median"] == 140.0
+        assert row["full.red_share"] == 0.0
+    finally:
+        model.close()
+
+
+def test_a_rejected_read_never_updates_the_bank(tmp_path):
+    """A black fill is refused and counted; the bank sees only what the
+    settle gate let through."""
+    live = _lit((120, 140, 60))
+    black = numpy.zeros((10, 10, 3), dtype=numpy.uint8)
+    model = _bank_model(tmp_path, [live] * 6 + [black])
+    try:
+        _started(model)
+        assert _wait_for(lambda: model.rejected_black >= 2)
+        _stopped(model)
+        assert model.rejected_black >= 2
+        bank = model.estimator_bank
+        assert len(bank) == model.frames_accepted
+        series = bank.series(["full.g_mean"], normalise=None)["full.g_mean"]
+        assert series and set(series) == {140.0}, "a black read reached the bank"
+    finally:
+        model.close()
+
+
+def test_all_black_reads_leave_the_bank_empty(tmp_path):
+    model = _bank_model(tmp_path, [numpy.zeros((10, 10, 3), dtype=numpy.uint8)])
+    try:
+        _started(model)
+        assert _wait_for(lambda: model.rejected_black >= 3)
+        _stopped(model)
+        assert model.frames_accepted == 0
+        assert len(model.estimator_bank) == 0
+        assert model.estimators_latest is None
+    finally:
+        model.close()
+
+
+def test_the_bank_is_reset_when_a_run_starts(tmp_path):
+    model = _bank_model(tmp_path, [_lit()])
+    try:
+        model.estimator_bank.update(0.0, _lit())
+        assert len(model.estimator_bank) == 1
+        _started(model)
+        # the old row is gone the moment the run starts; what is there now
+        # was accepted in THIS run
+        assert _wait_for(lambda: model.frames_accepted >= 1)
+        _stopped(model)
+        assert len(model.estimator_bank) == model.frames_accepted
+        assert model.estimator_bank.latest()["t"] < 3.0
+    finally:
+        model.close()
+
+
+def test_state_carries_the_latest_estimator_row(tmp_path):
+    model = _bank_model(tmp_path, [_lit((200, 50, 30))])
+    try:
+        assert model.state["run"]["estimators_latest"] is None
+        _started(model)
+        assert _wait_for(lambda: model.frames_accepted >= 1)
+        _stopped(model)
+        latest = model.state["run"]["estimators_latest"]
+        assert latest["full.r_mean"] == 200.0
+        assert latest["full.g_mean"] == 50.0
+        assert latest["custom.r_mean"] is None          # unused: None, not NaN
+        assert set(latest) == {"t", *bank_module.KEYS}
+        assert all(v is None or round(v, 3) == v for v in latest.values())
+    finally:
+        model.close()
+
+
+def test_a_failing_bank_does_not_end_the_recording(tmp_path, monkeypatch):
+    model = _bank_model(tmp_path, [_lit()])
+    try:
+        def boom(*args, **kwargs):
+            raise RuntimeError("bank broke")
+        monkeypatch.setattr(model.estimator_bank, "update", boom)
+        _started(model)
+        assert _wait_for(lambda: model.frames_accepted >= 3)
+        assert model.is_running and model.state["run"]["failure"] == ""
+        _stopped(model)
+    finally:
+        model.close()
+
+
+def test_bgra_screenshots_and_arrays_reach_the_bank_as_rgb():
+    class Shot:
+        height, width = 2, 3
+        bgra = bytes([30, 20, 10, 255] * 6)             # B=30 G=20 R=10
+    rgb = RgbAnalysis._rgb_array(Shot())
+    assert rgb.shape == (2, 3, 3) and tuple(rgb[0, 0]) == (10, 20, 30)
+    four = numpy.zeros((2, 2, 4), dtype=numpy.uint8)
+    four[:, :] = (30, 20, 10, 255)
+    assert tuple(RgbAnalysis._rgb_array(four)[0, 0]) == (10, 20, 30)
+    three = _lit((10, 20, 30))
+    assert RgbAnalysis._rgb_array(three) is three
+    assert RgbAnalysis._rgb_array(None) is None
+
+
+# -- the plot ---------------------------------------------------------
+
+def _fed(model, count=40, step=0.1):
+    for i in range(count):
+        model.estimator_bank.update(i * step, _lit((10, 100 + i, 10)))
+
+
+def test_the_schema_hosts_an_estimators_plot_on_the_trial_page():
+    model = RgbAnalysis(screen=fake_screen())
+    schema = model.schema
+    section = next(s for s in schema["sections"] if s["title"] == "Estimators")
+    assert section["tier"] == 2 and section["hosted_tier"] == 1
+    plot = next(e for e in section["elements"] if e["type"] == "plot")
+    assert plot["text"] == "Estimators, last 60 s"
+    assert plot["data_command"] == "estimator_series"
+    assert any(e["type"] == "image" and e["data_command"] == "estimator_figure"
+               for e in section["elements"])
+    # the plot's source is a declared data command, so the Web route serves it
+    assert model.run("estimator_series").is_ok
+    assert model._is_data_command("estimator_series")
+    assert model._is_data_command("estimator_figure")
+
+
+def test_the_plot_defaults_to_the_four_curves():
+    model = RgbAnalysis(screen=fake_screen())
+    _fed(model)
+    data = model.estimator_series
+    keys = ["full.red_share", "right_half.shade_g_median", "full.g_mean",
+            "centre.shade_g_median"]
+    assert data["keys"] == keys
+    for key in keys:
+        assert len(data[key]) == len(data["t"]) == 40
+    assert data["x"] == data["t"] and len(data["y"]) == 40
+
+
+def test_the_plot_is_computed_once_per_interval_with_a_fake_clock():
+    model = RgbAnalysis(screen=fake_screen())
+    clock = _Clock()
+    model._clock = clock
+    calls = []
+    real = model.estimator_bank.series
+
+    def counting(*args, **kwargs):
+        calls.append(clock.now)
+        return real(*args, **kwargs)
+    model.estimator_bank.series = counting
+    _fed(model, 20)
+
+    first = model.estimator_series
+    assert len(calls) == 1
+    _fed(model, 30)                                     # the bank moves on...
+    clock.now += 0.4
+    assert model.estimator_series is first              # ...a fast poll is cached
+    clock.now += 0.5
+    assert model.estimator_series is first and len(calls) == 1
+    clock.now += 0.2                                     # 1.1 s since the first
+    second = model.estimator_series
+    assert second is not first and len(calls) == 2
+    assert len(second["t"]) == 50                        # the new answer: 20 + 30 rows
+    clock.now += 0.99
+    assert model.estimator_series is second and len(calls) == 2
+    assert model.PLOT_INTERVAL_S == 1.0
+
+
+def test_the_picture_shares_the_interval_and_renders_once_per_answer():
+    model = RgbAnalysis(screen=fake_screen())
+    clock = _Clock()
+    model._clock = clock
+    assert model.estimator_figure == b""                # nothing yet
+    _fed(model, 30)
+    clock.now += 2.0
+    png = model.estimator_figure
+    assert png[:4] == b"\x89PNG"
+    clock.now += 0.3
+    assert model.estimator_figure is png                # cached, same bytes
+
+
+def test_changing_the_curves_replots_at_once():
+    model = RgbAnalysis(screen=fake_screen())
+    model._clock = _Clock()
+    _fed(model)
+    first = model.estimator_series
+    model.estimator_keys = "full.r_mean, left_half.luma_mean"
+    second = model.estimator_series                      # same clock instant
+    assert second is not first
+    assert second["keys"] == ["full.r_mean", "left_half.luma_mean"]
+    assert "full.red_share" not in second
+
+
+def test_the_plot_payload_is_downsampled_to_the_cap():
+    model = RgbAnalysis(screen=fake_screen())
+    for i in range(1200):                                # a full ring, 60 s x 20 Hz
+        model.estimator_bank.update(i * 0.05, _lit((10, i % 200, 10), 2, 2))
+    model.estimator_keys = ", ".join(
+        f"full.{n}" for n in bank_module.ESTIMATOR_NAMES)
+    data = model.estimator_series
+    assert len(data["t"]) <= RgbAnalysis.PLOT_MAX_POINTS == 600
+    for key in data["keys"]:
+        assert len(data[key]) == len(data["t"])
+    assert data["t"][-1] == pytest.approx(59.95)
+
+
+def test_curve_choices_are_validated():
+    model = RgbAnalysis(screen=fake_screen())
+    with pytest.raises(Refused):
+        model.estimator_keys = "full.red_share, nowhere.g_mean"
+    with pytest.raises(Refused):
+        model.estimator_keys = " , "
+    with pytest.raises(Refused):
+        model.estimator_keys = ",".join(
+            f"{c}.{n}" for c in bank_module.CROP_NAMES
+            for n in bank_module.ESTIMATOR_NAMES)
+    assert model.estimator_keys.startswith("full.red_share")   # unchanged
+    model.estimator_keys = "full.r_mean;full.r_mean\nfull.b_mean"
+    assert model.estimator_keys == "full.r_mean, full.b_mean"
+    assert not model.run("_commit", {"estimator_keys": "bogus"}).is_ok
+    assert model.set_value("estimator_keys", "centre.g_mean").is_ok
+
+
+def test_a_preset_chooses_the_curves_and_is_named_back():
+    model = RgbAnalysis(screen=fake_screen())
+    options = model.estimator_preset_options
+    assert options[0] == "Default" and model.estimator_preset == "Default"
+    assert "red_share, every crop" in options and "every estimator, full" in options
+    assert not any("custom" in o for o in options)       # unused crop: not offered
+    assert model.run("set_estimator_preset", args=("red_share, every crop",)).is_ok
+    assert model.estimator_keys == ("full.red_share, right_half.red_share, "
+                                    "left_half.red_share, centre.red_share")
+    assert model.estimator_preset == "red_share, every crop"
+    model.estimator_keys = "full.r_mean"
+    assert model.estimator_preset == "Custom"
+    assert not model.run("set_estimator_preset", args=("bogus",)).is_ok
+
+
+def test_the_custom_crop_entries_apply_on_change():
+    model = RgbAnalysis(screen=fake_screen())
+    bank = model.estimator_bank
+    assert bank.custom is None
+    assert model.set_value("custom_left", 2).is_ok
+    assert bank.custom is None                           # no size yet: unused
+    assert model.set_value("custom_top", 1).is_ok
+    assert model.set_value("custom_width", 4).is_ok
+    assert bank.custom is None
+    assert model.set_value("custom_height", 3).is_ok
+    assert bank.custom == (2, 1, 4, 3)
+    assert any("custom" in o for o in model.estimator_preset_options)
+    bank.update(0.0, _lit((50, 60, 70), 10, 10))
+    assert bank.latest()["custom.b_mean"] == 70.0
+    assert model.set_value("custom_width", 0).is_ok
+    assert bank.custom is None
+    assert not model.set_value("custom_left", -3).is_ok  # a Param bound
+    assert (model.custom_left, model.custom_width) == (2, 0)
