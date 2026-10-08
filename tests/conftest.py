@@ -277,3 +277,24 @@ def _no_firmware_check(monkeypatch, tmp_path):
     variable and hands Setup a fake FirmwareCheck."""
     monkeypatch.setenv("STATION_NO_FIRMWARE_CHECK", "1")
     monkeypatch.setenv("STATION_FLASH_STAMP", str(tmp_path / "flash" / "flashed.json"))
+
+
+
+@pytest.fixture
+def profiles_on(monkeypatch):
+    """The user profiles are off by default (owner 2026-10-06; the work waits
+    on branch `feature/sample-map-profiles`). A test of the held feature asks
+    for it on; `Setup` reads the flag when it builds its schema."""
+    from controller import setup as station_setup
+    monkeypatch.setattr(station_setup, "PROFILES_ENABLED", True)
+
+
+@pytest.fixture
+def sample_map_on(monkeypatch):
+    """The Sample Map is off by default (owner 2026-10-06; branch
+    `feature/sample-map-profiles`). A test that builds one through Setup asks
+    for it registered, in a private copy of the registry."""
+    from controller import setup as station_setup
+    from model.sample_map import SampleMap
+    monkeypatch.setattr(station_setup, "MODEL_TYPES", dict(station_setup.MODEL_TYPES))
+    station_setup.register(SampleMap)

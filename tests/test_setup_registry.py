@@ -11,6 +11,8 @@ autouse fixture imported from `test_setup_identify`.
 import pytest
 
 from controller import setup as station_setup
+
+pytestmark = pytest.mark.usefixtures("profiles_on")   # the held feature, on
 from controller.controller import Controller
 from controller.setup import SIM, Setup
 from devices import serial_port as serial_port_module
@@ -95,7 +97,7 @@ def warnings():
 BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
              "Temperature Controller", "Rotator", "RGB Analysis",
              "Transfer Map",   # Tier S (2026-09-27)
-             "Sample Map"]     # flake-coords (2026-10-04)
+             *(["Sample Map"] if station_setup.SAMPLE_MAP_ENABLED else [])]   # the flag: setup.py
 #: The built-in Setup rows: RGB Analysis is registered but has no row of its
 #: own, being drawn on the Transfer Map's page and launched by its row
 #: (Model.HOST, owner ruling 2026-09-28).
@@ -106,7 +108,7 @@ def test_the_six_built_ins_are_registered_in_todays_display_order():
     assert list(station_setup.MODEL_TYPES) == BUILT_INS
     assert list(station_setup.MODEL_TYPES.values()) == [
         StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, RgbAnalysis,
-        TransferMap, SampleMap]   # Tier S; flake-coords
+        TransferMap, *([SampleMap] if station_setup.SAMPLE_MAP_ENABLED else [])]
 
 
 def test_register_is_reachable_as_setup_register():

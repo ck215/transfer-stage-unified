@@ -15,6 +15,8 @@ import time
 import pytest
 
 from controller import setup as station_setup
+
+pytestmark = pytest.mark.usefixtures("profiles_on")   # the held feature, on
 from controller.controller import Controller
 from devices import gamepad as gamepad_module
 from devices import serial_port as serial_port_module
@@ -153,8 +155,8 @@ def test_model_types_is_every_model_class_keyed_by_its_name():
     assert list(MODEL_TYPES) == ["Stepper Probe", "DC Probe",
                                  "Chuck Positioner", "Temperature Controller",
                                  "Rotator", "RGB Analysis", "Transfer Map",   # Tier S; RG-3
-                                 "Sample Map"]   # flake-coords (2026-10-04)
-    assert len(set(MODEL_TYPES.values())) == 8   # + the Sample Map
+                                 *(["Sample Map"] if station_setup.SAMPLE_MAP_ENABLED else [])]
+    assert len(set(MODEL_TYPES.values())) == 7 + station_setup.SAMPLE_MAP_ENABLED
 
 
 def test_model_types_is_the_only_list_of_models(panel, fake_types):

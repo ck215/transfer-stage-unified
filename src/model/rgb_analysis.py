@@ -928,6 +928,29 @@ class RgbAnalysis(Model):
         self._touch()
         return run.run_id
 
+    def label_run(self, run_id, annotations=None):
+        """Name the active run (the Transfer Map's Arm: the polling run the
+        map started becomes trial N's, and its folder under `output_root`
+        should say so; bench 2026-09-28, "the runs no longer have labels").
+        Only while nothing of the run is on disk: a run with saved rows keeps
+        the name its files carry. `annotations` are merged into the run's
+        (specimen, consumable, note). Returns the run's id, or None when
+        there is no active run or it is already saved under its name."""
+        run = self._run
+        if run is None or not run.is_active or self._saved_rows:
+            return None
+        name = str(run_id or "").strip()
+        if not name or name == run.run_id and not annotations:
+            return run.run_id
+        was = run.run_id
+        run.run_id = name
+        if annotations:
+            run.annotations.update({k: str(v) for k, v in dict(annotations).items()})
+        if name != was:
+            events.info("Run Named", f"Run {was} is now {name}.", source=self.NAME)
+        self._touch()
+        return run.run_id
+
     def end_run(self):
         """Latch the current run's stop and return. Never blocks, never joins —
         that is `close()`'s job, with a budget."""

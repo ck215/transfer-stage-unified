@@ -138,6 +138,22 @@ On the 5-sample running median of the trial's red trace. M = red at the detected
 | `dip_area` | integral from t(M) to the end of max(0, n(b) - n(t)) dt, trapezoid, in normalised units x seconds |
 | `fall_slope` | (n(M) - n(m)) / (t(m) - t(M)) = 1 / fall time, per second |
 | `z_past_peak` | abs(z(Mark or end) - z(M)), steps lowered past the peak (added; needs Z) |
+| `shade_position` | **The map's default** (owner 2026-10-06). From the tip's shade, not the red trace: see below |
+
+### The tip's shade (the default force)
+
+The red percent counts pixels with R over 150, G under 100 and B under 100. The tip is orange (about 215, 153, 32), so only its darkest edge pixels pass, a few hundred of tens of thousands, and the count is dominated by one-frame flashes. The map's profile also logs a row only when the rounded red changes by 0.1 or more, so steady stretches have no rows. Neither says anything about force.
+
+What does: the **median green of the right half** of the recorded tip region (`model/tip_shade.py`). After the tip touches the sample the shade rises, peaks about 19 steps later (width near 10 steps) and falls back; where it stands on that peak at the Mark is the force. For each frame (taken at 15 a second on the picture thread, from the same frames the video records):
+
+- **baseline**: the median shade 0.3 to 1.3 s after Arm; its noise is the robust scatter over the same span.
+- **smoothed shade**: a median over the last second of frames.
+- **contact**: the smoothed shade stays above baseline by max(5 noise levels, 5% of baseline) for 0.5 s. `contact_lowered` is the steps lowered, from the first Z seen, where that rise began.
+- **position**: (highest smoothed shade since contact - smoothed shade now) / (highest - baseline); 0 at the peak, 1 back at baseline, held at 1.2.
+- **status** (the sheet's **Force** field): No contact; Contact below 0.10; Low below 1/3; Medium below 2/3; High above. The 0.10, the thirds and the contact line are the owner's to tune (`tip_shade` constants).
+
+The first frame at or after the Mark fixes the trial's columns: `force_position`, `force_class`, `contact_lowered`, `shade_baseline`, `shade_peak`, `shade_mark`. No contact before the Mark, or no video, leaves them empty. The video index gains a `shade` column. Recording is unchanged (the whole tip region is selected); `rebuild_force` recomputes the columns of recorded trials from their footage, or from the index's shade column, with the same tracker.
+
 
 The registry is `transfer_map_analysis.FORCE_DEFINITIONS` (name -> function(context)). A new line there reaches every figure, dropdown and export. Imported trials add their own names (default "given").
 

@@ -217,10 +217,23 @@ def _key_for(name):
     return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_") or "model"
 
 
+#: Owner 2026-10-06: the Sample Map and the user profiles (sign-in) are OFF
+#: until they are validated; the work is kept whole on the branch
+#: `feature/sample-map-profiles` and in this tree. Turn either on for a run
+#: with `STATION_SAMPLE_MAP=1` / `STATION_PROFILES=1`; to bring them back for
+#: good, delete these two lines' defaults and the guards that read them.
+# Merge of the lab's stage (2026-10-07): the Sample Map is ON by default
+# again: the approved proposal of 2026-10-07 picks every trial's sample,
+# chip and flake from it (the Transfer Map refuses Arm without them).
+# `STATION_SAMPLE_MAP=0` turns it off. An owner call, flagged to the lead.
+SAMPLE_MAP_ENABLED = os.environ.get("STATION_SAMPLE_MAP") != "0"
+PROFILES_ENABLED = os.environ.get("STATION_PROFILES") == "1"
+
 # The built-ins, in today's display order. The Sample Map (flake-coords,
 # 2026-10-04) follows the Transfer Map: its own page, no port.
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  RgbAnalysis, TransferMap, SampleMap):
+                  RgbAnalysis, TransferMap,
+                  *((SampleMap,) if SAMPLE_MAP_ENABLED else ())):
     register(_built_in)
 del _built_in
 
@@ -1306,6 +1319,8 @@ class Setup(PortProbe, Panel):
 
     def _apply_profile(self, model):
         """The effective model parameters (Q4 split) and who is working."""
+        if not PROFILES_ENABLED:
+            return              # profiles are off: nobody signs in, the station cuts
         apply = getattr(model, "apply_defaults", None)
         name = getattr(model, "NAME", None)
         if callable(apply) and name:
@@ -2206,7 +2221,7 @@ class Setup(PortProbe, Panel):
         runs, whether GitHub has something newer, and the one press that
         takes it. `sch.button` has no `enabled_by`, so Update now is gated by
         refusal (nothing to apply, a model running, a check under way)."""
-        sections = [self._profile_section(), sch.section(
+        sections = [sch.section(
             "Update",
             sch.readonly("Station", "station_version"),
             sch.readonly("Updates", "update_status", role="info"),
@@ -2273,6 +2288,8 @@ class Setup(PortProbe, Panel):
             sch.button("Close every model", "stop_system", role="neutral"),
             layout="row",
         ))
+        if PROFILES_ENABLED:
+            sections.insert(0, self._profile_section())
         return sch.schema(*sections)
 
     # -- plumbing ----------------------------------------------------------

@@ -50,6 +50,7 @@ def bench(tmp_path):
     (tree / "dev").mkdir(parents=True)
     shutil.copy2(REPO / "run.sh", tree / "run.sh")
     shutil.copy2(REPO / "dev" / "swap_branch.sh", tree / "dev" / "swap_branch.sh")
+    shutil.copy2(REPO / "dev" / "launch_desktop.sh", tree / "dev" / "launch_desktop.sh")
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
     _executable(venv / "bin" / "python3", STUB_PYTHON)
@@ -304,5 +305,59 @@ def test_a_headless_web_launch_prints_only_its_address(tmp_path):
     assert out.strip().splitlines() == [f"Station served at http://127.0.0.1:{port}"]
     assert err == ""
     titles = [s["title"] for s in setup["schema"]["sections"]]
-    assert titles[:4] == ["Profile", "Update", "Firmware", "Devices"]
+    assert titles[:3] == ["Update", "Firmware", "Devices"]      # no Profile row: profiles are off
     assert setup["state"]["values"]["web_address"] == f"http://127.0.0.1:{port}"
+
+
+# -- the desktop icons (Linux station PC) -----------------------------------------
+# Bench 2026-09-28: "Transfer Stage Launcher" had gone from the desktop and
+# "Transfer Stage Classic" still ran run_swap.sh, which is dev/swap_branch.sh
+# now. dev/desktop_shortcuts.sh rewrites both; the icons run
+# dev/launch_desktop.sh, since a .desktop Exec line may hold no shell.
+
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason=".desktop files")
+
+
+@linux_only
+def test_desktop_shortcuts_point_at_scripts_that_exist(tmp_path):
+    done = subprocess.run([BASH, str(REPO / "dev" / "desktop_shortcuts.sh"), str(tmp_path)],
+                          capture_output=True, text=True, env={**os.environ, "PATH": "/usr/bin:/bin"})
+    assert done.returncode == 0, done.stderr
+    files = {p.name: p.read_text() for p in tmp_path.glob("*.desktop")}
+    assert set(files) == {"Transfer Stage Launcher.desktop", "Transfer Stage Classic.desktop"}
+    for name, text in files.items():
+        exec_line = next(l for l in text.splitlines() if l.startswith("Exec="))
+        script = Path(exec_line[len("Exec="):].split()[0])
+        assert script == REPO / "dev" / "launch_desktop.sh", exec_line
+        assert script.exists() and os.access(script, os.X_OK)
+        assert "run_swap.sh" not in text
+        assert "Terminal=false" in text
+        assert os.access(tmp_path / name, os.X_OK)
+    assert files["Transfer Stage Classic.desktop"].count("launch_desktop.sh classic") == 1
+    if shutil.which("desktop-file-validate"):
+        checked = subprocess.run(["desktop-file-validate", *map(str, tmp_path.glob("*.desktop"))],
+                                 capture_output=True, text=True)
+        assert checked.returncode == 0 and checked.stdout == "", checked.stdout
+
+
+@linux_only
+def test_the_launcher_icon_runs_run_sh_silently_and_keeps_a_failure_in_the_log(bench):
+    """The icon's script runs run.sh (the stubbed python records the launch,
+    nothing starts) and opens no terminal and no dialog when all is well; a
+    failing run.sh leaves its message in ~/transfer-stage-runs/launcher.log
+    and shows it through zenity, stubbed here so nothing reaches the screen."""
+    stubs = bench.tmp / "stubs"
+    shown = bench.tmp / "zenity.log"
+    _executable(stubs / "zenity", f'#!/bin/sh\ncat >> "{shown}"\n')
+    _executable(stubs / "xmessage", f'#!/bin/sh\necho xmessage "$@" >> "{shown}"\n')
+    done, calls = bench.run("dev/launch_desktop.sh", FAKE_UNAME="Linux")
+    assert done.returncode == 0, done.stderr
+    assert (done.stdout, done.stderr) == ("", "")
+    assert calls[-1] == ["python3", "src/app.py"]
+    assert not shown.exists()
+    # No venv anywhere: run.sh's one message lands in the log and the dialog.
+    done, calls = bench.run("dev/launch_desktop.sh", FAKE_UNAME="Linux", VIRTUAL_ENV=None)
+    assert done.returncode != 0 and calls == []
+    log = bench.tmp / "transfer-stage-runs" / "launcher.log"
+    assert "no .venv" in log.read_text()
+    assert "no .venv" in shown.read_text()

@@ -112,6 +112,8 @@ def _register(model, stage, w=5000.0, h=4000.0, corners="ABD"):
 
 # -- the class and the store -----------------------------------------------------
 
+@pytest.mark.skipif(not station_setup.SAMPLE_MAP_ENABLED,
+                    reason="the Sample Map is off by default (owner 2026-10-06)")
 def test_the_class_is_a_portless_model_registered_after_the_transfer_map():
     assert SampleMap.NAME == "Sample Map"
     assert SampleMap.IDENTITY is None and SampleMap.RESOURCES == ()
