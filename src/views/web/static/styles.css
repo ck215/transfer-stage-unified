@@ -574,6 +574,18 @@ kbd {
 
 .is-shut-down .mushroom-glyph, .mushroom.is-off .mushroom-glyph { display: none; }
 
+/* Before the launch the rail draws no Stop (owner 2026-10-07): nothing is
+   there to stop. It arrives with the launch - a short rise, 200 ms, none
+   under reduced motion - and stays for the session (app.js revealStop). */
+body.is-prelaunch .stop-block { display: none; }
+
+body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; }
+
+@keyframes stop-arrive {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
 /* -- the rail's alert lines ---------------------------------------------- */
 /* A stop that did not reach the station, a lost device, a Quit that did not
    land: ink sentences beside a solid signal square, under the disc. */

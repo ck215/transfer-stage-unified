@@ -14,7 +14,9 @@
   <link rel="preload" href="/fonts/figtree-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/fonts/rubik-latin.woff2" as="font" type="font/woff2" crossorigin>
 </head>
-<body>
+<!-- is-prelaunch: no Stop on the rail until the launch (owner 2026-10-07);
+     app.js removes it for the session (revealStop). -->
+<body class="is-prelaunch">
   <a class="skip-link" href="#cards">Skip to the models</a>
   <!-- The rail: the station's name, the one stop that is never in doubt,
        the models by name, and the way to Setup and out. No numbers: a
@@ -118,7 +120,7 @@
               title="Close Setup (Escape). The Setup button on the rail brings it back.">Close</button>
     </header>
     <div id="drawer-body" class="drawer-body">
-      <p id="settings-note" class="settings-note" hidden>Devices are fixed while the station runs: Hard reset recovers one, and a changed port takes effect only at Relaunch or Restart.</p>
+      <p id="settings-note" class="settings-note" hidden>Devices are fixed while the station runs: Hard reset recovers one, and a changed port takes effect only after a Restart.</p>
     </div>
   </aside>
 

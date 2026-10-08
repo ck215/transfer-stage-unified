@@ -184,8 +184,10 @@ _SHOWN = r"""() => ({
   error: document.getElementById('gate-error').textContent,
   password: document.getElementById('gate-password').value,
   confirm: !document.getElementById('confirm-modal').hidden,
+  stopDrawn: document.getElementById('full-stop').getClientRects().length > 0,
   stopOnTop: (() => {
     const b = document.getElementById('full-stop').getBoundingClientRect();
+    if (!b.width) return null;
     const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
     return Boolean(hit && hit.closest('#full-stop'));
   })(),
@@ -278,19 +280,19 @@ def test_the_sign_in_screen_comes_first_and_leaves_the_stop_in_reach(served, tmp
         return [n.type, n.autocomplete];
       }));
       const tutorials = await page.evaluate(() => document.getElementById('tutorials-link').disabled);
-      // The stop still stops from under the screen.
-      const box = await page.evaluate(() => {
-        const b = document.getElementById('full-stop').getBoundingClientRect();
-        return [b.left + b.width / 2, b.top + b.height / 2];
-      });
-      await page.mouse.click(box[0], box[1]);
+      // Nothing is launched, so the rail draws no Stop (owner 2026-10-07);
+      // the chord is still harmless and still answered.
+      await page.keyboard.down('Control'); await page.keyboard.press('.'); await page.keyboard.up('Control');
       await sleep(400);
-      return { shown, words, fields, tutorials };
+      const after = await page.evaluate(%(shown)s);
+      return { shown, words, fields, tutorials, after };
     """ % {"shown": _SHOWN}, tmp_path)
     shown = out["shown"]
     assert shown["gate"] is True and shown["drawer"] is False, shown
     assert shown["setupLink"] is False, "Setup is reachable before a choice"
-    assert shown["stopOnTop"] is True, "the sign-in screen covers the stop"
+    # Updated (owner 2026-10-07): no Stop on the rail before the launch.
+    assert shown["stopDrawn"] is False and shown["stopOnTop"] is None, shown
+    assert out["after"]["gate"] is True and out["after"]["stopDrawn"] is False, out["after"]
     assert shown["cardsInert"] is True and shown["drawerInert"] is True, shown
     assert shown["focus"] == "gate-email", shown
     assert out["tutorials"] is True

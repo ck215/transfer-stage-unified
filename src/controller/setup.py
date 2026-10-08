@@ -700,8 +700,9 @@ class Setup(PortProbe, Panel):
 
     @property
     def mode_name(self):
-        """`scanning` gates Launch and Relaunch; `launched` swaps Launch for
-        Relaunch. The dropdowns are gated by neither: the operator may point a
+        """`scanning` gates Launch; `launched` retires it (owner 2026-10-07:
+        no relaunch - a device is recovered with its row's Hard reset, and
+        changing devices needs a station Restart). The dropdowns are gated by neither: the operator may point a
         row at a port while the scan is still walking the rest of them, and
         that choice then wins over auto-assign."""
         if self.is_scanning:
@@ -760,7 +761,8 @@ class Setup(PortProbe, Panel):
     @property
     def is_launched(self):
         """True once `build()` has put models into the Controller. The views
-        collapse the Setup panel on it; `stop_system()` clears it."""
+        collapse the Setup panel on it. Nothing clears it but a restart of
+        the station (owner 2026-10-07: no Relaunch, no Close every model)."""
         return self._is_launched
 
     @property
@@ -792,7 +794,7 @@ class Setup(PortProbe, Panel):
                 "needs_gamepad": row["needs_gamepad"],
                 "is_chosen": key in chosen,
                 # A board that answered after the launch: its port, until a
-                # restart (or Close every model) lets it launch.
+                # restart lets it launch.
                 "seen_after_launch": seen.get(key),
                 "options_command": row["options_command"],
             })
@@ -1358,10 +1360,14 @@ class Setup(PortProbe, Panel):
 
     # -- building ----------------------------------------------------------
     def launch(self, confirmed=False):
-        """Validate the current choices and build them. The Launch button,
-        and the Relaunch button once the system is up (a build resets the
-        Controller first, so relaunching is the same call). A relaunch over
-        energized models asks first (round 8, PM8-6)."""
+        """Validate the current choices and build them: the Launch button,
+        once per run of the station. Owner 2026-10-07: there is no relaunch -
+        a device is recovered with its row's Hard reset, and changing the
+        devices needs a station Restart - so a second Launch is refused."""
+        if self._is_launched:
+            self._refuse("The station is already launched. Recover a device "
+                         "with its row's Hard reset; to change devices, "
+                         "Restart the station.")
         if self.is_flashing:
             # A board mid-upload is not a board to open: its port is the
             # uploader's, and its firmware is neither the old nor the new.
@@ -1390,35 +1396,7 @@ class Setup(PortProbe, Panel):
                          "Refresh; every device that answers launches.")
         self.validate(configs)
         self._ask_about_firmware(configs, confirmed)
-        self._ask_before_taking_down("Relaunch", "launch", confirmed)
         return self.build(configs)
-
-    def _ask_before_taking_down(self, verb, command, confirmed):
-        energized = [n for n in self.controller.model_names
-                     if getattr(self.controller._model_or_none(n), "is_energized", False)]
-        if energized and not confirmed:
-            names = (", ".join(energized[:-1]) + " and " + energized[-1]
-                     if len(energized) > 1 else energized[0])
-            plural = len(energized) > 1
-            raise NeedsConfirm(
-                f"{verb}? {names} {'are' if plural else 'is'} energized; this stops "
-                f"and disconnects {'them' if plural else 'it'} first.", command)
-
-    def stop_system(self, confirmed=False):
-        """Take the whole system down without leaving the panel. Every model
-        is estopped and closed by `Controller.reset()`; Launch comes back.
-        Asks first while anything is energized (round 8, PM8-6)."""
-        running = self.controller.model_names
-        if not running and not self._is_launched:
-            self._refuse("Nothing is running.")
-        self._ask_before_taking_down("Close every model", "stop_system", confirmed)
-        self.controller.reset()
-        self._is_launched = False
-        self._take_seen()
-        self._refresh_rows()
-        events.info("Stopped", ", ".join(running) or "nothing was running",
-                    source=self.NAME)
-        return running
 
     def build(self, configs=None):
         """Construct the configured models into the Controller.
@@ -1792,7 +1770,7 @@ class Setup(PortProbe, Panel):
                 self.controller.add(name, self.model_from_config(config), config)
             except Exception as exc:
                 events.warn("Model Not Opened", f"{name} could not be opened for "
-                            f"{self.user.user_name}; press Relaunch in Settings.",
+                            f"{self.user.user_name}; restart the station to retry.",
                             source=self.NAME, exception=exc)
                 continue
             added.append(name)
@@ -1988,8 +1966,8 @@ class Setup(PortProbe, Panel):
                              "answer, then press Update now.")
             running = list(getattr(self.controller, "model_names", None) or [])
             if self._is_launched or running:
-                self._refuse("Close every model first: an update must not land "
-                             "under running devices.")
+                self._refuse("Restart the station first: an update must not "
+                             "land under running devices.")
             if not self.has_update:
                 self._refuse("There is no update to apply. Press Check again "
                              "to look for one.")
@@ -2274,7 +2252,7 @@ class Setup(PortProbe, Panel):
                              "answer, then press Flash.")
             running = list(getattr(self.controller, "model_names", None) or [])
             if self._is_launched or running:
-                self._refuse("Close every model first: a board cannot be "
+                self._refuse("Restart the station first: a board cannot be "
                              "flashed while the station holds its port.")
             if self.is_scanning or self._is_restart_pending:
                 self._refuse("The scan is using the ports. Flash when it has "
@@ -2479,13 +2457,7 @@ class Setup(PortProbe, Panel):
                 return
         sentence = (f"{stale[0]}'s firmware is out of date." if len(stale) == 1
                     else f"The firmware on {_and(stale)} is out of date.")
-        prompt = f"{sentence} Launch anyway?"
-        try:
-            self._ask_before_taking_down("Relaunch", "launch", False)
-        except NeedsConfirm as energized:
-            # One question, not two: the rerun comes back confirmed.
-            prompt = f"{energized.prompt} {prompt}"
-        raise NeedsConfirm(prompt, "launch")
+        raise NeedsConfirm(f"{sentence} Launch anyway?", "launch")
 
     def _firmware_section(self):
         """The Firmware row, right after Update: what the boards run against
@@ -2998,15 +2970,11 @@ class Setup(PortProbe, Panel):
             # ticked, the scan line says why Launch waits, and a Launch with
             # nothing ticked is refused with the reason. `summary` stays a
             # state value for the API and the tests.
+            # Once per run (owner 2026-10-07): no Relaunch and no Close every
+            # model. After the launch a device is recovered with its row's
+            # Hard reset; changing the devices is a station Restart.
             sch.button("Launch", "launch", role="go",
-                       enabled_when=[self.READY]),
-            sch.button("Relaunch", "launch", role="go",
-                       enabled_when=[self.LAUNCHED]),
-            # Never gated: taking the system down must not depend on what the
-            # panel happens to be doing.
-            # L17: not a third "stop" word beside the disc; it closes the
-            # models (stop, disconnect, destruct) and Launch builds them again.
-            sch.button("Close every model", "stop_system", role="neutral"),
+                       enabled_when=[self.READY], disabled_when=[self.LAUNCHED]),
             layout="row",
         ))
         if PROFILES_ENABLED:
@@ -3061,16 +3029,6 @@ class Setup(PortProbe, Panel):
             return "not scanned"
         answered = found[choice]
         return f"detected: {answered}" if answered else "not connected"
-
-    def _take_seen(self):
-        """After Close every model: a board seen after the launch is a row
-        like any other again, so the next Launch includes it."""
-        with self._lock:
-            seen, self._seen = dict(self._seen), {}
-            chosen = set(self._chosen)
-        for key, port in seen.items():
-            if key not in chosen and port in self._port_choices(key):
-                setattr(self, f"{key}_port", port)
 
     def _drop_stale_selections(self):
         """A port that is no longer attached must not stay selected: the old
