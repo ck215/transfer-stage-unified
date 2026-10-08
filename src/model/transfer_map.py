@@ -72,8 +72,10 @@ encoder.
 **The store is chosen by the operator** (owner decision 4, 2026-09-30,
 replacing the 2026-09-27 "inside the checkout" default): with no choice
 recorded the map has NO store - its state says `store: {"path": None,
-"chosen": False}`, its Store section asks (Open store: an existing file;
-New store: a folder and a name) and every recording command is refused
+"chosen": False}`, its page is the `new_store` step (2026-10-08, the Sample
+DB's prompt, `store_choice.StorePrompt`: a folder prefilled with
+`~/transfer-stage-runs/stores/<email>/`, Choose folder…, a name, New store;
+or an existing file and Open store) and every recording command is refused
 until one is chosen. The choice is remembered in the operator's choices
 file (`controller.user_config`, wired in as `TransferMap.choices` by the
 composition root; the model never imports the controller). A store inside
@@ -81,7 +83,10 @@ the station's own folder (the bundle root, or this checkout) is refused:
 updates replace that folder. `STATION_MAP_DB=<path>` / `--map-db` override
 the choice and skip the question. Pictures sit beside the file in
 `<folder>/<database name>/<trial_id>/`, exports in `<folder>/exports/`.
-"New session database" starts another file in the same folder. Building the
+"New session database" opens the same prompt (the open store's folder and
+a fresh `transfer_map_<stamp>` name, both changeable): a new file is never
+made without asking where. A store's files are never moved or rewritten
+(the trial rows hold full picture paths). Building the
 model creates nothing (the contract test builds every registered class).
 
 Live sources are duck-typed from `on_model_added`, never a class name: tilt
@@ -125,7 +130,8 @@ from param import Param
 from result import NeedsConfirm, Refused
 
 #: Every recording command's refusal while no store is chosen (A3).
-NO_STORE = "Choose a trial store first (Transfer Map, Store)."
+NO_STORE = ("Choose a trial store first: the Transfer Map's page asks where "
+            "(New store, or Open store).")
 INSIDE_INSTALL = ("the store cannot live inside the station's own folder; "
                   "updates replace that folder")
 #: The file the SQLite library writes first in every database.
@@ -863,7 +869,10 @@ class TransferMap(store_choice.StorePrompt, Model):
     #: says which step the operator is at; the schema draws each step's
     #: controls only in it. `new_tip` is the New tip prompt, entered from
     #: `setup` and left back to it (Add tip or Cancel); it arms nothing.
-    PHASES = ("setup", "new_tip", "region", "live", "marked", "finish")
+    #: `new_store` (2026-10-08) is the store prompt: the page while no store
+    #: is chosen, and Change store… / New session database.
+    PHASES = ("setup", "new_tip", "region", "live", "marked", "finish",
+              store_choice.StorePrompt.PROMPT)
     #: The user setting (and the station choices key) that remembers the
     #: store (`UserStore.put_setting(email, STORE_KEY, path)`).
     STORE_KEY = "map_store"
@@ -917,10 +926,9 @@ class TransferMap(store_choice.StorePrompt, Model):
         Param("speed_now", "int", default=0, unit="steps/s", label="Speed"),
         Param("trial_count", "int", default=0, label="Trials"),
         # A3: the trial store the operator chooses.
-        Param("store_path", "text", default="", label="Store file"),
-        Param("store_dir", "text", default="", label="Folder for a new store"),
-        Param("store_name", "text", default="transfer_map",
-              label="New store name"),
+        Param("store_path", "text", default="", label="Existing store file"),
+        Param("store_dir", "text", default="", label="Folder"),
+        Param("store_name", "text", default="transfer_map", label="Name"),
     )}
 
     #: Where the operator's store choice is remembered: an object with
@@ -1071,7 +1079,8 @@ class TransferMap(store_choice.StorePrompt, Model):
         trial store, and is remembered."""
         typed = (self.store_path or "").strip()
         if not typed:
-            raise Refused("Type the path of an existing store under Store file.")
+            raise Refused("Type the path of an existing store under Existing "
+                          "store file.")
         path = Path(typed).expanduser().resolve()
         self._refuse_inside_install(path)
         if not path.is_file():
@@ -1093,8 +1102,7 @@ class TransferMap(store_choice.StorePrompt, Model):
         folder = (self.store_dir or "").strip()
         name = (self.store_name or "").strip() or "transfer_map"
         if not folder:
-            raise Refused("Type the folder for the new store under Folder for "
-                          "a new store.")
+            raise Refused("Type or choose the folder for the new store.")
         if any(sep in name for sep in ("/", "\\")) or name in (".", ".."):
             raise Refused("The store name is a file name, not a path.")
         if not name.endswith(".sqlite"):
@@ -1102,8 +1110,8 @@ class TransferMap(store_choice.StorePrompt, Model):
         path = (Path(folder).expanduser() / name).resolve()
         self._refuse_inside_install(path)
         if path.exists():
-            raise Refused(f"{path} already exists. Type it under Store file and "
-                          "press Open store to use it.")
+            raise Refused(f"{path} already exists. Type it under Existing store "
+                          "file and press Open store to use it.")
         return self._choose(path, created=True)
 
     def _refuse_store_change(self):
@@ -1181,9 +1189,9 @@ class TransferMap(store_choice.StorePrompt, Model):
         if not self._store_chosen:
             legacy = self.legacy_store_path()
             events.warn("Trial Store Not Chosen", "Choose where the Transfer "
-                        "Map keeps its trials: Transfer Map, Store - Open store "
-                        "for an existing file, or New store in a folder of your "
-                        "choice." + (f" A store from an earlier version is at "
+                        "Map keeps its trials: its page asks (New store in a "
+                        "folder of your choice, or Open store for an existing "
+                        "file)." + (f" A store from an earlier version is at "
                                      f"{legacy}; move it out of the station's "
                                      "folder and open it there to keep its "
                                      "trials." if legacy else ""),
@@ -1224,7 +1232,9 @@ class TransferMap(store_choice.StorePrompt, Model):
         mode): `setup` nothing armed; `region` armed, waiting for the capture
         region; `live` recording, no Mark yet; `marked` recording, marked;
         `finish` the recording ended, the trial to review and keep;
-        `new_tip` the New tip prompt is open (nothing armed)."""
+        `new_tip` the New tip prompt is open (nothing armed); `new_store`
+        no store is chosen, or the store prompt is open (Change store…, New
+        session database)."""
         trial = self._trial
         if trial is not None:
             if trial.ended:
@@ -1232,13 +1242,17 @@ class TransferMap(store_choice.StorePrompt, Model):
             return "live" if trial.operator_t is None else "marked"
         if self._pending is not None:
             return "region"
+        if not self._store_chosen or self._choosing_store:
+            return self.PROMPT
         return "new_tip" if self._adding_tip else "setup"
 
     def _halt_hardware(self):
         """Disarm now; write the aborted trial on a worker. No I/O here and
         no lock wait without a timeout: the stop is never held by the disk.
-        A New tip prompt that is open closes (the stop returns to setup)."""
+        A New tip prompt or a store prompt over a chosen store closes (the
+        stop returns to setup; with no store the page stays the prompt)."""
         adding, self._adding_tip = self._adding_tip, False
+        choosing, self._choosing_store = self._choosing_store, False
         pending, self._pending = self._pending, None
         if pending is not None:
             self._discard_still(pending, wait=False)   # nothing was recorded
@@ -1256,7 +1270,7 @@ class TransferMap(store_choice.StorePrompt, Model):
                                       daemon=True, name="transfer-map-abort")
             self._persisting.append(writer)
             writer.start()
-        if pending is not None or trial is not None or adding:
+        if pending is not None or trial is not None or adding or choosing:
             self._touch()                  # the step went back to setup
         return True
 
@@ -1457,6 +1471,7 @@ class TransferMap(store_choice.StorePrompt, Model):
 
     STEP_WORDS = {
         "new_tip": "Type the new tip's ID, then press Add tip",
+        "new_store": "Choose where to save the trials: New store, or Open store",
         "region": "Drag the capture region on the picture of the stage",
         "live": "Lower the tip; press Mark force when the force is right",
         "marked": "Press End recording when the cut is done",
@@ -3370,32 +3385,24 @@ class TransferMap(store_choice.StorePrompt, Model):
 
     # -- the session database ----------------------------------------------
     def new_database(self):
-        """A new database beside this one, for a new session. The current
-        file stays on disk untouched; pictures and exports stay in the same
-        folder (`output_root`), the pictures under the new file's own name
-        so trial 1 of the new database never overwrites trial 1 of the old."""
+        """New session database: the store prompt (`new_store`), prefilled
+        with the open store's folder and a fresh `transfer_map_<stamp>` name;
+        New store there makes it (2026-10-08: never silently beside the
+        current file). The current file stays on disk untouched; each
+        database keeps its pictures under its own name, so trial 1 of the new
+        one never overwrites trial 1 of the old. Cancel goes back."""
         self._need_store()
         if self.is_armed or self._pending is not None:
             raise Refused("A trial is armed. Finish or abort it before starting "
                           "a new database.")
-        for writer in list(self._persisting):      # an abort still being written
-            writer.join(self.THREAD_JOIN_TIMEOUT)
+        self.change_store()
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        path = self.output_root / f"transfer_map_{stamp}.sqlite"
-        suffix = 2
-        while path.exists():
-            path = self.output_root / f"transfer_map_{stamp}_{suffix}.sqlite"
-            suffix += 1
-        store = TrialStore(path)
-        store.ensure()
-        previous = self.db_path
-        self.db_path, self._store = path, store
-        self._indices = {}
-        self._figure_cache = None
-        self._changed()
-        events.info("New Database", f"Trials now go to {path}. The previous "
-                    f"database stays at {previous}.", source=self.NAME)
-        return str(path)
+        name, suffix = f"transfer_map_{stamp}", 2
+        while (Path(self.store_dir).expanduser() / f"{name}.sqlite").exists():
+            name, suffix = f"transfer_map_{stamp}_{suffix}", suffix + 1
+        self.store_name = name
+        self._touch()
+        return self.store_dir
 
     @property
     def pictures_root(self):
@@ -3811,28 +3818,26 @@ class TransferMap(store_choice.StorePrompt, Model):
                 "Session",
                 sch.readonly("Database", "db_path"),
                 sch.readonly("Trials", "trial_count", param=P["trial_count"]),
-                sch.button("New session database", "new_database",
-                           confirm="Start a new database beside this one? The "
-                                   "current one stays on disk.",
+                sch.button("New session database\u2026", "new_database",
                            disabled_when=("armed",)),
                 phases=("setup",),
             ),
-            # Where the trials go (A3): chosen on the start screen.
+            # The store prompt (2026-10-08, the Sample DB's): the page with
+            # no store chosen, Change store… and New session database…. A
+            # new store always asks where.
             sch.section(
-                "Store",
+                "Where to save the trial store",
                 sch.readonly("Trial store", "store_status", role="info"),
-                sch.entry("Store file", "store_path", P["store_path"],
-                          disabled_when=("armed",)),
-                sch.button("Open store", "open_store", inputs=("store_path",),
-                           disabled_when=("armed",)),
-                sch.entry("Folder for a new store", "store_dir", P["store_dir"],
-                          disabled_when=("armed",)),
-                sch.entry("New store name", "store_name", P["store_name"],
-                          disabled_when=("armed",)),
-                sch.button("New store", "new_store",
-                           inputs=("store_dir", "store_name"),
-                           disabled_when=("armed",)),
-                phases=("setup",),
+                sch.entry("Folder", "store_dir", P["store_dir"]),
+                sch.dropdown("Choose folder\u2026", "store_folder_pick",
+                             "pick_store_folder", "store_folder_options"),
+                sch.entry("Name", "store_name", P["store_name"]),
+                sch.button("New store", "new_store", role="go",
+                           inputs=("store_dir", "store_name")),
+                sch.entry("Existing store file", "store_path", P["store_path"]),
+                sch.button("Open store", "open_store", inputs=("store_path",)),
+                sch.button("Cancel", "cancel_store_choice"),
+                phases=(self.PROMPT,),
             ),
             # Every step: what to do next and the stage's readouts.
             sch.section(
@@ -4055,6 +4060,15 @@ class TransferMap(store_choice.StorePrompt, Model):
                 sch.entry("Trial", "afm_trial_id", P["afm_trial_id"]),
                 sch.button("Set sample for trial", "set_trial_sample",
                            inputs=("afm_trial_id",)),
+                tier=2, disclosure=configure,
+            ),
+            # Where the trials go (A3): the line, and Change store… (the
+            # store prompt above; refused while a trial is armed).
+            sch.section(
+                "Store",
+                sch.readonly("Trial store", "store_status", role="info"),
+                sch.button("Change store…", "change_store",
+                           disabled_when=("armed",)),
                 tier=2, disclosure=configure,
             ),
             sch.section(

@@ -25,6 +25,7 @@ import pytest
 import schema as sch
 from controller.controller import Controller
 from model import plot_data
+from model import store_choice
 from model import transfer_map as tm_module
 from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
@@ -383,24 +384,101 @@ def no_store(tmp_path, monkeypatch):
     user_config.forget()
 
 
-def _store_elements(model):
-    [section] = [s for s in model.schema["sections"] if s["title"] == "Store"]
+PROMPT_TITLE = "Where to save the trial store"
+
+
+def _store_elements(model, title="Store"):
+    [section] = [s for s in model.schema["sections"] if s["title"] == title]
     return [(e["type"], e.get("command") or e.get("model_attr"))
             for e in section["elements"]]
 
 
 def test_with_nothing_chosen_the_map_has_no_store_and_asks(no_store):
     """Owner decision 4 (2026-09-30): no default. The map comes up without
-    a store, says so in its state, and its schema asks."""
+    a store, says so in its state, and its page is the store prompt
+    (2026-10-08, the Sample DB's `new_store` step)."""
     assert TransferMap.default_db_path() is None
     model = TransferMap()
     assert model.db_path is None and model.output_root is None
     assert model.state["store"] == {"path": None, "chosen": False}
-    assert _store_elements(model) == [
+    assert model.phase == model.state["phase"] == "new_store"
+    assert _store_elements(model, PROMPT_TITLE) == [
         ("readonly", "store_status"),
+        ("entry", "store_dir"), ("dropdown", "pick_store_folder"),
+        ("entry", "store_name"), ("button", "new_store"),
         ("entry", "store_path"), ("button", "open_store"),
-        ("entry", "store_dir"), ("entry", "store_name"), ("button", "new_store")]
+        ("button", "cancel_store_choice")]
+    [prompt] = [s for s in model.schema["sections"] if s["title"] == PROMPT_TITLE]
+    assert prompt["phases"] == ["new_store"]
     assert model.state["values"]["store_status"].startswith("Not chosen")
+    # The start screen's Store section is the line and Change store….
+    assert _store_elements(model) == [("readonly", "store_status"),
+                                      ("button", "change_store")]
+
+
+def test_the_prompt_suggests_the_users_folder_and_makes_the_store_there(
+        no_store, tmp_path, monkeypatch):
+    """The folder is prefilled with ~/transfer-stage-runs/stores/<email>/
+    (Setup's suggestion at a sign-in); New store makes `<folder>/<name>.sqlite`
+    and the page goes to setup."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    model = TransferMap()
+    assert model.store_dir == str(tmp_path / "home" / "transfer-stage-runs" / "stores")
+    model.suggest_store_dir(store_choice.suggested_dir("ialbinog@uci.edu"))
+    assert model.store_dir == str(tmp_path / "home" / "transfer-stage-runs" / "stores"
+                                  / "ialbinog@uci.edu")
+    options = model.store_folder_options
+    assert model.store_dir in options and str(tmp_path / "home") in options
+    assert model.run("pick_store_folder", args=(str(tmp_path / "home"),)).is_ok
+    assert model.store_dir == str(tmp_path / "home")
+    model.store_dir = str(tmp_path / "home" / "trials")
+    done = model.run("new_store", {"store_dir": model.store_dir, "store_name": "mine"})
+    assert done.is_ok, done.reason
+    assert model.db_path == (tmp_path / "home" / "trials" / "mine.sqlite").resolve()
+    assert model.db_path.is_file() and model.phase == "setup"
+
+
+def test_the_prompt_refuses_the_install_and_cancel_needs_a_store(no_store):
+    model = TransferMap()
+    refused = model.run("new_store", {"store_dir": str(no_store / "data"),
+                                      "store_name": "x"})
+    assert refused.is_refused and "inside the station" in refused.reason
+    assert not (no_store / "data" / "x.sqlite").exists()
+    refused = model.run("cancel_store_choice")
+    assert refused.is_refused and "no store to go back to" in refused.reason
+    assert model.phase == "new_store"
+
+
+def test_change_store_opens_the_prompt_and_cancel_goes_back(tmp_path):
+    model = TransferMap(db_path=tmp_path / "db" / "transfer_map.sqlite")
+    model.open()
+    try:
+        assert model.phase == "setup"
+        assert model.run("change_store").is_ok
+        assert model.phase == "new_store"
+        assert model.store_dir == str(tmp_path / "db")
+        assert model.store_path == str(tmp_path / "db" / "transfer_map.sqlite")
+        assert model.run("cancel_store_choice").is_ok
+        assert model.phase == "setup"
+        assert model.db_path == tmp_path / "db" / "transfer_map.sqlite"
+    finally:
+        model.close()
+
+
+def test_a_remembered_store_opens_with_no_prompt(no_store, tmp_path):
+    """A user's remembered `map_store` (the operator's 43 trials) opens
+    directly: no prompt, every trial there, nothing moved or rewritten."""
+    path = tmp_path / "stores" / "transfer_map.sqlite"
+    first = TransferMap(db_path=path)
+    first.open()
+    first._store.ensure()
+    first.close()
+    before = path.read_bytes()
+    from controller import user_config
+    user_config.write("map_store", str(path))
+    model = TransferMap()
+    assert model.has_store and model.db_path == path and model.phase == "setup"
+    assert path.read_bytes() == before
 
 
 def test_opening_without_a_store_warns_and_creates_nothing(no_store, tmp_path):
@@ -413,7 +491,7 @@ def test_opening_without_a_store_warns_and_creates_nothing(no_store, tmp_path):
     finally:
         events.unsubscribe(seen.append)
     [ask] = [e for e in seen if e.title == "Trial Store Not Chosen"]
-    assert "Transfer Map, Store" in ask.message
+    assert "its page asks" in ask.message
     assert not list(tmp_path.rglob("*.sqlite"))
 
 
@@ -437,7 +515,11 @@ def test_every_recording_command_is_refused_without_a_store(no_store, tmp_path,
     try:
         result = model.run(command, inputs)
         assert result.status == "refused"
-        assert result.reason == "Choose a trial store first (Transfer Map, Store)."
+        # The page is the store prompt: a setup command is not on it, and
+        # one that is everywhere is refused by the store check.
+        assert result.reason in (tm_module.NO_STORE,
+                                 f"{model._label_of(command)} is not part of "
+                                 "the new_store step."), result.reason
     finally:
         model.close()
     assert not list(tmp_path.rglob("*.sqlite"))
@@ -449,7 +531,7 @@ def test_import_is_refused_without_a_store(no_store, tmp_path):
     model = TransferMap()
     with pytest.raises(Refused) as refused:
         model.import_csv(str(csv_path))
-    assert refused.value.reason == "Choose a trial store first (Transfer Map, Store)."
+    assert refused.value.reason == tm_module.NO_STORE
 
 
 def test_a_new_store_is_created_where_the_operator_says_and_remembered(no_store, tmp_path):
@@ -636,9 +718,9 @@ def test_the_session_section_leads_tier_one():
     keys = [e.get("model_attr") or e.get("command") for e in first["elements"]]
     assert keys == ["db_path", "trial_count", "new_database"]
     button = first["elements"][2]
-    assert button["text"] == "New session database"
-    assert button["confirm"] == ("Start a new database beside this one? The "
-                                 "current one stays on disk.")
+    # 2026-10-08: it opens the store prompt (asks where), so no confirm.
+    assert button["text"] == "New session database\u2026"
+    assert "confirm" not in button
     diagnostics = next(s for s in model.schema["sections"]
                        if s["title"] == "Diagnostics")
     assert "db_path" not in [e.get("model_attr") for e in diagnostics["elements"]]
@@ -651,15 +733,27 @@ def test_new_database_starts_beside_the_old_one(station, private_db):
     old_png = Path(old_before).read_bytes()
     assert model.figure[:8] == b"\x89PNG\r\n\x1a\n"
     since = events.latest_id
+    files = sorted(private_db.parent.glob("*.sqlite"))
+    # 2026-10-08: New session database asks where (the store prompt),
+    # prefilled with this store's folder and a fresh name; nothing is made
+    # until New store.
     result = model.run("new_database")
+    assert result.is_ok, result
+    assert model.phase == "new_store" and model.db_path == private_db
+    assert result.value == model.store_dir == str(private_db.parent)
+    assert model.store_name.startswith("transfer_map_")
+    assert sorted(private_db.parent.glob("*.sqlite")) == files
+    result = model.run("new_store", {"store_dir": model.store_dir,
+                                     "store_name": model.store_name})
     assert result.is_ok, result
     new_path = Path(result.value)
     assert new_path.parent == private_db.parent == model.output_root
     assert new_path.name.startswith("transfer_map_") and new_path.suffix == ".sqlite"
     assert model.db_path == new_path and new_path.is_file()
+    assert model.phase == "setup"
     assert model.state["values"]["db_path"] == str(new_path)
     assert model.trial_count == 0 and model.figure == b""
-    assert _titled("New Database", since)
+    assert _titled("Trial Store", since)
     # the old one stays on disk, whole
     assert [r["id"] for r in _rows(private_db, "SELECT id FROM trials")] == [old_trial]
     # a trial in the new database starts at 1 again and must not overwrite
@@ -674,9 +768,32 @@ def test_new_database_starts_beside_the_old_one(station, private_db):
 
 def test_new_database_twice_in_one_second_gets_two_files(station):
     model = station[0]
-    first = Path(model.new_database())
-    second = Path(model.new_database())
+    made = []
+    for _ in range(2):
+        model.new_database()
+        made.append(Path(model.new_store()))
+    first, second = made
     assert first != second and first.is_file() and second.is_file()
+
+
+def test_new_database_cancel_keeps_the_store(station, private_db):
+    model = station[0]
+    model.new_database()
+    assert model.phase == "new_store"
+    assert model.run("cancel_store_choice").is_ok
+    assert model.phase == "setup" and model.db_path == private_db
+    assert sorted(p.name for p in private_db.parent.glob("*.sqlite")) == [private_db.name]
+
+
+def test_new_database_somewhere_else(station, private_db, tmp_path):
+    """The prompt's folder is the operator's to change: the new database
+    goes where they say, the old one stays where it is."""
+    model = station[0]
+    model.new_database()
+    elsewhere = tmp_path / "session two"
+    done = model.run("new_store", {"store_dir": str(elsewhere), "store_name": "s2"})
+    assert done.is_ok, done.reason
+    assert model.db_path == (elsewhere / "s2.sqlite").resolve() and private_db.is_file()
 
 
 def test_new_database_refuses_while_armed(station, private_db):
@@ -1401,6 +1518,9 @@ def _to_step(model, step):
     if step == "new_tip":
         assert model.run("new_tip").is_ok
         return
+    if step == "new_store":
+        assert model.run("change_store").is_ok
+        return
     _arm_only(model)
     if step == "region":
         return
@@ -1422,7 +1542,7 @@ def test_the_procedure_runs_through_its_steps_on_real_commands(station,
                                                                private_db):
     model, red, *_ = station
     assert TransferMap.PHASES == ("setup", "new_tip", "region", "live",
-                                  "marked", "finish")
+                                  "marked", "finish", "new_store")
     seen = []
 
     def step():
@@ -1469,8 +1589,9 @@ def test_the_phase_and_the_next_step_agree_in_every_step(station, step):
         assert words == "Press Arm trial" and model.mode_name == "ready"
     else:
         assert words == TransferMap.STEP_WORDS[step]
-        # The New tip prompt arms nothing.
-        assert model.mode_name == ("ready" if step == "new_tip" else "armed")
+        # The New tip and store prompts arm nothing.
+        assert model.mode_name == ("ready" if step in ("new_tip", "new_store")
+                                   else "armed")
     others = {w for s, w in TransferMap.STEP_WORDS.items() if s != step}
     assert words not in others
     model.estop()
@@ -1491,6 +1612,8 @@ HIDDEN = {
     "marked": ("arm_trial", "set_region", "finish_trial", "new_tip"),
     "finish": ("arm_trial", "set_region", "mark_force", "end_recording",
                "new_tip"),
+    "new_store": ("arm_trial", "new_tip", "pick_tip", "mark_force",
+                  "set_region", "finish_trial", "new_database"),
 }
 
 
@@ -1509,6 +1632,8 @@ def test_a_hidden_command_is_refused_in_the_wrong_step(station, step):
         assert model.phase == step
     if step == "new_tip":
         model.cancel_new_tip()
+    elif step == "new_store":
+        model.cancel_store_choice()
     elif step != "setup":
         model.abort_trial()
 
@@ -1519,7 +1644,7 @@ def test_abort_from_every_step(station, private_db, step):
     _to_step(model, step)
     trial = model._trial.id if model._trial is not None else None
     result = model.run("abort_trial", {"width_um": "not a number"})
-    if step in ("setup", "new_tip"):
+    if step in ("setup", "new_tip", "new_store"):
         assert result.is_refused and "no trial is armed" in result.reason
         return
     assert result.is_ok, result
@@ -1892,7 +2017,8 @@ def test_the_pictures_show_on_the_sheet(station):
     assert model.mark_full_image == b""        # not the last trial's
     model.run("abort_trial")
     model.disable()
-    model.new_database()
+    model.new_database()                      # asks where (2026-10-08)
+    model.new_store()
     assert model.stage_still == b"" and model.mark_full_image == b""
     for command in ("stage_still", "mark_full_image"):
         # Declared data sources of the region and review steps: the start
@@ -1931,10 +2057,12 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
     sections = model.schema["sections"]
     tier_one = [(s["title"], s.get("phases")) for s in sections
                 if s.get("tier", 1) == 1 and s["title"] != "Safety"]
-    # A3: the Store section, where the operator chooses the trial store,
-    # sits between the session and the trial it would refuse without one;
-    # it is the start screen's (2026-10-07), like the session.
-    assert tier_one == [("Session", ["setup"]), ("Store", ["setup"]),
+    # A3: where the operator chooses the trial store sits between the
+    # session and the trial it would refuse without one: the store prompt,
+    # the `new_store` step (2026-10-08; the start screen's Store line and
+    # Change store… are under Configure).
+    assert tier_one == [("Session", ["setup"]),
+                        ("Where to save the trial store", ["new_store"]),
                         ("Trial", None),
                         ("Start", ["setup"]), ("New tip", ["new_tip"]),
                         ("Capture region", ["region"]),
@@ -1968,7 +2096,7 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
              if s.get("tier", 1) != 1]
     assert later == [("Context", 2), ("Tip", 2), ("Figure", 2),
                      ("AFM measurement", 2), ("Optical measurement", 2),
-                     ("Data", 2),
+                     ("Data", 2), ("Store", 2),
                      ("Diagnostics", 3), ("Safety", 3)]
     assert not any(s.get("phases") for s in sections if s.get("tier", 1) != 1)
     diagnostics = next(s for s in sections if s["title"] == "Diagnostics")
@@ -2166,7 +2294,8 @@ def test_the_full_pictures_show_the_armed_trial_else_the_last(station):
                                        / "before_full.png").read_bytes()
     model.run("abort_trial")
     model.disable()
-    model.new_database()
+    model.new_database()                      # asks where (2026-10-08)
+    model.new_store()
     assert model.before_full_image == b""
 
 
@@ -4244,6 +4373,8 @@ def test_the_state_carries_the_step_text_in_every_step(station, step):
                                         "no region", "")
     if step == "new_tip":
         model.cancel_new_tip()
+    elif step == "new_store":
+        model.cancel_store_choice()
     elif step != "setup":
         model.abort_trial()
     model.estop()

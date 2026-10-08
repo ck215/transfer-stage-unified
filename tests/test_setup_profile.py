@@ -564,6 +564,8 @@ def test_the_maps_own_open_store_remembers_for_the_signed_in_user(setup, stores)
     create(setup)
     tmap = models(setup)["Transfer Map"]
     assert tmap.db_path == station, "a user with no store of their own: the station's"
+    # 2026-10-08: Open store is on the map's store prompt (Change store…).
+    assert setup.controller.run("Transfer Map", "change_store").is_ok
     result = setup.controller.run("Transfer Map", "open_store", {"store_path": str(mine)})
     assert result.is_ok, result.reason
     assert UserStore().setting(EMAIL, "map_store") == str(mine)

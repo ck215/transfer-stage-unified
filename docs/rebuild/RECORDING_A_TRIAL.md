@@ -21,8 +21,13 @@ analysis.
 
 **Where the store lives.** The operator chooses it (owner decision 4,
 2026-09-30): with no choice made the map has no store and every recording
-command is refused until Setup's Store section opens or creates one; the choice
-is remembered, a store inside the station's own folder is refused (updates
+command is refused until one is opened or created. Its page is then the store
+prompt (2026-10-08, the same as the Sample DB's): a folder prefilled with
+`~/transfer-stage-runs/stores/<email>/`, Choose folder…, a name and New store,
+or an existing file and Open store. "New session database…" and Change store…
+(Configure, Store) open the same prompt; a new file is never made without
+asking where, and a store's files are never moved or rewritten. The choice
+is remembered (a user's remembered store opens with no prompt), a store inside the station's own folder is refused (updates
 replace that folder), and `--map-db PATH` / `STATION_MAP_DB` override it. Pictures sit beside the
 file in `<folder>/<database name>/<trial id>/`, exports in `<folder>/exports/`.
 The store is at **version 8**, the lab's (adopted by the 2026-10-07 merge of the
@@ -49,7 +54,8 @@ section always names the one thing to do. Abort trial and any stop work from the
 region step on, and the stop overrides everything.
 
 1. **Setup.** Launch with the Transfer Map ticked. If no store is chosen yet,
-   open or create one (Store section; the store path and the trial count show on the sheet).
+   the page asks where (New store, or Open store); the store path and the trial
+   count then show on the sheet.
    The setup row holds the preliminary information:
    - **Tip**: one dropdown of the tips, each line "T7 · TAP300 · 3 trials" (with
      ", retired" where it is); **Tip status** says where the picked tip stands
@@ -171,13 +177,15 @@ bank over a recorded video (below).
 
 Each signed-in user's stores (the Transfer Map's trials and the Sample DB) stay
 on this computer and are copied, after every save and at Quit, to the user's
-backup folder (`src/controller/backup.py`): their Account setting "Backup folder",
+backup folder (`src/controller/backup.py`): their "Backup folder" (the account
+menu, 2026-10-08),
 else `$STATION_BACKUP_DIR/<email>/`, else `~/QMDL_Drive/transfer-stage-dbs/<email>/`
-when `~/QMDL_Drive` exists. `STATION_BACKUP_DIR=off` turns it off; a Guest is
+when `~/QMDL_Drive` is mounted (a bare, unmounted `~/QMDL_Drive` folder counts
+as unavailable and is never written into). `STATION_BACKUP_DIR=off` turns it off; a Guest is
 never backed up. The folder mirrors the store folder: `transfer_map.sqlite` with
 its `transfer_map/` (pictures, videos) and `exports/`, `sample_map.sqlite` with
 its `images/`. Each database is a consistent SQLite snapshot (online backup API),
-renamed into place, so it is never half written. Account shows "Last backup
+renamed into place, so it is never half written. The account menu shows "Last backup
 23:41 → <folder>" and has Back up now. A failure (drive not mounted, read-only)
 is one warning per streak.
 
