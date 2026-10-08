@@ -150,7 +150,6 @@ redpercent_log_*.csv
 
 # Agent handoffs, audit reports and screenshots: kept locally, never committed.
 handoff/
-!docs/archive/handoff/
 
 # The Transfer Map store and its footage: local to this checkout, never committed (owner ruling 2026-09-27)
 /data/

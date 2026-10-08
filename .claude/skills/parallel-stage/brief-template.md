@@ -25,7 +25,7 @@ Everything else is owned by someone working RIGHT NOW in another worktree:
   <src/devices/serial_port.py>   -> the lead
   <src/devices/smc100.py>        -> agent B (rb-rotator)
   <src/controller/setup.py>      -> agent C (rb-setup)
-  docs/**, CLAUDE.md, README.md, .claude/**, tests/test_architecture.py, tests/golden/**, legacy/** -> the lead
+  docs/**, CLAUDE.md, README.md, .claude/**, tests/test_architecture.py, tests/golden/** -> the lead
 
 ## The items you own
 

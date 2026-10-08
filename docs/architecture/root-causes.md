@@ -1,6 +1,6 @@
 # Root-Cause Synthesis
 
-> **Input (banner added 2026-09-23).** Root-cause analysis of the old tree (now `legacy/src/`); current until the rebuild replaced it on 2026-09-23. Kept for the invariants the ported safety tests must still prove. Pages it links outside `audit/` are in `docs/archive/architecture/`.
+> **Input (banner added 2026-09-23).** Root-cause analysis of the old tree (now removed from the tree, history: tag pre-root-cleanup-2026-10-07); current until the rebuild replaced it on 2026-09-23. Kept for the invariants the ported safety tests must still prove.
 
 **Status: COMPLETE (first pass, 2026-09-19).** Verified against the
 working tree at commit `9f88b54` (source unchanged since `046533f`).
@@ -8,7 +8,7 @@ Documentation-only pass; no source was modified.
 
 ## Purpose
 
-`audit/*.md` holds 213 symptom-level findings organized per subsystem
+`audit/*.md` (removed (history: tag pre-root-cleanup-2026-10-07)) held 213 symptom-level findings organized per subsystem
 (MANAGER-n, SERIAL-n, ERRORS-n, GAMEPAD-n, STEPPER-n, DC-n, ROTATOR-n,
 TEMP-n, REDPERCENT-n, PYSIDE-n, VIEW-TKINTER-n, WEB-n). Fixing those one at
 a time is the failure mode this branch has already exhibited. Examples from
@@ -964,7 +964,7 @@ independent enough for parallel agents.
 
 - **Wave 0 (no code).** Owner answers D-1 to D-12 — **all are answered
   except D-7** (see [Answered decisions](#answered-decisions) and
-  `../implementation/progress.md`'s decision table, which is authoritative).
+  the removed `progress.md`'s decision table, which was authoritative (history: tag pre-root-cleanup-2026-10-07)).
   D-7 blocks only S16. Apply the doc
   corrections below (corrections 8 and 11 applied 2026-09-19). RC-12
   hardware verification can start now, in parallel.
@@ -1081,7 +1081,7 @@ parentheses):
 12. `models.md`: rotator `connect()` is synchronous, not `_run_async`
     (ROTATOR-15). `detect_red` uses no OpenCV (REDPERCENT summary).
 13. `README.md` Quick Facts counts are superseded by this document and
-    `audit/`.
+    `audit/` (removed).
 
 ---
 
@@ -1135,7 +1135,7 @@ parentheses):
 
 ## Method and coverage
 
-- Read in full: all 12 `audit/*.md` files, `README.md`, `known-issues.md`,
+- Read in full: all 12 `audit/*.md` files (removed), `README.md`, `known-issues.md`,
   `ownership-and-lifecycle.md`.
 - Re-verified against source this pass:
   - `src/model/base.py`, `system_manager.py`, `error_routing.py` (full).

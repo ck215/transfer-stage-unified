@@ -13,7 +13,7 @@ else.
 
 1. `.claude/skills/station-map/SKILL.md` in `mvc-refactor/` (absolute path in
    the brief): the tree, the run commands, the owner rulings.
-2. `docs/rebuild/DESIGN_BRIEF.md` (it supersedes `WEB_DESIGN_BRIEF.md`): **the brief wins** over any skill's
+2. `docs/rebuild/DESIGN_BRIEF.md`: **the brief wins** over any skill's
    taste. Its six colour tokens, one typeface, "one red", sentence case and
    copy rules are the standard; a finding that asks to break them is not a
    finding, it goes under "Skill disagrees with the brief" for the owner.
@@ -21,7 +21,7 @@ else.
    the way it says to run. If the skill wants sub-agents and you have the
    Agent tool, use them; if not, run inline and say so in the header.
 4. The current captures in `handoff/shots/` (`round2_web_final_*`) and the
-   Web handoff `web5.md` (tracked under `docs/archive/handoff/`), so you do
+   Web handoff `web5.md` (removed from the tree (history: tag pre-root-cleanup-2026-10-07)), so you do
    not re-report what was just fixed or what the handoff lists as
    kept-on-purpose. The `qt_*` / `tk_*` captures are the retired views'.
 

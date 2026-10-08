@@ -15,8 +15,7 @@ everything else.
 
 1. `.claude/skills/station-map/SKILL.md` in `mvc-refactor/` (absolute path in
    the brief) — the tree, the commands, the owner rulings.
-2. `docs/rebuild/DESIGN_BRIEF.md` — **the brief wins** (it supersedes
-   `WEB_DESIGN_BRIEF.md`). Its colour tokens, typefaces, "one red", sentence
+2. `docs/rebuild/DESIGN_BRIEF.md` — **the brief wins**. Its colour tokens, typefaces, "one red", sentence
    case, copy rules, motion rules and the procedure section bind the Web view,
    which renders `theme.ROLES`.
 3. Impeccable: `~/.claude/skills/impeccable/SKILL.md`, then

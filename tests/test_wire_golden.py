@@ -7,18 +7,13 @@ in this suite checks that. A refactor can keep every test green, keep every
 mode machine honest, and still hand the stepper board a frame with its fields
 in a different order.
 
-Two halves:
+The golden JSON files beside this module are the pinned wire truth: they were
+captured from the old app (history: tag pre-root-cleanup-2026-10-07) and are
+no longer re-captured.
 
-(a) `test_golden_files_are_current` re-runs `golden/capture.py` against `legacy/src/`
-    and asserts the stored JSON still matches. It fails when someone changes
-    what the *old* code sends without regenerating - which means the golden
-    files stopped describing the firmware's actual input, and every
-    comparison below is measuring against the wrong thing.
-
-(b) Everything else replays the captured scenarios against the new `src/`
-    classes through a recording fake port and compares payload lists byte for
-    byte. Those classes are stubs today, so they are `xfail(strict=False)`:
-    they need no edit to go green once the real implementation lands.
+Every test below replays the captured scenarios against the new `src/`
+classes through a recording fake port and compares payload lists byte for
+byte.
 
 `_build_probe`, `_build_heater` and `_build_smc` are the only places that
 touch the new construction API. If the implementing agent's constructor
@@ -28,8 +23,6 @@ what has to change.
 import importlib
 import json
 import os
-import subprocess
-import sys
 
 import pytest
 
@@ -71,55 +64,6 @@ def _ids(scenarios):
 def _expected(scenario):
     """The golden payloads for one scenario, as a list of bytes."""
     return [bytes.fromhex(frame["hex"]) for frame in scenario["frames"]]
-
-
-# ==========================================================================
-# (a) the golden files describe what legacy/src/ sends today
-# ==========================================================================
-
-def _recapture(filename):
-    """`capture.py <filename>` in its own process: the old `legacy/src/`
-    packages and the new `src/` ones share top-level names and can never be
-    imported side by side."""
-    completed = subprocess.run(
-        [sys.executable, golden_capture.__file__, filename],
-        capture_output=True, text=True, timeout=300)
-    assert completed.returncode == 0, (
-        f"capture.py {filename} failed:\n{completed.stderr}")
-    return json.loads(completed.stdout)
-
-
-@pytest.mark.transport
-def test_golden_files_are_current():
-    """Re-capture from `legacy/src/` and assert nothing drifted.
-
-    A failure here is not a test problem. Either the old code's wire format
-    changed - in which case the firmware's input changed and that is the
-    thing to look at - or the capture is nondeterministic, which would make
-    every comparison below worthless.
-    """
-    stale = []
-    for filename in golden_capture.FILES:
-        recaptured = _recapture(filename)
-        stored = _load(filename)
-        if recaptured != stored:
-            for fresh, old in zip(recaptured["scenarios"],
-                                  stored["scenarios"]):
-                if fresh != old:
-                    stale.append(
-                        f"{filename}:{old['id']}\n"
-                        f"  stored:     {[f['hex'] for f in old['frames']]}\n"
-                        f"  recaptured: {[f['hex'] for f in fresh['frames']]}")
-            if len(recaptured["scenarios"]) != len(stored["scenarios"]):
-                stale.append(
-                    f"{filename}: scenario count "
-                    f"{len(stored['scenarios'])} -> "
-                    f"{len(recaptured['scenarios'])}")
-    assert not stale, (
-        "golden wire captures are out of date; the bytes legacy/src/ sends have "
-        "changed. Regenerate with `python3 tests/golden/capture.py` "
-        "and review the diff as a firmware-facing change:\n"
-        + "\n".join(stale))
 
 
 @pytest.mark.transport

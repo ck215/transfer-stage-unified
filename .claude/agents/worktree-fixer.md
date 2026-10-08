@@ -23,7 +23,7 @@ If a fix needs a file you do not own: **stop that item and report it
 edit the file anyway, and do not work around it with a worse fix.
 
 Never yours: `docs/**`, `CLAUDE.md`, `README.md`, `.claude/**`,
-`tests/test_architecture.py`, `tests/golden/**`, `legacy/**`, `firmware/**`.
+`tests/test_architecture.py`, `tests/golden/**`, `firmware/**`.
 
 ## How to work each item
 

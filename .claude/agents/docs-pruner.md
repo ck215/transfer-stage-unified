@@ -24,19 +24,17 @@ Inputs that open work still reads (do not archive, do not rewrite; a one-line
 banner at the top saying what it is and when it stopped being current is the
 most you may add):
 
-- `docs/implementation/progress.md` — the 213-finding ledger; `carry.json`
-  cites its IDs.
-- `docs/architecture/audit/*.md` — the audit entries those IDs point at.
+- (the finding ledger `progress.md` and `carry.json` were removed (history: tag pre-root-cleanup-2026-10-07))
+- (`docs/architecture/audit/` was removed (history: tag pre-root-cleanup-2026-10-07))
 - `docs/architecture/root-causes.md` and `safety-pattern.md` — the
   invariants the ported safety tests must still prove.
 - `tests/station/TEST_PORTING.md` — the second-wave work list (not under
   `docs/`, but do not touch it).
-- `docs/rebuild/design.json`, `design.rules`, `carry.json`,
-  `narrative.json` — machine-read design data.
+- (the machine-read design data `design.json`, `design.rules`, `narrative.json` was removed (history: tag pre-root-cleanup-2026-10-07))
 
 Everything else under `docs/architecture/` and `docs/implementation/` that
 describes the old `src/` tree as if it were the app is a candidate for
-`docs/archive/<original path>` with an `docs/archive/README.md` index that
+`docs/archive/<original path>` (the earlier archive was removed (history: tag pre-root-cleanup-2026-10-07)) with an `docs/archive/README.md` index that
 says, per file, what it was and why it is archived.
 
 ## What "true today" is measured against

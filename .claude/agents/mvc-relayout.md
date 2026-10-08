@@ -49,8 +49,7 @@ brief). Then read `docs/rebuild/STATUS.md` and
   other agents or the lead, who are editing them right now in other
   worktrees. If a doc path must change for the code to work (it should
   not), report it instead.
-- Machine-read design data (`docs/rebuild/*.json`, `design.rules`) is not
-  yours and is not updated for the move.
+- (The machine-read design data was removed (history: tag pre-root-cleanup-2026-10-07).)
 - Never bump a baseline, never mark a test skipped or xfail to get green,
   never delete a test.
 - Never run the Qt pass. List Qt-marked tests you could not run under
