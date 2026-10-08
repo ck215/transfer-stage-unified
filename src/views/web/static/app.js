@@ -519,6 +519,14 @@ function isUnconfirmedEvent(event) {
   return Boolean(event && event.title === UNCONFIRMED_TITLE);
 }
 
+/** True when `event` says the tray's line `shown` is over: it names that
+ *  line's title in `resolves` and comes from the same source (events.py). */
+function resolvesTray(event, shown) {
+  return Boolean(event && shown && event.resolves
+    && event.resolves === shown.title
+    && String(event.source || '') === String(shown.source || ''));
+}
+
 /** The face of a toggle's state, rendered from the schema's true/false
  *  text. The schema writes "Sync X: OFF" beside a row captioned "Sync X",
  *  and "AUTONOMOUS MODE (Click to Stop)"; on a panel the caption is already
@@ -5621,6 +5629,10 @@ class Dashboard {
       this.dom.log.removeChild(this.dom.log.firstChild);
     }
     this.dom.log.scrollTop = this.dom.log.scrollHeight;
+    // A condition that is over is not the tray's headline (UX audit
+    // 2026-10-08 #10): an event that `resolves` the warning the tray shows
+    // (a store chosen after "Sample Store Not Chosen") takes it back.
+    if (resolvesTray(event, this.trayEvent)) this.setTray(null);
     // The collapsed tray is one line, and it carries warnings and errors
     // only (status by exception): an info event is history, in the log. A
     // line replayed from before this tab opened is history too (L21), bar

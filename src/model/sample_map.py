@@ -433,7 +433,8 @@ class SampleMap(store_choice.StorePrompt, Model):
                             f"the choice could not be saved ({exc}); the station "
                             "will ask again next time.", source=self.NAME)
         events.info("Sample Store", f"Samples go to {path}: "
-                    f"{len(self._store.samples())} sample(s).", source=self.NAME)
+                    f"{len(self._store.samples())} sample(s).", source=self.NAME,
+                    resolves=events.SAMPLE_STORE_NOT_CHOSEN)
         self._request_backup()
         return str(path)
 
@@ -495,7 +496,7 @@ class SampleMap(store_choice.StorePrompt, Model):
         super().open()
         if not self._store_chosen:
             legacy = self.legacy_store_path()
-            events.warn("Sample Store Not Chosen", f"Choose where the {self.NAME} "
+            events.warn(events.SAMPLE_STORE_NOT_CHOSEN, f"Choose where the {self.NAME} "
                         "keeps its samples: its page asks (New store in a folder "
                         "of your choice, or Open store)." + (
                             f" A database from an earlier version is at {legacy}; "

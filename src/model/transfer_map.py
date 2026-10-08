@@ -1147,7 +1147,8 @@ class TransferMap(store_choice.StorePrompt, Model):
                             f"the choice could not be saved ({exc}); the station "
                             "will ask again next time.", source=self.NAME)
         events.info("Trial Store", f"Trials go to {path}: {store.count()} "
-                    "trial(s).", source=self.NAME)
+                    "trial(s).", source=self.NAME,
+                    resolves=events.TRIAL_STORE_NOT_CHOSEN)
         self._request_backup()
         return str(path)
 
@@ -1213,7 +1214,7 @@ class TransferMap(store_choice.StorePrompt, Model):
     def _announce_store(self):
         if not self._store_chosen:
             legacy = self.legacy_store_path()
-            events.warn("Trial Store Not Chosen", "Choose where the Transfer "
+            events.warn(events.TRIAL_STORE_NOT_CHOSEN, "Choose where the Transfer "
                         "Map keeps its trials: its page asks (New store in a "
                         "folder of your choice, or Open store for an existing "
                         "file)." + (f" A store from an earlier version is at "
