@@ -1766,9 +1766,14 @@ def sim_station():
     for key, row in setup._rows.items():
         if row["needs_port"]:
             getattr(setup, f"set_{key}_port")(SIM)
+    # Past the sign-in screen (2026-10-07) signed in: since 2026-10-07 a
+    # Guest's launch leaves out the Transfer Map and the Sample DB (and the
+    # RGB analysis drawn on the map's page), and this fixture is every model.
+    setup.users.create("sim@uci.edu", "correct-horse-4821", name="sim")
+    signed = setup.run("sign_in", {"account_email": "sim@uci.edu",
+                                   "account_password": "correct-horse-4821"})
+    assert signed.is_ok, signed.reason
     assert len(setup.launch()) == 8   # + the Transfer Map (Tier S) and the Sample DB
-    # Past the sign-in screen (2026-10-07) as Guest, as an operator would be.
-    assert setup.run("open_as_guest").is_ok
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open(), "the server did not bind an ephemeral port"
     try:
@@ -2290,7 +2295,10 @@ def test_tier_two_opens_on_demand_holds_tier_three_and_is_remembered(tiered_stat
       // Updated (K4): closing the shown model went back to the Overview.
       await openDevice();
       r.reopened = await read();
-      r.storage = await page.evaluate(() => localStorage.length + sessionStorage.length);
+      // Every key but the tab's own id ('station-tab', sessionStorage, the
+      // one-live-page seat since 2026-10-07): that is not open state.
+      r.storage = await page.evaluate(() => localStorage.length + Object.keys(sessionStorage)
+        .filter((k) => k !== 'station-tab').length);
       await page.click('.card .disclosure[data-tier="2"]');
       await sleep(200);
       r.closed = await read();
@@ -2508,6 +2516,10 @@ def test_the_stop_is_reachable_with_red_percents_details_open_at_900(sim_station
 #: Press a page in the rail by its words ("Overview" or a model's name).
 _PAGES = r"""
   const press = async (words) => {
+    // The rail is drawn on its own poll: the cards can be in before it.
+    const end = Date.now() + 8000;
+    while (Date.now() < end && !(await page.evaluate((w) => Array.from(document.querySelectorAll('#model-nav button'))
+      .some((b) => b.textContent === w), words))) await sleep(100);
     await page.evaluate((w) => Array.from(document.querySelectorAll('#model-nav button'))
       .find((b) => b.textContent === w).click(), words);
     await sleep(300);
@@ -3967,18 +3979,27 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
     body stay in view while the details under them scroll."""
     view, controller = sim_station
     out = _browse(view, r"""
-      await page.setViewport({ width: 1400, height: 600 });
+      // 760 tall: the Stepper Probe's tier 1 grew with the Autonomous and
+      // Manual groups (305d047) to ~375 px, past 60% of a 600 px window, so
+      // at 600 it is (rightly, pinOpened's rule) not pinned. At 760 it pins
+      // and tiers 2 and 3 still leave well over 60 px to scroll.
+      await page.setViewport({ width: 1400, height: 760 });
+      await until(() => document.querySelector('#model-nav [data-model="Stepper Probe"]'), 8000);
       if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
         await page.click('#drawer-close'); await sleep(300);
       }
       await page.click('#model-nav [data-model="Stepper Probe"]');
-      await sleep(300);
+      await until(() => document.querySelector('.card.is-opened .disclosure[data-tier="3"]'), 8000);
       await page.click('.card.is-opened .disclosure[data-tier="2"]');
       await page.click('.card.is-opened .disclosure[data-tier="3"]');
+      await sleep(300);
+      // From the top of the page, whatever focus scrolled into view.
+      await page.evaluate(() => window.scrollTo(0, 0));
       await sleep(300);
       const top = () => page.evaluate(() => {
         const c = document.querySelector('.card.is-opened');
         return { head: c.querySelector('.card-head').getBoundingClientRect().top,
+                 headHeight: c.querySelector('.card-head').getBoundingClientRect().height,
                  body: c.querySelector('.card-body').getBoundingClientRect().top,
                  well: c.querySelector('.tier-well').getBoundingClientRect().top,
                  scroll: window.scrollY,
@@ -3991,17 +4012,16 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
                pinned: await page.evaluate(() => document.querySelector('.card.is-opened').classList.contains('is-pinned')) };
     """, tmp_path)
     before, after = out["before"], out["after"]
-    # The Speeds block is shorter since the percent dials (2026-10-07): the
-    # page scrolls about 90 px at this height, which is still a scroll.
     assert before["room"] > 60, f"nothing to scroll: {before}"
-    assert after["scroll"] > 0, after
+    assert before["scroll"] == 0 and after["scroll"] > 60, out
     # Pinned: the head is still at the top of the view and the tier-1 body
     # sits flush under it (the pinned body's negative margin cancels the
     # card's row gap; its top is the measured head height, `--pin-head`),
-    # while the details moved under them.
+    # while the details moved under them. The head's own height, not
+    # "before" minus the row gap: the card is pinned from the moment its
+    # page opens, so "before" is already the pinned layout.
     assert -0.5 <= after["head"] <= before["head"] + 0.5, out
-    head_height = (before["body"] - before["head"]) - 12   # minus the card's row gap
-    assert abs((after["body"] - after["head"]) - head_height) < 1.5, out
+    assert abs((after["body"] - after["head"]) - before["headHeight"]) < 1.5, out
     assert after["well"] < before["well"] - 60, "the details did not scroll under it"
     assert out["pinned"], "the entry was not pinned"
 
