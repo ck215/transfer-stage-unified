@@ -379,7 +379,8 @@ def no_store(tmp_path, monkeypatch):
     monkeypatch.setattr(TransferMap, "choices", user_config)
     install = tmp_path / "install"
     (install / "src").mkdir(parents=True)
-    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    from model import store_choice
+    monkeypatch.setattr(store_choice, "install_root", lambda: install)
     yield install
     user_config.forget()
 

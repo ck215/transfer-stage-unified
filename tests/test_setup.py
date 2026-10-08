@@ -2546,7 +2546,8 @@ def store_choice(tmp_path, monkeypatch):
     user_config.forget()
     install = tmp_path / "install"
     install.mkdir()
-    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    from model import store_choice as shared
+    monkeypatch.setattr(shared, "install_root", lambda: install)
     yield install
     user_config.forget()
 

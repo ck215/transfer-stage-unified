@@ -561,7 +561,8 @@ def stores(tmp_path, monkeypatch):
     user_config.forget()
     install = tmp_path / "install"
     install.mkdir()
-    monkeypatch.setattr(tm_module, "_install_root", lambda: install)
+    from model import store_choice
+    monkeypatch.setattr(store_choice, "install_root", lambda: install)
     station, mine = tmp_path / "station.sqlite", tmp_path / "mine.sqlite"
     TrialStore(station).ensure()
     TrialStore(mine).ensure()

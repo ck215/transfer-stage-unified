@@ -106,7 +106,6 @@ import os
 import queue
 import re
 import sqlite3
-import sys
 import tempfile
 import threading
 import time
@@ -133,23 +132,8 @@ from result import NeedsConfirm, Refused
 #: Every recording command's refusal while no store is chosen (A3).
 NO_STORE = ("Choose a trial store first: the Transfer Map's page asks where "
             "(New store, or Open store).")
-INSIDE_INSTALL = ("the store cannot live inside the station's own folder; "
-                  "updates replace that folder")
 #: The file the SQLite library writes first in every database.
 _SQLITE_MAGIC = b"SQLite format 3\x00"
-
-
-def _install_root():
-    """The station's own folder: beside the launchers in a PyInstaller
-    bundle, else the checkout (the directory holding `src/`)."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[2]
-
-
-def _inside(root, path):
-    root, path = Path(root).resolve(), Path(path).resolve()
-    return path == root or root in path.parents
 
 
 #: The figure dropdown, in the operator's words -> `plot_data` kind.
@@ -1020,8 +1004,9 @@ class TransferMap(store_choice.StorePrompt, Model):
 
     @staticmethod
     def install_root():
-        """The station's own folder: no store may live under it."""
-        return _install_root()
+        """The station's own folder: no store may live under it (the shared
+        rule, `store_choice.install_root`)."""
+        return store_choice.install_root()
 
     @classmethod
     def legacy_store_path(cls):
@@ -1069,11 +1054,6 @@ class TransferMap(store_choice.StorePrompt, Model):
     @property
     def store_status(self):
         return self.describe_store(self.db_path if self._store_chosen else None)
-
-    def _refuse_inside_install(self, path):
-        if _inside(self.install_root(), path):
-            raise Refused(f"{path}: {INSIDE_INSTALL}. Choose a folder outside "
-                          f"{self.install_root()}.")
 
     def open_store(self):
         """Open store: the SQLite file typed in Store file becomes the
