@@ -63,6 +63,47 @@ def test_an_unmounted_drive_folder_is_unavailable_and_never_written(tmp_path, mo
     assert own.anchor is None and own.ready() == tmp_path / "mine"
 
 
+def test_a_folder_set_on_the_unmounted_drive_is_unavailable_too(tmp_path, monkeypatch):
+    """Architecture audit 2026-10-08: a user's own folder (or the station's
+    STATION_BACKUP_DIR) under `~/QMDL_Drive` gets the default's mount check;
+    without it the folder was made inside the bare mountpoint."""
+    store = _db(tmp_path / "live" / "s.sqlite")
+    drive = tmp_path / "QMDL_Drive"
+    drive.mkdir()                                        # the bare mountpoint
+    monkeypatch.setattr(backup.os.path, "ismount", lambda p: False)
+    monkeypatch.setattr(backup.events, "warn", lambda *a, **k: None)
+    for t in (backup.target("a@b.c", setting=str(drive / "mine"), env="", home=tmp_path),
+              backup.target("a@b.c", env=str(drive / "root"), home=tmp_path)):
+        assert t.anchor == drive
+        with pytest.raises(backup.Unavailable, match="not mounted"):
+            t.ready()
+        assert not backup.BackupService().run(backup.Job(t, [(store, [])]))
+    assert list(drive.iterdir()) == []                   # untouched
+
+
+def test_a_backup_folder_that_is_a_stores_own_folder_is_refused(tmp_path, monkeypatch):
+    """Architecture audit 2026-10-08: backing up INTO the store's own folder
+    renamed the snapshot over the live database (and mirrored its folders
+    onto themselves). Refused; the live file is never replaced."""
+    store = _db(tmp_path / "live" / "s.sqlite", rows=3)
+    (store.parent / "images").mkdir()
+    (store.parent / "images" / "a.png").write_bytes(b"one")
+    warned = []
+    monkeypatch.setattr(backup.events, "warn",
+                        lambda title, *a, **k: warned.append(title))
+    inode = store.stat().st_ino
+    service = backup.BackupService()
+    for folder in (store.parent, store.parent / "images" / "backup"):
+        job = backup.Job(backup.Target(folder), [(store, [store.parent / "images"])])
+        assert not service.run(job)
+    assert store.stat().st_ino == inode
+    assert warned == ["Backup Failed"] and "store's own folder" in service.status()
+    assert not (store.parent / "images" / "backup").exists()   # never made
+    ok = backup.Job(backup.Target(tmp_path / "elsewhere"),
+                    [(store, [store.parent / "images"])])
+    assert service.run(ok)                               # another folder works
+
+
 def test_backup_writes_a_valid_sqlite_via_rename_and_copies_new_files_only(tmp_path):
     store = _db(tmp_path / "live" / "transfer_map.sqlite", rows=5)
     pics = store.parent / "transfer_map" / "1"

@@ -63,7 +63,12 @@ with no hardware that owns a local store, reads other models by duck type
    - Modes: `sch.toggle(text, bool_attr, "set_mode", on_text, off_text,
      on_args=[mode], off_args=["disabled"], disabled_when=("latched",))`.
    - Data: `sch.plot(text, data_cmd, empty=)`, `sch.image`, and
-     `sch.log_stream(text, source_cmd, detached=True)`.
+     `sch.log_stream(text, source_cmd, detached=True)`. An image with
+     `model_attr=` is a still (2026-10-08, the picture previews): the
+     attribute is a key that changes exactly when the picture does, and the
+     view fetches the PNG only on a change (`preview_picture` /
+     `preview_key` on the Sample DB and the Transfer Map). Keep the key
+     cheap: it is read on every state poll.
    - Commands with no control of their own (for example `extend_idle`) are
      declared as `{"type": "internal", "command": ...}`.
    - Put rarely used controls in `tier=2` (and give that section a
@@ -150,12 +155,22 @@ armed, capture region, force mark, finalise or abort) declares its steps and
 hides what the current step does not need. Owner ruling 2026-10-07; the
 retired Tk and Qt views ignore the key and draw everything.
 
-- `PHASES = ("setup", "new_tip", "region", "live", "marked", "finish")` (the Transfer Map's) on the class: the
+- `PHASES = ("setup", "new_tip", "region", "live", "marked", "finish", "new_store")` (the Transfer Map's) on the class: the
   step names, in order. Empty (the default) means no procedure. A name that
   starts `new_` is a **prompt phase**: a sub-step that asks for a few entries
   (the Transfer Map's `new_tip`, the Sample DB's `new_sample`, `new_chip`,
-  `new_flake`), entered from and left back to the main procedure; the Web draws
+  `new_flake`, and both maps' `new_store`), entered from and left back to the main procedure; the Web draws
   it as a card dialog and does not number it in the strip.
+- **A per-user store** (2026-10-08): mix in `model.store_choice.StorePrompt`
+  (before `Model`, as the Transfer Map and the Sample DB do) and add its
+  `PROMPT` (`"new_store"`) to `PHASES`. The host supplies the Params
+  `store_path`, `store_dir`, `store_name`, and `has_store`, `db_path`,
+  `output_root`, `NAME`, and returns `PROMPT` from `phase` while it has no
+  store or `_choosing_store` is set. The mixin gives the suggested folder,
+  the "Choose folder..." list, Change store / Cancel, the refusal of a store
+  inside the station's own folder (`_refuse_inside_install`) and the backup
+  hook (`backup_hook`, set by Setup). A live store is copied only through
+  `store_choice.snapshot_sqlite` (the online backup API, then a rename).
 - `phase` property: the current step, one of `PHASES`, or `""` at rest. It is
   published as `state["phase"]` (and the ordered steps as `state["phases"]`,
   so the Web view draws a step strip for any phased model), beside `state["mode"]`; a phase is WHERE IN
@@ -196,9 +211,14 @@ in at least one step, and a model without a procedure hides nothing.
 
 ## Operator words (accounts)
 
-`model.user.User` is a non-hardware model that owns the signed-in account's
-config; Guest is a User with no account row, so every model gets the station's
-defaults. The records the maps write are stamped with the operator: the
+`model.user.User` owns the signed-in account's config. Since 2026-10-08 it
+is a `Panel`, NOT a `Model`: no device, no stop, never in the Controller, so
+it is in none of the stop, energized or watchdog aggregates by construction,
+and the contract test does not check it. Setup (the composition root) holds
+the one current User as `Setup.user`; the Web view draws its sheet as the
+rail's account menu under the reserved name `__user__`
+(`views.web.server.USER_NAME`). Guest is a User with no account row, so every
+model gets the station's defaults. The records the maps write are stamped with the operator: the
 Transfer Map's `operator_id` / `operator_auth` and the Sample DB's `owner` /
 `owner_auth` carry the account's email and the word `password`, or `guest` and
 `guest` for a Guest (a map built without Setup says `station`).

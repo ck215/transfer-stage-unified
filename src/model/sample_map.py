@@ -2371,9 +2371,9 @@ class SampleMap(store_choice.StorePrompt, Model):
             ),
             sch.section(
                 "Data",
-                sch.file_save("Export sample map", "export_json", extensions=("json",)),
+                sch.file_save("Export Sample DB (JSON)", "export_json", extensions=("json",)),
                 sch.file_save("Export flakes (CSV)", "export_csv", extensions=("csv",)),
-                sch.file_open("Import sample map", "import_json", extensions=("json",)),
+                sch.file_open("Import Sample DB (JSON)", "import_json", extensions=("json",)),
                 tier=2, disclosure=configure,
             ),
             sch.section(

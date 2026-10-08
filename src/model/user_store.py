@@ -17,9 +17,12 @@ Three tables, `PRAGMA user_version` 1:
   missing hash so the flag and the hash cannot disagree).
 - `preferences(email, model_name, param, value)`, one row per remembered
   parameter, the value JSON-encoded so an int stays an int.
-- `settings(email, key, value)`: kept for later, nothing reads it yet. Three
-  keys are reserved (`RESERVED_SETTINGS`), each a JSON value, none of them a
-  Param and so none under the Q4 split:
+- `settings(email, key, value)`, each a JSON value, none of them a Param and
+  so none under the Q4 split. In use since 2026-10-07/08 (Setup reads and
+  writes them for the signed-in user): `map_store` (`TransferMap.STORE_KEY`,
+  the trial store), `sample_store` (`SampleMap.STORE_KEY`, the Sample DB) and
+  `backup_dir` (`controller.backup.SETTING`; blank = the default). Three
+  more keys are reserved (`RESERVED_SETTINGS`), nothing built on them:
   `layout` - how the Web view is arranged for this person (open disclosures
   by model and tier, collapsed sections, page order); the User sheet would
   publish it in `state` and take it back through one internal command with
@@ -29,10 +32,9 @@ Three tables, `PRAGMA user_version` 1:
   preferences (a sample-ID prefix, the default figure, an export folder),
   handed to each model by `User.load_into` through an optional duck-typed
   hook, so a model without the hook is untouched.
-  `sample_base` - which Sample DB store this person works in: a path the
-  Sample DB opens on sign-in (as `TransferMap.choices` keeps the station's
-  trial store), or one shared store filtered by the `owner` column the
-  Sample DB already writes; which of the two is the owner's call.
+  `sample_base` - which Sample DB store this person works in; in effect
+  answered by `sample_store` above (a per-user path the Sample DB opens on
+  sign-in); still reserved (dropping it is the lead's call).
 
 **Passwords** (supersedes Q1 of 2026-10-04, "no credential on a station", by
 the owner's request of 2026-10-07): `hashlib.scrypt` with a 16-byte salt per
@@ -328,7 +330,7 @@ class UserStore:
         self.write(_do)
         return dict(values or {})
 
-    # -- settings (a hook; nothing reads them yet) ----------------------------------------
+    # -- settings (map_store, sample_store, backup_dir; see the module docstring) --------
     def settings(self, email):
         out = {}
         for row in self.read("SELECT key, value FROM settings WHERE email = ? "

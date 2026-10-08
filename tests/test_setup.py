@@ -1057,6 +1057,37 @@ def test_hard_reset_is_refused_while_the_device_is_energized(panel):
     assert panel.controller._model("Alpha") is old and old.closed == 0
 
 
+def test_a_second_hard_reset_while_one_runs_is_refused(panel, monkeypatch):
+    """Architecture audit 2026-10-08: Setup commands are not serialised (the
+    Web server is threaded) and `Controller.add` opens outside its lock, so
+    two confirmed resets could both build and open the model, the second
+    overwriting the first: an open port and threads no stop could reach.
+    One reset at a time; the second is refused in words."""
+    import threading
+    _launch_alpha_on(panel)
+    entered, gate = threading.Event(), threading.Event()
+    real = panel.controller.reopen
+
+    def slow(name):
+        entered.set()
+        gate.wait(5)
+        return real(name)
+
+    monkeypatch.setattr(panel.controller, "reopen", slow)
+    results = []
+    first = threading.Thread(
+        target=lambda: results.append(panel.run("hard_reset_alpha", args=(True,))))
+    first.start()
+    assert entered.wait(5)
+    second = panel.run("hard_reset_alpha", args=(True,))
+    gate.set()
+    first.join(5)
+    assert second.is_refused and "already running" in second.reason
+    assert results and results[0].is_ok
+    assert panel.controller.calls.count("add:Alpha") == 2     # launch + one reset
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok   # free again
+
+
 def test_hard_reset_of_a_row_that_did_not_launch_is_refused(panel):
     _launch_alpha_on(panel)
     result = panel.run("hard_reset_beta", args=(True,))
@@ -2357,18 +2388,13 @@ def store_choice(tmp_path, monkeypatch):
     user_config.forget()
 
 
-def test_the_trial_store_row_block_builds_the_brief_shape(panel):
-    """What `_store_section()` builds; the schema inserts it just before
-    Launch once `tests/test_setup_registry.py`'s section pin allows (see
-    the handoff: that file is outside this write set)."""
-    store = panel._store_section()
-    assert store["title"] == "Trial store" and store["layout"] == "row"
-    assert [(e["type"], e.get("command") or e.get("model_attr"))
-            for e in store["elements"]] == [
-        ("readonly", "map_store_status"),
-        ("entry", "map_store_path"), ("button", "open_map_store"),
-        ("entry", "map_store_dir"), ("entry", "map_store_name"),
-        ("button", "new_map_store")]
+def test_setup_draws_no_trial_store_row(panel):
+    """The Trial store row (A3) was never drawn and its builder is gone
+    (architecture audit 2026-10-08): an operator chooses a store on the
+    map's own `new_store` prompt (`model.store_choice.StorePrompt`)."""
+    titles = [s["title"] for s in panel.schema["sections"]]
+    assert "Trial store" not in titles
+    assert not hasattr(panel, "_store_section")
 
 
 def test_the_store_row_says_nothing_is_chosen_then_what_was(store_choice, tmp_path):

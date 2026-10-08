@@ -209,7 +209,8 @@ shows the step the operator is in and hides what the step does not need.
 - **Speed dials** read 0-100 % over each device's ceiling (stepper 3200,
   chuck 600 steps/s); the wire still carries steps/s.
 - **Dividers.** The Dashboard's hairline boundaries stand as above.
-- **Accounts and tutorials.** Setup's Account section masks secret entries
-  (`secret: True` on an entry, cleared after use). The Tutorials entry on the
+- **Accounts and tutorials.** The sign-in screen and the rail's account menu
+  (the User's sheet; 2026-10-08, was Setup's Account section) mask secret
+  entries (`secret: True` on an entry, cleared after use). The Tutorials entry on the
   rail runs coach cards (`tutorial.js`, `tutorials/*.json`) that point at real
   controls; simulation only.
