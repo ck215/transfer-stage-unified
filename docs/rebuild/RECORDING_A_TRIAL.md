@@ -182,19 +182,30 @@ menu, 2026-10-08),
 else `$STATION_BACKUP_DIR/<email>/`, else `~/QMDL_Drive/transfer-stage-dbs/<email>/`
 when `~/QMDL_Drive` is mounted (a bare, unmounted `~/QMDL_Drive` folder counts
 as unavailable and is never written into). `STATION_BACKUP_DIR=off` turns it off; a Guest is
-never backed up. The folder mirrors the store folder: `transfer_map.sqlite` with
-its `transfer_map/` (pictures, videos) and `exports/`, `sample_map.sqlite` with
-its `images/`. Each database is a consistent SQLite snapshot (online backup API),
+never backed up. Each store has its own subfolder there, `<name>-<8 hex>/` (the
+store's file name and a hash of its full path, audit 2026-10-08), so two stores
+with the same file name never overwrite each other's copies; the subfolder
+mirrors the store folder: `transfer_map.sqlite` with its `transfer_map/`
+(pictures, videos) and `exports/`, `sample_map.sqlite` with its `images/`. A
+store moved to another folder gets a new subfolder (the old one stays). Copies
+an earlier version wrote flat into the backup folder (before 2026-10-08) are
+left exactly where they are; nothing is moved or deleted. Each database is a consistent SQLite snapshot (online backup API),
 renamed into place, so it is never half written. The account menu shows "Last backup
 23:41 → <folder>" and has Back up now. A failure (drive not mounted, read-only)
 is one warning per streak. A backup folder under `~/QMDL_Drive` is used only
 while the drive is mounted, and a backup folder that is a store's own folder
 (or inside the folders it mirrors) is refused.
 
-**To restore:** quit the station; copy the backup folder's `*.sqlite` files and
-their folders (`transfer_map/`, `exports/`, `images/`) into an empty local folder
-(e.g. `~/transfer-stage-runs/stores/<email>/`), keeping the layout; skip the
-hidden `.backup-manifest.json`. Start the station, sign in, and Open store on
+**To restore:** quit the station; pick the store's subfolder in the backup
+folder (`transfer_map-…/`, `sample_map-…/`: the name is the store's file name;
+`ls -l` shows which is newest, and the trial or sample rows tell two of the same
+name apart) and copy its contents, the `*.sqlite` file and its folders
+(`transfer_map/`, `exports/`, `images/`), into an empty local folder (e.g.
+`~/transfer-stage-runs/stores/<email>/`), keeping the layout; skip the hidden
+`.backup-manifest.json`. A backup made before 2026-10-08 sits flat in the backup
+folder itself (`transfer_map.sqlite` beside its folders) and is restored the
+same way from there; if two stores shared its name it holds whichever was
+backed up last. Start the station, sign in, and Open store on
 each map with the copied `.sqlite`. Trial rows name their pictures by absolute
 path, so restore to the SAME folder the store lived in when you can; elsewhere
 the trials are intact but their pictures must be re-pointed. To force a

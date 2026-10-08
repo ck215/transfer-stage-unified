@@ -57,7 +57,7 @@ def test_an_unmounted_drive_folder_is_unavailable_and_never_written(tmp_path, mo
     # Mounted: the same target works.
     mounted.append(tmp_path / "QMDL_Drive")
     assert service.run(backup.Job(t, [(store, [])]))
-    assert (t.folder / "s.sqlite").is_file()
+    assert (t.folder / backup.store_subfolder(store) / "s.sqlite").is_file()
     # A folder the user set has no anchor: used as it is, mounted or not.
     own = backup.target("a@b.c", setting=str(tmp_path / "mine"), env="")
     assert own.anchor is None and own.ready() == tmp_path / "mine"
@@ -113,22 +113,51 @@ def test_backup_writes_a_valid_sqlite_via_rename_and_copies_new_files_only(tmp_p
     service = backup.BackupService()
     job = backup.Job(backup.Target(dest), [(store, [store.parent / "transfer_map"])])
     assert service.run(job)
-    copy = dest / "transfer_map.sqlite"
+    sub = backup.store_subfolder(store)
+    copy = dest / sub / "transfer_map.sqlite"
     db = sqlite3.connect(copy)
     assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert db.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 5
     db.close()
     assert not [p for p in dest.rglob("*.part")]
-    assert (dest / "transfer_map" / "1" / "a.png").read_bytes() == b"one"
-    assert sorted(service.copied) == ["transfer_map.sqlite", "transfer_map/1/a.png"]
+    assert (dest / sub / "transfer_map" / "1" / "a.png").read_bytes() == b"one"
+    assert sorted(service.copied) == [f"{sub}/transfer_map.sqlite",
+                                      f"{sub}/transfer_map/1/a.png"]
     # nothing changed: nothing copied
     assert service.run(job) and service.copied == []
     # one new file: only it
     (pics / "b.png").write_bytes(b"two")
-    assert service.run(job) and service.copied == ["transfer_map/1/b.png"]
+    assert service.run(job) and service.copied == [f"{sub}/transfer_map/1/b.png"]
     # a fresh service (a restart) reads the manifest: nothing again
     again = backup.BackupService()
     assert again.run(job) and again.copied == []
+
+
+def test_stores_with_the_same_name_never_share_a_backup(tmp_path):
+    """Audit 2026-10-08 item 6: one flat folder per user, so two stores
+    named `transfer_map.sqlite` in different folders (the default name), and
+    their `exports/`, backed up over each other. Each store now has its own
+    subfolder; a flat copy an earlier version left there is not touched."""
+    dest = tmp_path / "backup"
+    dest.mkdir()
+    (dest / "transfer_map.sqlite").write_bytes(b"an older version's copy")
+    stores = []
+    for who, rows in (("one", 2), ("two", 7)):
+        store = _db(tmp_path / who / "transfer_map.sqlite", rows=rows)
+        (store.parent / "exports").mkdir()
+        (store.parent / "exports" / "trials.csv").write_text(who)
+        stores.append(store)
+    service = backup.BackupService()
+    job = backup.Job(backup.Target(dest), [(s, [s.parent / "exports"]) for s in stores])
+    assert service.run(job)
+    subs = [backup.store_subfolder(s) for s in stores]
+    assert len(set(subs)) == 2 and all(sub.startswith("transfer_map-") for sub in subs)
+    for store, sub, rows, who in zip(stores, subs, (2, 7), ("one", "two")):
+        db = sqlite3.connect(dest / sub / "transfer_map.sqlite")
+        assert db.execute("SELECT COUNT(*) FROM t").fetchone()[0] == rows
+        db.close()
+        assert (dest / sub / "exports" / "trials.csv").read_text() == who
+    assert (dest / "transfer_map.sqlite").read_bytes() == b"an older version's copy"
 
 
 def test_requests_coalesce(tmp_path, monkeypatch):
