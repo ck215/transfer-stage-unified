@@ -135,7 +135,7 @@ and read the exit code unpiped; a pipeline's exit code is `tail`'s.
 - Transfer Map store: v8 (the lab's, adopted); Sample DB store v4. A store v9 is no longer planned.
 - Speed dials are percent over per-device ceilings (stepper 3200, chuck 600 steps/s).
 - Accounts: Guest = the station defaults; `STATION_PROFILES=0` hides Setup's Account section.
-- Firmware untouched; every byte on the wire identical to the old app's, pinned by `tests/golden/`.
+- Wire protocol untouched (firmware guards added 2026-10-07/08 send no new bytes); every byte on the wire identical to the old app's, pinned by `tests/golden/`.
 - D-7 (DC board has no coil kill) is open, bench-only, owner-only.
 
 Anything on this list that looks "missing" in `src/` is a ruling, not a
