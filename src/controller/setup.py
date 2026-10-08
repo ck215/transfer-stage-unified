@@ -634,6 +634,8 @@ class Setup(PortProbe, Panel):
         self._rows = self._build_rows()
         self._schema = self._build_schema()
         self._lock = threading.RLock()
+        #: Held while a Hard reset closes and reopens its model (`_hard_reset`).
+        self._reset_lock = threading.Lock()
         self._scan_thread = None
         self._abort = threading.Event()
         self._ports = []
@@ -1298,6 +1300,22 @@ class Setup(PortProbe, Panel):
                             f"and disconnected from {where}, then opened and "
                             f"identified on {target}.{latched}")
             raise NeedsConfirm(question, f"hard_reset_{key}")
+        # One reset at a time (architecture audit 2026-10-08): Setup's
+        # commands are not serialised and `Controller.add` opens outside its
+        # lock, so two confirmed resets could both open the model and the
+        # second replace the first - an open port no stop could reach.
+        if not self._reset_lock.acquire(blocking=False):
+            self._refuse("A hard reset is already running; wait for it to "
+                         "finish, then press Hard reset again if needed.")
+        try:
+            return self._hard_reset_now(key, name, model, wanted, where,
+                                        target if wanted is not None else None)
+        finally:
+            self._reset_lock.release()
+
+    def _hard_reset_now(self, key, name, model, wanted, where, target):
+        """`_hard_reset` after the question, under `_reset_lock`."""
+        controller = self.controller
         if wanted is None:
             events.info("Hard Reset", f"{name} on {where}: closing, then opening "
                         "again.", source=self.NAME)

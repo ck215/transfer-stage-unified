@@ -1057,6 +1057,37 @@ def test_hard_reset_is_refused_while_the_device_is_energized(panel):
     assert panel.controller._model("Alpha") is old and old.closed == 0
 
 
+def test_a_second_hard_reset_while_one_runs_is_refused(panel, monkeypatch):
+    """Architecture audit 2026-10-08: Setup commands are not serialised (the
+    Web server is threaded) and `Controller.add` opens outside its lock, so
+    two confirmed resets could both build and open the model, the second
+    overwriting the first: an open port and threads no stop could reach.
+    One reset at a time; the second is refused in words."""
+    import threading
+    _launch_alpha_on(panel)
+    entered, gate = threading.Event(), threading.Event()
+    real = panel.controller.reopen
+
+    def slow(name):
+        entered.set()
+        gate.wait(5)
+        return real(name)
+
+    monkeypatch.setattr(panel.controller, "reopen", slow)
+    results = []
+    first = threading.Thread(
+        target=lambda: results.append(panel.run("hard_reset_alpha", args=(True,))))
+    first.start()
+    assert entered.wait(5)
+    second = panel.run("hard_reset_alpha", args=(True,))
+    gate.set()
+    first.join(5)
+    assert second.is_refused and "already running" in second.reason
+    assert results and results[0].is_ok
+    assert panel.controller.calls.count("add:Alpha") == 2     # launch + one reset
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok   # free again
+
+
 def test_hard_reset_of_a_row_that_did_not_launch_is_refused(panel):
     _launch_alpha_on(panel)
     result = panel.run("hard_reset_beta", args=(True,))
