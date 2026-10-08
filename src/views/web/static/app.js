@@ -2175,8 +2175,12 @@ class PanelCard {
         const head = tableHead(sections, columns);
         if (head) this.body.appendChild(head);
       }
+      // A `group` section is a named group of controls (a probe's
+      // Autonomous and Manual, owner 2026-10-07): its title is drawn even
+      // in tier 1, where a section's title is otherwise unseen.
       const block = make('div', 'section' + (isRow ? ' section-row' : '')
-                         + (spans ? ' section-span' : ''));
+                         + (spans ? ' section-span' : '')
+                         + (!isRow && section.layout === 'group' ? ' section-group' : ''));
       // An untitled row claims no name column (the rule views/qt.py settled
       // on); a titled one's caption is the row's name. A well does not open
       // onto a heading that repeats its own disclosure ("Diagnostics" under

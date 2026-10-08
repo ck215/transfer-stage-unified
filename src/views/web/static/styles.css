@@ -1489,6 +1489,31 @@ kbd {
   white-space: nowrap;
 }
 
+/* A named group in tier 1 (a probe's Autonomous and Manual, owner
+   2026-10-07): a hairline over it and its title as a caption on its own
+   line, so the two control systems read as two. */
+.card-body > .section.section-group {
+  flex: 1 1 20rem;
+  /* Side by side on a wide page, both start under one line. */
+  align-self: stretch;
+  align-content: flex-start;
+  padding-top: var(--space-3);
+  border-top: var(--line) solid var(--edge);
+}
+
+.card-body > .section.section-group > .section-title {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+  flex: 1 0 100%;
+  margin: 0 0 calc(-1 * var(--space-2));
+  font-size: var(--t-cap);
+  font-weight: 600;
+  color: var(--text);
+}
+
 /* In a well, a section title is a small ink caption on its own line. */
 .tier-well .section-title, .tier-deep .section-title {
   flex: 1 0 100%;
