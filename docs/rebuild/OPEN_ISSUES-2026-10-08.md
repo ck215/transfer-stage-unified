@@ -101,10 +101,18 @@ Ranked. None blocks operation or safety.
   proposals) not re-checked tonight.
 
 **Tests**
-- Known flakes under load (pass alone): `test_web5_a_file_open_…`,
-  `test_the_slider_keyboard_…`, `test_the_rail_leads_…`,
-  `test_closing_the_shown_device_…`, `test_restart_an_action_that_asks_…`.
-  Worth hardening with state waits instead of sleeps.
+- ~~Known flakes under load~~ hardened 2026-10-08 (afternoon). Two were a
+  real page race, fixed in `app.js`: a poll asked before an entry's commit
+  and answered after it wrote the old value back into the box, and the next
+  command sent it (`test_web5_a_file_open_…` lost "SEM"/250;
+  `test_the_slider_keyboard_…` stuck at 420). An entry now stays put while
+  its commit is out and against any state asked before the answer; pinned
+  deterministically by `test_a_state_asked_before_a_commit_never_puts_the_old_value_back`.
+  Closing the shown device left the rail with no current page for one poll
+  (`removeCard` now drops `opened`). The rest waited on sleeps: the rail and
+  close tests now wait for every card AND rail link (`settle`), web5 and
+  `test_restart_an_action_that_asks_…` for the command's own answers.
+  `test_a_reload_keeps_…` (fixed in `df392d9`) held under the same load.
 - The `impeccable` and `web-design-guidelines` skills are not installed on the
   lab PC; tonight's design and accessibility passes used design-critique,
   accessibility-review and ux-copy. A pass with the primary skills is owed.
