@@ -382,13 +382,14 @@ def test_the_setup_drawer_withdraws_when_the_first_model_appears():
     the instrument-console pass Setup is a left drawer rather than a card in
     the rack, so "minimised" is "slid out" - the same edge, the same rule."""
     collapse = _body(r"collapseSetupOnLaunch\(models, setupState\) \{(.*?)\n  \}")
-    # Updated (2026-10-07, the sign-in gate): a model appearing, but not the
-    # signed-in user's sheet - signing in in Setup withdrew the drawer and
-    # showed the User page, as if the station had launched.
-    assert "Object.keys(models || {}).some((name) => name !== sheet)" in collapse, (
+    # Updated (owner 2026-10-07): the signed-in user is Setup's, never a
+    # model, so any model appearing is a launch - no name is filtered out.
+    assert "Object.keys(models || {}).length > 0" in collapse, (
         "the collapse is not driven by a model appearing in the state")
-    assert "const sheet = accountSheet(setupState);" in collapse, (
-        "the User sheet counts as a launched device")
+    assert "accountSheet" not in CODE and "'User'" not in CODE, (
+        "the page still treats a model named User as the account")
+    # The drawer's words follow the launch edge: Setup before, Settings after.
+    assert "this.applySetupWords();" in collapse
     assert "setupState.is_launched" in collapse, (
         "the Setup panel's own is_launched must close it too - a launch "
         "that builds no model still leaves the wizard")

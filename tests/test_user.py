@@ -1,8 +1,8 @@
-"""`model.user.User`: the signed-in person as a model (owner request
-2026-10-07, AC-2).
+"""`model.user.User`: the signed-in person (owner request 2026-10-07,
+AC-2), a settings menu and not a device (owner, later that day).
 
-A non-hardware Model (`NAME = "User"`, no devices, no identity byte, no
-port) that OWNS the signed-in user's config: `config()` reads it from the
+A Panel (`NAME = "User"`, no devices, no stop switch, never in the
+Controller: Setup keeps it as `Setup.user`) that OWNS the signed-in user's config: `config()` reads it from the
 accounts file, `remember()` writes it (the Q4 split still decides what a
 user may keep), `operator()` is who the Transfer Map and the Sample Map
 stamp on their records. A Guest is a User with no account row: its config
@@ -14,17 +14,14 @@ and at sign-in); `revert` undoes it from each model's own Params, the
 station's saved defaults over them, never a restart. Both are driven here
 through a fake controller that holds models the way the real one does.
 
-The User is not in `setup.MODEL_TYPES` (it would get a Setup row and change
-the built-in list), so the contract checks of `test_model_contract.py` run
-against it here, every one that takes a `model`.
+The User is not in `setup.MODEL_TYPES` (it would get a Setup row) and not
+a Model, so the device contract (`test_model_contract.py`) is not its.
 """
-import inspect
 import json
 
 import pytest
 
 import schema as sch
-import test_model_contract as contract
 from controller.controller import Controller
 from controller.setup import MODEL_TYPES
 from events import events
@@ -32,6 +29,7 @@ from model import profile as pf
 from model.base import Model
 from model.user import AUTH_GUEST, AUTH_PASSWORD, GUEST, User
 from model.user_store import AccountError, UserStore
+from panel import Panel
 from param import Param
 
 PASSWORD = "correct-horse-4821"
@@ -129,60 +127,26 @@ def signed_in(store, **kwargs):
 
 # -- the class -------------------------------------------------------------------------------
 
-def test_a_non_hardware_model_named_user():
-    assert issubclass(User, Model)
-    assert (User.NAME, User.IDENTITY, User.NEEDS_PORT, User.NEEDS_GAMEPAD) == (
-        "User", None, False, False)
-    for attr in ("NAME", "IDENTITY", "NEEDS_PORT", "NEEDS_GAMEPAD"):
-        assert attr in User.__dict__, f"{attr} is inherited, not declared"
-    assert User().devices == []
+def test_the_user_is_a_settings_panel_not_a_device():
+    """Owner 2026-10-07: "the safety switch in the user model makes no
+    sense, it is not a device". A Panel (schema, state, run), never a Model:
+    no stop, no devices, no heartbeat, no Setup row."""
+    assert issubclass(User, Panel) and not issubclass(User, Model)
+    assert User.NAME == "User"
+    for attr in ("estop", "toggle_estop", "clear_estop", "devices", "is_energized",
+                 "is_active", "IDENTITY", "NEEDS_PORT"):
+        assert not hasattr(User, attr), f"a User has {attr}, which is a device's"
     assert "User" not in MODEL_TYPES, "a registered User would get a Setup row"
 
 
-def test_setups_constructor_call_builds_a_guest():
-    """`cls(port="SIM", gamepad=None, sim=True)`, the contract's constructor."""
-    user = User(port="SIM", gamepad=None, sim=True)
-    assert user.is_guest and user.email is None
-
-
-def _contract_checks():
-    checks = []
-    for name, fn in sorted(vars(contract).items()):
-        if name.startswith("test_") and callable(fn) and \
-                "model" in inspect.signature(fn).parameters:
-            checks.append(pytest.param(fn, id=name[len("test_"):]))
-    return checks
-
-
-@pytest.fixture(params=["guest", "signed_in"])
-def any_user(request, store):
-    user = User(port="SIM", gamepad=None, sim=True) if request.param == "guest" \
-        else signed_in(store)
-    user.open()
-    try:
-        yield user
-    finally:
-        try:
-            user.estop()
-        finally:
-            user.close()
-
-
-@pytest.mark.parametrize("check", _contract_checks())
-def test_the_user_meets_every_model_contract_check(check, any_user, monkeypatch):
-    wanted = inspect.signature(check).parameters
-    kwargs = {"model": any_user}
-    if "monkeypatch" in wanted:
-        kwargs["monkeypatch"] = monkeypatch
-    check(**kwargs)
-
-
-def test_the_contract_checks_were_found():
-    names = {p.id for p in _contract_checks()}
-    assert {"estop_latches_calls_halt_and_reports", "confirm_round_trips",
-            "state_carries_every_key_the_views_read",
-            "every_declared_command_exists_on_the_model"} <= names
-    assert len(names) >= 25
+@pytest.mark.parametrize("who", ["guest", "signed_in"])
+def test_the_sheet_has_no_stop_switch(who, store):
+    user = User.guest() if who == "guest" else signed_in(store)
+    commands = {e.get("command") for e in sch.elements(user.schema)}
+    assert not commands & {"toggle_estop", "estop", "clear_estop", "halt"}, commands
+    titles = [s["title"] for s in user.schema["sections"]]
+    assert "Safety" not in titles and "Stop" not in titles, titles
+    json.dumps(user.state)
 
 
 # -- guest semantics -----------------------------------------------------------------------------
@@ -291,9 +255,8 @@ def test_revert_rebuilds_each_models_defaults_from_its_params(store, station, pr
 
 def test_remember_current_collects_the_open_models_user_values(store, station):
     """"Remember current values as my defaults": the inverse of apply_defaults
-    over every open model the User was told about, Q4-filtered."""
-    user = signed_in(store)
-    station.add(User.NAME, user)
+    over every open model Setup hands it (`models=`), Q4-filtered."""
+    user = signed_in(store, models=lambda: station.models)
     probe = station.models["Stepper Probe"]
     probe.x_step, probe.man_full_speed, probe.slow_speed = 6, 260, 33
     station.models["Temperature Controller"].p_term = 2.5
@@ -303,16 +266,18 @@ def test_remember_current_collects_the_open_models_user_values(store, station):
     assert "x_step" in user.remembered and "Stepper Probe" in user.remembered
 
 
-def test_remember_current_through_the_real_controller(store):
+def test_remember_current_reads_the_real_controllers_open_models(store):
+    """The User reads the Controller's models; it is never one of them."""
     controller = Controller()
     try:
         controller.add("Stepper Probe", FakeProbe())
-        user = controller.add(User.NAME, signed_in(store))
+        user = signed_in(store, models=lambda: controller.models)
+        assert "User" not in controller.model_names
         controller.models["Stepper Probe"].x_step = 11
-        assert controller.run(User.NAME, "remember_current").is_ok
+        assert user.run("remember_current").is_ok
         assert user.config() == {"Stepper Probe": {"x_step": 11, "man_full_speed": 300}}
         controller.remove("Stepper Probe")
-        assert controller.run(User.NAME, "remember_current").is_refused
+        assert user.run("remember_current").is_refused
     finally:
         controller.close()
 
@@ -327,27 +292,45 @@ def _sections(user):
     return {s["title"]: s for s in user.schema["sections"]}
 
 
-def test_the_sheet_tier_1_is_who_and_sign_out_tier_2_the_account(store):
+def test_the_menu_is_who_switch_user_sign_out_then_name_password_defaults(store):
+    """A menu, so everything at tier 1: who, Switch user and Sign out; the
+    name, the password and "Remember current values as my defaults"."""
     sections = _sections(signed_in(store))
+    assert list(sections) == ["Signed in", "Name", "Password", "My defaults"]
+    assert all(s["tier"] == 1 for s in sections.values())
     first = sections["Signed in"]
-    assert first["tier"] == 1
     assert [(e["type"], e.get("command") or e.get("model_attr")) for e in first["elements"]] \
-        == [("readonly", "who"), ("button", "sign_out")]
-    second = sections["Account"]
-    assert second["tier"] == 2 and second["disclosure"]
-    commands = {e.get("command") for e in second["elements"]}
+        == [("readonly", "who"), ("button", "switch_user"), ("button", "sign_out")]
+    commands = {e.get("command") for s in sections.values() for e in s["elements"]}
     assert {"rename", "change_password", "remember_current"} <= commands
-    remember = next(e for e in second["elements"] if e.get("command") == "remember_current")
+    remember = next(e for e in sections["My defaults"]["elements"]
+                    if e.get("command") == "remember_current")
     assert remember["text"] == "Remember current values as my defaults"
     secrets = [e["model_attr"] for e in sch.elements(signed_in(store).schema) if e.get("secret")]
     assert secrets == ["current_password", "new_password"]
 
 
-def test_sign_out_on_the_sheet_is_setups(store):
+def test_a_guests_menu_is_who_and_sign_in_switch_user(store):
     calls = []
-    user = signed_in(store, on_sign_out=lambda: calls.append("out") or "Guest")
+    guest = User.guest(on_switch_user=lambda: calls.append("switch") or "chosen")
+    sections = _sections(guest)
+    assert list(sections) == ["Signed in"]
+    assert [(e["type"], e.get("command") or e.get("model_attr"), e.get("text"))
+            for e in sections["Signed in"]["elements"]] == [
+        ("readonly", "who", "Signed in"),
+        ("button", "switch_user", "Sign in / Switch user")]
+    assert "Guest" in guest.state["values"]["who"] and guest.state["is_guest"] is True
+    assert guest.run("switch_user").value == "chosen" and calls == ["switch"]
+
+
+def test_sign_out_and_switch_user_on_the_sheet_are_setups(store):
+    calls = []
+    user = signed_in(store, on_sign_out=lambda: calls.append("out") or "Guest",
+                     on_switch_user=lambda: calls.append("switch") or "Guest")
     assert user.run("sign_out").value == "Guest" and calls == ["out"]
+    assert user.run("switch_user").is_ok and calls == ["out", "switch"]
     assert signed_in(store).run("sign_out").is_refused     # not wired to a Setup
+    assert signed_in(store).run("switch_user").is_refused
     assert User.guest().run("sign_out").is_refused
 
 
@@ -409,5 +392,6 @@ def test_the_users_state_is_json_and_names_no_secret(store):
     state = user.state
     json.dumps(state)
     assert state["values"]["who"] == user.who
-    assert state["name"] == "User" and state["devices"] == {}
+    assert state["name"] == "User" and "devices" not in state
+    assert state["user_name"] == "Ian" and state["is_guest"] is False
     assert "x_step" in state["values"]["remembered"]

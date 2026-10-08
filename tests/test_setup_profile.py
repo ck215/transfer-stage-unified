@@ -6,12 +6,14 @@ Setup is the composition root: it opens the accounts file
 session (the signed-in `User`, a Guest by default), applies the station's
 defaults and the user's config to every model it builds and, on sign-in, to
 the models already open, reverts them on sign-out, and keeps the signed-in
-user's sheet (the `User` page) in the Controller. Everything here goes
+user as its own `Setup.user`. Everything here goes
 through `run()`, the way a view drives it, and the password never reaches
 the log, an event, `state` or a result.
 
-The section is still titled "Profile" (`Setup.ACCOUNT_SECTION`): two tests
-outside this item's write set pin the title (see the handoff).
+Owner 2026-10-07 (later): the user is a settings menu, not a device - Setup
+keeps it as `Setup.user`, never in the Controller, and the section here is
+the station-wide half ("Station defaults"). A Guest gets the tool controls
+only: no Transfer Map or Sample Map.
 """
 import json
 import sqlite3
@@ -91,18 +93,18 @@ def models(panel):
 
 # -- the section --------------------------------------------------------------------------
 
-def test_the_account_section_comes_first_with_who_is_in_switch_user_and_save(setup):
-    """Decluttered (2026-10-07, the sign-in gate): signing in, making an
-    account and choosing Guest happen on the sign-in screen before Setup, so
-    the section says who is in, goes back to that screen, and saves the
-    station's defaults - nothing else."""
-    assert setup.schema["sections"][0]["title"] == Setup.ACCOUNT_SECTION == "Account"
+def test_the_station_defaults_section_comes_first_and_only_saves_them(setup):
+    """Owner 2026-10-07: the user is a settings menu of its own (the rail's
+    account menu: who is in, Switch user, the name, the password, my
+    defaults), so Setup keeps the station-wide half only: Save station
+    settings. Signing in happens on the sign-in screen."""
+    assert setup.schema["sections"][0]["title"] == Setup.ACCOUNT_SECTION == "Station defaults"
     elements = _section(setup)["elements"]
     assert [(e["type"], e.get("command") or e.get("model_attr")) for e in elements] == [
-        ("readonly", "account_status"), ("button", "switch_user"),
         ("button", "save_station_settings")]
-    assert [e["text"] for e in elements if e["type"] == "button"] == [
-        "Switch user", "Save station settings"]
+    assert [e["text"] for e in elements] == ["Save station settings"]
+    shown = {e.get("command") or e.get("model_attr") for e in sch.elements(setup.schema)}
+    assert not shown & {"switch_user", "account_status", "remember_current"}
     assert "account_password" in Setup.SECRET_INPUTS
     for gone in ("set_profile_user", "add_profile", "remember_settings"):
         assert gone not in {e.get("command") for e in elements}
@@ -136,7 +138,8 @@ def test_the_session_is_unchosen_until_sign_in_create_or_guest(setup):
         return state["account_chosen"]
 
     assert chosen() is False and setup.account["signed_in"] is False
-    assert setup.state["account"]["sheet"] == "User"
+    assert "sheet" not in setup.state["account"], "the user is no model's page"
+    assert setup.state["account"]["name"] == "Guest"
     assert setup.run("open_as_guest").is_ok and chosen() is True
     assert setup.run("switch_user").is_ok and chosen() is False
     create(setup)
@@ -165,12 +168,62 @@ def test_a_new_station_is_a_guest_and_launching_as_guest_changes_nothing(setup):
     assert setup.account_status == "Guest (station defaults)"
     assert setup.user.is_guest
     setup.build(CONFIGS)
-    assert "User" not in setup.controller.model_names, "a Guest has no sheet"
+    assert "User" not in setup.controller.model_names, "a user is never a model"
     probe = models(setup)["Stepper Probe"]
     assert int(probe.x_step) == int(probe.PARAMS["x_step"].default)
-    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample Map"]
-    assert (tmap.operator_id, tmap.operator_auth) == ("guest", "guest")
-    assert (smap.owner, smap.owner_auth) == ("guest", "guest")
+
+
+# -- a Guest has the tool controls only (owner 2026-10-07) --------------------------------------
+
+def test_a_guest_launch_has_no_transfer_map_or_sample_map(setup):
+    """"Guest users should have no access to transfer map or sample map,
+    just tool controls": a Guest's launch leaves them (and what the Map
+    hosts) out, and their Setup rows say why."""
+    setup.build(CONFIGS)
+    assert setup.controller.model_names == ["Stepper Probe"]
+    assert not [c for c in setup.configs if c["model"] in (
+        "Transfer Map", "Sample Map", "RGB Analysis")], setup.configs
+    statuses = {row["name"]: row["status"] for row in setup.state["rows"]}
+    assert statuses["Transfer Map"] == statuses["Sample Map"] == "sign in to use"
+    assert set(setup.state["account"]["signed_in_only"]) >= {
+        "Transfer Map", "Sample Map", "RGB Analysis"}
+
+
+def test_a_guest_cannot_build_or_reopen_a_map(setup):
+    with pytest.raises(Exception, match="signed-in users"):
+        setup.model_from_config({"model": "Transfer Map", "port": None, "sim": False})
+    assert "signed-in users" in setup.session_refusal("Sample Map", "save_sample")
+    assert setup.session_refusal("Sample Map", "toggle_estop") == "", "a stop is never refused"
+    assert setup.session_refusal("Stepper Probe", "set_mode") == ""
+    create(setup)
+    assert setup.session_refusal("Transfer Map", "arm") == ""
+
+
+def test_signing_in_adds_the_maps_to_a_running_station_and_guest_removes_them(setup):
+    setup.build(CONFIGS)
+    probe = models(setup)["Stepper Probe"]
+    create(setup)
+    assert {"Transfer Map", "Sample Map"} <= set(setup.controller.model_names)
+    assert models(setup)["Stepper Probe"] is probe, "nothing restarted"
+    tmap = models(setup)["Transfer Map"]
+    assert (tmap.operator_id, tmap.operator_auth) == (EMAIL, "password")
+    assert setup.run("switch_user").is_ok and setup.user.is_guest
+    assert setup.controller.model_names == ["Stepper Probe"]
+    assert models(setup)["Stepper Probe"] is probe
+
+
+def test_switching_to_guest_mid_trial_is_refused(setup, monkeypatch):
+    from model.transfer_map import TransferMap
+    create(setup)
+    setup.build(CONFIGS)
+    monkeypatch.setattr(TransferMap, "is_active", property(lambda self: True))
+    for command in ("switch_user", "sign_out", "open_as_guest"):
+        refused = setup.run(command)
+        assert refused.is_refused and "trial" in refused.reason, (command, refused.reason)
+        assert not setup.user.is_guest and "Transfer Map" in setup.controller.model_names
+    monkeypatch.undo()
+    assert setup.run("switch_user").is_ok
+    assert "Transfer Map" not in setup.controller.model_names
 
 
 # -- creating an account and signing in ----------------------------------------------------
@@ -185,8 +238,8 @@ def test_create_account_asks_first_then_signs_in(setup, root):
     assert done.is_ok, done.reason
     assert setup.account_status == "Signed in as ian (password)"
     assert UserStore(root / "users.sqlite").verify(EMAIL, PASSWORD)
-    assert "User" in setup.controller.model_names
-    assert models(setup)["User"].email == EMAIL
+    assert "User" not in setup.controller.model_names, "the user is Setup's, not a model"
+    assert setup.user.email == EMAIL
 
 
 def test_create_account_refuses_a_bad_email_a_short_password_and_a_taken_email(setup):
@@ -273,8 +326,8 @@ def test_sign_out_rebuilds_the_station_defaults_without_a_restart(setup):
     assert models(setup)["Stepper Probe"] is probe, "the same model, not a rebuild"
     assert (int(probe.x_step), int(probe.man_full_speed)) == (
         int(probe.PARAMS["x_step"].default), 250)
-    assert [c for c in setup.controller.calls[len(calls):]
-            if c != "remove:User"] == [], "nothing but the sheet closed"
+    assert setup.controller.calls[len(calls):] == [
+        "remove:Transfer Map", "remove:Sample Map"], "nothing but the maps closed"
 
 
 def test_switching_users_reverts_the_first_users_values(setup):
@@ -284,13 +337,13 @@ def test_switching_users_reverts_the_first_users_values(setup):
     create(setup, email="bo@uci.edu")
     probe = models(setup)["Stepper Probe"]
     assert int(probe.x_step) == int(probe.PARAMS["x_step"].default)
-    assert models(setup)["User"].email == "bo@uci.edu"
+    assert setup.user.email == "bo@uci.edu"
 
 
 def test_built_models_carry_the_operator_and_how_it_was_established(setup):
-    setup.build(CONFIGS)
-    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample Map"]
+    setup.build(CONFIGS)            # a Guest's: the maps come with the sign-in
     create(setup)
+    tmap, smap = models(setup)["Transfer Map"], models(setup)["Sample Map"]
     assert (tmap.operator_id, tmap.operator_auth) == (EMAIL, "password")
     assert (smap.owner, smap.owner_auth) == (EMAIL, "password")
     # Reason: the live sheet has no Sample ID entry (the sample is picked), so
@@ -307,19 +360,18 @@ def test_built_models_carry_the_operator_and_how_it_was_established(setup):
     flake = smap._store.coord_flakes()[0]
     assert (flake["owner"], flake["owner_auth"]) == (EMAIL, "password")
     setup.run("sign_out")
-    assert (tmap.operator_id, tmap.operator_auth) == ("guest", "guest")
+    assert "Transfer Map" not in setup.controller.model_names
 
 
-# -- the sheet: a page while someone is signed in ---------------------------------------------
+# -- the sheet: the account menu, Setup's own (never a model) ----------------------------------
 
-def test_launch_while_signed_in_keeps_the_users_sheet(setup):
+def test_launch_while_signed_in_has_no_user_model(setup):
     create(setup)
     UserStore().remember(EMAIL, "Stepper Probe", {"x_step": 9})
     built = setup.build(CONFIGS)
     assert built == ["Stepper Probe", "Transfer Map", "Sample Map"]
-    assert "User" in setup.controller.model_names
-    sheet = models(setup)["User"]
-    assert sheet.email == EMAIL and not sheet.is_estopped
+    assert "User" not in setup.controller.model_names
+    assert setup.user.email == EMAIL
     assert int(models(setup)["Stepper Probe"].x_step) == 9
 
 
@@ -327,7 +379,7 @@ def test_the_sheets_sign_out_is_setups(setup):
     create(setup)
     UserStore().remember(EMAIL, "Stepper Probe", {"x_step": 9})
     setup.build(CONFIGS)
-    result = setup.controller.run("User", "sign_out")
+    result = setup.user.run("sign_out")
     assert result.is_ok, result.reason
     assert setup.user.is_guest and setup.account_status == "Guest (station defaults)"
     assert "User" not in setup.controller.model_names
@@ -341,7 +393,7 @@ def test_remember_current_values_on_the_sheet_keeps_only_user_params(setup):
     probe = models(setup)["Stepper Probe"]
     probe.x_step = 7
     probe.slow_speed = 33                                    # a brake field: never
-    result = setup.controller.run("User", "remember_current")
+    result = setup.user.run("remember_current")
     assert result.is_ok, result.reason
     kept = UserStore().preferences(EMAIL)
     assert kept["Stepper Probe"]["x_step"] == 7
@@ -349,18 +401,19 @@ def test_remember_current_values_on_the_sheet_keeps_only_user_params(setup):
     assert "RGB Analysis" not in kept and "Sample Map" not in kept
 
 
-def test_a_closed_sheet_reopens_for_the_same_user(setup):
+def test_there_is_no_user_page_to_close_or_reopen(setup):
+    """The "Reopen User" path is gone with the User model."""
     create(setup)
-    assert setup.controller.remove("User")
-    assert setup.account_status.startswith("Signed in"), "closing the page is not a sign-out"
-    setup.controller.reopen("User")
-    assert models(setup)["User"].email == EMAIL
-    setup.run("sign_out")
+    assert not setup.controller.remove("User")
     with pytest.raises(Exception):
         setup.controller.reopen("User")
+    with pytest.raises(Exception):
+        setup.model_from_config({"model": "User", "sim": False})
+    assert setup.account_status.startswith("Signed in")
 
 
 def test_save_station_settings_asks_and_keeps_the_brakes_out(setup, root):
+    create(setup)                   # the Sample Map is a signed-in user's
     setup.build(CONFIGS)
     smap = models(setup)["Sample Map"]
     smap.um_per_count = "0.4"
@@ -507,9 +560,9 @@ def test_the_maps_own_open_store_remembers_for_the_signed_in_user(setup, stores)
     from controller import user_config
     station, mine = stores
     setup.build(CONFIGS)
-    tmap = models(setup)["Transfer Map"]
-    assert tmap.db_path == station
     create(setup)
+    tmap = models(setup)["Transfer Map"]
+    assert tmap.db_path == station, "a user with no store of their own: the station's"
     result = setup.controller.run("Transfer Map", "open_store", {"store_path": str(mine)})
     assert result.is_ok, result.reason
     assert UserStore().setting(EMAIL, "map_store") == str(mine)
@@ -522,13 +575,13 @@ def test_signing_in_opens_the_users_store_and_guest_gets_the_stations_back(setup
     UserStore().put_setting(EMAIL, "map_store", str(mine))
     setup.run("sign_out")
     setup.build(CONFIGS)
-    tmap = models(setup)["Transfer Map"]
-    assert tmap.db_path == station, "a Guest records in the station's store"
+    assert "Transfer Map" not in setup.controller.model_names, "a Guest has no map"
     assert sign_in(setup).is_ok
-    assert tmap.db_path == mine, "signing in moves the open map onto the user's store"
+    assert models(setup)["Transfer Map"].db_path == mine, "the sign-in's map is on the user's store"
     assert setup.run("switch_user").is_ok
-    assert tmap.db_path == station
+    assert "Transfer Map" not in setup.controller.model_names
     assert sign_in(setup).is_ok
+    assert models(setup)["Transfer Map"].db_path == mine
     setup.build(CONFIGS)
     assert models(setup)["Transfer Map"].db_path == mine, "a launch while signed in too"
 

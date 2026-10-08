@@ -1,10 +1,17 @@
-"""The signed-in person, as a model (owner request 2026-10-07: "each
-signed-in user a model that owns a config the Controller loads, Guest as
-the station defaults").
+"""The signed-in person (owner request 2026-10-07: "each signed-in user a
+model that owns a config the Controller loads, Guest as the station
+defaults"; and later the same day: "the user object should be treated as
+another settings menu similar to tutorials and setup").
 
-A `User` is a non-hardware Model: no device, no identity byte, no port, no
-loop. It OWNS one account's config, kept in the accounts file
-(`model.user_store`):
+A `User` is a `Panel`, NOT a device `Model`: no device, no port, no stop
+switch, no status, never in the Controller. Setup (the composition root,
+which owns the session) keeps the one current `User` as `Setup.user`, and
+the Web view draws its sheet as the rail's account menu through
+`views.web.server.USER_NAME`. So it is in none of the device aggregates (the
+FULL STOP, the stop words, energized, active, latched, the watchdog, a
+launch) by construction, not by a filter in each.
+
+It OWNS one account's config, kept in the accounts file (`model.user_store`):
 
 - `config()` is `{model_name: {param: value}}`, as the account remembered it;
 - `remember(model_name, values)` writes it, Q4 deciding what a user may keep
@@ -25,21 +32,22 @@ for a Phase 1 profile at build and at sign-in) and stamps the operator;
 to its own Params' defaults with the station's saved ones over them. Nothing
 restarts; a gated setter that refuses is reported, not forced.
 
-**The sheet.** Tier 1: who is signed in, and Sign out (Setup's, handed in as
-`on_sign_out`: the session, the revert and this page are the composition
-root's). Tier 2: the name, Change password, and "Remember current values as
-my defaults", which collects every open model's user parameters
-(`profile.current_params`, the inverse of `apply_defaults`) from the models
-the Controller introduced (`on_model_added`), the way the Transfer Map reads
-other models by duck type. The password entries are `SECRET_INPUTS` (the log
+**The sheet** (the account menu). Who is signed in, Switch user and Sign
+out (Setup's, handed in as `on_switch_user` / `on_sign_out`: the session and
+the revert are the composition root's); then the name, Change password, and
+"Remember current values as my defaults", which collects every open model's
+user parameters (`profile.current_params`, the inverse of `apply_defaults`)
+from `models()` - Setup hands in the Controller's open models - the way the
+Transfer Map reads other models by duck type. A Guest's sheet is who it is
+and Sign in / Switch user. The password entries are `SECRET_INPUTS` (the log
 says `<redacted>`), carry `secret: True` for a renderer to mask, read back
 as "" (never in `state`), and are forgotten when the command ends.
 """
 import schema as sch
 from events import events
 from model import profile as pf
-from model.base import Model
 from model.user_store import AccountError, normalize_email
+from panel import Panel
 from param import Param
 from result import Refused
 
@@ -69,11 +77,8 @@ def _secret_property(name):
     return property(read, write, doc=f"The typed {name.replace('_', ' ')}; reads as \"\".")
 
 
-class User(Model):
+class User(Panel):
     NAME = "User"
-    IDENTITY = None
-    NEEDS_PORT = False
-    NEEDS_GAMEPAD = False
     SECRET_INPUTS = frozenset(SECRETS)
     PARAMS = {p.name: p for p in (
         Param("display_name", "text", default="", label="Name"),
@@ -84,22 +89,22 @@ class User(Model):
     current_password = _secret_property("current_password")
     new_password = _secret_property("new_password")
 
-    def __init__(self, sim=False, store=None, email=None, params_of=None,
-                 on_sign_out=None, **resources):
+    def __init__(self, store=None, email=None, params_of=None, models=None,
+                 on_sign_out=None, on_switch_user=None):
         """`User()` is a Guest. `User(store=, email=)` is that account's user;
-        an email with no account raises AccountError. `sim` and any resource
-        (Setup's and the contract's `port=`, `gamepad=`) are accepted and
-        ignored: a User owns no device. `params_of(name)` returns a model
-        class's PARAMS (Setup passes the registry's); without it the open
-        models' own are used. `on_sign_out()` is Setup's sign-out."""
-        del sim, resources
+        an email with no account raises AccountError. `params_of(name)`
+        returns a model class's PARAMS (Setup passes the registry's); without
+        it the open models' own are used. `models()` returns the open models
+        `{name: model}` (Setup passes the Controller's). `on_sign_out()` and
+        `on_switch_user()` are Setup's."""
         self._typed = {name: "" for name in SECRETS}   # before the Panel seeds them
         super().__init__()
         self._store = store
         self._email = None
         self._params_of = params_of
+        self._models_of = models
         self._on_sign_out = on_sign_out
-        self._models = {}
+        self._on_switch_user = on_switch_user
         if store is not None and email:
             record = store.user(email)
             if record is None:
@@ -109,8 +114,8 @@ class User(Model):
             self.display_name = record["name"] or ""
 
     @classmethod
-    def guest(cls):
-        return cls()
+    def guest(cls, **hooks):
+        return cls(**hooks)
 
     def __repr__(self):
         return f"User({self._email or GUEST!r})"
@@ -142,7 +147,7 @@ class User(Model):
     @property
     def who(self):
         if self.is_guest:
-            return "Guest: the station's defaults."
+            return "Guest: the station's defaults. Sign in to keep your own."
         return f"{self.user_name} ({self._email}), signed in with a password."
 
     # -- the config ------------------------------------------------------------------
@@ -153,10 +158,19 @@ class User(Model):
             return {}
         return self._store.preferences(self._email)
 
+    def _open_models(self):
+        """The open models, never this sheet: `{name: model}`."""
+        try:
+            found = self._models_of() if callable(self._models_of) else {}
+        except Exception:
+            found = {}
+        return {name: model for name, model in dict(found or {}).items()
+                if model is not self and not isinstance(model, User)}
+
     def _params_for(self, model_name):
         found = self._params_of(model_name) if self._params_of else None
         if not found:
-            found = getattr(self._models.get(model_name), "PARAMS", None)
+            found = getattr(self._open_models().get(model_name), "PARAMS", None)
         return found or {}
 
     def remember(self, model_name, values):
@@ -222,26 +236,26 @@ class User(Model):
                     model.owner, model.owner_auth = operator_id, auth
         return refused
 
-    # -- the models it was introduced to -------------------------------------------------
-    def on_model_added(self, name, model):
-        if model is not self:
-            self._models[name] = model
-
-    def on_model_removed(self, name, model):
-        self._models.pop(name, None)
-
     # -- commands ----------------------------------------------------------------------
     def _signed_in(self):
         if self.is_guest:
             raise Refused("Nobody is signed in: a Guest has the station's defaults "
                           "and keeps nothing.")
 
+    def _setups(self, hook, what):
+        if hook is None:
+            raise Refused(f"This sheet is not connected to the station's Setup, so "
+                          f"it cannot {what}.")
+        return hook()
+
     def sign_out(self):
         self._signed_in()
-        if self._on_sign_out is None:
-            raise Refused("This sheet is not connected to the station's Setup. "
-                          "Sign out on the Setup page.")
-        return self._on_sign_out()
+        return self._setups(self._on_sign_out, "sign out")
+
+    def switch_user(self):
+        """Back to the sign-in screen (Setup's `switch_user`): a signed-in
+        user is signed out first; a Guest just chooses again."""
+        return self._setups(self._on_switch_user, "switch user")
 
     def rename(self):
         self._signed_in()
@@ -277,7 +291,7 @@ class User(Model):
         or a live value)."""
         self._signed_in()
         collected = {}
-        for name, model in sorted(self._models.items()):
+        for name, model in sorted(self._open_models().items()):
             values = pf.current_params(model, pf.USER_PARAMS)
             if values:
                 collected[getattr(model, "NAME", name) or name] = values
@@ -296,31 +310,46 @@ class User(Model):
         return summary
 
     # -- what a view reads ------------------------------------------------------------------
-    def _expects_heartbeat(self):
-        return False
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot.update({"user_name": self.user_name, "is_guest": self.is_guest,
+                         "email": self._email or ""})
+        return snapshot
 
     @property
     def schema(self):
+        if self.is_guest:
+            return sch.schema(sch.section(
+                "Signed in",
+                sch.readonly("Signed in", "who", role="info"),
+                sch.button("Sign in / Switch user", "switch_user", role="go"),
+            ))
         P = self.PARAMS
         return sch.schema(
             sch.section(
                 "Signed in",
                 sch.readonly("Signed in", "who", role="info"),
+                sch.button("Switch user", "switch_user", role="neutral"),
                 sch.button("Sign out", "sign_out", role="neutral"),
             ),
             sch.section(
-                "Account",
+                "Name",
                 sch.entry("Name", "display_name", P["display_name"]),
                 sch.button("Save name", "rename", inputs=("display_name",)),
+            ),
+            sch.section(
+                "Password",
                 secret(sch.entry("Current password", "current_password",
                                  P["current_password"])),
                 secret(sch.entry("New password", "new_password", P["new_password"])),
                 sch.button("Change password", "change_password",
                            inputs=("current_password", "new_password")),
+            ),
+            sch.section(
+                "My defaults",
                 sch.button("Remember current values as my defaults",
                            "remember_current", role="go"),
                 sch.readonly("Remembered", "remembered"),
-                tier=2, disclosure="Account settings",
             ),
-            self._safety_section(),
         )

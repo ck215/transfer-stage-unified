@@ -21,6 +21,12 @@ const DATA_POLL_MS = 1000;
 const HEARTBEAT_MS = 2000;
 const STALE_AFTER_S = 1.0;
 const SETUP_NAME = '__setup__';
+//: The account menu's sheet (`views.web.server.USER_NAME`): Setup's signed-in
+//: user, never a model (owner 2026-10-07).
+const USER_NAME = '__user__';
+//: The event a side window owned by another script closes on (a press on a
+//: rail page, the account menu opening, the sign-in screen).
+const SIDE_WINDOWS_CLOSE = 'station-side-windows-close';
 //: rb-restart R4: after Restart the page asks for /api/state this often, for
 //: this long, and reloads itself once a NEW station (another `boot`) answers.
 const RESTART_POLL_MS = 2000;
@@ -3279,13 +3285,6 @@ class PanelCard {
   }
 }
 
-/** The name of the signed-in user's sheet (`state.account.sheet` of Setup),
- *  which is never a launched device. "User" when Setup does not say. */
-function accountSheet(setupState) {
-  const account = setupState && setupState.account;
-  return (account && account.sheet) || 'User';
-}
-
 /** The label on a confirmation's yes-button: the action, not "OK". */
 function confirmLabel(result) {
   const command = String((result && result.command) || '');
@@ -3421,6 +3420,13 @@ class Dashboard {
       drawerClose: document.getElementById('drawer-close'),
       scrim: document.getElementById('scrim'),
       setupLink: document.getElementById('setup-link'),
+      drawerTitle: document.querySelector('#setup-drawer .drawer-title'),
+      settingsNote: document.getElementById('settings-note'),
+      accountLink: document.getElementById('account-link'),
+      accountName: document.querySelector('#account-link .account-name'),
+      accountDrawer: document.getElementById('account-drawer'),
+      accountBody: document.getElementById('account-body'),
+      accountClose: document.getElementById('account-close'),
       quitLink: document.getElementById('quit-link'),
       // The rail's other keys (not the stop, Setup or Quit): off while the
       // sign-in screen is up.
@@ -3464,7 +3470,23 @@ class Dashboard {
     this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true));
     this.dom.quitLink.addEventListener('click', () => this.quitStation());
     this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
-    this.dom.scrim.addEventListener('click', () => this.setDrawerOpen(false));
+    this.dom.scrim.addEventListener('click', () => {
+      this.setDrawerOpen(false);
+      this.setAccountOpen(false);
+    });
+    //: The account menu (owner 2026-10-07): the signed-in user's sheet,
+    //: Setup's `user` through `/api/user`, never a model.
+    this.isAccountOpen = false;
+    this.userCard = null;
+    this.userKey = null;
+    if (this.dom.accountLink) {
+      this.dom.accountLink.addEventListener('click', () => {
+        if (this.isAccountOpen) this.setAccountOpen(false);
+        else this.openAccount();
+      });
+      this.dom.accountClose.addEventListener('click', () => this.setAccountOpen(false));
+    }
+    this.applySetupWords();
     // One keyboard handler, in the capture phase so nothing on the page can
     // swallow it first. Ctrl+. stops every model from anywhere, a
     // text box included (F9). Escape answers the top-most thing over the page: a
@@ -3487,6 +3509,7 @@ class Dashboard {
       // does not also withdraw.
       if (document.activeElement && document.activeElement.closest
           && document.activeElement.closest('.log-window')) return;
+      if (this.isAccountOpen && this.dom.modal.hidden) { this.setAccountOpen(false); return; }
       if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false);
     }, true);
     // Closing the last tab quits the station (owner 2026-10-07, as the Qt
@@ -3534,6 +3557,8 @@ class Dashboard {
     // Setup comes after the sign-in screen, never beside it.
     if (this.isGated) isOpen = false;
     const wasOpen = this.isDrawerOpen;
+    // One side window at a time: Settings replaces the account menu.
+    if (isOpen && !wasOpen) this.setAccountOpen(false, true);
     const active = document.activeElement;
     const hadFocus = this.dom.drawer.contains(active);
     this.isDrawerOpen = Boolean(isOpen);
@@ -3542,8 +3567,9 @@ class Dashboard {
     }
     this.dom.drawer.classList.toggle('open', this.isDrawerOpen);
     // The scrim dims what the drawer is covering. At boot it is covering an
-    // empty rack, so there is nothing to dim and no scrim.
-    this.dom.scrim.hidden = !(this.isDrawerOpen && this.cards.size > 0);
+    // empty rack, so there is nothing to dim and no scrim. The account menu
+    // dims what it covers too.
+    this.dom.scrim.hidden = !this.wantsScrim();
     this.dom.setupLink.hidden = this.isDrawerOpen || this.isGated;
     this.dom.drawer.setAttribute('aria-hidden', this.isDrawerOpen ? 'false' : 'true');
     // While the drawer is open the rack behind it is inert, so Tab walks the
@@ -3556,10 +3582,150 @@ class Dashboard {
     // that brings it back).
     if (this.isDrawerOpen && !wasOpen) {
       this.dom.drawer.focus({ preventScroll: true });
-    } else if (!this.isDrawerOpen && wasOpen
+    } else if (!this.isDrawerOpen && wasOpen && !this.isNavigating
                && (hadFocus || document.activeElement === document.body)) {
       this.restoreFocus(this.drawerReturn, this.dom.setupLink);
     }
+  }
+
+  wantsScrim() {
+    return (this.isDrawerOpen && this.cards.size > 0) || this.isAccountOpen;
+  }
+
+  /** "Setup" before the launch, "Settings" after it (owner 2026-10-07): once
+   *  the station runs the devices are fixed for the session, and what is
+   *  left - Hard reset, Restart, the update and firmware rows, the
+   *  station's defaults - is settings, not set-up. The note at the top of
+   *  the drawer says so. Escape and Close behave the same under both. */
+  applySetupWords() {
+    const word = this.isLaunched ? 'Settings' : 'Setup';
+    if (this.setupWord === word) return;
+    this.setupWord = word;
+    putText(this.dom.setupLink, word);
+    this.dom.setupLink.title = this.isLaunched
+      ? 'Open Settings: Hard reset, Restart, updates, firmware and the station\'s defaults'
+      : 'Open Setup: ports, devices and launch';
+    this.dom.drawer.setAttribute('aria-label', word);
+    if (this.dom.drawerTitle) putText(this.dom.drawerTitle, word);
+    this.dom.drawerClose.title = 'Close ' + word + ' (Escape). The ' + word
+      + ' button on the rail brings it back.';
+    if (this.dom.settingsNote) this.dom.settingsNote.hidden = !this.isLaunched;
+  }
+
+  // -- the account menu (owner 2026-10-07) ------------------------------------
+  //
+  // The signed-in user is a settings menu, not a device: the rail's account
+  // key at the top of the page list opens the user's sheet beside the rail,
+  // as Settings opens, and never over the stop. One side window at a time.
+  async openAccount() {
+    if (this.isGated || this.isShutDown) return;
+    this.setAccountOpen(true);
+    await this.refreshUser();
+  }
+
+  setAccountOpen(isOpen, quietly) {
+    if (!this.dom.accountDrawer) return;
+    if (this.isGated) isOpen = false;
+    const wasOpen = this.isAccountOpen;
+    if (Boolean(isOpen) === wasOpen) return;
+    if (isOpen) {
+      this.setDrawerOpen(false);
+      this.closeOtherSideWindows();
+    }
+    const hadFocus = this.dom.accountDrawer.contains(document.activeElement);
+    this.isAccountOpen = Boolean(isOpen);
+    this.dom.accountDrawer.classList.toggle('open', this.isAccountOpen);
+    this.dom.accountDrawer.setAttribute('aria-hidden', this.isAccountOpen ? 'false' : 'true');
+    this.dom.accountLink.setAttribute('aria-expanded', this.isAccountOpen ? 'true' : 'false');
+    this.dom.scrim.hidden = !this.wantsScrim();
+    this.updateInert();
+    if (this.isAccountOpen) {
+      this.dom.accountDrawer.focus({ preventScroll: true });
+    } else if (!quietly && !this.isNavigating
+               && (hadFocus || document.activeElement === document.body)) {
+      this.restoreFocus(this.dom.accountLink, this.dom.cards);
+    }
+  }
+
+  /** A side window another script owns (one marked `data-side-window`,
+   *  such as the step-by-step guides' list) is asked to close by an event
+   *  it listens for; this page does not reach into it. */
+  hasOtherSideWindow() {
+    return Boolean(document.querySelector('[data-side-window]:not([hidden])'));
+  }
+
+  closeOtherSideWindows() {
+    window.dispatchEvent(new CustomEvent(SIDE_WINDOWS_CLOSE));
+  }
+
+  /** The rail's account key: the signed-in name (or Guest), from Setup's
+   *  `state.account`. Hidden with accounts off and on the sign-in screen. */
+  renderAccountLink(setupState) {
+    const link = this.dom.accountLink;
+    if (!link) return;
+    const account = setupState && setupState.account;
+    const show = Boolean(account && account.enabled !== false && account.chosen !== false);
+    if (link.hidden !== !show) link.hidden = !show;
+    if (!show) { if (this.isAccountOpen) this.setAccountOpen(false); return; }
+    const name = String(account.name || (account.signed_in ? account.email : 'Guest') || 'Guest');
+    putText(this.dom.accountName, name);
+    putAttr(link, 'aria-label', 'Account: ' + name);
+    putAttr(link, 'title', account.signed_in
+      ? 'Your account: name, password, your defaults, Switch user and Sign out'
+      : 'Guest: the station\'s defaults. Sign in or switch user here');
+    link.classList.toggle('is-guest', !account.signed_in);
+    if (this.isAccountOpen) this.refreshUser();
+  }
+
+  /** The account sheet, fetched while the menu is open: rebuilt when who it
+   *  is for changes (a Guest's sheet and a user's differ), else refreshed. */
+  async refreshUser() {
+    if (!this.dom.accountBody || this.isUserLoading) return;
+    this.isUserLoading = true;
+    try {
+      const sheet = await apiGet('/api/user');
+      if (!sheet || !sheet.schema || !sheet.schema.sections) return;
+      const state = sheet.state || {};
+      const key = (state.is_guest ? 'guest' : 'user:' + (state.email || ''))
+        + '\n' + sheet.schema.sections.map((s) => s.title).join('|');
+      if (key !== this.userKey || !this.userCard) {
+        if (this.userCard) this.userCard.close();
+        this.userKey = key;
+        this.userCard = new PanelCard(this, USER_NAME, sheet.schema, { title: 'Account' });
+        this.userCard.node.classList.add('account-card');
+        this.dom.accountBody.appendChild(this.userCard.node);
+      }
+      this.userCard.refresh(state);
+    } catch (err) {
+      /* the next poll retries */
+    } finally {
+      this.isUserLoading = false;
+    }
+  }
+
+  /** Owner 2026-10-07: a press on a page in the rail closes whatever side
+   *  window is open (Settings, the account menu, any `data-side-window`) and
+   *  shows that page, focus on the page. Not while the sign-in screen is up
+   *  (the list is inert then), and an open confirmation or acknowledgement
+   *  keeps priority: the press is not taken, the dialog keeps focus. */
+  navigateTo(name) {
+    if (this.isGated || this.isShutDown) return;
+    if (this.confirmPending) { this.dom.confirmNo.focus({ preventScroll: true }); return; }
+    if (!this.dom.modal.hidden) { this.dom.modalOk.focus({ preventScroll: true }); return; }
+    if (!this.dom.picker.hidden) return;
+    const hadWindow = this.isDrawerOpen || this.isAccountOpen || this.hasOtherSideWindow();
+    this.isNavigating = true;
+    try {
+      this.setDrawerOpen(false);
+      this.setAccountOpen(false);
+      this.closeOtherSideWindows();
+    } finally {
+      this.isNavigating = false;
+    }
+    this.showPage(name);
+    // A device page took focus (showPage); the Overview takes it too when a
+    // side window had it, so it never falls back onto that window's key.
+    if (!this.opened && hadWindow) this.dom.cards.focus({ preventScroll: true });
   }
 
   /** What may take focus right now: the rail never goes inert - the stop
@@ -3575,9 +3741,10 @@ class Dashboard {
     // The sign-in screen: everything but it and the rail's stop and Quit.
     // Another page is the live one: everything but the notice and the stop.
     const gated = this.isGated || this.isElsewhere;
-    setInert(this.dom.cards, covered || this.isDrawerOpen || gated || gone);
+    setInert(this.dom.cards, covered || this.isDrawerOpen || this.isAccountOpen || gated || gone);
     setInert(this.dom.logPanel, covered || gated || gone);
     setInert(this.dom.drawer, covered || !this.isDrawerOpen || gated || gone);
+    setInert(this.dom.accountDrawer, covered || !this.isAccountOpen || gated || gone);
     setInert(this.dom.nav, gated);
     setInert(this.dom.gate, covered || !this.isGated || this.isElsewhere || gone);
     setInert(this.elsewhereGate, covered || !this.isElsewhere || gone);
@@ -3595,6 +3762,7 @@ class Dashboard {
     if (!setupState) return;
     const account = setupState.account;
     this.setGated(Boolean(account && account.enabled !== false && account.chosen === false));
+    this.renderAccountLink(setupState);
   }
 
   setGated(flag) {
@@ -3607,6 +3775,8 @@ class Dashboard {
     if (isGated) {
       putText(this.dom.gateError, '');
       this.setDrawerOpen(false);
+      this.setAccountOpen(false, true);
+      this.closeOtherSideWindows();
       this.dom.setupLink.hidden = true;
       this.updateInert();
       if (!this.confirmPending) this.dom.gateEmail.focus({ preventScroll: true });
@@ -4047,6 +4217,7 @@ class Dashboard {
     this.answerConfirm(false);
     this.closeRegionPicker();
     this.setDrawerOpen(false);
+    this.setAccountOpen(false, true);
     for (const win of this.floating.slice()) {
       if (win.closeFloating) win.closeFloating();
     }
@@ -4271,17 +4442,16 @@ class Dashboard {
    *  would slam the card shut 250 ms after every re-open. */
   collapseSetupOnLaunch(models, setupState) {
     if (!this.setupCard) return;
-    // The signed-in user's sheet is a model in the Controller but not a
-    // launched device: signing in in Setup must not read as a launch and
-    // withdraw the drawer (2026-10-07).
-    const sheet = accountSheet(setupState);
-    const hasModels = Object.keys(models || {}).some((name) => name !== sheet);
+    // The signed-in user is Setup's, never a model (owner 2026-10-07), so
+    // every model here is a launched one.
+    const hasModels = Object.keys(models || {}).length > 0;
     // No setup state and no models: the setup poll failed, which is not an
     // edge and must not be read as "stopped".
     if (!hasModels && !setupState) return;
     const isLaunched = hasModels || Boolean(setupState.is_launched);
     if (isLaunched === this.isLaunched) return;
     this.isLaunched = isLaunched;
+    this.applySetupWords();
     // A launch lands on the Overview (K4), whatever page was shown before.
     if (isLaunched && this.opened) {
       this.opened = null;
@@ -4447,7 +4617,7 @@ class Dashboard {
         const overview = make('button', 'model-link overview-link', 'Overview');
         overview.type = 'button';
         overview.dataset.page = 'overview';
-        overview.addEventListener('click', () => this.showPage(null));
+        overview.addEventListener('click', () => this.navigateTo(null));
         this.dom.nav.appendChild(overview);
       }
       for (const name of names) {
@@ -4474,7 +4644,7 @@ class Dashboard {
         link.type = 'button';
         link.dataset.model = name;
         link.setAttribute('translate', 'no');
-        link.addEventListener('click', () => this.showPage(name));
+        link.addEventListener('click', () => this.navigateTo(name));
         this.dom.nav.appendChild(link);
       }
       if (this.latched) this.setUnconfirmed(Array.from(this.latched), Array.from(this.unconfirmed));
@@ -4782,6 +4952,7 @@ class Dashboard {
       // full-screen Setup no longer opens only to slide away on the first
       // poll, under a press meant for it.
       if (setup.state && setup.state.is_launched) this.isLaunched = true;
+      this.applySetupWords();
       if (!this.isLaunched) this.setDrawerOpen(true);        // Setup is where a run begins
     } catch (err) { /* setup is optional once models are built */ }
   }

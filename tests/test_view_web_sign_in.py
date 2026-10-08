@@ -6,8 +6,9 @@ then the station.
    secret, the box redrew empty, and the next Sign in sent
    `"account_password": ""`. A secret never commits itself, keeps its text
    until a command that declares it runs, and is cleared after that.
-2. Signing in withdrew Setup: the signed-in user's sheet (`User`) is a model
-   in the Controller, and the drawer read any model as a launch.
+2. Signing in withdrew Setup: the signed-in user's sheet (`User`) was a
+   model in the Controller, and the drawer read any model as a launch. Since
+   2026-10-07 the user is Setup's own, never a model (the account menu).
 3. The sign-in screen: shown while Setup's `state.account.chosen` is false,
    beside the rail (the stop stays reachable), in front of everything else;
    its three choices are Setup commands with the typed email and password as
@@ -88,7 +89,8 @@ class AccountSetup(Panel):
             snapshot["account"] = {"enabled": True, "chosen": self.chosen,
                                    "signed_in": bool(self.signed_in),
                                    "email": self.signed_in or "",
-                                   "status": self.signed_in or "Guest", "sheet": "User"}
+                                   "status": self.signed_in or "Guest",
+                                   "name": self.signed_in or "Guest"}
         return snapshot
 
     def _allows(self, command, args=()):
@@ -145,8 +147,9 @@ class AccountSetup(Panel):
         return "ok"
 
     def add_sheet(self):
-        """What a sign-in does to the Controller: the user's sheet appears."""
-        self.controller.add("User", FakeProbe(), {})
+        """A sign-in from Setup: since 2026-10-07 the user is Setup's own,
+        never a model, so the Controller is left exactly as it was."""
+        self.signed_in = "ian@uci.edu"
         return "ok"
 
     def launch(self):
@@ -255,8 +258,8 @@ def test_signing_in_does_not_withdraw_setup_but_a_launch_does(served, tmp_path):
       const afterLaunch = await page.evaluate(%(shown)s);
       return { afterSheet, afterLaunch };
     """ % {"shown": _SHOWN}, tmp_path)
-    assert "User" in controller.model_names
-    assert out["afterSheet"]["drawer"] is True, "the User sheet read as a launch"
+    assert "User" not in controller.model_names, "the user became a model"
+    assert out["afterSheet"]["drawer"] is True, "a sign-in read as a launch"
     assert out["afterLaunch"]["drawer"] is False, "a real launch no longer withdraws Setup"
 
 

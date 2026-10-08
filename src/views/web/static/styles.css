@@ -3027,6 +3027,85 @@ label.row-title[for] { cursor: pointer; }
   }
 }
 
+/* -- the account menu (owner 2026-10-07) --------------------------------- */
+/* Who is signed in, at the top of the page list: a person, not a device -
+   a head-and-shoulders glyph where a device has its dot, the name in the
+   page list's type, a rule under it that sets it apart from the pages. It
+   opens the account sheet beside the rail, as Settings opens. */
+.account-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--hit-panel);
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-bottom: 1px solid var(--surface);
+  border-radius: var(--radius-key) var(--radius-key) 0 0;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.account-link[hidden] { display: none; }
+.account-link:hover { background: color-mix(in srgb, var(--rail) 40%, var(--surface)); }
+.account-link[aria-expanded="true"] { background: var(--surface); box-shadow: var(--shadow-inset); }
+.account-link.is-guest .account-name { font-weight: 500; color: var(--muted); }
+.account-name { min-width: 0; overflow-wrap: anywhere; }
+
+.account-glyph {
+  position: relative;
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+}
+
+.account-glyph::before,
+.account-glyph::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 1.5px solid currentColor;
+}
+
+.account-glyph::before { top: 0; width: 0.45rem; height: 0.45rem; border-radius: 50%; }
+.account-glyph::after {
+  bottom: 0;
+  width: 0.9rem;
+  height: 0.42rem;
+  border-bottom: 0;
+  border-radius: 0.5rem 0.5rem 0 0;
+}
+
+/* The account sheet: a side window beside the rail, narrower than the
+   full-screen Settings (a few rows of its own), above the tray. */
+.account-drawer {
+  right: auto;
+  width: min(36rem, calc(100vw - var(--rail-left)));
+  --setup-pad: var(--space-8);
+}
+
+.account-drawer .section { margin-bottom: var(--space-5); }
+
+/* After the launch: one line at the top of Settings saying what is fixed. */
+.settings-note {
+  margin: 0 0 var(--space-5);
+  font-size: var(--t-sm);
+  color: var(--muted);
+}
+
+.settings-note[hidden] { display: none; }
+
+@media (max-width: 40rem) {
+  .account-link { order: 4; flex: 1 0 100%; border-radius: var(--radius-key); }
+  .account-drawer { --setup-pad: var(--space-5); }
+}
+
 /* -- tutorial ------------------------------------------------------------ */
 /* The coach: a card beside the control a step is about, a ring on the
    control, and a panel that lists the tutorials. Beside the rail, above the
