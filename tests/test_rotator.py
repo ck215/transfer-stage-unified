@@ -1060,3 +1060,58 @@ def test_an_unreachable_stage_past_the_boot_grace_asks_for_attention(seen):
     model._poll()
     back = [e for e in seen if e.title == "Rotator Back"]
     assert back and back[0].needs_ack is False
+
+
+# -- UX audit 2026-10-07 #8: a Rotator set to SIM raises no false alarms --
+
+@pytest.mark.parametrize("build", [lambda: Rotator(port="SIM", sim=True),
+                                   lambda: Rotator(port="SIM")])
+def test_a_sim_rotator_is_not_stale_and_its_stop_is_confirmed(build):
+    """In SIM the Rotator is no stage, by the operator's choice. It used to
+    read "Stale" with a red dot (no loop ever touched it), drop out of the
+    rail's "Simulated:" line, and make every Stop say "Rotator did not
+    confirm". With no stage there is nothing to stop and nothing to go
+    stale; it still refuses every command (ROTATOR-13)."""
+    model = build()
+    model.open()
+    try:
+        time.sleep(0.05)
+        state = model.state
+        assert state["age"] is None, "a SIM rotator has no loop to be stale about"
+        assert state["devices"] == {"SMC100": "simulated"}, state["devices"]
+        assert state["hardware_devices"] == []
+        assert model.estop() is True
+        assert model.stop_confirmed is True
+        model.clear_estop(confirmed=True)
+        with pytest.raises(Refused) as refusal:
+            model.home()
+        assert "not connected" in refusal.value.reason.lower()
+    finally:
+        _settle(model)
+
+
+def test_a_sim_rotators_stop_raises_no_error(seen):
+    model = Rotator(port="SIM", sim=True)
+    model.open()
+    try:
+        model.toggle_estop()
+    finally:
+        _settle(model)
+    assert [e for e in seen if e.severity == "error"] == [], [e.title for e in seen]
+
+
+def test_a_rotator_on_a_real_port_still_goes_stale_and_reports_an_unlanded_stop():
+    """The SIM rule does not reach a real stage: it still expects its
+    sampler's heartbeat, and a stop that did not land is unconfirmed."""
+    smc = FakeSMC()
+    smc.stop = lambda priority=False: False
+    model = _rotator(smc)
+    try:
+        assert model._expects_heartbeat() is True
+        assert model.state["age"] is not None
+        assert "SMC100" not in model.state["devices"] or \
+            model.state["devices"]["SMC100"] != "simulated"
+        assert model.estop() is False
+        assert model.stop_confirmed is False
+    finally:
+        _settle(model)
