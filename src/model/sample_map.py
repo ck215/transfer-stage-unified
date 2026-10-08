@@ -2159,6 +2159,11 @@ class SampleMap(store_choice.StorePrompt, Model):
         snapshot["values"]["has_chip"] = self.has_chip
         snapshot["store"] = {"path": str(self.db_path) if self._store_chosen else None,
                              "chosen": self._store_chosen}
+        # UX audit 2026-10-08 #11: the titles name the current pick ("New
+        # flake on S-001 · C1"); a view built its card from the schema of
+        # an earlier moment, so the titles of now ride in the state.
+        snapshot["section_titles"] = [s.get("title", "")
+                                      for s in self.schema["sections"]]
         return snapshot
 
     # -- data -----------------------------------------------------------------------

@@ -133,6 +133,30 @@ class TitledProc(FakeProc):
                 section["title"] = f"New tip on {self.chip or '?'}"
         return base
 
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["section_titles"] = [s["title"] for s in self.schema["sections"]]
+        return snapshot
+
+
+def test_the_sample_dbs_state_carries_its_titles_of_now(tmp_path):
+    from model.sample_map import SampleMap
+    model = SampleMap(db_path=tmp_path / "s" / "sample_map.sqlite")
+    model.open()
+    try:
+        model.run("begin_new_sample")
+        model.run("set_new_material", None, ("hBN",))
+        assert model.run("create_sample", {"new_sample_id": "S-001"}).is_ok
+        model.run("begin_new_chip")
+        assert model.run("create_chip", {"new_chip_id": "C1"}).is_ok
+        model.run("begin_new_flake")
+        titles = model.state["section_titles"]
+    finally:
+        model.close()
+    assert titles == [s["title"] for s in model.schema["sections"]]
+    assert "New flake on S-001 · C1" in titles
+
 
 @pytest.fixture
 def titled_station():

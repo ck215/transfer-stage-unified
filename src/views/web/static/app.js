@@ -2846,7 +2846,7 @@ class PanelCard {
     this.applyPhase((state && state.phase) || '');
     this.applyProcedure(state);
     this.watchOptions();
-    this.watchTitles(state);
+    this.applyTitles(state);
     const link = this.linkWords;
     const isDown = Boolean(link && link.down);
     for (const widget of this.widgets) {
@@ -3196,40 +3196,20 @@ class PanelCard {
   /** UX audit 2026-10-08 #11 ("New flake on ? · ?"): a procedure's section
    *  titles may name the current pick ("New flake on S-001 · C1", "Pictures
    *  of …"), but the card is built once from the schema fetched at the
-   *  launch, so they kept the picks of that moment. When the step or a
-   *  pick changes, the schema is read again and only the titles that
-   *  changed are rewritten in place (the structure is the build's). */
-  watchTitles(state) {
-    if (!state || typeof state.phase !== 'string' || !state.phase) return;
-    const picks = this.widgets.filter((w) => w.element.type === 'dropdown')
-      .map((w) => {
-        const v = this.values[w.element.model_attr];
-        return v === undefined ? null : v;
-      });
-    const sig = state.phase + '\n' + JSON.stringify(picks);
-    const seen = this.titlesSeen;
-    this.titlesSeen = sig;
-    if (seen !== undefined && seen !== sig) this.retitle();
-  }
-
-  async retitle() {
-    this.retitleAsk = (this.retitleAsk || 0) + 1;
-    const ask = this.retitleAsk;
-    let fresh;
-    try {
-      fresh = await apiGet('/api/schema?name=' + encodeURIComponent(this.name));
-    } catch (err) {
-      return;                         // the next change asks again
-    }
-    if (ask !== this.retitleAsk || !fresh || !Array.isArray(fresh.sections)) return;
-    if (fresh.sections.length !== this.phaseSections.length) return;
-    fresh.sections.forEach((section, at) => {
+   *  launch, so they kept the picks of that moment. A model whose titles
+   *  move publishes them in its state (`section_titles`, one per schema
+   *  section); the titles that changed are rewritten in place (and the
+   *  prompt's name). The structure stays the build's; nothing is fetched. */
+  applyTitles(state) {
+    const titles = state && state.section_titles;
+    if (!Array.isArray(titles) || titles.length !== this.phaseSections.length) return;
+    titles.forEach((raw, at) => {
       const entry = this.phaseSections[at];
-      const title = section.title || '';
+      const title = String(raw === null || raw === undefined ? '' : raw);
       if (title === entry.title) return;
-      const box = this.dialog && entry.node.parentNode
-        && entry.node.parentNode.classList.contains('dialog-box') ? entry.node.parentNode : null;
-      if (box && box.getAttribute('aria-label') === sentenceCase(entry.title)) {
+      const box = entry.node.parentNode;
+      if (this.dialog && box && box.classList.contains('dialog-box')
+          && box.getAttribute('aria-label') === sentenceCase(entry.title)) {
         box.setAttribute('aria-label', sentenceCase(title));
       }
       entry.title = title;
