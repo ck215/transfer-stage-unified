@@ -26,8 +26,9 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 
-from controller import updater
+from controller import single_instance, updater
 from controller.controller import Controller
 from events import events
 from controller.setup import Setup
@@ -147,6 +148,9 @@ def restart_process(args=None, extra_args=(), delay=0.0):
         except Exception:
             pass
     events.close_file()
+    # The new run waits for this PID's one-station lock instead of taking it
+    # for a second station (Windows starts it before this one has exited).
+    os.environ[single_instance.RESTART_ENV] = str(os.getpid())
     try:
         if not frozen:
             os.chdir(CHECKOUT_ROOT)
@@ -173,6 +177,7 @@ def restart_process(args=None, extra_args=(), delay=0.0):
                     events.warn("Update Not Installed", refusal, source="app")
             os.execv(sys.executable, argv)
     except OSError:
+        os.environ.pop(single_instance.RESTART_ENV, None)
         events.open_file()
         raise
     return None
@@ -216,6 +221,43 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
         raise ValueError(f"{view_name!r} is not a view: "
                          f"{', '.join(sorted(VIEWS))}")
 
+    # One station per computer (owner 2026-10-07): taken before the gamepad,
+    # the log file or the port scan, so a second launch touches nothing.
+    lock, running = single_instance.acquire()
+    if lock is None:
+        point_at_running_station(running, open_browser)
+        return None
+    try:
+        return _launch(view_name, lock, port=port, open_browser=open_browser,
+                       font_size=font_size)
+    finally:
+        lock.release()
+
+
+def point_at_running_station(info, open_browser=True):
+    """A second launch on this computer: open the running station's page
+    (unless --no-browser) and say so in one sentence. The launch then ends
+    with status 0 - the desktop icon shows no failure dialog for it."""
+    root = single_instance.data_root()
+    url = single_instance.wait_for_address(root, info)
+    pid = info.get("pid")
+    who = f" (PID {pid})" if pid else ""
+    if url and open_browser:
+        try:
+            webbrowser.open(url)
+            done = "opened it in the browser"
+        except Exception:
+            done = "open that address in the browser"
+    elif url:
+        done = "open that address in the browser"
+    else:
+        done = "it has not said its address yet; try again in a moment"
+    where = f" at {url}" if url else ""
+    sys.stdout.write(f"The station is already running{where}{who}; {done}.\n")
+    sys.stdout.flush()
+
+
+def _launch(view_name, lock, port, open_browser, font_size):
     # SDL must be initialised on the MAIN thread, before any view or request
     # thread builds a model: initialised anywhere else it traps the process
     # (SIGTRAP) at exit on macOS. Its teardown is registered FIRST so that
@@ -231,6 +273,9 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
     events.hook_exceptions()
     path = events.open_file()
     events.info("Log File", path, source="app")
+    if lock.note:
+        (events.debug if lock.held else events.warn)("Single Instance", lock.note,
+                                                       source="app")
     events.debug("Launch", f"view={view_name} port={port} "
                  f"open_browser={open_browser} font_size={font_size} "
                  f"platform={sys.platform} python={sys.version.split()[0]}",
@@ -282,6 +327,8 @@ def launch(view_name, port=DEFAULT_PORT, open_browser=True, font_size=None):
         listening = _after_first_subscriber(events, setup.startup_checks)
     try:
         view.open()
+        # What a second launch opens instead of starting another station.
+        lock.set_url(getattr(view, "url", "") or "")
         if view_name == "web":
             setup.startup_checks(on_next_read=True)
         # A desktop view's open() runs its event loop and returns at close;

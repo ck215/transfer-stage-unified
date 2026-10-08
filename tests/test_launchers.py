@@ -461,7 +461,15 @@ def _served_web(tmp_path, *flags):
     env = {k: v for k, v in os.environ.items() if k != "STATION_ECHO_EVENTS"}
     env.update(TRANSFER_STAGE_DATA_ROOT=str(tmp_path), STATION_NO_UPDATE_CHECK="1",
                STATION_NO_FIRMWARE_CHECK="1", QT_QPA_PLATFORM="offscreen")
-    child = subprocess.Popen([sys.executable, str(REPO / "src" / "app.py"), "--web",
+    env.pop("STATION_RESTART_OF", None)
+    # src/app.py with an empty port listing (2026-10-07): the Setup scan of a
+    # test launch must never reach the bench's serial ports, which a station
+    # in use may hold.
+    no_ports = ("import sys; sys.path.insert(0, {src!r}); "
+                "import devices.serial_port as s; s.list_ports = lambda: []; "
+                "import app; sys.argv[0] = {app!r}; sys.exit(app.main())").format(
+                    src=str(REPO / "src"), app=str(REPO / "src" / "app.py"))
+    child = subprocess.Popen([sys.executable, "-c", no_ports, "--web",
                               "--port", str(port), *flags],
                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              text=True, cwd=str(tmp_path))

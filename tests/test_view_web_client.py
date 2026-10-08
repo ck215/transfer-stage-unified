@@ -1023,6 +1023,28 @@ def test_the_heartbeat_goes_on_while_hidden_and_stops_when_the_tab_goes():
     assert "'/api/heartbeat'" in send
 
 
+def test_the_close_guard_is_always_armed_and_the_tab_says_it_is_leaving():
+    """Owner 2026-10-07: closing the last tab quits the station, so the
+    browser asks on every close while the station runs - not only while
+    something is energized (was N3) - and never after Quit or on the page's
+    own reload. The pagehide says so to /api/leave, with the page's id, as
+    a keepalive request that outlives the page."""
+    guard = re.search(r"window\.addEventListener\('beforeunload', \(event\) => \{(.*?)\n    \}\);",
+                      APP_JS, re.S).group(1)
+    assert "energized" not in guard, "the guard is keyed on energized again"
+    assert "if (this.isShutDown || this.isReloading) return;" in guard
+    assert "event.preventDefault();" in guard
+    assert "this.isReloading = true;" in _body(r"reloadPage\(\) \{(.*?)\n  \}")
+    watch = _body(r"watchVisibility\(\) \{(.*?)\n  \}")
+    assert "window.addEventListener('pagehide', () => this.sayLeaving());" in watch
+    assert "this.pageId = newPageId();" in watch, "a bfcache-restored page kept its old id"
+    leaving = _body(r"sayLeaving\(\) \{(.*?)\n  \}")
+    assert "if (this.isShutDown) return;" in leaving
+    assert "'/api/leave'" in leaving and "keepalive: true" in leaving
+    assert "page: this.pageId" in leaving
+    assert "body: JSON.stringify({ hidden, page })" in APP_JS, "the worker's beat has no page id"
+
+
 def test_the_heartbeat_has_its_own_interval():
     assert "const HEARTBEAT_MS = 2000;" in APP_JS
     assert "const STATE_POLL_MS = 250;" in APP_JS

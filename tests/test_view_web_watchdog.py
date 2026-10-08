@@ -461,3 +461,200 @@ def test_v4_browser_silent_tells_the_operator_how_to_recover(watched, captured):
     assert "throttl" in message and "sleep" in message
     assert "keep the station in its own window" in message
     assert f"at {view.STOP_SECONDS:.0f} s" in warning.message
+
+
+# --------------------------------------------------------------------------
+# Closing the last tab quits the station (owner 2026-10-07): "make sure
+# closing the browser/tab also closes the server". A page's pagehide posts
+# /api/leave; no page checking in within the grace quits by the Quit
+# control's own path (every model stopped, then wait() released, which runs
+# close()). A reload or another tab checks in inside the grace. The backstop
+# quits after a longer silence once a page had checked in.
+# --------------------------------------------------------------------------
+def _titles(captured):
+    return [e.title for e in captured]
+
+
+def test_a_closed_last_tab_quits_after_the_grace(watched, captured):
+    view, controller, clock = watched
+    view.beat(page="a")
+    assert view.leave(page="a") == view.leave_grace
+    clock.advance(view.leave_grace - 0.1)
+    view._check_heartbeat()
+    assert controller.estop_calls == 0 and not view._halt.is_set(), (
+        "quit before the grace was over: a reload would have been cut off")
+    clock.advance(0.2)
+    view._check_heartbeat()
+    assert controller.estop_calls == 1, "the quit did not stop every model first"
+    assert view._halt.is_set(), "wait() was not released"
+    titles = _titles(captured)
+    assert "Tab Closed" in titles and "No Browser Left" in titles and "Quit" in titles
+    said = next(e for e in captured if e.title == "No Browser Left").message
+    assert "no page has checked in" in said and "grace" in said
+    view._check_heartbeat()
+    assert controller.estop_calls == 1, "quit twice"
+
+
+def test_an_idle_station_quits_too(watched):
+    """Idle or energized alike: the owner's ask is the server, not the stop."""
+    view, controller, clock = watched
+    controller.is_active = False
+    view.beat(page="a")
+    view.leave(page="a")
+    clock.advance(view.leave_grace + 0.1)
+    view._check_heartbeat()
+    assert view._halt.is_set()
+
+
+def test_a_reload_checks_in_within_the_grace_and_cancels_the_quit(watched, captured):
+    view, controller, clock = watched
+    view.beat(page="old")
+    view.leave(page="old")
+    clock.advance(1.5)
+    view.beat(page="new")                 # the reloaded page, under a new id
+    assert "Quit Cancelled" in _titles(captured)
+    for _ in range(10):
+        clock.advance(2.0)
+        view.beat(page="new")
+        view._check_heartbeat()
+    assert controller.estop_calls == 0 and not view._halt.is_set()
+
+
+def test_a_beat_in_flight_from_the_page_that_left_does_not_cancel(watched):
+    """The worker's last beat can land after the leave; it is the old page,
+    not a page coming back."""
+    view, controller, clock = watched
+    view.beat(page="a")
+    view.leave(page="a")
+    clock.advance(0.3)
+    view.beat(page="a")
+    clock.advance(view.leave_grace)
+    view._check_heartbeat()
+    assert view._halt.is_set(), "a late beat from the closed tab kept the station up"
+
+
+def test_with_two_tabs_only_the_last_one_closing_quits(watched):
+    view, controller, clock = watched
+    view.beat(page="a")
+    view.beat(page="b")
+    view.leave(page="a")
+    for _ in range(15):                   # tab b keeps checking in, 30 s
+        clock.advance(2.0)
+        view.beat(page="b")
+        view._check_heartbeat()
+    assert not view._halt.is_set() and controller.estop_calls == 0
+    view.leave(page="b")
+    clock.advance(view.leave_grace + 0.1)
+    view._check_heartbeat()
+    assert view._halt.is_set()
+
+
+def test_the_backstop_quits_after_a_long_silence_without_a_leave(watched, captured):
+    """A crashed or killed browser sends no leave."""
+    view, controller, clock = watched
+    view.beat()
+    clock.advance(view.quit_after_silence - 0.5)
+    view._check_heartbeat()
+    assert not view._halt.is_set()
+    clock.advance(1.0)
+    view._check_heartbeat()
+    assert view._halt.is_set() and controller.estop_calls == 1
+    said = next(e for e in captured if e.title == "No Browser Left").message
+    assert "backstop" in said
+
+
+def test_the_backstop_never_fires_before_any_page_checked_in(watched):
+    view, controller, clock = watched
+    clock.advance(view.quit_after_silence * 10)
+    view._check_heartbeat()
+    assert not view._halt.is_set() and controller.estop_calls == 0
+
+
+def test_while_energized_the_full_stop_still_comes_first_then_the_backstop(watched):
+    """The 15 s FULL STOP is unchanged; the quit comes after it."""
+    view, controller, clock = watched
+    controller.is_active = True
+    view.beat()
+    clock.advance(view.STOP_SECONDS + 1)
+    view._check_heartbeat()
+    assert controller.estop_calls == 1 and not view._halt.is_set()
+    clock.advance(view.quit_after_silence)
+    view._check_heartbeat()
+    assert view._halt.is_set() and controller.estop_calls == 2
+
+
+def test_the_grace_and_the_backstop_are_set_from_the_environment(monkeypatch):
+    assert WebView.LEAVE_GRACE_SECONDS == 8.0
+    assert WebView.QUIT_AFTER_SILENCE_SECONDS == 60.0
+    assert (WebView.LEAVE_GRACE_SECONDS < WebView.STOP_SECONDS
+            < WebView.QUIT_AFTER_SILENCE_SECONDS)
+    monkeypatch.setenv("STATION_LEAVE_GRACE_SECONDS", "0.25")
+    monkeypatch.setenv("STATION_QUIT_AFTER_SILENCE_SECONDS", "3")
+    view = WebView(FakeController(), object(), port=0, open_browser=False)
+    assert (view.leave_grace, view.quit_after_silence) == (0.25, 3.0)
+    monkeypatch.setenv("STATION_LEAVE_GRACE_SECONDS", "nonsense")
+    monkeypatch.setenv("STATION_QUIT_AFTER_SILENCE_SECONDS", "-1")
+    view = WebView(FakeController(), object(), port=0, open_browser=False)
+    assert (view.leave_grace, view.quit_after_silence) == (8.0, 60.0)
+
+
+def _post(view, route, body, origin=None):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{view.port}{route}", data=json.dumps(body).encode(),
+        method="POST", headers={"Content-Type": "application/json",
+                                "Origin": origin or f"http://127.0.0.1:{view.port}"})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read().decode("utf-8"))
+
+
+@pytest.fixture
+def served(monkeypatch):
+    """A real server on an ephemeral port, its launcher's wait() on a thread,
+    with a short grace so the real watchdog thread decides in under a second."""
+    monkeypatch.setenv("STATION_LEAVE_GRACE_SECONDS", "0.6")
+    controller = FakeController()
+    view = WebView(controller, object(), port=0, open_browser=False)
+    assert view.open()
+    waiter = threading.Thread(target=view.wait, name="launcher", daemon=True)
+    waiter.start()
+    try:
+        yield view, controller, waiter
+    finally:
+        view.close()
+        waiter.join(timeout=2.0)
+
+
+def test_the_leave_route_quits_the_served_station_the_quit_way(served):
+    view, controller, waiter = served
+    assert _post(view, "/api/heartbeat", {"page": "a"})[0] == 200
+    status, answer = _post(view, "/api/leave", {"page": "a"})
+    assert (status, answer) == (200, {"status": "ok", "quit_in": 0.6})
+    waiter.join(timeout=3.0)
+    assert not waiter.is_alive(), "the last tab closed and the station kept running"
+    assert controller.estop_calls == 1 and controller.closed == 1
+    assert not view.is_serving
+
+
+def test_the_leave_route_then_a_reload_keeps_the_station_up(served):
+    view, controller, waiter = served
+    _post(view, "/api/heartbeat", {"page": "a"})
+    _post(view, "/api/leave", {"page": "a"})
+    _post(view, "/api/heartbeat", {"page": "b"})
+    deadline = time.monotonic() + 1.8     # three graces
+    while time.monotonic() < deadline:
+        _post(view, "/api/heartbeat", {"page": "b"})
+        time.sleep(0.2)
+    assert waiter.is_alive() and controller.estop_calls == 0 and view.is_serving
+
+
+def test_the_leave_route_is_guarded_like_every_other_post(served):
+    """A page on another origin cannot quit the station."""
+    view, controller, waiter = served
+    _post(view, "/api/heartbeat", {"page": "a"})
+    status, _ = _post(view, "/api/leave", {"page": "a"}, origin="http://evil.example")
+    assert status == 403
+    time.sleep(1.2)
+    assert waiter.is_alive() and controller.estop_calls == 0

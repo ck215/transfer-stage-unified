@@ -132,13 +132,13 @@ async function apiPostChecked(path, body) {
 //: fetch is bounded like every other (WEB-22).
 const HEARTBEAT_WORKER_SOURCE = [
   "'use strict';",
-  "let url = '', every = 0, bound = 8000, hidden = false, timer = null;",
+  "let url = '', every = 0, bound = 8000, hidden = false, page = '', timer = null;",
   "async function beat() {",
   "  const controller = new AbortController();",
   "  const clock = setTimeout(() => controller.abort(), bound);",
   "  try {",
   "    const response = await fetch(url, { method: 'POST', signal: controller.signal,",
-  "      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden }) });",
+  "      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden, page }) });",
   "    const answer = await response.json();",
   "    postMessage({ ok: Boolean(answer && answer.status === 'ok') });",
   "  } catch (err) {",
@@ -151,7 +151,7 @@ const HEARTBEAT_WORKER_SOURCE = [
   "  const said = message.data || {};",
   "  if ('hidden' in said) hidden = Boolean(said.hidden);",
   "  if (said.start && !timer) {",
-  "    url = said.url; every = said.every; bound = said.bound || bound;",
+  "    url = said.url; every = said.every; bound = said.bound || bound; page = said.page || '';",
   "    beat();",
   "    timer = setInterval(beat, every);",
   "  }",
@@ -172,6 +172,15 @@ function heartbeatWorker() {
   } finally {
     URL.revokeObjectURL(source);
   }
+}
+
+/** A fresh id for this page's heartbeats and its leave (owner 2026-10-07):
+ *  the server tells a reload (a new id checking in) from a beat that was
+ *  still in flight when this page went (the old id). */
+function newPageId() {
+  const c = typeof crypto !== 'undefined' ? crypto : null;
+  if (c && c.randomUUID) return c.randomUUID();
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
 // ==========================================================================
@@ -3277,6 +3286,12 @@ class Dashboard {
     this.isPolling = false;
     this.heartbeatTimer = null;
     this.heartbeatWorker = null;
+    //: This page's id on its heartbeats and its leave; a page restored from
+    //: the back-forward cache takes a new one.
+    this.pageId = newPageId();
+    //: The page is reloading itself (Restart, a new station run): the
+    //: browser's "Leave site?" must not ask about the page's own reload.
+    this.isReloading = false;
     this.setupCard = null;
     this.isLaunched = false;
     this.isEstopped = false;
@@ -3436,13 +3451,16 @@ class Dashboard {
           && document.activeElement.closest('.log-window')) return;
       if (this.isDrawerOpen && this.dom.modal.hidden) this.setDrawerOpen(false);
     }, true);
-    // Closing the tab silences the heartbeat, and the watchdog then stops
-    // the station: while anything is ENERGIZED - a probe merely in a mode
-    // included, not only one moving, heating or recording - the browser
-    // asks first (F24, WDG-12; N3 keys it on `state.energized`). After Quit
-    // there is nothing left to guard.
+    // Closing the last tab quits the station (owner 2026-10-07, as the Qt
+    // app asked "are you sure you want to exit" on close), so the browser
+    // asks first on every close, reload or navigation away while the station
+    // runs - not only while something is energized (was F24/N3). The words
+    // are the browser's own generic "Leave site?": no browser shows a page's
+    // text any more, and none asks for a page the operator never clicked or
+    // typed in. After Quit there is nothing left to guard, and the page's
+    // own reloads (Restart, a new station run) do not ask.
     window.addEventListener('beforeunload', (event) => {
-      if (!this.energized.length || this.isShutDown) return;
+      if (this.isShutDown || this.isReloading) return;
       event.preventDefault();
       event.returnValue = '';
     });
@@ -3746,7 +3764,8 @@ class Dashboard {
     if (worker) {
       worker.onmessage = (message) => this.heardBeat(message.data && message.data.ok);
       worker.postMessage({ start: true, every: HEARTBEAT_MS, bound: fetchTimeoutMs(),
-        url: new URL('/api/heartbeat', window.location.href).href, hidden });
+        url: new URL('/api/heartbeat', window.location.href).href, hidden,
+        page: this.pageId });
       this.heartbeatWorker = worker;
       return;
     }
@@ -3769,7 +3788,7 @@ class Dashboard {
   async sendHeartbeat() {
     try {
       const hidden = typeof document !== 'undefined' && Boolean(document.hidden);
-      const answer = await apiPost('/api/heartbeat', { hidden });
+      const answer = await apiPost('/api/heartbeat', { hidden, page: this.pageId });
       this.heardBeat(Boolean(answer && answer.status === 'ok'));
     } catch (err) {
       // Nothing to recover: a missed heartbeat is the signal itself.
@@ -3790,12 +3809,29 @@ class Dashboard {
     document.addEventListener('visibilitychange', () => {
       if (this.heartbeatWorker) this.heartbeatWorker.postMessage({ hidden: Boolean(document.hidden) });
     });
-    // The tab going is the silence the watchdog exists for. A tab restored
-    // from the back-forward cache is a browser that came back.
+    // The tab going is the silence the watchdog exists for, and it says so
+    // (owner 2026-10-07): the station quits unless a page checks in within
+    // its grace, which a reload does. A tab restored from the back-forward
+    // cache is a browser that came back, under a new id.
     window.addEventListener('pagehide', () => this.stopHeartbeat());
+    window.addEventListener('pagehide', () => this.sayLeaving());
     window.addEventListener('pageshow', (event) => {
-      if (event.persisted && !this.isShutDown) this.startHeartbeat();
+      if (event.persisted && !this.isShutDown) {
+        this.pageId = newPageId();
+        this.startHeartbeat();
+      }
     });
+  }
+
+  /** Tell the station this page is going. A keepalive request outlives the
+   *  page (what sendBeacon is, but with the JSON type and Origin every POST
+   *  here must carry); nothing waits on its answer, and a lost one is what
+   *  the server's backstop is for. */
+  sayLeaving() {
+    if (this.isShutDown) return;
+    api('/api/leave', { method: 'POST', keepalive: true,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: this.pageId }) }).catch(() => {});
   }
 
   // -- polling ------------------------------------------------------------
@@ -3861,8 +3897,8 @@ class Dashboard {
 
   // -- Quit (G2) -----------------------------------------------------------
   //
-  // The only way the console ends the program: closing the tab leaves the
-  // station running for the next tab, with the watchdog as its guard. Quit
+  // The console's way to end the program; closing the last tab ends it the
+  // same way a few seconds later (owner 2026-10-07; `sayLeaving`). Quit
   // is allowed while active - the server's close path stops every model
   // before it closes anything. The server answers first and then exits, so
   // after the answer nothing here polls, beats or reconnects: there is no
@@ -5012,6 +5048,7 @@ class Dashboard {
   }
 
   reloadPage() {
+    this.isReloading = true;
     window.location.reload();
   }
 
