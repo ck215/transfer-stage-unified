@@ -69,6 +69,7 @@ How this file is kept:
 
 ### Changed
 
+- **Swap to the original app.** `dev/swap_branch.sh legacy` flashes the boards and runs the lab's original Tk app from a `legacy-app` folder beside this one (made on first use); `station` swaps back.
 - **A trial is a procedure.** The Transfer Map walks through setup, region,
   live, marked and finish, shown as a step strip with the next step in words
   and a health word for the analysis. At Arm a full-resolution picture of the
