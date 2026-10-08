@@ -27,6 +27,9 @@ class Controller:
     #: s a second `close()` waits for the first. Above the heater's worst
     #: read-back (3 x 1.5 s) plus every other model's bounded teardown.
     CLOSE_WAIT = 30.0
+    #: s `close()` waits for an `add` whose open was under way when it
+    #: began; that add then stops and closes its model itself.
+    OPEN_WAIT = 10.0
 
     def __init__(self):
         self._lock = threading.RLock()
@@ -40,6 +43,7 @@ class Controller:
         #: Bumped by every stop of the whole station; `add` compares it
         #: across an open so a stop pressed meanwhile reaches the new model.
         self._stop_count = 0
+        self._opening_changed = threading.Condition(self._lock)
         self._subscribers = []
         self._closed = False
         self._closing_thread = None
@@ -61,16 +65,25 @@ class Controller:
         where no FULL STOP reached them). The open itself runs with the lock
         released: FULL STOP never waits behind a port handshake. A FULL STOP
         pressed while the model was opening is applied to it after the open
-        and before it is published (`_stop_count`)."""
+        and before it is published (`_stop_count`).
+
+        Once `close()` has begun nothing is added: the model is closed and
+        RuntimeError raised, before the open or, when the close began during
+        it, right after (`close()` waits, bounded, for such an open)."""
         with self._lock:
-            if name in self._models:
-                raise ValueError(f"{name} is already open")
-            if name in self._removing:
-                raise ValueError(f"{name} is still closing")
-            if name in self._opening:
-                raise ValueError(f"{name} is already opening")
-            self._opening[name] = model
-            stops_seen = self._stop_count
+            refused = self._closed
+            if not refused:
+                if name in self._models:
+                    raise ValueError(f"{name} is already open")
+                if name in self._removing:
+                    raise ValueError(f"{name} is still closing")
+                if name in self._opening:
+                    raise ValueError(f"{name} is already opening")
+                self._opening[name] = model
+                stops_seen = self._stop_count
+        if refused:
+            self._close_refused(name, model, opened=False)
+            raise RuntimeError(f"{name} was not opened: the station is closing")
         published = False
         try:
             try:
@@ -80,6 +93,8 @@ class Controller:
                 raise
             while True:
                 with self._lock:
+                    if self._closed:
+                        break
                     if self._stop_count == stops_seen:
                         others = dict(self._models)
                         del self._opening[name]
@@ -95,16 +110,34 @@ class Controller:
                 events.debug("Stopped After Open", f"{name}: a FULL STOP ran "
                              "while it was opening", source="Controller")
                 model.estop()
+            if not published:
+                self._close_refused(name, model, opened=True)
+                raise RuntimeError(f"{name} was closed again: the station is "
+                                   "closing")
         finally:
             if not published:
                 with self._lock:
                     if self._opening.get(name) is model:
                         del self._opening[name]
+                    self._opening_changed.notify_all()
         for other_name, other in others.items():
             other.on_model_added(name, model)
             model.on_model_added(other_name, other)
         self._notify("added", name)
         return model
+
+    def _close_refused(self, name, model, opened):
+        """Stop (when it opened) and close a model `add` refused because the
+        station is closing. Never raises: the refusal is what the caller
+        hears."""
+        events.debug("Add Refused", f"{name}: the station is closing",
+                     source="Controller")
+        for step in ((model.estop, model.close) if opened else (model.close,)):
+            try:
+                step()
+            except Exception as exc:
+                events.debug("Close Failed", f"{name}: {exc!r}",
+                             source="Controller", exception=exc)
 
     def remove(self, name):
         """Estop, close, drop. The config is remembered so reopen() works.
@@ -177,6 +210,7 @@ class Controller:
             return
         try:
             self._close_models()
+            self._wait_for_opens()
         finally:
             self._close_done.set()
         deferred, self._deferred_signal = self._deferred_signal, None
@@ -186,6 +220,20 @@ class Controller:
                          source="Controller")
             signal.signal(deferred, signal.SIG_DFL)
             signal.raise_signal(deferred)
+
+    def _wait_for_opens(self):
+        """Until every `add` under way has refused and closed its model, at
+        most OPEN_WAIT s (a handshake that hangs is the port's to bound)."""
+        import time
+        deadline = time.monotonic() + self.OPEN_WAIT
+        with self._lock:
+            while self._opening:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    events.debug("Open Wait Expired", "still opening at close: "
+                                 + ", ".join(self._opening), source="Controller")
+                    return
+                self._opening_changed.wait(left)
 
     def _close_models(self):
         with self._lock:

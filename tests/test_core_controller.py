@@ -129,6 +129,36 @@ def test_a_full_stop_during_an_open_latches_the_model_before_it_is_published(
     assert "halt" in model.close_order
 
 
+def test_add_after_close_began_is_refused_and_the_model_closed(controller):
+    """Audit 2026-10-08 item 9: `add` never checked `_closed`; a Hard reset
+    or sign-in landing during a tab-close quit added a model nobody closed."""
+    controller.close()
+    device = FakeDevice("a")
+    model = FakeModel(devices=[device])
+    with pytest.raises(RuntimeError, match="closing"):
+        controller.add("probe", model)
+    assert model.start_calls == 0, "a model opened on a closing station"
+    assert model.disable_calls == 1, "the refused model was not closed"
+    assert controller.model_names == []
+
+
+def test_close_during_an_open_closes_that_model_too(controller):
+    model = _SlowOpen(devices=[FakeDevice("a")])
+    thread, errors = _add_in_thread(controller, "probe", model)
+    assert model.opening.wait(2)
+    closer = threading.Thread(target=controller.close, daemon=True)
+    closer.start()
+    time.sleep(0.1)
+    model.open_gate.set()
+    closer.join(5)
+    thread.join(5)
+    assert not closer.is_alive() and not thread.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], RuntimeError)
+    assert controller.model_names == []
+    assert model.is_estopped and model.disable_calls == 1
+    assert not model.devices[0].is_open, "the port opened during Quit stayed open"
+
+
 def test_a_failed_open_frees_the_name(controller):
     model = FakeModel()
     model.start_error = OSError("handshake timed out")
