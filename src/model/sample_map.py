@@ -2085,7 +2085,28 @@ class SampleMap(store_choice.StorePrompt, Model):
         db.row_factory = sqlite3.Row
         return db
 
+    def _trial_cached(self, key, read):
+        """`read()` once per change of the Transfer Map's trial file
+        (`sample_store.change_token`: the stat of the file, its journal and
+        its WAL), not on every state poll (open issues 2026-10-08). The
+        entry is keyed by the file too, so a store the map switches to is
+        read afresh. No file: read as is (answers [] without opening)."""
+        path = self._trial_store
+        if path is None:
+            return read()
+        cache = self.__dict__.setdefault("_trial_reads", {})
+        token = ss.change_token(path)
+        hit = cache.get(key[0])
+        if hit is not None and hit[0] == (token, key):
+            return hit[1]
+        value = read()
+        cache[key[0]] = ((token, key), value)
+        return value
+
     def _trial_labels(self):
+        return self._trial_cached(("labels",), self._read_trial_labels)
+
+    def _read_trial_labels(self):
         try:
             db = self._trial_connection()
             if db is None:
@@ -2111,6 +2132,11 @@ class SampleMap(store_choice.StorePrompt, Model):
         label = str(sample_id or "").strip()
         if not label:
             return []
+        return [dict(r) for r in self._trial_cached(
+            ("trials", label.lower(), chip_id, flake_id),
+            lambda: self._read_trials_for(label, chip_id, flake_id))]
+
+    def _read_trials_for(self, label, chip_id, flake_id):
         try:
             db = self._trial_connection()
             if db is None:

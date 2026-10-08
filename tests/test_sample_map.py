@@ -1381,6 +1381,38 @@ def test_the_preview_readouts_open_no_sqlite_while_nothing_changed(
     assert any(o.startswith("9sep26") for o in images.sample_options)
 
 
+def test_an_unchanged_state_poll_opens_no_trial_file(images, tmp_path, monkeypatch):
+    """Open issues 2026-10-08 section 4: the sample picker read the Transfer
+    Map's trial file on every state poll for its trial labels (and the
+    trials readouts for the picked sample). Read once per change of that
+    file (its stat, as `change_token` does), never on an unchanged poll."""
+    from model import sample_map as sm_module
+    path = _trial_file(tmp_path / "trials.sqlite", [
+        {"started_at": "2026-10-01T10:00:00", "status": "complete",
+         "sample_id": "4oct26", "chip_id": "2"}])
+    images.on_model_added("Transfer Map", FakeTransferMap(path))
+    images.select_sample("4oct26")
+    values = images.state["values"]
+    assert "4oct26" in images.sample_options
+    real, opened = sm_module.sqlite3.connect, []
+    monkeypatch.setattr(sm_module.sqlite3, "connect",
+                        lambda *a, **k: opened.append(a) or real(*a, **k))
+    for _ in range(3):
+        assert images.state["values"] == values
+    assert opened == [], f"{len(opened)} trial-file opens in 3 unchanged polls"
+    db = real(str(path))                     # the Transfer Map records a trial
+    db.execute("INSERT INTO trials (started_at, status, sample_id) VALUES "
+               "('2026-10-02T10:00:00', 'complete', '9sep26')")
+    db.commit()
+    db.close()
+    assert "9sep26" in images.sample_options, "a change is read at the next poll"
+    assert images.trials_text.startswith("2 trials") or "1 trial" in images.trials_text
+    del opened[:]
+    images.state
+    images.state
+    assert len(opened) <= 2, "one read per change, not per poll"
+
+
 def test_the_pictures_section_previews_the_100x_picture_and_can_switch(images, tmp_path):
     """Owner 2026-10-08: a preview of the picked level's picture, 100x by
     default; the operator may pick another magnification on offer."""
