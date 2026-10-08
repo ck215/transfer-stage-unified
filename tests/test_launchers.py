@@ -550,7 +550,9 @@ def test_the_launcher_icon_runs_run_sh_silently_and_keeps_a_failure_in_the_log(b
     shown = bench.tmp / "zenity.log"
     _executable(stubs / "zenity", f'#!/bin/sh\ncat >> "{shown}"\n')
     _executable(stubs / "xmessage", f'#!/bin/sh\necho xmessage "$@" >> "{shown}"\n')
-    done, calls = bench.run("dev/launch_desktop.sh", FAKE_UNAME="Linux")
+    # The firmware step has its own test below; this one is about run.sh.
+    done, calls = bench.run("dev/launch_desktop.sh", FAKE_UNAME="Linux",
+                            STATION_NO_AUTO_FLASH="1")
     assert done.returncode == 0, done.stderr
     assert (done.stdout, done.stderr) == ("", "")
     assert calls[-1] == ["python3", "src/app.py"]
@@ -561,3 +563,40 @@ def test_the_launcher_icon_runs_run_sh_silently_and_keeps_a_failure_in_the_log(b
     log = bench.tmp / "transfer-stage-runs" / "launcher.log"
     assert "no .venv" in log.read_text()
     assert "no .venv" in shown.read_text()
+
+
+def test_the_launcher_icon_flashes_stale_boards_first_unless_a_station_runs(bench):
+    """Owner 2026-10-08: switching between the Classic and Launcher icons
+    leaves the boards on the other app's sketches, so the Launcher flashes
+    every out-of-date board (controller.flashing, in-process) before run.sh,
+    as Classic does. Not when a station already runs: its ports are held and
+    run.sh only opens its page."""
+    stubs = bench.tmp / "stubs"
+    _executable(stubs / "zenity", "#!/bin/sh\ncat > /dev/null\n")
+    done, calls = bench.run("dev/launch_desktop.sh", FAKE_UNAME="Linux")
+    assert done.returncode == 0, done.stderr
+    assert calls[0][:2] == ["python3", "-c"] and "flashing" in calls[0][2]
+    assert calls[-1] == ["python3", "src/app.py"]
+    # A running station (its instance file names a live process): no flash.
+    runs = bench.tmp / "transfer-stage-runs"
+    runs.mkdir(exist_ok=True)
+    (runs / "station-instance.json").write_text(
+        json.dumps({"pid": os.getpid(), "url": "http://127.0.0.1:8080"}))
+    done, calls = bench.run("dev/launch_desktop.sh", FAKE_UNAME="Linux")
+    assert done.returncode == 0, done.stderr
+    assert not any("flashing" in " ".join(c) for c in calls), calls
+    assert calls[-1] == ["python3", "src/app.py"]
+
+
+def test_a_failed_flash_keeps_the_launcher_from_starting_the_station(bench):
+    """As Classic: a flash that fails stops the launch, and says why."""
+    stubs = bench.tmp / "stubs"
+    shown = bench.tmp / "zenity.log"
+    _executable(stubs / "zenity", f'#!/bin/sh\ncat >> "{shown}"\n')
+    _executable(bench.venv / "bin" / "python3", STUB_PYTHON.replace(
+        "sys.exit(0)", "sys.exit(1 if sys.argv[1:2] == ['-c'] else 0)"))
+    done, calls = bench.run("dev/launch_desktop.sh", FAKE_UNAME="Linux")
+    assert done.returncode != 0
+    assert ["python3", "src/app.py"] not in calls
+    log = bench.tmp / "transfer-stage-runs" / "launcher.log"
+    assert "flashing failed, so the station was not launched" in log.read_text()
