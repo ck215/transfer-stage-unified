@@ -258,13 +258,36 @@ del _built_in
 #: Guest removes them - refused while a trial is open.
 SIGNED_IN_ONLY = (TransferMap, SampleMap)
 
-# A3: the Transfer Map remembers the operator's store choice in the one
-# choices file. Wired here, at the composition root: `model/` never imports
-# the controller.
-TransferMap.choices = user_config
-# 2026-10-07: the Sample DB's store is chosen and remembered the same way
-# (`sample_store`); it no longer defaults to a file inside the install.
-SampleMap.choices = user_config
+class _StationChoices:
+    """The store models' class-level `choices` (what a map reads while it is
+    built, before Setup hands it the session's `_SessionChoices`).
+
+    With accounts off the station's choices file (`controller.user_config`)
+    is the operator's, as before (A3). With accounts on a map exists only
+    for a signed-in user, and owner ruling 2026-10-08 (data safety): "Signed
+    in but no map -> it prompts for creation of a new db, does NOT default
+    to another user's data!" - so the station's file is never read for one
+    (it may hold whoever chose a store before accounts), and nothing is
+    remembered there for one."""
+
+    @staticmethod
+    def read(key, default=None):
+        if PROFILES_ENABLED:
+            return default
+        return user_config.read(key, default)
+
+    @staticmethod
+    def write(key, value):
+        if PROFILES_ENABLED:
+            raise OSError("no signed-in user to remember it for")
+        return user_config.write(key, value)
+
+
+# A3: the maps remember the operator's store choice. Wired here, at the
+# composition root: `model/` never imports the controller. 2026-10-07: the
+# Sample DB's store is chosen and remembered the same way (`sample_store`).
+TransferMap.choices = _StationChoices
+SampleMap.choices = _StationChoices
 
 
 def is_signed_in_only(name):
@@ -1622,6 +1645,7 @@ class Setup(PortProbe, Panel):
         if not email:
             self._take_password()
             self._refuse("Type your email and password, or press Proceed as guest.")
+        self._refuse_other_user_mid_trial(email)
         record = self.users.user(email)
         if record is None:
             self._take_password()
@@ -1664,6 +1688,7 @@ class Setup(PortProbe, Panel):
             self._take_password()
             self._refuse(f"An account for {email} already exists. Press Sign in "
                          "instead.")
+        self._refuse_other_user_mid_trial(email)
         if not confirmed:
             raise NeedsConfirm(
                 f"Create an account for {email} on this station? The password is "
@@ -1823,17 +1848,33 @@ class Setup(PortProbe, Panel):
         return {name: model for name, model in self.controller.models.items()
                 if is_signed_in_only(name)}
 
+    def _busy_signed_in_only(self):
+        return [name for name, model in self._open_signed_in_only().items()
+                if getattr(model, "is_active", False)]
+
     def _refuse_guest_mid_trial(self):
         """Back to Guest takes the Transfer Map and the Sample Map away, so
         not while one of them is busy (an armed trial, a recording)."""
         if not PROFILES_ENABLED or self.user.is_guest:
             return
-        busy = [name for name, model in self._open_signed_in_only().items()
-                if getattr(model, "is_active", False)]
+        busy = self._busy_signed_in_only()
         if busy:
             self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
                          "open. Finish or abort it first: a Guest has no Transfer "
                          "Map or Sample DB, so they close when you switch.")
+
+    def _refuse_other_user_mid_trial(self, email):
+        """Signing in as someone else closes the previous user's stores
+        (owner ruling 2026-10-08), so not while a trial is being recorded
+        into one of them."""
+        if not PROFILES_ENABLED or self.user.is_guest or email == self.user.email:
+            return
+        busy = self._busy_signed_in_only()
+        if busy:
+            self._take_password()
+            self._refuse(f"{_and(busy)} {'has' if len(busy) == 1 else 'have'} a trial "
+                         f"open for {self.user.user_name}. Finish or abort it before "
+                         "someone else signs in: their stores replace this user's.")
 
     def _drop_signed_in_only(self):
         """A Guest's station: the signed-in-only models closed (stopped,
@@ -2740,29 +2781,27 @@ class Setup(PortProbe, Panel):
         return [m for m in models.values() if isinstance(m, self.STORE_MODELS)]
 
     def _follow_store(self, previous):
-        """After a sign-in or sign-out, each open map records where the new
-        session's store is: the signed-in user's remembered store, or - back
-        to Guest from a user - the station's remembered one. The prompt's
-        suggested folder becomes the new user's."""
+        """After a sign-in or a switch, each open map is on the new user's
+        own remembered store, or on its store prompt: never the previous
+        user's, never the station's (owner ruling 2026-10-08, data safety).
+        The prompt's suggested folder becomes the new user's. A Guest has no
+        maps (`_drop_signed_in_only` closed them)."""
         for model in self._store_models():
             model.suggest_store_dir(self._suggested_store_dir())
         if not PROFILES_ENABLED:
             return
         for model in self._store_models():
             model.choices = self._map_choices
-            key = model.STORE_KEY
             if not self.user.is_guest:
                 self._open_users_store(model)
-            elif not previous.is_guest and not os.environ.get(self.STORE_ENV[key]):
-                station = user_config.read(key)
-                if station:
-                    self._open_store_on(model, station, "The station's")
 
     def _open_users_store(self, model):
         """The signed-in user's remembered store (`UserStore` setting
         `map_store` / `sample_store`) becomes `model`'s, when it is still
-        there. `--map-db` / `--sample-db` win over it, as over the station's
-        choice."""
+        there; with none (or one that is gone or will not open) the model
+        lets go of whatever it had and asks (`release_store`, the `new_store`
+        prompt) - owner ruling 2026-10-08: never the station's store, never
+        another user's. `--map-db` / `--sample-db` win over all of it."""
         key = model.STORE_KEY
         if os.environ.get(self.STORE_ENV[key]):
             return
@@ -2773,34 +2812,49 @@ class Setup(PortProbe, Panel):
                         "store could not be read from the accounts file; the "
                         f"{model.NAME} asks where its store is.",
                         source=self.NAME, exception=exc)
+            path = None
+        else:
+            if path and not Path(path).is_file():
+                events.warn(self._store_word(model) + " Missing", f"{self.user.user_name}'s {model.NAME} "
+                            f"store {path} is not there any more. The {model.NAME} "
+                            "asks where its store is; open or make one there.",
+                            source=self.NAME)
+                path = None
+        if path and self._open_store_on(model, path, f"{self.user.user_name}'s"):
             return
-        if not path:
+        self._release_store(model)
+
+    def _release_store(self, model):
+        """`model` back to its store prompt, for the signed-in user."""
+        release = getattr(model, "release_store", None)
+        if not callable(release):
             return
-        if not Path(path).is_file():
-            events.warn(self._store_word(model) + " Missing", f"{self.user.user_name}'s {model.NAME} "
-                        f"store {path} is not there any more. The {model.NAME} "
-                        "asks where its store is; open or make one there.",
-                        source=self.NAME)
-            return
-        self._open_store_on(model, path, f"{self.user.user_name}'s")
+        try:
+            release()
+        except Refused as refusal:      # a switch mid-trial is refused before this
+            events.warn(self._store_word(model) + " Not Closed", f"The {model.NAME} "
+                        f"kept its store: {refusal.reason}", source=self.NAME)
 
     def _open_store_on(self, model, path, whose):
         """Open `path` on `model` the way Open store does; a refusal is a
-        warning, never a failed sign-in."""
+        warning, never a failed sign-in. True when `model` is on `path`."""
         current = getattr(model, "db_path", None)
         if (current is not None and getattr(model, "has_store", False)
                 and Path(current) == Path(path).expanduser().resolve()):
-            return
+            return True
         model.store_path = str(path)
         try:
             model.open_store()
         except Refused as refusal:
             events.warn(self._store_word(model) + " Not Opened", f"{whose} {model.NAME} store {path} "
                         f"was not opened: {refusal.reason}", source=self.NAME)
+            return False
         except Exception as exc:
             events.warn(self._store_word(model) + " Not Opened", f"{whose} {model.NAME} store {path} "
                         "was not opened; the details are in the log file.",
                         source=self.NAME, exception=exc)
+            return False
+        return True
 
     @staticmethod
     def _store_word(model):

@@ -6,7 +6,10 @@ chosen by the operator ... the choice is remembered").
 
 It holds `map_store` (the Transfer Map's SQLite file, an absolute path, or
 null) and `sample_store` (the Sample DB's, 2026-10-07): a Guest's choices;
-a signed-in user's are in their account settings. Outside the install on purpose: an update
+a signed-in user's are in their account settings. With accounts on, a map
+never opens what this file holds for a signed-in user (owner ruling
+2026-10-08: no own setting -> the store prompt, never another user's data;
+`controller.setup._StationChoices`). Outside the install on purpose: an update
 replaces the install folder, and a choice kept there would go with it.
 
 Read once per file and cached; every write goes straight through to disk

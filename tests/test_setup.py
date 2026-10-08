@@ -2380,7 +2380,11 @@ def test_the_store_row_says_nothing_is_chosen_then_what_was(store_choice, tmp_pa
     assert panel.new_map_store() == str(path)
     assert path.is_file()
     assert panel.map_store_status == str(path)
-    assert TransferMap().db_path == path         # remembered for the map
+    from controller import user_config
+    assert user_config.read("map_store") == str(path)   # remembered (a Guest's)
+    # Owner ruling 2026-10-08 (data safety): with accounts on a map is a
+    # signed-in user's and never opens the station's remembered store.
+    assert TransferMap().db_path is None
 
 
 def test_opening_a_store_from_setup_moves_an_open_map_onto_it(store_choice, tmp_path):

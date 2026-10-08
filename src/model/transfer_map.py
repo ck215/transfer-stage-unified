@@ -1170,6 +1170,30 @@ class TransferMap(store_choice.StorePrompt, Model):
                 events.debug("Peer Not Told", repr(exc), source=self.NAME)
         return str(path)
 
+    def release_store(self):
+        """No store until the operator chooses one: the `new_store` prompt,
+        prefilled with the suggested folder (Setup, at a user switch: owner
+        ruling 2026-10-08, a user never records into another's store). The
+        previous store stays on disk untouched; nothing of it is left in the
+        prompt's fields. Refused while a trial is armed."""
+        self._refuse_store_change()
+        for writer in list(self._persisting):      # an abort still being written
+            writer.join(self.THREAD_JOIN_TIMEOUT)
+        self._no_store()
+        self._choosing_store = False
+        self.store_path = ""
+        self.store_dir = self.suggested_folder
+        self._indices = {}
+        self._figure_cache = None
+        self._revision += 1
+        self._touch()
+        sample = self._peers.get(self.SAMPLE_MAP)
+        if sample is not None:
+            try:
+                sample.on_model_added(self.NAME, self)
+            except Exception as exc:
+                events.debug("Peer Not Told", repr(exc), source=self.NAME)
+
     # -- the Model contract ------------------------------------------------
     @property
     def devices(self):
@@ -1292,9 +1316,9 @@ class TransferMap(store_choice.StorePrompt, Model):
         # Sample DB finds this map's store).
         if name == self.SAMPLE_MAP and model is not self:
             path = getattr(model, "db_path", None)
-            if path:
-                self._sample_db = Path(path)
-                self._touch()
+            # None too: a released store is never read on (2026-10-08).
+            self._sample_db = Path(path) if path else None
+            self._touch()
         if callable(getattr(model, "subscribe", None)) and \
                 callable(getattr(model, "grab_frame", None)):
             self._red, self._red_name = model, name
