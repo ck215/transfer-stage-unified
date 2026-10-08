@@ -278,8 +278,9 @@ GATE_WORDS = {
     "no_source": ("No locating axes", None),
     # The Rotator turns the chip (owner 2026-10-04): no angle, no marks.
     "rotator_unknown": ("Rotator angle unknown: home or reconnect it", None),
-    # Setup's Launch, once per run (owner 2026-10-07: no relaunch).
-    "launched": ("Launched: restart the station to change devices",
+    # Setup's Launch, once per run (owner 2026-10-07: no relaunch). A
+    # changed port is applied by its row's Hard reset (2026-10-08).
+    "launched": ("Launched: to add a device, restart the station",
                  "Nothing launched yet"),
 }
 

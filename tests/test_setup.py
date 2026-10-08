@@ -169,8 +169,10 @@ def test_model_types_is_the_only_list_of_models(panel, fake_types):
     builds. Four copies of this list disagreed before RC-7."""
     assert panel.model_types == list(fake_types)
     titles = [section["title"] for section in panel.schema["sections"]]
-    assert titles == [Setup.ACCOUNT_SECTION, "Update", "Firmware", "Devices", *fake_types,
-                      "Launch"]
+    # The drawer's job first, then upkeep, then the defaults (UX audit
+    # 2026-10-08).
+    assert titles == ["Devices", *fake_types, "Launch", "Update", "Firmware",
+                      Setup.ACCOUNT_SECTION]
 
 
 # -- the table (Addendum 2) ------------------------------------------------
@@ -254,8 +256,7 @@ def test_the_header_row_offers_refresh_the_scan_status_and_cancel(panel):
 def test_the_launch_row_is_launch_alone(panel):
     """Owner 2026-10-07: no Relaunch and no Close every model. A device is
     recovered with its row's Hard reset; changing devices is a Restart."""
-    row = panel.schema["sections"][-1]
-    assert row["title"] == "Launch"
+    [row] = [s for s in panel.schema["sections"] if s["title"] == "Launch"]
     assert [e.get("text") for e in row["elements"]] == ["Launch"]
     commands = {e.get("command") for e in _elements(panel)}
     assert "stop_system" not in commands and not hasattr(panel, "stop_system")
@@ -525,7 +526,7 @@ def test_launch_runs_once_and_a_second_launch_is_refused(panel):
     import schema as sch
     from views.base import gate_reason
     assert sch.is_enabled(launch, "ready") and not sch.is_enabled(launch, "launched")
-    assert gate_reason(launch, "launched") == "Launched: restart the station to change devices"
+    assert gate_reason(launch, "launched") == "Launched: to add a device, restart the station"
     assert panel.run("launch").is_ok
     model = panel.controller._model("Alpha")
     # The panel's gate refuses the command (the button is disabled), and a
@@ -1117,6 +1118,16 @@ def test_a_port_changed_after_the_launch_waits_for_hard_reset(panel):
     assert beta["pending_reset"] is False
 
 
+def test_a_changed_port_that_has_not_answered_says_so_and_is_not_applied(panel):
+    old = _launch_alpha_on(panel)
+    offer(panel, "/dev/ttyUSB1")            # listed, never identified
+    select(panel, "alpha", "port", "/dev/ttyUSB1")
+    assert panel.alpha_status == "changed: not identified there; press Refresh"
+    result = panel.run("hard_reset_alpha", args=(True,))
+    assert result.is_refused and "Refresh" in result.reason
+    assert panel.controller._model("Alpha") is old and old.closed == 0
+
+
 def test_hard_reset_applies_a_changed_port_stop_path_first(
         panel, fake_types, monkeypatch):
     log = []
@@ -1302,10 +1313,12 @@ def checking(monkeypatch):
 
 
 def test_the_update_section_follows_the_profile_row_and_is_a_tier_one_row(panel):
-    """The account section is first (user-system section 2.4; the Phase 1
-    Profile row became the accounts on 2026-10-07); Update next."""
-    assert panel.schema["sections"][0]["title"] == Setup.ACCOUNT_SECTION
-    section = panel.schema["sections"][1]
+    """Update leads the upkeep, right after Launch (UX audit 2026-10-08:
+    the drawer's job first; the account section, first until then, is
+    last)."""
+    titles = [s["title"] for s in panel.schema["sections"]]
+    assert titles[-1] == Setup.ACCOUNT_SECTION
+    section = panel.schema["sections"][titles.index("Launch") + 1]
     assert section["title"] == "Update"
     assert section["layout"] == "row" and section["tier"] == 1
     assert [(e["type"], e.get("text"), e.get("command") or e.get("model_attr"))
@@ -1320,7 +1333,9 @@ def test_the_update_section_follows_the_profile_row_and_is_a_tier_one_row(panel)
     status = section["elements"][1]
     assert status["role"] == "info"
     update, again = section["elements"][2:4]
-    assert update["role"] == "go" and again["role"] == "neutral"
+    # Outlined in the schema; the Web draws it ink only while an update is
+    # ready (UX audit 2026-10-08: Launch is the drawer's one ink key).
+    assert update["role"] == "neutral" and again["role"] == "neutral"
     assert update["confirm"].startswith("Update the station now?")
 
 
@@ -1671,15 +1686,17 @@ def test_the_firmware_row_block_builds_the_brief_shape(panel):
     ]
     boards, _, flash, again = section["elements"]
     assert boards["role"] == "info"
-    assert flash["role"] == "go" and again["role"] == "neutral"
+    # Outlined (UX audit 2026-10-08): Launch is the drawer's one ink key.
+    assert flash["role"] == "neutral" and again["role"] == "neutral"
     assert flash["confirm"].startswith("Flash the out-of-date boards?")
 
 
 def test_the_firmware_row_is_second_right_after_update(panel):
     sections = panel.schema["sections"]
-    assert [s["title"] for s in sections[:4]] == [Setup.ACCOUNT_SECTION, "Update",
-                                                  "Firmware", "Devices"]
-    assert sections[2] == panel._firmware_section()
+    titles = [s["title"] for s in sections]
+    at = titles.index("Update")
+    assert titles[at - 1:at + 2] == ["Launch", "Update", "Firmware"]
+    assert sections[at + 1] == panel._firmware_section()
 
 
 def test_the_firmware_row_reaches_the_views_through_run_and_state(fake_types):
@@ -2456,9 +2473,11 @@ def test_a_checkout_has_no_switch_to_stable(panel):
 def test_a_bundle_with_stable_beside_it_offers_the_switch(fake_types, stable):
     panel = switching(stable, StableFirmware(), [])
     titles = [s["title"] for s in panel.schema["sections"]]
-    # The account section leads the schema (user-system section 2.4).
-    assert titles[:5] == [Setup.ACCOUNT_SECTION, "Update", "Firmware", "Stable", "Devices"]
-    [button] = [e for e in panel.schema["sections"][3]["elements"]
+    # Upkeep after Launch, the station's defaults last (UX audit
+    # 2026-10-08; the account section led the schema before, user-system
+    # section 2.4).
+    assert titles[-4:] == ["Update", "Firmware", "Stable", Setup.ACCOUNT_SECTION]
+    [button] = [e for e in panel.schema["sections"][-2]["elements"]
                 if e["type"] == "button"]
     assert button["command"] == "switch_to_stable"
     assert button["confirm"] == STABLE_CONFIRM

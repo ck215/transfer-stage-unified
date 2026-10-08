@@ -93,12 +93,13 @@ def models(panel):
 
 # -- the section --------------------------------------------------------------------------
 
-def test_the_station_defaults_section_comes_first_and_only_saves_them(setup):
+def test_the_station_defaults_section_comes_last_and_only_saves_them(setup):
     """Owner 2026-10-07: the user is a settings menu of its own (the rail's
     account menu: who is in, Switch user, the name, the password, my
     defaults), so Setup keeps the station-wide half only: Save station
     settings. Signing in happens on the sign-in screen."""
-    assert setup.schema["sections"][0]["title"] == Setup.ACCOUNT_SECTION == "Station defaults"
+    # Last since the UX audit of 2026-10-08 (the drawer's job first).
+    assert setup.schema["sections"][-1]["title"] == Setup.ACCOUNT_SECTION == "Station defaults"
     elements = _section(setup)["elements"]
     assert [(e["type"], e.get("command") or e.get("model_attr")) for e in elements] == [
         ("button", "save_station_settings"),

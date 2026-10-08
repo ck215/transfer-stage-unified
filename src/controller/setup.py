@@ -2555,8 +2555,11 @@ class Setup(PortProbe, Panel):
             "Firmware",
             sch.readonly("Boards", "firmware_status", role="info"),
             sch.readonly("Flashing", "firmware_progress"),
-            sch.button("Flash out-of-date boards", "flash_firmware", role="go",
-                       confirm=self.FLASH_CONFIRM),
+            # Outlined (UX audit 2026-10-08): Launch is the drawer's one ink
+            # key; an out-of-date board is said by the Boards line and the
+            # startup offer, not by a second dark key.
+            sch.button("Flash out-of-date boards", "flash_firmware",
+                       role="neutral", confirm=self.FLASH_CONFIRM),
             sch.button("Check firmware", "check_firmware", role="neutral"),
             layout="row",
         )
@@ -2995,15 +2998,20 @@ class Setup(PortProbe, Panel):
         and a Launch row (Addendum 2). Every section is `layout="row"`, which
         is the hint each renderer lays out horizontally.
 
-        The Update row comes first (owner, 2026-09-28): what this station
-        runs, whether GitHub has something newer, and the one press that
-        takes it. `sch.button` has no `enabled_by`, so Update now is gated by
-        refusal (nothing to apply, a model running, a check under way)."""
-        sections = [sch.section(
+        Order (UX audit 2026-10-08, replacing "the Update row comes first",
+        owner 2026-09-28): the drawer's job first - Devices, the rows, Launch
+        under them - then the station's upkeep - Update, Firmware, Stable -
+        then Station defaults. Update keeps everything it had: what this
+        station runs, whether GitHub has something newer, and the one press
+        that takes it. `sch.button` has no `enabled_by`, so Update now is
+        gated by refusal (nothing to apply, a model running, a check under
+        way); it is outlined here and the Web draws it ink only while an
+        update is ready (`has_update`), so Launch is the one dark key."""
+        upkeep = [sch.section(
             "Update",
             sch.readonly("Station", "station_version"),
             sch.readonly("Updates", "update_status", role="info"),
-            sch.button("Update now", "apply_update", role="go",
+            sch.button("Update now", "apply_update", role="neutral",
                        confirm=self.UPDATE_CONFIRM),
             sch.button("Check again", "check_updates", role="neutral"),
             # rb-restart R3: the Restart Needed dialog's action, and the way
@@ -3017,8 +3025,8 @@ class Setup(PortProbe, Panel):
         ), self._firmware_section()]
         if self.has_stable:
             # A4: a frozen bundle with the stable app beside it only.
-            sections.append(self._stable_section())
-        sections += [sch.section(
+            upkeep.append(self._stable_section())
+        sections = [sch.section(
             "Devices",
             sch.button("Refresh", "refresh", role="info"),
             sch.readonly("Scan:", "scan_status"),
@@ -3060,14 +3068,16 @@ class Setup(PortProbe, Panel):
             # nothing ticked is refused with the reason. `summary` stays a
             # state value for the API and the tests.
             # Once per run (owner 2026-10-07): no Relaunch and no Close every
-            # model. After the launch a device is recovered with its row's
-            # Hard reset; changing the devices is a station Restart.
+            # model. After the launch a device is recovered, or moved to a
+            # changed port (2026-10-08), with its row's Hard reset; adding a
+            # device is a station Restart.
             sch.button("Launch", "launch", role="go",
                        enabled_when=[self.READY], disabled_when=[self.LAUNCHED]),
             layout="row",
         ))
+        sections += upkeep
         if PROFILES_ENABLED:
-            sections.insert(0, self._account_section())
+            sections.append(self._account_section())
         return sch.schema(*sections)
 
     # -- plumbing ----------------------------------------------------------
@@ -3105,9 +3115,13 @@ class Setup(PortProbe, Panel):
             seen = self._seen.get(key)
         if seen:
             return f"seen on {seen}: restart to launch"
-        if self._pending_config(key) is not None:
-            # Owner ruling 2026-10-08: the row's Hard reset applies it.
-            return "changed: hard reset to apply"
+        pending = self._pending_config(key)
+        if pending is not None:
+            # Owner ruling 2026-10-08: the row's Hard reset applies it - once
+            # the new port has answered as this model (or it is SIM).
+            if pending.get("sim") or found.get(pending.get("port")) == row["name"]:
+                return "changed: hard reset to apply"
+            return "changed: not identified there; press Refresh"
         choice = getattr(self, f"{key}_port")
         if self.guest_locked and is_signed_in_only(row["name"]):
             return "sign in to use"

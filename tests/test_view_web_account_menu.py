@@ -13,7 +13,8 @@ sample map, just tool controls".
    beside the rail (Settings closes); its name, password, "Remember current
    values as my defaults" and Sign out work from there.
 3. The drawer and its key read "Setup" before the launch and "Settings"
-   after it, with a note on what is fixed.
+   after it (no note on what is fixed: owner ruling 2026-10-08, a row's
+   Hard reset applies a changed port).
 4. A press on a rail page closes every side window and focuses the page; a
    pending confirmation keeps priority.
 5. A Guest gets the tool controls only: no Transfer Map or Sample Map, and
@@ -130,7 +131,9 @@ _SHOWN = r"""() => ({
   setupHidden: document.getElementById('setup-link').hidden,
   drawerTitle: document.querySelector('#setup-drawer .drawer-title').textContent,
   drawerLabel: document.getElementById('setup-drawer').getAttribute('aria-label'),
-  note: !document.getElementById('settings-note').hidden,
+  // The "Devices are fixed while the station runs" note is gone (owner
+  // ruling 2026-10-08: a row's Hard reset applies a changed port).
+  note: Boolean(document.getElementById('settings-note')),
   drawer: document.getElementById('setup-drawer').classList.contains('open'),
   account: document.getElementById('account-drawer').classList.contains('open'),
   accountText: document.getElementById('account-link').textContent.trim(),
@@ -266,7 +269,7 @@ def test_setup_before_the_launch_settings_after(station, tmp_path):
     assert before["note"] is False
     assert out["launched"]["setupWord"] == "Settings" and not out["launched"]["setupHidden"]
     assert (after["drawerTitle"], after["drawerLabel"]) == ("Settings", "Settings")
-    assert after["note"] is True
+    assert after["note"] is False
     assert "Close Settings" in out["closeTitle"]
 
 

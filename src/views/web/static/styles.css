@@ -2609,9 +2609,47 @@ label.row-title[for] { cursor: pointer; }
    own and the device table jumps down and back as the scan ends. */
 .drawer .section-span > .row-title + .actions + .cell.stat { flex: 1 1 0; }
 
-.drawer .section-span:last-child {
-  margin-top: var(--space-5);
+/* The Settings drawer's order (UX audit 2026-10-08): Devices, the rows,
+   Launch under them, then the upkeep (Update, Firmware, Stable) and the
+   station's defaults. Launch closes the table at its right edge, under the
+   Status column, with no caption beside it (the "Launch" title beside the
+   Launch key read as two buttons); a strong rule opens the upkeep. */
+.drawer .section-span[data-section="Launch"] {
+  justify-content: flex-end;
+  padding-top: var(--space-5);
+}
+
+.drawer .section-span[data-section="Update"] {
+  margin-top: var(--space-7);
   border-top: var(--rule-strong-px) solid var(--rule-strong);
+  padding-top: var(--space-5);
+}
+
+/* The upkeep sections are quieter than the table: one hairline between
+   them, their names in the caption weight. */
+.drawer .section-span[data-section="Firmware"],
+.drawer .section-span[data-section="Stable"],
+.drawer .section-span[data-section="Station defaults"] {
+  border-top: 1px solid var(--surface);
+}
+
+/* Once launched, Launch can never be pressed again: it is not drawn. */
+.drawer .setup-card.is-launched .section-span[data-section="Launch"] { display: none; }
+
+/* Before the launch a row's Hard reset has nothing to reset: its column
+   takes no room and its key is not drawn (it was five greyed keys). */
+.drawer .setup-card.is-prelaunch .card-body.table {
+  grid-template-columns:
+    minmax(min-content, max-content) minmax(9rem, 1fr) 0 minmax(9rem, 1fr)
+    minmax(min-content, max-content)
+    !important;
+}
+
+.drawer .setup-card.is-prelaunch .hard-reset-cell {
+  visibility: hidden;
+  overflow: hidden;
+  min-width: 0;
+  padding: 0;
 }
 
 .section-span > .value,
@@ -2967,17 +3005,39 @@ label.row-title[for] { cursor: pointer; }
   .mushroom, .mushroom.is-latched { font-size: var(--t-stop-narrow); }
   .card.span-2 { grid-column: span 3; }
   .sheet { column-gap: var(--space-9); }
-  /* UX audit 2026-10-07: beside a 200 px rail the drawer has under 560 px
-     for five columns; the table takes the phone's shape (the name on its
-     own line, the port, Hard reset, the gamepad and the status under it)
-     instead of painting the dropdowns over the names. */
-  .drawer .card-body.table {
-    grid-template-columns:
-      minmax(0, 1fr) max-content minmax(0, 1fr) minmax(min-content, max-content)
-      !important;
+  /* UX audit 2026-10-08 (was a four-track grid that squeezed the Port
+     dropdown to its chevron at phone width): beside a 200 px rail, and on
+     a phone, each device is a block of its own - its name, then Port and
+     Hard reset, then Gamepad, then Status - each control with its caption
+     shown, since the table's header row is not drawn. */
+  .drawer .card-body.table { display: block !important; }
+  .drawer .table-head { display: none !important; }
+  .drawer .card-body.table > .section.section-row:not(.section-span) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-3) 0 var(--space-4);
+    border-bottom: 1px solid var(--surface);
   }
-  .drawer .section-row > .row-title { grid-column: 1 / -1; padding-bottom: 0; border-bottom: 0 !important; }
-  .drawer .table-head > .row-title { display: none; }
+  .drawer .section-row:not(.section-span):not(.table-head) > * { border-bottom: 0; }
+  .drawer .section-row:not(.section-span) > .row-title { flex: 1 0 100%; padding: 0; }
+  .drawer .section-row:not(.section-span) > .filler { display: none; }
+  .drawer .section-row:not(.section-span) > .cell { flex: 1 1 10rem; padding: 0; justify-self: auto; }
+  .drawer .section-row:not(.section-span) > .cell > .select-key { flex: 1 1 auto; width: auto; min-width: 0; }
+  .drawer .section-row:not(.section-span) > .cell.hard-reset-cell { flex: 0 0 auto; }
+  .drawer .setup-card.is-prelaunch .section-row > .cell.hard-reset-cell { display: none; }
+  .drawer .section-row:not(.section-span) > .cell:last-child { flex: 1 0 100%; min-height: 0; }
+  .drawer .section-row:not(.section-span):not(.table-head) > .cell > .label {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    min-width: 4.5rem;
+    font-size: var(--t-cap);
+    color: var(--muted);
+  }
 }
 
 /* Under 760 px the entries stack in one column. */
@@ -3018,15 +3078,12 @@ label.row-title[for] { cursor: pointer; }
   .page { margin-left: 0; }
   .drawer-head { padding: var(--space-5) var(--space-5) var(--space-3); }
   .drawer-body { padding: 0 var(--space-5) var(--space-5); }
-  /* Setup's table at phone width: the name on its own line, the port,
-     Hard reset, the gamepad and the status under it (I9, WDG6-2). */
-  .drawer .card-body.table {
-    grid-template-columns:
-      minmax(0, 1fr) max-content minmax(0, 1fr) minmax(0, max-content)
-      !important;
-  }
-  .drawer .section-row > .row-title { grid-column: 1 / -1; padding-bottom: 0; border-bottom: 0 !important; }
-  .drawer .table-head > .row-title { display: none; }
+  /* Setup's device blocks take the narrow shape above (UX audit
+     2026-10-08). A section's sentence (the backup line, the update check,
+     the boards) takes the whole line at phone width, its keys under it:
+     squeezed beside them it broke one letter per line. */
+  .drawer .section-span > .cell.stat,
+  .drawer .section-span > .cell.stat:has(> .value.role-info) { flex: 1 1 100%; }
   .tray-head, .tray-log { padding-left: var(--space-5); padding-right: var(--space-5); }
 }
 
@@ -3103,15 +3160,6 @@ label.row-title[for] { cursor: pointer; }
 }
 
 .account-drawer .section { margin-bottom: var(--space-5); }
-
-/* After the launch: one line at the top of Settings saying what is fixed. */
-.settings-note {
-  margin: 0 0 var(--space-5);
-  font-size: var(--t-sm);
-  color: var(--muted);
-}
-
-.settings-note[hidden] { display: none; }
 
 @media (max-width: 40rem) {
   .account-link { order: 4; flex: 1 0 100%; border-radius: var(--radius-key); }
