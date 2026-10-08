@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Run the right test gates for the station at the right time — the fast suite while working, the golden and legacy gates plus a launch before anything merges. Use after any change under src/ or tests/, before merging an agent's worktree, and when deciding whether the optional Qt pass is warranted.
+description: Run the right test gates for the station at the right time — the fast suite while working, the golden gate plus a launch before anything merges. Use after any change under src/ or tests/, before merging an agent's worktree, and when deciding whether the optional Qt pass is warranted.
 ---
 
 # Verifying
@@ -17,7 +17,7 @@ $PY -m pytest tests -q -p no:cacheprovider -m "not qt"
 Minutes, not seconds; run after every edit. Baseline (2026-10-07, the merged
 round, lead's full run on the final tree): **3841 passed, 10 skipped, 227
 deselected, 1 xfailed** (the 227 are the Qt tests of the frozen view);
-golden 78; legacy 1038 passed, 1 skipped, 89 deselected, 1 xfailed. A count
+golden 78. A count
 that moved is a finding, not noise. Known flake, not a regression:
 `test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
 fails about one run in three on an unchanged tree (a 1 ms timing bound);
@@ -27,15 +27,12 @@ rerun it alone before calling a red fast gate.
 
 ```
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # the fast gate, see above (STATION_NO_WINDOWS=1 while anyone is at the Mac)
-$PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                  # 78 passed; recaptures from legacy/src in a subprocess
-cd legacy && $PY -m pytest tests -q -p no:cacheprovider -m "not slow and not order_dependent and not qt"
-                                                                                # 1038 passed, 1 skipped, 89 deselected, 1 xfailed
+$PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                  # 78 passed; replays the stored golden JSON against src/
 $PY src/app.py --no-browser --port 8081 &  sleep 8;  curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/setup;  kill %1
 ```
 
 The launch is not optional: a suite that passes on an app that cannot start
-has proved nothing. The legacy gate exists only to prove the old tree is
-still a valid golden reference; nothing in it is edited on purpose.
+has proved nothing.
 
 On macOS, before the Qt pass: `chflags -R nohidden "$(python -c 'import PySide6,os;print(os.path.dirname(PySide6.__file__))')"`.
 
@@ -67,7 +64,7 @@ agents never run it. A Qt-marked test an agent wrote but did not run is
 The suite under `tests/` runs against the real `serial`, `pygame`, `mss`,
 `PIL` and `matplotlib`; the only stand-in is `tkinter` (a `MagicMock` in
 `tests/conftest.py`, so the frozen Tk view's tests exercise logic, not widgets).
-The legacy suite mocks all of them. **Iterating a MagicMock yields
+(The old suite mocked all of them.) **Iterating a MagicMock yields
 nothing**, so a loop-based assertion over one passes vacuously; check what
 you are really asserting on before believing a green test.
 

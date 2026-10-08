@@ -2,7 +2,7 @@
 
 Last updated 2026-10-07 (the round recorded in "Round 2026-10-07" below). Read
 this first; then `BRIEF.md` (the architecture contract and its addenda),
-`DESIGN_BRIEF.md` (`WEB_DESIGN_BRIEF.md` is its superseded predecessor), and
+`DESIGN_BRIEF.md` (its predecessor `WEB_DESIGN_BRIEF.md` was removed (history: tag pre-root-cleanup-2026-10-07)), and
 `BUGFIX_PLAN.md` (the ranked defect list with a delegation route per item).
 The sections from "Where things are" down to "Resume here" were written while
 Tk and Qt were live views; where they say so, read it as history (the Web is
@@ -13,9 +13,9 @@ the only frontend since 2026-10-07).
 | What | Where |
 |---|---|
 | The new app | `src/` on branch `mvc-refactor`, worktree `../mvc-refactor`. The Web view (`src/views/web/`, over `views/base.py`) is the only frontend; `src/views/tk.py` and `qt.py` are frozen at `413f504`, unregistered, with a banner on line 1, kept intact for reference. Also since the layout below: `devices/{screen_recorder,camera}.py`, `model/{trial_telemetry,transfer_map_analysis,sample_store}.py`, `controller/{flashing,updater,user_config}.py`. Built as the `station/` package on the `rebuild` branch (the refactor redone from scratch), fast-forwarded here and retired 2026-09-23, then moved to `src/` the same day. Layout: `src/app.py` (run as a script), `events.py panel.py param.py schema.py result.py palette.py`, `controller/{controller,setup}.py`, `model/base.py` + `model/{probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/`. |
-| The old app | `legacy/src/` (was `src/`), its suite in `legacy/tests/` (was `tests/` minus `tests/station/`); code untouched, still the reference for the golden wire tests. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
+| The old app | Removed from the tree 2026-10-07 (history: tag pre-root-cleanup-2026-10-07); its wire bytes are pinned in `tests/golden/*.json`. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
 | Worktrees | `../mvc-refactor` (the lead's, branch `mvc-refactor`) and, while a fix round runs, one `../rb-<name>` per agent (this round's: `rb-tmap`, `rb-docs`). `../main` is a plain checkout of `origin/main`, NOT a worktree (it holds the venv, `main/.venv`, the `$PY` of the skills). The eleven stale merged `rb-*` worktrees were removed on 2026-10-07 (rb-clean). |
-| Agent handoffs | `handoff/*.md` inside each worktree, git-ignored (`handoff/` stays ignored). The 32 handoff files that code and docs cite are tracked under `docs/archive/handoff/` (2026-10-07); a worktree's own handoff for a round is `handoff/fix-<name>.md`. Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
+| Agent handoffs | `handoff/*.md` inside each worktree, git-ignored (`handoff/` stays ignored). The handoff files that code and docs cite were removed from the tree (history: tag pre-root-cleanup-2026-10-07); a worktree's own handoff for a round is `handoff/fix-<name>.md`. Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
 | **Timeouts, audit round 8, the model contract (2026-09-26)** | Owner: warn before closing the tab with devices energized, validate the watchdog and the idle timeout in every view, warn before the timeout with a way to extend. Core (**Tier N/O**): `Probe.idle_remaining` + one "Idle Timeout Soon" warning inside the last 60 s + `extend_idle`; `Controller.is_energized` / `state()["energized"]` (a probe in a mode, a heating heater, a recording run); the Web watchdog keys on it; stop-class commands and `set_mode("disabled")` skip input validation (`Panel.UNGATED_COMMANDS`, schema `stop=True`) so a stop is never refused over bad text in a box; `/api/data` runs only schema-declared sources, JSON POSTs need an Origin, frame-blocking headers; `views.base.GATE_WORDS` / `gate_reason` as the one direction-aware table, served to the Web; Setup's `stop_system` / `launch` ask while anything is energized; the schema's `fault` gate; `Heater.heating_to`. Views (rb-o-{tk,qt,web}, `handoff/fix-o-*.md`): a countdown line per probe under the disc with **Extend**; energized ring and faulted "!" marks; "Disable failed. Treat as live." in tier 1; quit / close questions name what is energized; Web `beforeunload` while energized, `/api/quit` answers after the stop with the unconfirmed named, busy commands, refusal at its field, commit on release, tier 1 pinned; live regions (Web) and announcements (Qt); one Qt Tab order. Audits: round 8 with one skill per auditor (`handoff/audit-ui-round8-*.md`), the architecture audit (intact with debt), and the **model contract** audit (`handoff/audit-model-contract-2026-09-26.md`: a `PiezoStage` written from the new `docs/rebuild/MODEL_CONTRACT.md` drove all three views unedited once CON-1/3/4/5/9 were fixed; `tests/test_model_contract.py`, 160 cases). Headless validation: the watchdog warns at 4.9 s and stops every model at 15.2 s of browser silence; no memory leak. Gates **fast 2290 (+11 window tests deferred, 1 xfail = CON-13), golden 78, Qt 212**. Open: O17 (lead part), O19–O23, CON-6/7/11, CON-13 (owner), the display-dependent captures, owner calls below. |
 | **Owner's Web pass + audit round 7 (2026-09-26)** | Tier K from the owner's look at the merged E views: the gamepad choice is tier 1; every tier-2 disclosure names its device and sits at the foot of the tier-1 body above its well; the sheet has an **Overview** page (rail's first item, every model compact, no wells, pressable heads) and a **device page** (one model alone). Tier L from three real-display auditors (`handoff/audit-ui-round7-{web,tk,qt}.md`): the S1 in every view was that one model's own stop read as "Every model is stopped." and turned the disc to Clear over five live models (`is_estopped` = any). Core: `Controller.stop_state` {latched, unconfirmed, every, since}, `Model.stop_confirmed`, `views.base.stop_words()` / `event_line()`, `events.forget` on clear; views: disc face from the words, per-model rail marks, reasons on disabled commands, 24/36 px targets, slider keys, tier 1 pinned on the device page, Quit asks in Qt, Tab reaches every Qt control. Also: `handoff/proposal-probe-zeroing.md` (K5: TMC2209 on a Mega; host-only set-zero now, optical home switches later); the `window` test marker + `STATION_NO_WINDOWS=1` (owner: strictly background while at the Mac); a memory-leak check (none: 49→23 MB flat under a 10 Hz client). Gates **fast 2056 (+11 window tests deferred), golden 78, Qt 195**. Open: Tier M; owner calls below. |
 | **Bench sheet, tiered (2026-09-26)** | The owner chose canvas row E (C "Control sheet" + A's circular stop + three tiers of prominence) and said "execute on that vision". Lead core (`rb-e-core`): the six light tokens in `palette.py`, `theme.py` (Public Sans text, Archivo numerals, READING_SIZES, STOP, SWITCH, RADIUS, TIER_LABELS, QUIET_VALUES, muted OFF outlines), `schema.section(tier=, disclosure=)`, `entry(slider=)`, `readonly(unit=)`, the four model schemas re-tiered (Red Percent = Red, Change, Start/Stop run in tier 1; everything else behind Details), `docs/rebuild/DESIGN_BRIEF.md`. Three Opus view worktrees rendered it (`rb-e-{web,tk,qt}`, handoffs `handoff/fix-e-{web,tk,qt}.md`): left rail with A's disc, entries not cards, one disclosure per model with Diagnostics inside, a slider beside every speed entry, status by exception, tray = warnings and errors only. Lead-verified: gates **fast 1956, golden 78, Qt 155**; ritual captures `handoff/shots/final_e_{web,tk,qt}_*`. Open follow-ups (Tier J below): fonts not installed on this Mac (Helvetica renders in Tk/Qt), heater shows the word "Simulated" as its reading in SIM, per-model stop switch caption, `theme.SLIDER`, px-vs-pt base unit in Qt. |
@@ -25,7 +25,7 @@ the only frontend since 2026-10-07).
 | UI round 2 (2026-09-24) | All three views refined as siblings of the Web console: one red (the stop object reads `Stop` / `Clear`, pulses once on the edge), sentence-case labels without colons, one-header Setup tables, readable event logs, empty states that say what to do next, boolean readouts as Yes/No, `Start run` / `Stop run` / `Stop heater` / `Stop motion` as quiet commands. Handoffs `handoff/{tk3,qt3,web5}.md`; shots `round2_{tk,qt,web}_*`. Tk `after` shots are pending (the Mac was in use; capture commands are in tk3.md UNVERIFIED). |
 | Screenshots | `handoff/shots/` (ignored, never tracked): `tk_*`, `qt_*` (polish pass), `web4_*` (console: drawer, launched, stopped), `web3_*` (agent's own rounds). The capture scripts were temporary and are gone; recreate from the procedure below. |
 | Tests | `tests/` (was `tests/station/`, flattened); wire captures in `tests/golden/`. |
-| Design data | `docs/rebuild/design.json` (every new class/member with origins), `design.rules` (one line per old method: kept/renamed/merged/purged/implied; its paths are pre-move: `station/` = `src/`, old `src/` = `legacy/src/`), `carry.json` (all 229 old ledger findings classified against the design), `narrative.json`. Interactive pages (temp, may be gone): `/private/tmp/claude-501/.../412595fe.../scratchpad/{control_system_uml,ideal_system_uml}.html`. |
+| Design data | `design.json`, `design.rules`, `carry.json`, `narrative.json` were removed (history: tag pre-root-cleanup-2026-10-07). Interactive pages (temp, may be gone): `/private/tmp/claude-501/.../412595fe.../scratchpad/{control_system_uml,ideal_system_uml}.html`. |
 | Logs at runtime | `~/transfer-stage-runs/logs/station-<timestamp>.log`, one per launch; every event with thread and traceback; `events.debug` is file-only. |
 | Run output | `~/transfer-stage-runs/<run_id>/` (CSV + `<run_id>_station_meta.json`). |
 
@@ -37,8 +37,7 @@ cd ../mvc-refactor
 python3 src/app.py --no-browser --port 8080   # the same, with the venv's python ($PY)
 
 STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # the fast gate; counts are in the verify skill
-python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to legacy/src/
-cd legacy && python3 -m pytest tests -q -m "not slow and not order_dependent and not qt"   # the old suite
+python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to the stored golden captures
 # optional: the frozen Qt view's tests, only after `pip install -e .[qt]`:
 QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt
 ```
@@ -195,7 +194,7 @@ landed.
   boxes in the Overview; `GET /api/image` serves thumbnails by relative path
   under the output root).
 - `rb-clean` `3cd94cc`: eleven merged worktrees removed, `.DS_Store`
-  untracked, 32 cited handoff files archived under `docs/archive/handoff/`.
+  untracked, 32 cited handoff files archived (since removed (history: tag pre-root-cleanup-2026-10-07)).
 - In flight at the time of writing, in `../rb-tmap` (not merged): TM-1 the
   Transfer Map follows the procedure (`PHASES = setup, region, live, marked,
   finish`), TM-2 the live plots leave the live view, TM-3 the tilt is collected,
@@ -777,12 +776,11 @@ rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`
    name filter is one line in `Setup.scan_ports` if the station PC is slow.
 3. **Second test wave**: `tests/TEST_PORTING.md` lists 135 old test
    files (PORT 22 / PORT-ADAPTED 103 / VOID 10) and 26 safety tests that must
-   have ported equivalents before `legacy/` is deleted.
+   have ported equivalents before `legacy/` was deleted (history: tag pre-root-cleanup-2026-10-07).
 4. **Cutover** — partly done. Done 2026-09-23: the move (`station/` → `src/`,
    old `src/` and `tests/` → `legacy/`, `tests/station/` → `tests/`) and the
-   docs prune (stale pages to `docs/archive/`). Not done: deleting `legacy/`,
-   which waits until every one of TEST_PORTING's 135 files has a ported
-   equivalent (item 3); then merge `mvc-refactor` → `main` and push.
+   docs prune (stale pages to `docs/archive/`). Done 2026-10-07: `legacy/` deleted (history: tag pre-root-cleanup-2026-10-07).
+   Not done: merge `mvc-refactor` → `main` and push.
 5. `Rotator.home()` target-commit ordering is tested now (rb-rotator); the
    `COLUMN_SPLIT_CARDS = 6` Qt rule is a judgement, not a measurement.
 6. Heater refusals new vs old: 300 °C ceiling, PID/ramp bounds, 31-char
@@ -794,15 +792,14 @@ rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`
   `413f504`), settled-frame recording, full-display recorder, the procedure
   phases, the image-store Sample Map, serial-link safety, in-process flashing.
 - Aug–Sep 2026: `src/` was a staged MVC repair (S0–S16) of 13 root causes
-  across 213 audited findings. Plan and test policy are in `docs/archive/`.
+  across 213 audited findings. Plan and test policy: (history: tag pre-root-cleanup-2026-10-07).
 - 2026-09-23: the refactor redone from scratch as `station/` on a `rebuild`
   branch was fast-forwarded here; `rebuild` retired. The same day `station/`
   became `src/`, the old tree became `legacy/`, and stale docs were archived.
 - 2026-09-23: `verify` and `parallel-stage` rewritten for the new tree;
   `stage-close`, `reconcile-ledger` and `fix-a-finding` retired with the
   ledger process (in git history before `beb7b94`).
-- `legacy/` is deleted once every file in `tests/TEST_PORTING.md` has a
-  ported equivalent; then `mvc-refactor` merges to `main`.
+- `legacy/` was deleted 2026-10-07 (history: tag pre-root-cleanup-2026-10-07); `mvc-refactor` still merges to `main`.
 
 ## Process notes
 

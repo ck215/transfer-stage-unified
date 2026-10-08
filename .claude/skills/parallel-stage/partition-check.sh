@@ -49,7 +49,7 @@ done
 
 # Lead-only files: an agent touching one is a contract breach even when no
 # other agent touched it. Keep in step with parallel-stage/SKILL.md section 1.
-lead_only='^docs/|^CLAUDE\.md$|^README\.md$|^\.claude/|^src/views/theme\.py$|^src/views/base\.py$|^src/palette\.py$|^tests/test_architecture\.py$|^tests/golden/|^legacy/|^firmware/'
+lead_only='^docs/|^CLAUDE\.md$|^README\.md$|^\.claude/|^src/views/theme\.py$|^src/views/base\.py$|^src/palette\.py$|^tests/test_architecture\.py$|^tests/golden/|^firmware/'
 for t in "${trees[@]}"; do
   name="$(basename "$t")"
   bad="$(grep -E "$lead_only" "$tmp/$name.files" || true)"

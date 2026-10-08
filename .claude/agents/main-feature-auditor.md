@@ -33,9 +33,8 @@ timeouts, debounce), what happens on disconnect, what happens on stop.
    `tests/test_edge_main_*.py` files on `main` and the operator README are
    part of the spec. Do not skip the boring parts; defaults and units are
    where regressions hide.
-2. **Find the counterpart.** `docs/rebuild/design.rules` in `mvc-refactor`
-   maps old methods to kept/renamed/merged/purged. Use it, then read the
-   `station/` code — do not trust the map alone.
+2. **Find the counterpart.** The old-method map `design.rules` was removed (history: tag pre-root-cleanup-2026-10-07).
+   Search the `station/` code by construct, then read it — do not trust the map alone.
 3. **Verify by running when it is cheap.** The rebuild starts in SIM mode
    with no hardware; the golden captures under `tests/station/golden/` show
    the bytes on the wire. If a claim is "the rebuild no longer sends X",
@@ -82,7 +81,7 @@ confidence: high | medium | low  (low = you could not run it)
 
 Order findings by consequence, worst first. A finding with no `consequence`
 line is not a finding. A finding whose `station:` line was not read by you
-(only inferred from `design.rules`) is `confidence: low`.
+(only inferred, not read) is `confidence: low`.
 
 ## Two things that will happen
 

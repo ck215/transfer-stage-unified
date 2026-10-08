@@ -26,7 +26,7 @@ the files it must touch. Then:
   energizes a coil or leaves an axis moving.
 - **Lead-only files**, always: `docs/**`, `CLAUDE.md`, `README.md`,
   `.claude/**`, `tests/test_architecture.py`, `tests/golden/**`,
-  `legacy/**`, `firmware/**`. Agents never touch them.
+  `firmware/**`. Agents never touch them.
 - **Anything that changes wire bytes is an owner decision**, not an item.
 
 Each agent then gets an **allow-list and a deny-list**, and the deny-list

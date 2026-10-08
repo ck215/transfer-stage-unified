@@ -102,12 +102,12 @@ Key mechanics you must use, not re-implement:
 
 ## Your file
 
-Your stub lists every public member (the contract, from `docs/rebuild/design.json`),
+Your stub lists every public member (the contract, from `design.json`, removed (history: tag pre-root-cleanup-2026-10-07)),
 what old method(s) each came from, and a MUST SATISFY block: fixes from the old
 audit ledger that live in the code you are replacing. **Each one is a bug that
 returns if you do not port it.** Find the old fix in `src/` (the old code comments
 cite the finding IDs), port the behaviour, and port or write a test for it.
-`docs/rebuild/design.rules` has one line per old method saying where it went and why.
+`design.rules` (removed (history: tag pre-root-cleanup-2026-10-07)) had one line per old method saying where it went and why.
 
 Trap: `src/` comments quote old broken code at length. A grep hit for a defect
 is not evidence the defect exists. Read the line.
