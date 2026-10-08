@@ -253,6 +253,25 @@ def test_switching_to_guest_mid_trial_is_refused(setup, monkeypatch):
     assert "Transfer Map" not in setup.controller.model_names
 
 
+@pytest.mark.parametrize("step", ["_pending", "_arming"])
+def test_switching_to_guest_while_a_trial_is_being_armed_is_refused(setup, step):
+    """Arch #13: the region step (`_pending`) and the Arm in flight
+    (`_arming`) are not `is_active` yet; a Guest switch then removed the map
+    under the Arm. Both are refused like an open trial."""
+    create(setup)
+    setup.build(CONFIGS)
+    tmap = models(setup)["Transfer Map"]
+    assert not tmap.is_active
+    setattr(tmap, step, object())
+    for command in ("switch_user", "sign_out", "open_as_guest"):
+        refused = setup.run(command)
+        assert refused.is_refused and "trial" in refused.reason, (command, refused.reason)
+        assert not setup.user.is_guest and "Transfer Map" in setup.controller.model_names
+    setattr(tmap, step, None)
+    assert setup.run("switch_user").is_ok
+    assert "Transfer Map" not in setup.controller.model_names
+
+
 # -- creating an account and signing in ----------------------------------------------------
 
 def test_create_account_asks_first_then_signs_in(setup, root):

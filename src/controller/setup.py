@@ -2019,8 +2019,11 @@ class Setup(PortProbe, Panel):
                 if is_signed_in_only(name)}
 
     def _busy_signed_in_only(self):
+        # A trial being armed (the region step, an Arm in flight) counts:
+        # removing the map under it would discard the Arm.
         return [name for name, model in self._open_signed_in_only().items()
-                if getattr(model, "is_active", False)]
+                if getattr(model, "is_active", False)
+                or getattr(model, "is_arming", False)]
 
     def _refuse_guest_mid_trial(self):
         """Back to Guest takes the Transfer Map and the Sample Map away, so
@@ -2109,7 +2112,7 @@ class Setup(PortProbe, Panel):
         out = {}
         for model in self.controller.models.values():
             name = getattr(model, "NAME", None)
-            if not name or isinstance(model, User):
+            if not name:
                 continue
             values = profiles_module.current_params(model, names)
             if values:

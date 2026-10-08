@@ -1253,6 +1253,26 @@ class PicturePreview:
         return (f"{mag}x picture, taken {when}"
                 + (f", newest of {same}" if same > 1 else ""))
 
+    def alt(self, level, rows):
+        """The shown picture's alt text (UX audit #19): what it is a picture
+        of, "100x picture of flake 3 on chip 1, sample 15jul26"; `NONE`
+        when there is no picture."""
+        row, _order = self.pick(level, rows)
+        if row is None:
+            return self.NONE
+        def field(key):
+            try:
+                return row[key]
+            except (KeyError, IndexError):
+                return None
+        parts = [f"{kind} {field(key)}" for kind, key in
+                 (("flake", "flake_id"), ("chip", "chip_id"), ("sample", "sample_id"))
+                 if field(key) not in (None, "")]
+        what = (" on ".join(parts[:-1]) + ", " + parts[-1]) if len(parts) > 1 else "".join(parts)
+        mag = _int_or_none(row["magnification"])
+        head = f"{mag}x picture" if mag else "Picture"
+        return f"{head} of {what}" if what else head
+
     def png(self, store, level, rows):
         """The shown picture as a small PNG; b"" when there is none (or its
         file is missing, outside the store, or unreadable)."""

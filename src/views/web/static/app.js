@@ -1660,6 +1660,12 @@ function renderImage(panel, element) {
     dataCommand: element.data_command,
     isBinary: true,
     setData: (url) => { picture.src = url; },
+    // UX audit #19: what the picture is of (schema `alt_attr`), written
+    // only when it changes; the label stays the alt until one is served.
+    setAlt: (text) => {
+      const alt = text ? String(text) : sentence(element.text || 'image');
+      if (picture.alt !== alt) picture.alt = alt;
+    },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
 }
@@ -2139,7 +2145,7 @@ class PanelCard {
     side.appendChild(this.unconfirmedMark);
     head.appendChild(side);
     if (options && options.openable) {
-      // The Overview's press target (K4): the whole head opens the device
+      // The Dashboard's press target (K4): the whole head opens the device
       // page. It is one real button, "Open" and the disclosure chevron at
       // the head's right, whose hit area is stretched over the head
       // (styles.css) - so the name stays a heading, Return and Space work,
@@ -2519,7 +2525,7 @@ class PanelCard {
   isBehindClosedTier(widget) {
     const node = widget && widget.node;
     if (!node) return false;
-    // Tiers 2 and 3 exist only on the device page (K4): on the Overview the
+    // Tiers 2 and 3 exist only on the device page (K4): on the Dashboard the
     // well is not drawn, whatever its remembered state.
     if (this.well && this.well.contains(node) && !this.isOpened()) return true;
     return Boolean((this.well && this.well.hidden && this.well.contains(node))
@@ -2595,7 +2601,7 @@ class PanelCard {
     return this.node.querySelector(':scope > .card-tiers');
   }
 
-  /** What the head says about the stop: its own, and on the Overview (where
+  /** What the head says about the stop: its own, and on the Dashboard (where
    *  a hosted model has no entry) the worse of its own and its guests' -
    *  a latch or an unconfirmed stop anywhere on the page shows. */
   paintHead() {
@@ -2617,10 +2623,10 @@ class PanelCard {
   }
 
   /** Whether this entry is on the page being shown: every entry on the
-   *  Overview, only the opened one on a device page. */
+   *  Dashboard, only the opened one on a device page. */
   isShown() {
     const shownPage = this.dashboard && this.dashboard.opened;
-    // A hosted model is drawn on its host's page only (not on the Overview).
+    // A hosted model is drawn on its host's page only (not on the Dashboard).
     if (this.hostName) return shownPage === this.hostName;
     return !shownPage || shownPage === this.name;
   }
@@ -2904,6 +2910,7 @@ class PanelCard {
       } else if (kind === 'image' && attr) {
         // A still (a picture preview, schema `model_attr`): fetched when its
         // key changes, never on every poll - the picture is a file, not a feed.
+        if (element.alt_attr && widget.setAlt) widget.setAlt(this.values[element.alt_attr]);
         const key = this.values[attr] === undefined ? '' : String(this.values[attr]);
         if (key !== widget.stillKey && this.wantsData(widget)) {
           widget.stillKey = key;
@@ -3444,7 +3451,7 @@ class PanelCard {
   }
 
   /** `field` if it can be shown: its tier opened on the device page. On
-   *  the Overview a tier-2 field is not drawn, so null (the refusal then
+   *  the Dashboard a tier-2 field is not drawn, so null (the refusal then
    *  sits where the press was). */
   reveal(field) {
     if (!field || !field.node || !this.owns(field.node)) return null;
@@ -3549,7 +3556,7 @@ class Dashboard {
     //: What was last said about the stop, for the announcements (O7).
     this.saidStop = null;
     this.railLines = new Map();
-    //: Which page the sheet shows (K4): null is the Overview, else the name
+    //: Which page the sheet shows (K4): null is the Dashboard, else the name
     //: of the model whose device page it is.
     this.opened = null;
     this.navKey = null;
@@ -3970,7 +3977,7 @@ class Dashboard {
       this.isNavigating = false;
     }
     this.showPage(name);
-    // A device page took focus (showPage); the Overview takes it too when a
+    // A device page took focus (showPage); the Dashboard takes it too when a
     // side window had it, so it never falls back onto that window's key.
     if (!this.opened && hadWindow) this.dom.cards.focus({ preventScroll: true });
   }
@@ -4722,7 +4729,7 @@ class Dashboard {
     if (isLaunched === this.isLaunched) return;
     this.isLaunched = isLaunched;
     this.applySetupWords();
-    // A launch lands on the Overview (K4), whatever page was shown before.
+    // A launch lands on the Dashboard (K4), whatever page was shown before.
     if (isLaunched && this.opened) {
       this.opened = null;
       this.layoutSheet();
@@ -4810,7 +4817,7 @@ class Dashboard {
   // `state.models[name].host` is the host's name while the host is open
   // (Controller.state), never a class. The hosted model keeps its own entry,
   // controls and name; only where it is drawn changes: inside its host's
-  // entry, after the host's tier 1, with no page, link or Overview entry of
+  // entry, after the host's tier 1, with no page, link or Dashboard entry of
   // its own. Its host closed, it is a page like any other again.
   placeHosted(models) {
     const wanted = new Map();
@@ -4852,7 +4859,7 @@ class Dashboard {
     return guests;
   }
 
-  /** The models with a page (and a link, and an Overview entry) of their own. */
+  /** The models with a page (and a link, and a Dashboard entry) of their own. */
   pageNames() {
     return Array.from(this.cards.keys()).filter((n) => !this.hostOf.has(n));
   }
@@ -4869,7 +4876,7 @@ class Dashboard {
   layoutSheet() {
     const names = this.pageNames();
     // The shown device was closed, or is gone (or is drawn on another
-    // model's page now): back to the Overview.
+    // model's page now): back to the Dashboard.
     if (this.opened && (!this.cards.has(this.opened) || this.hostOf.has(this.opened))) this.opened = null;
     const isDevice = Boolean(this.opened);
     // toggle(…, force), never remove()/add() blindly: an unconditional
@@ -5185,8 +5192,8 @@ class Dashboard {
   }
 
   /** Show a page: a model's name for its device page, null for the
-   *  Overview. The sheet goes to the top; a device page takes focus (its
-   *  entry), the Overview leaves focus where the press was. */
+   *  Dashboard. The sheet goes to the top; a device page takes focus (its
+   *  entry), the Dashboard leaves focus where the press was. */
   showPage(name) {
     // A hosted model's page is its host's, scrolled to its group.
     const guest = name && this.hostOf.has(name) && this.cards.has(this.hostOf.get(name))

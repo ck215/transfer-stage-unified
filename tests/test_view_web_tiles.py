@@ -215,3 +215,32 @@ def test_a_tiles_wide_and_move_are_not_tab_stops_on_the_way_through(launched, tm
     assert not [f for f in forward if f.startswith(("Wide ", "Move "))], forward
     assert out["back1"] == "Move Probe B" and out["back2"] == "Wide Probe B", out
     assert out["order"][0] == "Probe B" and out["focus"] == "Move Probe B", out
+
+
+@needs_browser
+def test_open_and_the_tile_keys_share_a_line_in_the_tile_head(launched, tmp_path):
+    """Open sat ~8 px above Wide and Move when the head took two lines (a
+    state under the name in a narrow tile): the keys were centred on the
+    whole head, Open on its first line. They share the first line."""
+    out = _browse(launched, r"""
+      await until(() => document.querySelectorAll('#cards > .card .tile-keys').length === 4);
+      await page.setViewport({ width: 1400, height: 900 });
+      await sleep(500);
+      return page.evaluate(() => Array.from(document.querySelectorAll('#cards > .card')).map((card, i) => {
+        const side = card.querySelector('.card-head .card-side');
+        if (i === 0 && side) {                 // a state line under the name
+          const state = document.createElement('span');
+          state.className = 'card-state';
+          state.textContent = 'Connection lost';
+          side.appendChild(state);
+        }
+        const mid = (n) => { const b = n.getBoundingClientRect(); return b.top + b.height / 2; };
+        return { open: mid(card.querySelector('.card-open')),
+                 keys: Array.from(card.querySelectorAll('.tile-key')).map(mid),
+                 head: card.querySelector('.card-head').getBoundingClientRect().height };
+      }));
+    """, tmp_path)
+    assert out[0]["head"] > out[1]["head"], f"the state did not take a line: {out}"
+    for tile in out:
+        for key in tile["keys"]:
+            assert abs(key - tile["open"]) <= 1.5, tile

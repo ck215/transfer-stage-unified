@@ -37,15 +37,15 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 | 10 | P2 | `/api/open_model` and `/api/close_model` kept for tests bypass Setup's rules | Fixed `f88942f` |
 | 11 | P2 | Guest session gating is enforced in the Web adapter, not below it | Fixed `1740189` |
 | 12 | P2 | The Transfer Map duplicates `store_choice`'s install-folder rules | Fixed `02a264d` |
-| 13 | P2 | Hard reset is not refused during a scan; Guest switch races an Arm | Documented |
+| 13 | P2 | Hard reset is not refused during a scan; Guest switch races an Arm | Guest half fixed `36e5556`; Hard reset documented |
 | 14 | P2 | Back up now / the close backup copy a trial video still being recorded | Fixed `f513104` |
 | 15 | P2 | Setup's A3 Trial-store commands survive with no control | Partly fixed `ffa978b` |
 | 16 | P3 | `Setup._store_section` dead, stale comments in `setup.py` | Fixed `ffa978b` |
 | 17 | P3 | "Export/Import sample map" in operator text | Fixed `ffa978b` |
-| 18 | P3 | `isinstance(model, User)` filters that can no longer match | Documented |
+| 18 | P3 | `isinstance(model, User)` filters that can no longer match | Fixed `c706f3c` |
 | 19 | P3 | MODEL_CONTRACT, STATUS, DESIGN_BRIEF, RECORDING_A_TRIAL, `user_store` docstring drift | Fixed `cc61d1d` |
 | 20 | P3 | CLAUDE.md / `station-map` / `heater.py` say "firmware untouched" / "no watchdog" | Documented (lead) |
-| 21 | P3 | "Overview" remains in code comments and CSS | Documented |
+| 21 | P3 | "Overview" remains in code comments and CSS | Fixed `f1bed83` |
 
 ## P1: correctness and data safety
 
@@ -267,7 +267,7 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   Transfer Map's `_SQLITE_MAGIC` read in `open_store` still duplicates
   `store_choice.is_sqlite` (left: its error wording differs).
 
-### 13. Hard reset during a scan; Guest switch versus Arm (documented)
+### 13. Hard reset during a scan; Guest switch versus Arm (Guest half fixed `36e5556`)
 
 - Hard reset is not refused while a scan runs (`setup.py:1066-1068`,
   `1096-1097`); a Refresh in the reset window can probe the port being
@@ -276,6 +276,14 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   (`setup.py:1826-1848`); an Arm that lands between is aborted and saved as
   aborted. A switch during the region step discards the Arm still, because
   `is_active` (`transfer_map.py:1219`) counts only an armed trial.
+  **Fixed `36e5556`:** `TransferMap.is_arming` (the region step or an Arm
+  in flight) counts in Setup's busy check, so the Guest switch (and a
+  sign-in as someone else) refuses while a trial is being armed, as it does
+  for an open trial. Test:
+  `test_setup_profile.py::test_switching_to_guest_while_a_trial_is_being_armed_is_refused`.
+  The check still runs outside the map's lock: an Arm pressed in the
+  instant between the check and the removal is aborted and saved as aborted
+  (nothing energized, nothing lost silently). The Hard reset half is open.
 
 ### 14. Backups copy a video still being recorded (fixed `f513104`)
 
@@ -314,9 +322,9 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   (JSON)" / "Import Sample DB (JSON)". No operator-visible "Sample Map" or
   "Overview" string remains in `src/` (both survive in comments only, and in
   `profile.RENAMED_MODELS` and `tutorial.js:178` on purpose).
-- **18.** `isinstance(model, User)` filters (`setup.py:1901`, `user.py:186`,
+- **18 (fixed `c706f3c`).** `isinstance(model, User)` filters (`setup.py:1901`, `user.py:186`,
   `user.py:245`) can no longer match: a User is never among the Controller's
-  models. Harmless; remove when those functions are next touched.
+  models. Removed.
 - **19 (fixed `cc61d1d`).** `MODEL_CONTRACT.md` called User "a non-hardware
   model", listed the Transfer Map's `PHASES` without `new_store`, and did not
   describe the `StorePrompt` mixin or an image's `model_attr` still. STATUS had
@@ -332,9 +340,12 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   "User (`user.py`...)" among the Models) are stale after `79a9008` and
   `f53ce9c`. `heater.py:437` ("The firmware has no watchdog") is true until the
   proposed host-gone watchdog is flashed; reword once it is.
-- **21.** "Overview" remains in ~25 code comments and CSS comments
+- **21 (fixed `f1bed83`).** "Overview" remains in ~25 code comments and CSS comments
   (`app.js:2114`, `:2475`, `:3410`, `styles.css:945-1210` and others) next to
-  the rename note at `app.js:25`. Not operator-visible; rename when touched.
+  the rename note at `app.js:25`. Not operator-visible. Now "Dashboard" in
+  app.js and styles.css; the rename note, the "K4's Overview" cross-references,
+  the internal identifiers (`overview-link`, `is-overview`), `tutorial.js:178`
+  and the frozen Tk/Qt views keep the old name.
 
 ## Checked and sound
 
