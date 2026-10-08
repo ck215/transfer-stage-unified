@@ -1,10 +1,16 @@
 # Rebuild status — cold-resume document
 
-Last updated 2026-10-07 (the round recorded in "Round 2026-10-07" below). Read
-this first; then `BRIEF.md` (the architecture contract and its addenda),
+Last updated 2026-10-07, after the proposal round, the lab merge, the root
+cleanup and the move to `~/GitHub` ("Round 2026-10-07" and "Round 2026-10-07
+(proposal)" below). Read this first; then `BRIEF.md` (the architecture contract and its addenda),
 `DESIGN_BRIEF.md` (its predecessor `WEB_DESIGN_BRIEF.md` was removed (history: tag pre-root-cleanup-2026-10-07)), and
 `BUGFIX_PLAN.md` (the ranked defect list with a delegation route per item).
-The sections from "Where things are" down to "Resume here" were written while
+Paths are `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/...` (the
+repository moved there from `~/Documents/GitHub`); `$PY` is
+`mvc-refactor/.venv/bin/python`, the one venv (created from pyproject's `[dev]`
+extra; the old `main/.venv` is gone). Older sections say "Red Percent" for what
+is now RGB Analysis (renamed 2026-10-07) and describe `main/` as the lab's
+original app, which is now branch `legacy`. The sections from "Where things are" down to "Resume here" were written while
 Tk and Qt were live views; where they say so, read it as history (the Web is
 the only frontend since 2026-10-07).
 
@@ -12,9 +18,9 @@ the only frontend since 2026-10-07).
 
 | What | Where |
 |---|---|
-| The new app | `src/` on branch `mvc-refactor`, worktree `../mvc-refactor`. The Web view (`src/views/web/`, over `views/base.py`) is the only frontend; `src/views/tk.py` and `qt.py` are frozen at `413f504`, unregistered, with a banner on line 1, kept intact for reference. Also since the layout below: `devices/{screen_recorder,camera}.py`, `model/{trial_telemetry,transfer_map_analysis,sample_store}.py`, `controller/{flashing,updater,user_config}.py`. Built as the `station/` package on the `rebuild` branch (the refactor redone from scratch), fast-forwarded here and retired 2026-09-23, then moved to `src/` the same day. Layout: `src/app.py` (run as a script), `events.py panel.py param.py schema.py result.py palette.py`, `controller/{controller,setup}.py`, `model/base.py` + `model/{probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/`. |
+| The new app | `src/` on branch `mvc-refactor`, the integration checkout `mvc-refactor/` (branch model: "Round 2026-10-07 (proposal)"). The Web view (`src/views/web/`, over `views/base.py`) is the only frontend; `src/views/tk.py` and `qt.py` are frozen at `413f504`, unregistered, with a banner on line 1, kept intact for reference. Also since the layout below: `devices/{screen_recorder,camera}.py`, `model/{trial_telemetry,transfer_map_analysis,sample_store}.py`, `controller/{flashing,updater,user_config}.py`. Built as the `station/` package on the `rebuild` branch (the refactor redone from scratch), fast-forwarded here and retired 2026-09-23, then moved to `src/` the same day. Layout: `src/app.py` (run as a script), `events.py panel.py param.py schema.py result.py palette.py`, `controller/{controller,setup}.py`, `model/base.py` + `model/{probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/`. |
 | The old app | Removed from the tree 2026-10-07 (history: tag pre-root-cleanup-2026-10-07); its wire bytes are pinned in `tests/golden/*.json`. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
-| Worktrees | `../mvc-refactor` (the lead's, branch `mvc-refactor`) and, while a fix round runs, one `../rb-<name>` per agent (this round's: `rb-tmap`, `rb-docs`). `../main` is a plain checkout of `origin/main`, NOT a worktree (it holds the venv, `main/.venv`, the `$PY` of the skills). The eleven stale merged `rb-*` worktrees were removed on 2026-10-07 (rb-clean). |
+| Worktrees | `mvc-refactor/` (the integration checkout, branch `mvc-refactor`; it holds the one venv, `mvc-refactor/.venv`, the `$PY` of the skills) and, while a fix round runs, one `rb-<name>` per agent beside it; no others between rounds. `main/` is a plain checkout of the lab's original app, NOT a worktree, kept for `dev/swap_branch.sh` (it has no venv now). The eleven stale merged `rb-*` worktrees were removed on 2026-10-07 (rb-clean). |
 | Agent handoffs | `handoff/*.md` inside each worktree, git-ignored (`handoff/` stays ignored). The handoff files that code and docs cite were removed from the tree (history: tag pre-root-cleanup-2026-10-07); a worktree's own handoff for a round is `handoff/fix-<name>.md`. Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
 | **Timeouts, audit round 8, the model contract (2026-09-26)** | Owner: warn before closing the tab with devices energized, validate the watchdog and the idle timeout in every view, warn before the timeout with a way to extend. Core (**Tier N/O**): `Probe.idle_remaining` + one "Idle Timeout Soon" warning inside the last 60 s + `extend_idle`; `Controller.is_energized` / `state()["energized"]` (a probe in a mode, a heating heater, a recording run); the Web watchdog keys on it; stop-class commands and `set_mode("disabled")` skip input validation (`Panel.UNGATED_COMMANDS`, schema `stop=True`) so a stop is never refused over bad text in a box; `/api/data` runs only schema-declared sources, JSON POSTs need an Origin, frame-blocking headers; `views.base.GATE_WORDS` / `gate_reason` as the one direction-aware table, served to the Web; Setup's `stop_system` / `launch` ask while anything is energized; the schema's `fault` gate; `Heater.heating_to`. Views (rb-o-{tk,qt,web}, `handoff/fix-o-*.md`): a countdown line per probe under the disc with **Extend**; energized ring and faulted "!" marks; "Disable failed. Treat as live." in tier 1; quit / close questions name what is energized; Web `beforeunload` while energized, `/api/quit` answers after the stop with the unconfirmed named, busy commands, refusal at its field, commit on release, tier 1 pinned; live regions (Web) and announcements (Qt); one Qt Tab order. Audits: round 8 with one skill per auditor (`handoff/audit-ui-round8-*.md`), the architecture audit (intact with debt), and the **model contract** audit (`handoff/audit-model-contract-2026-09-26.md`: a `PiezoStage` written from the new `docs/rebuild/MODEL_CONTRACT.md` drove all three views unedited once CON-1/3/4/5/9 were fixed; `tests/test_model_contract.py`, 160 cases). Headless validation: the watchdog warns at 4.9 s and stops every model at 15.2 s of browser silence; no memory leak. Gates **fast 2290 (+11 window tests deferred, 1 xfail = CON-13), golden 78, Qt 212**. Open: O17 (lead part), O19–O23, CON-6/7/11, CON-13 (owner), the display-dependent captures, owner calls below. |
 | **Owner's Web pass + audit round 7 (2026-09-26)** | Tier K from the owner's look at the merged E views: the gamepad choice is tier 1; every tier-2 disclosure names its device and sits at the foot of the tier-1 body above its well; the sheet has an **Overview** page (rail's first item, every model compact, no wells, pressable heads) and a **device page** (one model alone). Tier L from three real-display auditors (`handoff/audit-ui-round7-{web,tk,qt}.md`): the S1 in every view was that one model's own stop read as "Every model is stopped." and turned the disc to Clear over five live models (`is_estopped` = any). Core: `Controller.stop_state` {latched, unconfirmed, every, since}, `Model.stop_confirmed`, `views.base.stop_words()` / `event_line()`, `events.forget` on clear; views: disc face from the words, per-model rail marks, reasons on disabled commands, 24/36 px targets, slider keys, tier 1 pinned on the device page, Quit asks in Qt, Tab reaches every Qt control. Also: `handoff/proposal-probe-zeroing.md` (K5: TMC2209 on a Mega; host-only set-zero now, optical home switches later); the `window` test marker + `STATION_NO_WINDOWS=1` (owner: strictly background while at the Mac); a memory-leak check (none: 49→23 MB flat under a 10 Hz client). Gates **fast 2056 (+11 window tests deferred), golden 78, Qt 195**. Open: Tier M; owner calls below. |
@@ -25,21 +31,22 @@ the only frontend since 2026-10-07).
 | UI round 2 (2026-09-24) | All three views refined as siblings of the Web console: one red (the stop object reads `Stop` / `Clear`, pulses once on the edge), sentence-case labels without colons, one-header Setup tables, readable event logs, empty states that say what to do next, boolean readouts as Yes/No, `Start run` / `Stop run` / `Stop heater` / `Stop motion` as quiet commands. Handoffs `handoff/{tk3,qt3,web5}.md`; shots `round2_{tk,qt,web}_*`. Tk `after` shots are pending (the Mac was in use; capture commands are in tk3.md UNVERIFIED). |
 | Screenshots | `handoff/shots/` (ignored, never tracked): `tk_*`, `qt_*` (polish pass), `web4_*` (console: drawer, launched, stopped), `web3_*` (agent's own rounds). The capture scripts were temporary and are gone; recreate from the procedure below. |
 | Tests | `tests/` (was `tests/station/`, flattened); wire captures in `tests/golden/`. |
-| Design data | `design.json`, `design.rules`, `carry.json`, `narrative.json` were removed (history: tag pre-root-cleanup-2026-10-07). Interactive pages (temp, may be gone): `/private/tmp/claude-501/.../412595fe.../scratchpad/{control_system_uml,ideal_system_uml}.html`. |
+| Design data | `design.json`, `design.rules`, `carry.json`, `narrative.json` (and the ledger `progress.md`) were removed (history: tag pre-root-cleanup-2026-10-07). |
 | Logs at runtime | `~/transfer-stage-runs/logs/station-<timestamp>.log`, one per launch; every event with thread and traceback; `events.debug` is file-only. |
 | Run output | `~/transfer-stage-runs/<run_id>/` (CSV + `<run_id>_station_meta.json`). |
 
 ## How to run and verify
 
 ```
-cd ../mvc-refactor
+cd /Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor
 ./run.sh --no-browser --port 8080         # the Web view (the only one; --tk/--qt print "retired" and exit 2)
-python3 src/app.py --no-browser --port 8080   # the same, with the venv's python ($PY)
+$PY src/app.py --no-browser --port 8080   # the same, with the one venv's python ($PY = mvc-refactor/.venv/bin/python)
+$PY src/app.py --version                  # the git tag; 0.0.0+<sha> before the first release
 
-STATION_NO_WINDOWS=1 python3 -m pytest tests -q -p no:cacheprovider -m "not qt"   # the fast gate; counts are in the verify skill
-python3 -m pytest tests/test_wire_golden.py -q                         # 78 scenarios byte-identical to the stored golden captures
+STATION_NO_WINDOWS=1 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"   # the fast gate; counts are in the verify skill
+$PY -m pytest tests/test_wire_golden.py -q                         # 77 captures byte-identical to the stored golden captures
 # optional: the frozen Qt view's tests, only after `pip install -e .[qt]`:
-QT_QPA_PLATFORM=offscreen python3 -m pytest tests -q -p no:cacheprovider -m qt
+QT_QPA_PLATFORM=offscreen $PY -m pytest tests -q -p no:cacheprovider -m qt
 ```
 
 Screenshot capture of the Web view needs headless Chrome (puppeteer, below);
@@ -98,7 +105,7 @@ wire is pinned by `tests/golden/`.
   Integers display without decimals.
 - No platform-specific UI (2026-09-25): one stop chord (Ctrl+.), no ⌘
   variants, no macOS-only commands or copy in any view.
-- Names: "Red Percent", "Rotator", "Temperature Controller".
+- Names: "RGB Analysis" (renamed from "Red Percent", 2026-10-07), "Rotator", "Temperature Controller".
 - 2026-10-04: **the Rotator turns the chip** (in-plane, about a centre that
   is neither corner A nor the stage origin); the Sample Map models it
   (`rb-rotator-frame`, 2026-10-05). The Transfer Map still calls the angle
@@ -195,27 +202,125 @@ landed.
   under the output root).
 - `rb-clean` `3cd94cc`: eleven merged worktrees removed, `.DS_Store`
   untracked, 32 cited handoff files archived (since removed (history: tag pre-root-cleanup-2026-10-07)).
-- In flight at the time of writing, in `../rb-tmap` (not merged): TM-1 the
-  Transfer Map follows the procedure (`PHASES = setup, region, live, marked,
-  finish`), TM-2 the live plots leave the live view, TM-3 the tilt is collected,
-  never demanded or drawn. This page and the others describe that target.
+- `rb-tmap` (part 1) `436400a`: TM-1..TM-4, the Transfer Map follows the
+  procedure (`PHASES` setup, region, live, marked, finish; `new_tip` joined it in
+  the proposal round), the live plots leave the live view, the tilt is collected,
+  never demanded or drawn.
+- `rb-docs` `af3bb75`: the first docs pass of the round.
 
-**Transfer Map store.** The repo is at v6. The LAB's databases are v7/v8 (the
-bench PC runs code not yet in this repo; the owner is pushing a branch, and
-recovering it is a gate). The next repo version will be v9, with
-column-presence migration and a `.v8.bak` backup. v9 is NOT done.
+**Transfer Map store.** At the time of this first pass the repo was at v6 and the
+lab's databases at v7/v8 (superseded: the lab's stage push was merged in the
+proposal round below and the repo is now v8; the planned v9 is no longer needed).
 
-**Gates** (the lead's full run on the merged round, after rb-tmap part 1 and
-the docs pass): 3841 passed, 10 skipped, 227 deselected, 1 xfailed; legacy
-1038 passed; a SIM end-to-end trial (setup -> region with the stage still ->
+**Gates** (the first pass's lead run, after rb-tmap part 1 and the docs pass; the
+current counts are in "Round 2026-10-07 (proposal)"): 3841 passed, 10 skipped,
+227 deselected, 1 xfailed; legacy 1038 passed (the legacy tree and gate are gone); a SIM end-to-end trial (setup -> region with the stage still ->
 live -> marked -> finish) produced screen.mp4, frames.csv, telemetry.csv,
 before_full.png, mark_full.png and a recorded row.
-Golden 78. The Qt pass is optional now and needs `.[qt]`.
+Golden 78 (now 77). The Qt pass is optional and needs `.[qt]`.
 
 **Bench-only, the owner's (Phase 4)**: the transient mechanism on the Mint box,
 `libtoupcam` / `amcam` for the MU1003, the full-screen grab and x264 cost,
 flashing after A1/A2, D-7, and reviewing `reanalysis_<date>.md` before any
 `dev/reanalyse_trials.py --write`.
+
+## Round 2026-10-07 (proposal)
+
+Base: tag `round-2026-10-07-merged` (`da1205b`). The proposal round, the merge of
+the lab's stage push, the root cleanup and the move to `~/GitHub`; `git log
+--oneline round-2026-10-07-merged..HEAD` is the list, and each merge message says
+what landed. The row-by-row closures are in `BUGFIX_PLAN.md`
+("Round 2026-10-07 (proposal)").
+
+**Owner rulings** (they supersede the dated ones named):
+- **The force is read from the tip's shade** (the lab's estimator, `model/tip_shade.py`):
+  a baseline comparison beats the red extrema. The red-trace definitions stay as a
+  secondary analysis, the `factor=`. The estimator bank compares candidates on
+  footage before the model is chosen for good. See `RECORDING_A_TRIAL.md`, "The force".
+- **Red Percent is RGB Analysis** (`src/model/rgb_analysis.py`, class `RgbAnalysis`,
+  section "RGB analysis details"): six channel numbers per settled sample (red,
+  green, blue shares; r, g, b means), `factor=` on the analysis, profile columns
+  `green blue r_mean g_mean b_mean shade`, `dev/reanalyse_trials.py --factor`.
+- **Tips have a model** (`tip_models`, seeded TAP300; existing tips backfilled TAP300);
+  "New tip..." is a prompt phase (`new_tip`) with Tip ID and Model; `set_tip_model`.
+- **Every trial names its sample, chip and flake**, picked from the Sample Map's store
+  read-only; Arm refuses without all three; the cut number is derived. Every Arm asks
+  the vacuum question first (the station cannot sense it).
+- **The Sample Map is a sample > chip > flake store** with photos at every level
+  (a four-phase sheet: browse, new_sample, new_chip, new_flake; store v4; materials
+  seeded hBN, graphite, MoS2; a sample and a flake need a photo). It is ON by default
+  again (`STATION_SAMPLE_MAP=0` turns it off).
+- **Speed dials are percent** over per-device ceilings (stepper 3200, chuck 600
+  steps/s), steps/s as a secondary readout.
+- **User accounts**: `model/user_store.py` (scrypt passwords, `users.sqlite`),
+  `model/user.py` (the User model owns a config the Controller loads; Guest = the
+  station defaults), Setup's Account section; Phase 1 profiles migrated;
+  `STATION_PROFILES=0` hides it. The maps stamp `operator_auth`/`owner_auth` with
+  `password` or `guest`. Reserved settings keys `layout`, `default_fields` and
+  `sample_base` exist, nothing built on them.
+- **Tutorials**: `views/web/static/tutorial.js`, `tutorials/*.json` ("Your first
+  trial", "Register a sample"); simulation only.
+- **The branch model**: `main` is the pre-release line, receiving merges from
+  `mvc-refactor` (the integration branch for agent rounds) and feature PRs
+  (`feat/*`, `fix/*`, `agent/*`); releases are tags on main cut with
+  `dev/release.sh vX.Y.Z`; `legacy` is the lab's original Tk app, frozen; `stable`
+  is the original app's packaging ref. `gate.yml` runs the fast gate, golden and a
+  Web launch on PRs and pushes to main and mvc-refactor. The version is the git tag.
+
+**Landed** (merges on `mvc-refactor`):
+- `dd10f01` `state["phases"]`; `b8aadfc` rb-samples (sample store v4, the Sample Map
+  pickers); `606c724` rb-web2 (procedure strip, prompt dialog, cascading dropdowns);
+  `565abd5` rb-rgb (six channels, `factor=`, the rename); `13c9caa` `section(hosted_tier=)`
+  and `readonly(secondary=)`; `e644b89` rb-speed; `889cac0` rb-tutorial.
+- `c345e2f` the lab's 2026-10-07 stage push merged (the lab's commit `f55de75`; tag
+  `bench-2026-10-07-stage`): store v8 (`chip_id`, `flake_id`, `cut_id`, `invalid`, six
+  tip-shade columns), `tip_shade.py`, `shade_offline.py`, `finalize.py`, the vacuum
+  question; the Qt finalizer frozen with the Qt view.
+- `429a988` rb-trial (the trial page per the approved proposal: tip dropdown and New tip
+  prompt, pickers and cut number, the Force estimate from the shade, Video as one word,
+  step text and analysis health in `state["step_text"]` and `state["analysis_health"]`,
+  counts in Diagnostics).
+- `17791b8` rb-release (+ `ad311eb`): one version source, the publishing pipeline with
+  `SHA256SUMS`, `dev/release.sh`, the updater in versions, `update.sh`/`update.bat`, the
+  branch model, `gate.yml`.
+- `e3ef866` rb-accounts; `53a9cdb` rb-estimators (`model/estimators.py`, the Estimators
+  section hosted at tier 1, `dev/estimators_offline.py`; the first-trial tutorial walk
+  xfail).
+- `c315201` rb-rootclean (+ `aa2ae4e`): `legacy/`, `docs/archive`, the frozen ledger
+  (`progress.md`, `carry.json`), the design data and `shots` leave the repository (history:
+  tag `pre-root-cleanup-2026-10-07`); `bench-checklist.md` moved to `docs/rebuild`; the
+  lab's `merge_cuts.py` and `set_sample_ids.py` moved to `dev/`; the golden re-capture test and
+  the three live frame comparisons are retired (golden pins 77 captures). Lost with them: the
+  SMC100 pacing comparison and the heater ramp-decimals cross-check.
+
+**The move.** The repository moved from `~/Documents/GitHub` to
+`~/GitHub/transfer-stage-unified/`: `mvc-refactor/` (integration checkout, the one venv
+`mvc-refactor/.venv` made from the `[dev]` extra), `main/` (a plain checkout of the lab's
+original app, for `dev/swap_branch.sh`), `rb-<name>/` while a round runs. The lab deploys by git
+today (`git fetch && git checkout main` or `mvc-refactor`, `pip install -e .`, `run.sh`); the
+first installed release comes after v1.0.0.
+
+**Transfer Map store.** v8, the lab's, adopted; "Transfer Map part 2" is DONE by the lab
+merge, and the planned v9 (with a `.v8.bak` backup) is no longer needed. The Sample Map
+store is v4.
+
+**Gates**: fast **<FAST>**, golden **77**, a launch; known flakes are listed in the
+`verify` skill (the first-trial tutorial walk is an xfail, `test_o15` under load, the Sample
+Map's rated-later flake, the transfer-map mark timing flake). The lead fills the count after the
+final gate. Collected under `-m "not qt"`: 4211 (collect-only, 2026-10-07).
+
+**Open**:
+- The first-trial tutorial walk re-anchored to the pickers (xfail until then); the
+  "Register a sample" tutorial's step text still calls the photo optional while the
+  Sample Map requires one for a sample and a flake.
+- The Web finalizer (the data finalizer exists only in the frozen Qt view).
+- Per-user layout, default fields and sample bases (reserved settings keys only).
+- Phase 4 bench items (the owner's): the list under "Bench-only" in "Round 2026-10-07"
+  plus reviewing the estimator bank's curves on new footage before the force model is
+  fixed, and the shade thresholds (contact line, 0.10, the thirds).
+- The lab PC's code must reach a branch before a release is installed there
+  (`packaging/README.md`); the stale `rb-estimators` and `rb-rootclean` directories beside
+  `mvc-refactor/` are leftovers, not worktrees.
 
 ## Open items
 
@@ -223,8 +328,8 @@ flashing after A1/A2, D-7, and reviewing `reanalysis_<date>.md` before any
 
 - **The force is read from the tip's shade, not the red percent** (owner ruling). Median green of the right half of the recorded tip region; contact is the shade rising off its baseline, and the force is where the shade stands on its peak at the Mark (`model/tip_shade.py`, `docs/rebuild/RECORDING_A_TRIAL.md`). The sheet's **Force** field reads No contact, Contact, Low, Medium or High live; schema v8 stores `force_position`, `force_class`, `contact_lowered`, `shade_*`; the map's default definition is `shade_position`; the video index gains a `shade` column. Recording is unchanged (the whole tip region). The red-percent profile only logs when the rounded value changes by 0.1, so its force indices (`at_operator_mark` and the rest) are not to be trusted. `rebuild_force` recomputes the columns from footage; run on the bench database on 2026-10-06 for the four valid trials. The thresholds (contact line, 0.10, the thirds) are bench values, the owner's.
 - **The map has two axes, speed and force** (owner, 2026-10-06; tilt is fixed at 7° and recorded but no longer plotted). The figure dropdown is Map (speed × force, coloured by width; `plot_data` kind `map`, `map_limits`), Heatmap (the Gaussian process over speed × force; replaces the tilt × speed slice) , Compare, Profile. The Force band dropdown is gone; `width_gradient` reads um per step/s and um per unit force. Trials with no tilt are plotted. Bench database, 2026-10-06: trials 7 and 8 (400 steps/s, off the 100/200/300 plan) unflagged as supplemental points and their force rebuilt from footage (Medium, High); trials 6, 2 and 35 stay invalid (6 troublesome, 2 and 35 have no force).
-- **Sample Map and user profiles are off by default** (owner, 2026-10-06) until validated. The code stays whole in this tree and on branch `feature/sample-map-profiles`; `STATION_SAMPLE_MAP=1` and `STATION_PROFILES=1` turn them on (`controller/setup.py`). History was not rewritten: every commit is on `origin/mvc-refactor`, and some are another developer's.
-- **Data finalizer** (Qt only, temporary): the Transfer Map's "Finalize data..." button opens a window to walk the samples with video and stills and enter AFM and optical estimates (`model/finalize.py`, `views/qt_finalizer.py`).
+- **Sample Map and user profiles were off by default** (owner, 2026-10-06; SUPERSEDED 2026-10-07: the Sample Map is on again, `STATION_SAMPLE_MAP=0` turns it off, and accounts are on, `STATION_PROFILES=0` hides them; `controller/setup.py`). The code is also on branch `feature/sample-map-profiles`. History was not rewritten: every commit is on `origin/mvc-refactor`, and some are another developer's.
+- **Data finalizer** (Qt only, temporary; frozen with the Qt view, a Web finalizer is open): the Transfer Map's "Finalize data..." button opens a window to walk the samples with video and stills and enter AFM and optical estimates (`model/finalize.py`, `views/qt_finalizer.py`).
 - **Bench database:** schema v8; trials 3, 4, 5 and 9 are the valid series (7 deg, 100/200/300 steps/s); every other trial is flagged invalid, notes untouched. Backups beside it in `data/` (`*_pre_reconcile`, `*_old` with its pictures, `*_pre_shade`).
 
 
@@ -788,6 +893,8 @@ rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`
 
 ## History
 
+- 2026-10-07 (later): the proposal round, the lab's stage merge, the root cleanup and the
+  move to `~/GitHub` ("Round 2026-10-07 (proposal)").
 - 2026-10-07: the round above: Web the only frontend (Tk and Qt frozen at
   `413f504`), settled-frame recording, full-display recorder, the procedure
   phases, the image-store Sample Map, serial-link safety, in-process flashing.

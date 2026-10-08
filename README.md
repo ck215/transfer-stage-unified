@@ -29,6 +29,17 @@ version is kept beside the new one as `station.previous`.
 
 Developers run from a source checkout instead (`run.sh` / `run.bat`, or
 `pip install -e .`, which installs the one entry point `station-web`); a checkout updates itself by fast-forwarding git.
+Until the first installed release (after v1.0.0) the lab runs from a checkout:
+`git fetch && git checkout main`, `pip install -e .`, `./run.sh` (the repository lives at
+`~/GitHub/transfer-stage-unified/`; `mvc-refactor/` is the integration checkout and `main/`
+a plain checkout of the lab's original app). The branches are explained in
+`packaging/README.md`; the original app is the `legacy` branch.
+
+**Which version is this?** `station-web --version` (or `python src/app.py --version`)
+prints it, and so does the Setup page's Station row. A version is a git tag
+(`v1.3.0`); a checkout past a tag says `1.3.0.post3+gabc1234`, one before the first
+release `0.0.0+abc1234`. What changed for the bench, release by release, is in
+`CHANGELOG.md`.
 
 ## System Initialization and Operating System Selection
 
@@ -70,6 +81,14 @@ Prior to opening the software, the Xbox controller must be connected to the PC.
    - **Firmware**: **Boards** says whether each board still runs the sketch this checkout carries (`all current`, `Stepper Probe out of date`, `never flashed here`, or that arduino-cli is missing and the board must be flashed by hand). When the check at startup finds a board to flash, a dialog asks once ("Stepper Probe out of date. Flash it now?"): **Flash now** flashes it unattended, as the old launcher did, and **Later** leaves it to the row's **Flash out-of-date boards**, which flashes exactly those, after asking, with every model closed. **Flashing** shows the flash tool's progress while it runs, and Launch waits for it. Nothing is ever flashed without one of those two keys. Launching a board whose firmware is out of date asks once first ("Stepper Probe's firmware is out of date. Launch anyway?"), since that can be deliberate.
    - **Address** on the Devices row is where the dashboard is served.
 3. Use the drop-down menus on the right to assign the Xbox controller to each device.
+   Setup's **Account** section signs you in with your email and password (**Sign in**),
+   makes an account (**Create account…**), or **Open as guest**; a guest runs with the
+   station's defaults and the records you make carry the word "guest". A signed-in
+   account keeps its own defaults (**Remember current values as my defaults**) and
+   stamps its email on the trials and samples it records. (Set `STATION_PROFILES=0`
+   to hide the section.) The **Tutorials** button on the rail walks through "Your first
+   trial" and "Register a sample" by pointing at the real controls; they run on a
+   simulated station only.
 
 > ![Configuration GUI](./images/GUI_chose_ports_controllers.png)
 > *Figure 4: Configuration GUI showing the COM port drop-down menus.*
@@ -100,7 +119,7 @@ This mode is used to move the probe by fixed, precise step amounts. Ensure **Ena
   > - **Chuck**: UNVERIFIED
 - **Relative Step Counts**: Enter the desired X, Y, and Z step increments. The probe will move to the resulting coordinate. 
   > **Note**: Diagonal (multi-axis) movement is unverified. Restrict movement to a single axis at a time.
-- **Full Speed**: Sets the constant speed of the probe during movement.
+- **Autonomous Speed**: Sets the constant speed of the probe during movement, as a percent of the device's ceiling (stepper 3200 steps/s, chuck 600 steps/s); the steps per second it means appear in small type under the dial.
 - **Execution**: Click **Start Stepping** to send the command. The probe will move first in the x, then y, then z directions in successive order. If a field is left at zero, no steps will occur in that direction. 
 
 > **Important**: Once a command is sent, it cannot be updated. To correct a mistake, click **FULL STOP**, wait for the probe to stop completely, and send a new command.
@@ -110,7 +129,7 @@ This mode is used to move the probe by fixed, precise step amounts. Ensure **Ena
 Manual mode allows for real-time movement of the stages using the Xbox controller or Thrustmaster Joystick. Ensure **Enable System** has been clicked prior to attempting joystick inputs.
 
 - **Input Controls**: Use the analog thumbsticks to move along the X (left thumbstick) and Y (right thumbstick) axes. Use the analog triggers to move along the Z axis; left trigger to raise, right trigger to lower the probe. The D-pad and bummpers an also be used for discrete directional inputs in the x/y and z directions, respectively.
-- **Speed Limits**: The maximum speed during manual operation is determined by the 'Manual Mode Max Speed' field. For Stepper and Chuck controllers, this is set in Microsteps/Sec. For DC controllers, this sets the maximum *PWM* signal on a scale from 30 to 255. Lower values may be possible, but are not officially supported on the DC probe and may result in stalling.
+- **Speed Limits**: The maximum speed during manual operation is determined by the **Manual Speed** dial. For Stepper and Chuck controllers, this is a percent of the device's ceiling (stepper 3200 steps/s, chuck 600 steps/s), with the steps per second shown beneath. For DC controllers, this sets the maximum *PWM* signal on a scale from 30 to 255. Lower values may be possible, but are not officially supported on the DC probe and may result in stalling.
 - **Stopping**: To halt continuous movement from the controller, click the **Full Stop** button. This will stop the system from reading controller inputs and halt the motors safely.
 
 ## Temperature Controller

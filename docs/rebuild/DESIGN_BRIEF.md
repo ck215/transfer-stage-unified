@@ -9,7 +9,7 @@ Where a sentence below names Tk or Qt it records what those views did, and the
 "What each view owes this round" section is history. The Web renders the
 instrument from `palette.py` / `theme.py`; the procedure rules are in "The
 procedure (2026-10-07)" at the end.
-The reference is canvas row E and its source:
+The reference is canvas row E and its source (the handoff files and artboards named here were removed with the old handoffs; history: tag pre-root-cleanup-2026-10-07, so the text below is the surviving record):
 `handoff/design-Tiered.md` (the tiers, the stop, what each toolkit does),
 `handoff/design-Sheet.md` (tokens, type, spacing, radii, per-toolkit
 fallbacks), the artboards `scratchpad/canvas/project/Tiered_*.dc.html` and
@@ -35,8 +35,8 @@ files differ, the artboards win.
 
 | Tier | Drawn | Holds |
 |---|---|---|
-| 1 | always | a device's X/Y/Z position; its speeds as a **slider beside an exact entry** (`entry(..., slider=(low, high))`), the gamepad choice (Tier K: picked every session), the mode toggles, Step; the heater's temperature and setpoint; the rotator's angle, step and moves; Red Percent's Red, Change, Start run, Stop run |
-| 2 | behind one disclosure per model in a panel-toned well; the disclosure names the device (`disclosure`: "Configure Stepper Probe", "Configure Temperature Controller", "Red Percent details" …, Tier K 2026-09-26) | step sizes, targets, brakes; PID/ramp and the heater plot; the rotator's target and reset; **all of Red Percent's statistics, annotations, region, save/load, analysis** (its live plots left the live view on 2026-10-07; the trace is drawn once, at review) |
+| 1 | always | a device's X/Y/Z position; its speeds as a **slider beside an exact entry** in percent of the device's ceiling (`entry(..., slider=(0, 100))`, steps/s as a quiet secondary readout under it), the gamepad choice (Tier K: picked every session), the mode toggles, Step; the heater's temperature and setpoint; the rotator's angle, step and moves; RGB Analysis's Current Red, Red Change, Start run, Stop run (hosted on the Transfer Map's page, its live group behind its details; see "The procedure") |
+| 2 | behind one disclosure per model in a panel-toned well; the disclosure names the device (`disclosure`: "Configure Stepper Probe", "Configure Temperature Controller", "RGB analysis details" …, Tier K 2026-09-26) | step sizes, targets, brakes; PID/ramp and the heater plot; the rotator's target and reset; **all of RGB Analysis's statistics, channels, annotations, region, save/load, analysis and the Estimators comparison** (its live plots left the live view on 2026-10-07; the trace is drawn once, at review) |
 | 3 | behind a second disclosure ("Diagnostics") inside the tier-2 well | velocity, position age, the gamepad log button, fault and fault reason, the per-model stop as a small switch |
 
 Tier 1 never scrolls away. Tiers 2 and 3 remember their open state per
@@ -109,7 +109,7 @@ Render `tier` and `disclosure`; render `slider` beside its entry; the rail
 with the disc; entries instead of cards; status by exception; the tray
 rule; the new tokens through `theme` only (no view-local colour constants
 derived from the old dark tokens); before/after captures at 1400×900 and
-900×900 in the four states (launched, Red Percent details open, stopped,
+900×900 in the four states (launched, RGB analysis details open, stopped,
 setup); every existing test green or updated with the reason in the test.
 
 ## Signature (2026-09-27): the aesthetic ruling
@@ -161,12 +161,12 @@ Owner ruling 2026-10-07, rendered by the Web (WEB-1..5) from the model's
 shows the step the operator is in and hides what the step does not need.
 
 - **Phases.** A model with a procedure declares `PHASES`; the Transfer Map's
-  are setup (preliminary info), region (a full-resolution still of the stage
+  are setup (preliminary info: tip, sample, chip, flake), new_tip (a prompt), region (a full-resolution still of the stage
   is taken and the capture region is picked on it), live, marked (after Mark
   force), finish (review). A section or element drawn only in some steps names
   them (`phases=`); the page marks the shown step on the sections and rows,
-  moves focus to the step's first control, and shows a procedure strip on the
-  Overview. Hidden is not disabled: `enabled_when` still greys a control where
+  moves focus to the step's first control, and draws the procedure strip on the
+  model's card (see below). Hidden is not disabled: `enabled_when` still greys a control where
   it stands. The stop is never phased and stays reachable in every step.
 - **The region picker** draws on the model's still at full resolution, maps
   the drag to source pixels and outlines the held region.
@@ -176,3 +176,36 @@ shows the step the operator is in and hides what the step does not need.
   Overview.
 - **Thumbnails.** Images reach the page through `GET /api/image` (a relative
   path under the output root).
+
+### What the proposal round added (2026-10-07)
+
+- **The procedure strip.** A phased model's page draws a strip from
+  `state["phases"]`, the lit step from `state["phase"]`, the step's own
+  sentence from `state["step_text"]` and one health word from
+  `state["analysis_health"]` (quiet when it says "settled", a warning pill
+  otherwise: unsettled, stalled). Each part is written only when it changes.
+  A phase whose name starts `new_` is a prompt, not a numbered step: the strip
+  does not number it.
+- **Prompt phases are a card dialog.** A `new_` step (the Transfer Map's
+  `new_tip`; the Sample Map's `new_sample`, `new_chip`, `new_flake`) is asked
+  as a dialog over the model's card: a scrim over the card (never the stop,
+  never the rail), the step's sections centred in it with their widgets
+  moved, not copied, focus on the first entry, Escape is Cancel and Return in
+  an entry is Add. Everything else on the card is inert while it is open.
+- **Cascading dropdowns refresh on change.** A dropdown whose options depend
+  on another (Sample, Chip, Flake) is re-read after each change, so a new
+  sample clears the chip and the flake in the page, not only in the model.
+- **Secondary readouts.** `readonly(..., secondary=True)` is drawn as a small
+  quiet line under the control it follows, inside that control's row (the
+  speed dials' steps/s). A secondary readout never counts as the reading.
+- **Hosted tiers.** `section(..., hosted_tier=N)` places a hosted model's
+  section in tier N of its host's page (`MODEL_CONTRACT.md`); on its own page
+  it keeps its own tier. RGB Analysis's Live group is hosted at tier 2 (behind
+  its details) and its Estimators plot at tier 1 on the trial page.
+- **Speed dials** read 0-100 % over each device's ceiling (stepper 3200,
+  chuck 600 steps/s); the wire still carries steps/s.
+- **Dividers.** The Overview's hairline boundaries stand as above.
+- **Accounts and tutorials.** Setup's Account section masks secret entries
+  (`secret: True` on an entry, cleared after use). The Tutorials entry on the
+  rail runs coach cards (`tutorial.js`, `tutorials/*.json`) that point at real
+  controls; simulation only.

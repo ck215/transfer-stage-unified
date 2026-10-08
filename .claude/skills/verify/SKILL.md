@@ -5,8 +5,9 @@ description: Run the right test gates for the station at the right time — the 
 
 # Verifying
 
-Run from the repo root. `$PY` is the venv's python (`../main/.venv/bin/python`
-on this Mac); `$S` is the session scratch directory.
+Run from the repo root (`mvc-refactor/` or your `rb-*` worktree). `$PY` is the
+one venv's python, `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor/.venv/bin/python`
+(made from pyproject's `[dev]` extra); `$S` is the session scratch directory.
 
 ## The working loop
 
@@ -14,20 +15,27 @@ on this Mac); `$S` is the session scratch directory.
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"
 ```
 
-Minutes, not seconds; run after every edit. Baseline (2026-10-07, the merged
-round, lead's full run on the final tree): **3841 passed, 10 skipped, 227
-deselected, 1 xfailed** (the 227 are the Qt tests of the frozen view);
-golden 78. A count
-that moved is a finding, not noise. Known flake, not a regression:
-`test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
-fails about one run in three on an unchanged tree (a 1 ms timing bound);
-rerun it alone before calling a red fast gate.
+Minutes, not seconds; run after every edit. Baseline (2026-10-07, after the
+proposal round, the lab merge and the root cleanup): **<FAST>** (the lead
+fills it after the final gate; the 200-odd deselected are the Qt tests of the
+frozen view); golden **77** captures (the re-capture test and the three live
+frame comparisons against the deleted legacy tree are retired). There is no
+legacy gate any more. A count that moved is a finding, not noise.
+
+Known flakes, not regressions (rerun the test alone before calling a red fast gate):
+
+- `test_view_web_tutorial.py`: the first-trial walk is an **xfail** until the
+  tutorial is re-anchored to the sample/chip/flake pickers.
+- `test_o15` (the pinned head): can fail under load.
+- `test_sample_map.py`: a "rated later" test is timing-flaky.
+- `test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
+  (the transfer-map mark timing, a 1 ms bound): fails about one run in three.
 
 ## Before a merge: the gates and a launch
 
 ```
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"                          # the fast gate, see above (STATION_NO_WINDOWS=1 while anyone is at the Mac)
-$PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                  # 78 passed; replays the stored golden JSON against src/
+$PY -m pytest tests/test_wire_golden.py -q -p no:cacheprovider                  # 77 passed; replays the stored golden JSON against src/
 $PY src/app.py --no-browser --port 8081 &  sleep 8;  curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/setup;  kill %1
 ```
 

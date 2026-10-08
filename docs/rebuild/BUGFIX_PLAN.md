@@ -34,13 +34,32 @@ keep their own A1-A9. Nothing here is a new defect; every row is a landed fix.
 | L1 .. L13 | Serial-link safety: a lost link is stopped on its open handle and reconnects by itself (reverses D-11 for automatic recovery, owner 2026-09-30), counters, a confirmed halt, no mode entry out of an unconfirmed disable (SF-1, SF-2, SF-4, SF-5, SF-6). | `3bfb8bc` rb-finalize (rb-link) |
 | rb-dist-app A1 .. A5 | In-process flashing (`controller/flashing.py`), the bundle firmware check, the operator-chosen trial store, Switch to stable, the updater on the public repository. Bench-confirm flashing: owner. | `3bfb8bc` rb-finalize |
 | V1 .. V4 | The link, its counters, a held input gate and "Browser silent" are visible (Web + base only). | `3bfb8bc` rb-finalize (rb-link-views) |
-| TM-1 .. TM-3 | In flight in `../rb-tmap` at the time of writing, not yet merged: the Transfer Map follows the procedure, the live plots leave the live view, the tilt is collected, never drawn. | not merged |
+| TM-1 .. TM-4 | The Transfer Map follows the procedure (setup, region with the stage still, live, marked, finish), the live plots leave the live view, the tilt is collected never demanded, the full-display recorder and telemetry are wired in. | `436400a` rb-tmap (part 1) |
+
+## Round 2026-10-07 (proposal) — closed (merge commits on `mvc-refactor`)
+
+Ids are the round's own (RG, SP, TU, TR, REL, AC, RC); SA, W2, EST and LAB are this page's labels for merges that carried no row id. Each merge message says what landed. Nothing here is a new defect.
+
+| Id | What closed | Merge |
+|---|---|---|
+| (lead) | `state["phases"]`: a phased model publishes its ordered steps. | `dd10f01` |
+| SA | Sample store v4 (sample > chip > flake, materials, level-keyed photos, `open_readonly`); the Sample Map as cascading pickers with three level prompts. | `b8aadfc` rb-samples |
+| W2 | The procedure strip from `state.phases`, prompt phases as a card dialog, cascading dropdowns refreshed on change, no model-name literals in the client. | `606c724` rb-web2 |
+| RG-1 .. RG-3 | Six channel numbers per settled sample; the `factor=` as an analysis setting (`reanalyse_trials.py --factor`); Red Percent renamed RGB Analysis (`RgbAnalysis`, `model.rgb_analysis`), old profile keys mapped. | `565abd5` rb-rgb, `e485e76` |
+| SP-1 .. SP-3 | Speed dials in percent over per-device ceilings (stepper 3200, chuck 600) with steps/s underneath; the client draws `readonly(secondary=)` and `section(hosted_tier=)`; the analysis live group leaves the trial page's tier 1. | `e644b89` rb-speed |
+| TU-1, TU-2 | Data-driven interactive tutorials in the Web console ("Your first trial", "Register a sample"; simulation only); the tutorials ship in the wheel. | `889cac0` rb-tutorial |
+| TR-1 .. TR-5 | The trial page per the approved proposal: one Tip dropdown with the New tip prompt and tip models (TAP300 backfill); sample, chip and flake pickers with the derived cut number (Arm refuses without them); the Force estimate from the tip's shade and Video as one word; the procedure strip's step text and analysis health; profile columns for the six channels. | `429a988` rb-trial |
+| LAB | The lab's 2026-10-07 stage push (tag `bench-2026-10-07-stage`): store v8 (`chip_id`, `flake_id`, `cut_id`, `invalid`, the six tip-shade columns), `tip_shade.py` (primary), `shade_offline.py`, `finalize.py`, the vacuum question at Arm; the Qt finalizer frozen. This closes "Transfer Map part 2" except the Web finalizer. | `c345e2f` (inside `429a988`) |
+| REL-1 .. REL-6 | One version source (the git tag, `--version`); a pipeline that publishes its own draft with `SHA256SUMS`; `dev/release.sh`; the updater in versions for both modes; `update.sh`/`update.bat`; the branch model and the PR gate workflow. | `17791b8` rb-release, `ad311eb` |
+| AC-1 .. AC-4 | The accounts file (`users.sqlite`, scrypt), the `User` model (Guest = the station defaults), Setup's Account section (Phase 1 profiles migrated; `STATION_PROFILES=0` hides it), reserved settings keys for later. | `e3ef866` rb-accounts |
+| EST | The estimator bank (5 crops x 9 estimators in a 60 s ring), its comparison plot and image on the analysis page (hosted on the trial page) and `dev/estimators_offline.py`; the first-trial tutorial walk marked xfail until re-anchored. | `53a9cdb` rb-estimators |
+| RC-1, RC-2 | The legacy tree, the archived docs, the frozen ledger, the design data and the screenshots leave the repository (tag `pre-root-cleanup-2026-10-07`); the bench checklist and the lab's root scripts move; the golden re-capture test and the three live frame comparisons retire (golden pins 77 captures; lost: the SMC100 pacing comparison and the heater ramp-decimals cross-check). | `c315201` rb-rootclean, `aa2ae4e` |
 
 Retired by the Web-only ruling (rows that name Tk or Qt work are history, not
 open): Tier B7 (`views/tk.py`), Tier C2 (`views/tk.py` swallows) and every
 Tk-only or Qt-only row in Tiers E to O. They are left in place as the record.
 Still open and the owner's: the bench list in `STATUS.md` ("Round 2026-10-07",
-Bench-only), D-7, the store v9 migration (not done) and the bench branch gate.
+Bench-only) and D-7. The store v9 migration and the bench branch gate are closed: the lab's v8 is the repository's (`STATUS.md`, "Round 2026-10-07 (proposal)").
 
 ---
 

@@ -1,12 +1,12 @@
 ---
 name: main-feature-auditor
-description: Read-only audit of one subsystem of the lab's original app on `main` against the rebuild in `station/`, reporting only features that are missing or changed with a negative or neutral consequence for the intended functionality. Use in a fleet, one agent per subsystem; the brief names the subsystem and its files.
+description: Read-only audit of one subsystem of the lab's original app (branch `legacy`, the checkout `main/`) against the rebuild in `src/`, reporting only features that are missing or changed with a negative or neutral consequence for the intended functionality. Use in a fleet, one agent per subsystem; the brief names the subsystem and its files.
 tools: Read, Bash, Grep, Glob
 model: opus
 ---
 
 You are auditing ONE subsystem. Your brief names the files on `main` you
-own and the `station/` files that inherit their job. This file is everything
+own and the `src/` files that inherit their job. This file is everything
 else and does not change between runs.
 
 First read `.claude/skills/station-map/SKILL.md` in `mvc-refactor/`. It has
@@ -28,15 +28,14 @@ timeouts, debounce), what happens on disconnect, what happens on stop.
 
 ## How to work
 
-1. **Inventory main first.** Read your `main/src/` files top to bottom and
-   list every behaviour as a one-line row before you open `station/`. The
-   `tests/test_edge_main_*.py` files on `main` and the operator README are
-   part of the spec. Do not skip the boring parts; defaults and units are
+1. **Inventory main first.** Read your `main/src/` files (the checkout of the lab's original app, branch `legacy`) top to bottom and
+   list every behaviour as a one-line row before you open `src/`. The
+   operator README in `main/` is part of the spec (the old `tests/test_edge_main_*.py` files are gone with the legacy tree; history: tag pre-root-cleanup-2026-10-07). Do not skip the boring parts; defaults and units are
    where regressions hide.
 2. **Find the counterpart.** The old-method map `design.rules` was removed (history: tag pre-root-cleanup-2026-10-07).
-   Search the `station/` code by construct, then read it — do not trust the map alone.
+   Search the `src/` code by construct, then read it — do not trust the map alone.
 3. **Verify by running when it is cheap.** The rebuild starts in SIM mode
-   with no hardware; the golden captures under `tests/station/golden/` show
+   with no hardware; the golden captures under `tests/golden/` show
    the bytes on the wire. If a claim is "the rebuild no longer sends X",
    check the golden JSON or a SIM run before writing it down.
 4. **Never edit a repository file.** You are read-only. Scratch goes in the
@@ -67,7 +66,7 @@ Checked: <N> behaviours from <files>. Findings: <M> (<a> MISSING, <b> NEGATIVE, 
 ## Findings
 ### <AREA>-1 — <one-line title>            [MISSING|NEGATIVE|NEUTRAL]
 main:     `src/<file>.py:<line>` — <what it does, one or two sentences>
-station:  `station/<file>.py:<line>` or "absent" — <what it does instead>
+station:  `src/<file>.py:<line>` or "absent" — <what it does instead>
 consequence: <what the operator or hardware loses; be concrete>
 evidence: <golden scenario, SIM run, or test name that shows it>
 confidence: high | medium | low  (low = you could not run it)

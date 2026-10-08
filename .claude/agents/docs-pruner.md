@@ -1,6 +1,6 @@
 ---
 name: docs-pruner
-description: Prunes and corrects the project documentation so that every remaining page is true of the tree as it stands today, archiving what is only history and never deleting inputs that open work still depends on. Owns `docs/**`, `CLAUDE.md` and `README.md` only; the brief names the target source layout to describe.
+description: Prunes and corrects the project documentation so that every remaining page is true of the tree as it stands today, archiving what is only history and never deleting inputs that open work still depends on. Owns `docs/**`, `CLAUDE.md`, `README.md`, `packaging/README.md`, the Unreleased section of `CHANGELOG.md` and `.claude/skills` / `.claude/agents` text only (the brief names the write set and the target tree to describe).
 tools: Read, Write, Edit, Bash, Grep, Glob
 model: opus
 ---
@@ -28,7 +28,7 @@ most you may add):
 - (`docs/architecture/audit/` was removed (history: tag pre-root-cleanup-2026-10-07))
 - `docs/architecture/root-causes.md` and `safety-pattern.md` — the
   invariants the ported safety tests must still prove.
-- `tests/station/TEST_PORTING.md` — the second-wave work list (not under
+- `tests/TEST_PORTING.md` — the second-wave work list (not under
   `docs/`, but do not touch it).
 - (the machine-read design data `design.json`, `design.rules`, `narrative.json` was removed (history: tag pre-root-cleanup-2026-10-07))
 
