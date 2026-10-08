@@ -36,6 +36,24 @@ int counter;
 int counter2;
 int state;
 
+// PROPOSED 2026-10-07 - NOT FLASHED, NEEDS BENCH REVIEW AND FLASHING.
+// Host-gone watchdog. Until now whatever the last frame commanded persisted
+// for as long as the board had power: a host that died, was killed, lost
+// its USB cable or simply closed the port left the heater at its setpoint.
+// The station's software close path cannot cover SIGKILL, a crash of the
+// interpreter, a PC power loss or a pulled cable; the board must.
+//
+// "Host present" is the USB CDC DTR line: pyserial asserts DTR when it
+// opens the port and Linux/Windows/macOS drop it when the port is closed or
+// the process holding it dies (Teensy core: `Serial` is true only while
+// DTR is set). So this needs NO new bytes on the wire and the protocol is
+// unchanged: the station still sends the same frames, and nothing has to
+// be sent periodically. After HOST_GONE_MS without a host the board does
+// exactly what the heater-off frame does (endpoint 0, gains 0) and the
+// LCD shows SP=0.
+const unsigned long HOST_GONE_MS = 5000;     // owner's number to tune at the bench
+unsigned long hostSeenAt = 0;
+
 const byte numChars = 32;
 char receivedChars[numChars];
 boolean newData = false;
@@ -70,6 +88,25 @@ void setup() {
   ki = 0.5;                                           // Diff constant
   kd = 0.1;                                           // Int constant
   starttime = millis();
+  hostSeenAt = millis();                          // boot grace for the host-gone watchdog
+}
+
+// PROPOSED (see HOST_GONE_MS): no host holding the port for HOST_GONE_MS ->
+// the heater-off frame's effect, done by the board itself.
+void hostGoneWatchdog() {
+  if (Serial) {                                   // DTR set: a host has the port open
+    hostSeenAt = millis();
+    return;
+  }
+  if (endpoint != 0 && millis() - hostSeenAt > HOST_GONE_MS) {
+    endpoint = 0;                                 // as <0,...,0,0,0,...>
+    kp = 0;
+    ki = 0;
+    kd = 0;
+    sum = 0;
+    olderror = 0;
+    setpoint = 0;
+  }
 }
 
 
@@ -81,7 +118,8 @@ void loop(){
   
   recvWithStartEndMarkers();
   showNewData();
-  
+  hostGoneWatchdog();                             // PROPOSED, see HOST_GONE_MS
+
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%//PWM Modulator//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   if(zcrossstate == 1){                                       // when ac current reaches zero, modulate the next half-wavelength. half-wavelength duration is 8300us 
