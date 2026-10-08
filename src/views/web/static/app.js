@@ -2154,7 +2154,10 @@ class PanelCard {
       open.addEventListener('click', () => dashboard.showPage(name));
       // The Dashboard's tile keys (owner 2026-10-08): Wide (one tile or two
       // across, the same entry either way) and Move (drag, or the arrow
-      // keys). Above the head's stretched Open target; Dashboard only.
+      // keys). Dashboard only. Beside the head, never in it: the head's one
+      // button is Open, so nothing next to a stop this model did not
+      // confirm reads as its Dismiss (G6, I8). Before the head in the DOM,
+      // so Shift+Tab from Open still reaches Move, then Wide.
       const keys = make('span', 'tile-keys');
       const wide = make('button', 'button role-neutral tile-key tile-wide', 'Wide');
       wide.type = 'button';
@@ -2169,7 +2172,7 @@ class PanelCard {
       move.addEventListener('keydown', (event) => dashboard.moveByKey(name, event));
       move.addEventListener('pointerdown', (event) => dashboard.startTileDrag(name, event));
       keys.append(wide, move);
-      head.appendChild(keys);
+      this.node.appendChild(keys);
       this.wideKey = wide;
       this.moveKey = move;
       // UX audit 2026-10-08 #19: Wide, Move and Open were three Tab stops
@@ -3523,6 +3526,8 @@ class Dashboard {
     this.isReloading = false;
     this.setupCard = null;
     this.isLaunched = false;
+    //: Whether a poll has yet said launched or not (collapseSetupOnLaunch).
+    this.hasLookedAtLaunch = false;
     //: Owner 2026-10-07: the rail's Stop is drawn from the launch on, for
     //: the rest of the session (never hidden again once shown).
     this.stopShown = false;
@@ -4708,6 +4713,12 @@ class Dashboard {
     // edge and must not be read as "stopped".
     if (!hasModels && !setupState) return;
     const isLaunched = hasModels || Boolean(setupState.is_launched);
+    // The first poll to find the station running is a reload, not a
+    // launch: its entries are arriving for the first time anyway, so the
+    // launch's replay (settleSheet) is not played - its timed class change
+    // on the sheet would be the one write an idle page makes (F21).
+    const isFirstLook = !this.hasLookedAtLaunch;
+    this.hasLookedAtLaunch = true;
     if (isLaunched === this.isLaunched) return;
     this.isLaunched = isLaunched;
     this.applySetupWords();
@@ -4717,7 +4728,7 @@ class Dashboard {
       this.layoutSheet();
       this.renderNav(Object.fromEntries(Array.from(this.cards.keys()).map((n) => [n, {}])));
     }
-    if (isLaunched) this.landOnSheet();
+    if (isLaunched) this.landOnSheet(!isFirstLook);
     else this.setDrawerOpen(true);
   }
 
@@ -4728,7 +4739,7 @@ class Dashboard {
    *  never lost on the body. Reduced motion: the same states, at once
    *  (the stylesheet zeroes every duration and delay). Focus stays put when
    *  the operator is elsewhere - a dialog, the sign-in screen, the rail. */
-  landOnSheet() {
+  landOnSheet(settle = true) {
     const active = document.activeElement;
     const takeFocus = !active || active === document.body
       || this.dom.drawer.contains(active);
@@ -4744,7 +4755,7 @@ class Dashboard {
       this.isStepsLeaving = false;
       this.renderSteps();
     }, 240);
-    this.settleSheet();
+    if (settle) this.settleSheet();
     const covered = this.confirmPending || !this.dom.modal.hidden
       || !this.dom.picker.hidden || this.isGated || this.isElsewhere;
     if (takeFocus && !covered) this.dom.cards.focus({ preventScroll: true });
