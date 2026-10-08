@@ -167,6 +167,29 @@ percent from pixels.) The lab's one-off scripts `dev/merge_cuts.py` and
 beside it and are the owner's to delete. `dev/estimators_offline.py` runs the estimator
 bank over a recorded video (below).
 
+## Backups (2026-10-07)
+
+Each signed-in user's stores (the Transfer Map's trials and the Sample DB) stay
+on this computer and are copied, after every save and at Quit, to the user's
+backup folder (`src/controller/backup.py`): their Account setting "Backup folder",
+else `$STATION_BACKUP_DIR/<email>/`, else `~/QMDL_Drive/transfer-stage-dbs/<email>/`
+when `~/QMDL_Drive` exists. `STATION_BACKUP_DIR=off` turns it off; a Guest is
+never backed up. The folder mirrors the store folder: `transfer_map.sqlite` with
+its `transfer_map/` (pictures, videos) and `exports/`, `sample_map.sqlite` with
+its `images/`. Each database is a consistent SQLite snapshot (online backup API),
+renamed into place, so it is never half written. Account shows "Last backup
+23:41 → <folder>" and has Back up now. A failure (drive not mounted, read-only)
+is one warning per streak.
+
+**To restore:** quit the station; copy the backup folder's `*.sqlite` files and
+their folders (`transfer_map/`, `exports/`, `images/`) into an empty local folder
+(e.g. `~/transfer-stage-runs/stores/<email>/`), keeping the layout; skip the
+hidden `.backup-manifest.json`. Start the station, sign in, and Open store on
+each map with the copied `.sqlite`. Trial rows name their pictures by absolute
+path, so restore to the SAME folder the store lived in when you can; elsewhere
+the trials are intact but their pictures must be re-pointed. To force a full
+re-copy, delete `.backup-manifest.json` in the backup folder.
+
 ## The force
 
 ### The tip's shade (the default, the lab's model)

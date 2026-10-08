@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 
 import schema as sch
+from controller import backup as backup_module
 from controller import flashing, user_config
 from controller.firmware import FirmwareCheck
 from controller.updater import Updater
@@ -50,6 +51,7 @@ from devices import serial_port as serial_port_module
 from devices.serial_port import ConnectionState, SerialPort
 from events import events
 from model import profile as profiles_module
+from model import store_choice
 from model import user_store as user_store_module
 from model.base import Model
 from model.heater import Heater
@@ -260,6 +262,9 @@ SIGNED_IN_ONLY = (TransferMap, SampleMap)
 # choices file. Wired here, at the composition root: `model/` never imports
 # the controller.
 TransferMap.choices = user_config
+# 2026-10-07: the Sample DB's store is chosen and remembered the same way
+# (`sample_store`); it no longer defaults to a file inside the install.
+SampleMap.choices = user_config
 
 
 def is_signed_in_only(name):
@@ -596,6 +601,9 @@ class Setup(PortProbe, Panel):
         Param("map_store_dir", "text", default="", label="Folder for a new store"),
         Param("map_store_name", "text", default="transfer_map",
               label="New store name"),
+        # 2026-10-07 (B): the signed-in user's backup folder; blank = the
+        # default (`controller.backup.target`).
+        Param("backup_dir", "text", default="", label="Backup folder"),
     )}
 
     def __init__(self, controller, updater=None, firmware=None, restart=None,
@@ -625,6 +633,7 @@ class Setup(PortProbe, Panel):
         # The accounts (2026-10-07; were the Phase 1 profiles): the station
         # scope, users.sqlite and the session, a Guest until someone signs in.
         self._init_accounts()
+        self._init_backup()
         self._rows = self._build_rows()
         self._schema = self._build_schema()
         self._lock = threading.RLock()
@@ -1798,7 +1807,7 @@ class Setup(PortProbe, Panel):
             return
         self._warn_not_applied(self.user.load_into(
             {getattr(model, "NAME", None) or "": model}, self.profiles))
-        if isinstance(model, TransferMap):
+        if isinstance(model, self.STORE_MODELS):
             model.choices = self._map_choices
             if not self.user.is_guest:
                 self._open_users_store(model)
@@ -1851,6 +1860,12 @@ class Setup(PortProbe, Panel):
             self.ACCOUNT_SECTION,
             sch.button("Save station settings", "save_station_settings",
                        role="neutral"),
+            # 2026-10-07 (B): the signed-in user's backup of their stores.
+            sch.readonly("Backup", "backup_status", role="info"),
+            sch.entry("Backup folder", "backup_dir", self.PARAMS["backup_dir"]),
+            sch.button("Set backup folder", "set_backup_dir",
+                       inputs=("backup_dir",), role="neutral"),
+            sch.button("Back up now", "back_up_now", role="neutral"),
             layout="row",
         )
 
@@ -1874,6 +1889,7 @@ class Setup(PortProbe, Panel):
             resources[resource] = value
         model = model_class(sim=is_sim, **resources)
         self._apply_account(model)
+        self._wire_store(model)
         return model
 
     def _check_identities(self, configs):
@@ -2641,42 +2657,64 @@ class Setup(PortProbe, Panel):
         target.store_dir, target.store_name = self.map_store_dir, self.map_store_name
         return target.new_store()
 
+    #: The models whose store is chosen per user (2026-10-07: the Transfer
+    #: Map's trials and the Sample DB's samples).
+    STORE_MODELS = (TransferMap, SampleMap)
+    #: The variable (flag) that names each one's store and wins over a
+    #: choice.
+    STORE_ENV = {TransferMap.STORE_KEY: "STATION_MAP_DB",
+                 SampleMap.STORE_KEY: "STATION_SAMPLE_DB"}
+
+    def _store_models(self):
+        """The open Transfer Map and Sample DB (either may be closed)."""
+        models = getattr(self.controller, "models", None) or {}
+        if not isinstance(models, dict):
+            return []
+        return [m for m in models.values() if isinstance(m, self.STORE_MODELS)]
+
     def _follow_store(self, previous):
-        """After a sign-in or sign-out, the open map records where the new
+        """After a sign-in or sign-out, each open map records where the new
         session's store is: the signed-in user's remembered store, or - back
-        to Guest from a user - the station's remembered one."""
+        to Guest from a user - the station's remembered one. The prompt's
+        suggested folder becomes the new user's."""
+        self.backup_dir = self._backup_setting() or ""
+        for model in self._store_models():
+            model.suggest_store_dir(self._suggested_store_dir())
         if not PROFILES_ENABLED:
             return
-        model = self._transfer_map()
-        if model is None:
-            return
-        model.choices = self._map_choices
-        if not self.user.is_guest:
-            self._open_users_store(model)
-        elif not previous.is_guest and not os.environ.get("STATION_MAP_DB"):
-            station = user_config.read("map_store")
-            if station:
-                self._open_store_on(model, station, "The station's")
+        for model in self._store_models():
+            model.choices = self._map_choices
+            key = model.STORE_KEY
+            if not self.user.is_guest:
+                self._open_users_store(model)
+            elif not previous.is_guest and not os.environ.get(self.STORE_ENV[key]):
+                station = user_config.read(key)
+                if station:
+                    self._open_store_on(model, station, "The station's")
 
     def _open_users_store(self, model):
         """The signed-in user's remembered store (`UserStore` setting
-        `map_store`) becomes `model`'s, when it is still there. `--map-db`
-        (STATION_MAP_DB) wins over it, as over the station's choice."""
-        if os.environ.get("STATION_MAP_DB"):
+        `map_store` / `sample_store`) becomes `model`'s, when it is still
+        there. `--map-db` / `--sample-db` win over it, as over the station's
+        choice."""
+        key = model.STORE_KEY
+        if os.environ.get(self.STORE_ENV[key]):
             return
         try:
-            path = self.users.setting(self.user.email, "map_store")
+            path = self.users.setting(self.user.email, key)
         except Exception as exc:
-            events.warn("Trial Store Not Read", f"{self.user.user_name}'s trial store "
-                        "could not be read from the accounts file; trials go where "
-                        "the Transfer Map says.", source=self.NAME, exception=exc)
+            events.warn(self._store_word(model) + " Not Read", f"{self.user.user_name}'s {model.NAME} "
+                        "store could not be read from the accounts file; the "
+                        f"{model.NAME} asks where its store is.",
+                        source=self.NAME, exception=exc)
             return
         if not path:
             return
         if not Path(path).is_file():
-            events.warn("Trial Store Missing", f"{self.user.user_name}'s trial store "
-                        f"{path} is not there any more. Trials go where the Transfer "
-                        "Map says; open or make a store there.", source=self.NAME)
+            events.warn(self._store_word(model) + " Missing", f"{self.user.user_name}'s {model.NAME} "
+                        f"store {path} is not there any more. The {model.NAME} "
+                        "asks where its store is; open or make one there.",
+                        source=self.NAME)
             return
         self._open_store_on(model, path, f"{self.user.user_name}'s")
 
@@ -2691,12 +2729,152 @@ class Setup(PortProbe, Panel):
         try:
             model.open_store()
         except Refused as refusal:
-            events.warn("Trial Store Not Opened", f"{whose} trial store {path} was "
-                        f"not opened: {refusal.reason}", source=self.NAME)
+            events.warn(self._store_word(model) + " Not Opened", f"{whose} {model.NAME} store {path} "
+                        f"was not opened: {refusal.reason}", source=self.NAME)
         except Exception as exc:
-            events.warn("Trial Store Not Opened", f"{whose} trial store {path} was "
-                        "not opened; the details are in the log file.",
+            events.warn(self._store_word(model) + " Not Opened", f"{whose} {model.NAME} store {path} "
+                        "was not opened; the details are in the log file.",
                         source=self.NAME, exception=exc)
+
+    @staticmethod
+    def _store_word(model):
+        """The event titles' first words: "Trial Store" (as before) or
+        "Sample Store"."""
+        return "Trial Store" if isinstance(model, TransferMap) else "Sample Store"
+
+    def _suggested_store_dir(self):
+        """Where the store prompt suggests: `~/transfer-stage-runs/stores/
+        <email>/` for a signed-in user, the `stores/` folder for a Guest."""
+        email = None if self.user.is_guest else self.user.email
+        return store_choice.suggested_dir(email)
+
+    def _wire_store(self, model):
+        """A Transfer Map or Sample DB just built: its prompt suggests the
+        user's folder and its writes are backed up."""
+        if not isinstance(model, self.STORE_MODELS):
+            return
+        model.suggest_store_dir(self._suggested_store_dir())
+        model.backup_hook = self._store_written
+
+    # -- the backup (2026-10-07, B) -----------------------------------------
+    def _init_backup(self):
+        """The backup thread's service, and a final backup when a store
+        model closes (bounded, and waited for only at Quit)."""
+        self.backup = backup_module.BackupService()
+        self.backup_dir = self._backup_setting() or ""
+        subscribe = getattr(self.controller, "subscribe", None)
+        if callable(subscribe):
+            subscribe(self._on_models_changed)
+        self._closing_store_models = {}
+
+    def _backup_setting(self):
+        if self.user.is_guest:
+            return None
+        try:
+            return self.users.setting(self.user.email, backup_module.SETTING)
+        except Exception:
+            return None
+
+    def _backup_target(self):
+        if self.user.is_guest:
+            return None
+        return backup_module.target(self.user.email, self._backup_setting())
+
+    def _backup_job(self, models=None):
+        where = self._backup_target()
+        if where is None:
+            return None
+        sources = []
+        for model in (self._store_models() if models is None else models):
+            try:
+                sources += model.backup_sources()
+            except Exception as exc:
+                events.debug("Backup Sources Failed", repr(exc), source=self.NAME)
+        return backup_module.Job(where, sources)
+
+    def _store_written(self, model):
+        """`backup_hook`: a store was written; back it up soon."""
+        self.backup.request(self._backup_job([model]))
+
+    def _on_models_changed(self, event, name):
+        """Remember the store models while they are open; when one is
+        removed (a tab close, a relaunch, Quit) back its store up. At Quit
+        (the Controller closing) the backup is waited for, at most
+        `BackupService.QUIT_WAIT_S`."""
+        if event == "added":
+            lookup = getattr(self.controller, "_model_or_none", None)
+            model = lookup(name) if callable(lookup) else None
+            if isinstance(model, self.STORE_MODELS):
+                self._closing_store_models[name] = model
+            return
+        if event != "removed":
+            return
+        model = self._closing_store_models.pop(name, None)
+        if model is None:
+            return
+        if self.backup.request(self._backup_job([model])) and \
+                getattr(self.controller, "_closed", False):
+            if not self.backup.wait(self.backup.QUIT_WAIT_S):
+                events.warn("Backup Not Finished", "The last backup was still "
+                            f"running after {self.backup.QUIT_WAIT_S:g} s; the "
+                            "stores are safe on this computer and are backed "
+                            "up at the next start.", source=self.NAME)
+
+    @property
+    def backup_status(self):
+        """The Account section's line: where the backup goes and how the
+        last one went."""
+        if self.user.is_guest:
+            return "No backup for Guest: sign in to have your stores backed up."
+        where = self._backup_target()
+        if where is None:
+            return ("No backup folder: type one under Backup folder (the "
+                    "default needs ~/QMDL_Drive, or STATION_BACKUP_DIR is off).")
+        return self.backup.status(where.folder)
+
+    def set_backup_dir(self):
+        """Set backup folder: the signed-in user's own folder (blank = the
+        default). Never inside the station's folder."""
+        if self.user.is_guest:
+            self._refuse("Sign in first: a Guest's stores are not backed up.")
+        typed = (self.backup_dir or "").strip()
+        if typed:
+            folder = Path(typed).expanduser()
+            if not folder.is_absolute():
+                self._refuse("Type the backup folder as a full path.")
+            if store_choice.inside(store_choice.install_root(), folder):
+                self._refuse("The backup folder cannot be inside the station's "
+                             "own folder; updates replace that folder.")
+            typed = str(folder)
+        try:
+            self.users.put_setting(self.user.email, backup_module.SETTING,
+                                   typed or None)
+        except Exception as exc:
+            self._refuse(f"The backup folder could not be saved ({exc}).")
+        where = self._backup_target()
+        events.info("Backup Folder", f"{self.user.user_name}'s stores are backed "
+                    f"up to {where.folder if where else 'nowhere (no folder)'}.",
+                    source=self.NAME)
+        self.back_up_now(quiet=True)
+        return str(where.folder) if where else ""
+
+    def back_up_now(self, quiet=False):
+        """Back up now: every open store, on the backup thread."""
+        if self.user.is_guest:
+            self._refuse("Sign in first: a Guest's stores are not backed up.")
+        job = self._backup_job()
+        if job is None:
+            if quiet:
+                return ""
+            self._refuse("There is no backup folder: type one under Backup "
+                         "folder and press Set backup folder.")
+        if not job.sources:
+            if quiet:
+                return ""
+            self._refuse("No store is open: open the Transfer Map or the "
+                         f"{SampleMap.NAME} with a store chosen.")
+        self.backup.request(job)
+        return str(job.target.folder)
 
     def _store_section(self):
         """The Trial store row: where the Transfer Map's trials go, and the
@@ -3007,14 +3185,15 @@ class _SessionChoices:
         return None if user.is_guest else user.email
 
     def read(self, key, default=None):
+        """A signed-in user's own choice only (2026-10-07: the stores are
+        per user; with none, the map asks); a Guest's is the station's."""
         email = self._email()
         if email:
             try:
                 value = self._setup.users.setting(email, key)
             except Exception:
                 value = None
-            if value:
-                return value
+            return value or default
         return user_config.read(key, default)
 
     def write(self, key, value):

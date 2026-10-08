@@ -59,6 +59,7 @@ the `rotator_unknown` gate. Nothing here moves the Rotator.
 """
 import datetime
 import math
+import os
 import sqlite3
 import sys
 import threading
@@ -70,6 +71,7 @@ from events import events
 from model import plot_data
 from model import sample_frame as sf
 from model import sample_store as ss
+from model import store_choice
 from model.base import Model
 from param import Param
 from result import NeedsConfirm, Refused
@@ -95,6 +97,48 @@ ROTATOR_UNKNOWN_STATES = ("Communication lost", "Disconnected", "Homing")
 ROTATOR_UNKNOWN_PREFIX = "Not referenced"
 
 
+#: Every store command's refusal while no store is chosen (2026-10-07).
+NO_SAMPLE_STORE = ("Choose where the sample database is saved first (the "
+                   "New store prompt on this page).")
+
+
+class _NoSampleStore(ss.SampleStore):
+    """The store while none is chosen: every read answers empty (the file
+    "does not exist"), every write is refused. Never touches the disk."""
+
+    def __init__(self):
+        self.path = None
+        self._lock = threading.Lock()
+        self._readonly = False
+
+    @property
+    def exists(self):
+        return False
+
+    @property
+    def directory(self):
+        raise Refused(NO_SAMPLE_STORE)
+
+    def write(self, fn):
+        raise Refused(NO_SAMPLE_STORE)
+
+    def add_image(self, *args, **kwargs):
+        raise Refused(NO_SAMPLE_STORE)
+
+
+class _BackedStore(ss.SampleStore):
+    """The chosen store: after every write, `after_write()` (the backup)."""
+
+    def __init__(self, path, after_write):
+        super().__init__(path)
+        self._after_write = after_write
+
+    def write(self, fn):
+        result = super().write(fn)
+        self._after_write()
+        return result
+
+
 def _number(value):
     try:
         number = float(str(value).strip())
@@ -103,7 +147,7 @@ def _number(value):
     return number if math.isfinite(number) else None
 
 
-class SampleMap(Model):
+class SampleMap(store_choice.StorePrompt, Model):
     NAME = "Sample DB"
     IDENTITY = None
     NEEDS_PORT = False
@@ -125,7 +169,17 @@ class SampleMap(Model):
     #: and chips do NOT." Checked when the New prompt adds the record; a
     #: record already stored loads whatever pictures it has.
     PHOTO_REQUIRED = {"sample": False, "chip": False, "flake": True}
-    PHASES = TIERS + ("new_sample", "new_chip", "new_flake")
+    PHASES = TIERS + ("new_sample", "new_chip", "new_flake", "new_store")
+    #: The user setting (and the station choices key) that remembers the
+    #: store: `UserStore.put_setting(email, STORE_KEY, path)`.
+    STORE_KEY = "sample_store"
+    #: Where the store choice is remembered: `read(key)` / `write(key,
+    #: value)`, set by the composition root (per session by Setup). None
+    #: remembers nothing.
+    choices = None
+    #: The folders beside the database that belong to it (pictures; the
+    #: dormant flake pictures): copied with it and backed up with it.
+    SIDE_FOLDERS = ("images", "sample_map")
     #: What a dropdown shows between a sample's label and its material.
     SEP = " \u00b7 "
 
@@ -174,15 +228,29 @@ class SampleMap(Model):
               unit="nm", label="AFM thickness"),
         Param("thickness_afm_sigma_nm", "float", default=0.0, minimum=0,
               decimals=2, unit="nm", label="AFM thickness uncertainty"),
+        # Where the store is (2026-10-07: chosen by the user, never inside
+        # the install).
+        Param("store_path", "text", default="", label="Existing store file"),
+        Param("store_dir", "text", default="", label="Folder"),
+        Param("store_name", "text", default="sample_map", label="Name"),
     )}
 
     def __init__(self, port=None, gamepad=None, sim=False, db_path=None):
         super().__init__()
         self.sim = sim
-        self.db_path = Path(db_path) if db_path else self.default_db_path()
-        self.output_root = self.db_path.parent
-        self._store = ss.SampleStore(self.db_path)
         self._lock = threading.RLock()
+        path = Path(db_path) if db_path else self.default_db_path()
+        if path is None:
+            self._no_store()
+        else:
+            self._adopt(path)
+        # Migration by choice: a store an earlier build kept inside the
+        # install is offered (Copy it here), never opened or moved for them.
+        legacy = self.legacy_store_path()
+        if legacy is not None and not self.store_path:
+            self.store_path = str(legacy)
+        self._prefill_store_dir()
+        self._trial_peer = None        # the Transfer Map, told of a new store
         self._stages = {}              # name -> locating model, Controller order
         self._source = None            # a stage name, TYPED, or None
         self._red = None
@@ -208,17 +276,183 @@ class SampleMap(Model):
         self.owner = "station"
         self.owner_auth = "station"
 
-    @staticmethod
-    def default_db_path():
-        """`STATION_SAMPLE_DB`, else `data/sample_map.sqlite` beside the
-        Transfer Map's store (a bundle: beside the executable)."""
-        import os
+    @classmethod
+    def default_db_path(cls):
+        """`STATION_SAMPLE_DB` (`--sample-db`), else the store the user chose
+        and `choices` remembers, else None: no store until one is chosen
+        (2026-10-07; it was `data/sample_map.sqlite` inside the install)."""
         configured = os.environ.get("STATION_SAMPLE_DB")
         if configured:
             return Path(configured).expanduser().resolve()
-        if getattr(sys, "frozen", False):
-            return Path(sys.executable).resolve().parent / "data" / "sample_map.sqlite"
-        return Path(__file__).resolve().parents[2] / "data" / "sample_map.sqlite"
+        chosen = cls.choices.read(cls.STORE_KEY) if cls.choices is not None else None
+        return Path(chosen) if chosen else None
+
+    @classmethod
+    def legacy_store_path(cls):
+        """`<install>/data/sample_map.sqlite`, where builds before 2026-10-07
+        kept the store, when one is there; else None."""
+        left = store_choice.install_root() / "data" / "sample_map.sqlite"
+        return left if left.is_file() else None
+
+    # -- the store (2026-10-07: per user, chosen, outside the install) ---------
+    def _adopt(self, path):
+        self.db_path = Path(path)
+        self.output_root = self.db_path.parent
+        self._store = _BackedStore(self.db_path, self._request_backup)
+        self._store_chosen = True
+
+    def _no_store(self):
+        self.db_path = None
+        self.output_root = None          # no download is served
+        self._store = _NoSampleStore()
+        self._store_chosen = False
+
+    @property
+    def has_store(self):
+        return self._store_chosen
+
+    def _need_store(self):
+        if not self._store_chosen:
+            raise Refused(NO_SAMPLE_STORE)
+
+    NOT_CHOSEN = ("Not chosen. Make a new store in a folder of your choice, or "
+                  "open an existing one.")
+
+    @property
+    def store_status(self):
+        if not self._store_chosen:
+            return self.NOT_CHOSEN
+        if os.environ.get("STATION_SAMPLE_DB"):
+            return f"{self.db_path} (set by STATION_SAMPLE_DB / --sample-db)"
+        return str(self.db_path)
+
+    @property
+    def legacy_text(self):
+        legacy = self.legacy_store_path()
+        if legacy is None:
+            return ""
+        return (f"An earlier version kept this database at {legacy}, inside "
+                "the station's folder. Copy it here copies it (and its "
+                "pictures) to the folder above and opens the copy; the "
+                "original stays where it is.")
+
+    def backup_sources(self):
+        """`[(database, [folders beside it])]` for the backup; [] with no
+        store."""
+        if not self._store_chosen:
+            return []
+        return [(self.db_path, [self.output_root / f for f in self.SIDE_FOLDERS])]
+
+    def _refuse_store_change(self):
+        if self._phase != "browse":
+            raise Refused("Finish or cancel the New prompt first.")
+
+    def open_store(self):
+        """Open store: the database typed under Existing store file becomes
+        this map's store, and is remembered."""
+        typed = (self.store_path or "").strip()
+        if not typed:
+            raise Refused("Type the path of an existing sample database under "
+                          "Existing store file.")
+        path = Path(typed).expanduser().resolve()
+        self._refuse_inside_install(path)
+        if not path.is_file():
+            raise Refused(f"{path}: no file there. Check the path, or press New "
+                          "store to make one.")
+        try:
+            sqlite = store_choice.is_sqlite(path)
+        except OSError as exc:
+            raise Refused(f"{path} could not be read ({exc}).")
+        if not sqlite:
+            raise Refused(f"{path} is not a sample database (not a database "
+                          "file).")
+        return self._choose(path, created=False)
+
+    def new_store(self):
+        """New store: `<folder>/<name>.sqlite`, made now (the folder too) and
+        remembered. Never over an existing file."""
+        path = self._new_store_path()
+        if path.exists():
+            raise Refused(f"{path} already exists. Type it under Existing "
+                          "store file and press Open store to use it.")
+        return self._choose(path, created=True)
+
+    def _new_store_path(self):
+        folder = (self.store_dir or "").strip()
+        name = (self.store_name or "").strip() or "sample_map"
+        if not folder:
+            raise Refused("Type or choose the folder for the new store.")
+        if any(sep in name for sep in ("/", "\\")) or name in (".", ".."):
+            raise Refused("The store name is a file name, not a path.")
+        if not name.endswith(".sqlite"):
+            name += ".sqlite"
+        path = (Path(folder).expanduser() / name).resolve()
+        self._refuse_inside_install(path)
+        return path
+
+    def copy_legacy_store(self):
+        """Copy it here: the database an earlier version left inside the
+        install, with its pictures, copied to the folder above and opened
+        there. The original is left exactly where it is."""
+        legacy = self.legacy_store_path()
+        if legacy is None:
+            raise Refused("There is no sample database from an earlier version "
+                          "in the station's folder.")
+        folder = (self.store_dir or "").strip()
+        if not folder:
+            raise Refused("Type or choose the folder to copy it to.")
+        dest = (Path(folder).expanduser() / legacy.name).resolve()
+        self._refuse_inside_install(dest)
+        if dest.exists():
+            raise Refused(f"{dest} already exists. Type it under Existing "
+                          "store file and press Open store to use it.")
+        try:
+            store_choice.copy_store(legacy, dest, self.SIDE_FOLDERS)
+        except (OSError, sqlite3.Error) as exc:
+            raise Refused(f"The database could not be copied to {dest} ({exc}).")
+        events.info("Sample Database Copied", f"{legacy} was copied to {dest} "
+                    "with its pictures; the original is untouched. Delete it "
+                    "when you have checked the copy.", source=self.NAME)
+        return self._choose(dest, created=False)
+
+    def _choose(self, path, created):
+        self._refuse_store_change()
+        store = ss.SampleStore(path)
+        try:
+            store.ensure()          # a new file's schema, an old one's upgrade
+        except (OSError, sqlite3.Error) as exc:
+            raise Refused(f"The store could not be {'created' if created else 'opened'} "
+                          f"at {path} ({exc}).")
+        self.adopt_store(path)
+        if self.choices is not None:
+            try:
+                self.choices.write(self.STORE_KEY, str(path))
+            except OSError as exc:
+                events.warn("Store Not Remembered", f"Samples go to {path}, but "
+                            f"the choice could not be saved ({exc}); the station "
+                            "will ask again next time.", source=self.NAME)
+        events.info("Sample Store", f"Samples go to {path}: "
+                    f"{len(self._store.samples())} sample(s).", source=self.NAME)
+        self._request_backup()
+        return str(path)
+
+    def adopt_store(self, path):
+        """Use `path` from now on; the previous store stays on disk as it is.
+        The Transfer Map (its pickers read this store) is told."""
+        with self._lock:
+            self._adopt(Path(path))
+            self._choosing_store = False
+            self._selected = None
+            self._chip = self._flake_id = None
+            self._phase = "browse"
+        peer = self._trial_peer
+        if peer is not None:
+            try:
+                peer.on_model_added(self.NAME, self)
+            except Exception as exc:
+                events.debug("Peer Not Told", repr(exc), source=self.NAME)
+        self._touch()
+        return str(path)
 
     # -- the Model contract ----------------------------------------------------
     @property
@@ -233,6 +467,15 @@ class SampleMap(Model):
 
     def open(self):
         super().open()
+        if not self._store_chosen:
+            legacy = self.legacy_store_path()
+            events.warn("Sample Store Not Chosen", f"Choose where the {self.NAME} "
+                        "keeps its samples: its page asks (New store in a folder "
+                        "of your choice, or Open store)." + (
+                            f" A database from an earlier version is at {legacy}; "
+                            "Copy it here keeps its samples." if legacy else ""),
+                        source=self.NAME)
+            return
         try:
             self._store.ensure()
         except Exception as exc:
@@ -264,6 +507,7 @@ class SampleMap(Model):
         # The Transfer Map's store, for the read-only trial listing: its
         # public `db_path` (the file), never a private attribute.
         if name == self.TRANSFER_MAP and model is not self:
+            self._trial_peer = model
             path = getattr(model, "db_path", None)
             if path:
                 self._trial_store = Path(path)
@@ -284,6 +528,7 @@ class SampleMap(Model):
     def on_model_removed(self, name, model=None):
         if name == self.TRANSFER_MAP:
             self._trial_store = None
+            self._trial_peer = None
             self._touch()
         if name == self._red_name:
             self._red, self._red_name = None, None
@@ -1316,6 +1561,8 @@ class SampleMap(Model):
         """A prompt's own step, else the browsing tier the picks put the
         sheet in: "sample" (nothing chosen), "chip" (a sample), "flake" (a
         chip)."""
+        if not self._store_chosen or self._choosing_store:
+            return self.PROMPT
         if self._phase != "browse":
             return self._phase
         _sample, chip, _flake = self._picked()
@@ -1762,10 +2009,13 @@ class SampleMap(Model):
         # the Chip and Flake dropdowns from these, as the Panel refuses.
         snapshot["values"]["has_sample"] = self.has_sample
         snapshot["values"]["has_chip"] = self.has_chip
+        snapshot["store"] = {"path": str(self.db_path) if self._store_chosen else None,
+                             "chosen": self._store_chosen}
         return snapshot
 
     # -- data -----------------------------------------------------------------------
     def _exports(self):
+        self._need_store()
         folder = self.output_root / "exports"
         folder.mkdir(parents=True, exist_ok=True)
         return folder, datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1893,9 +2143,34 @@ class SampleMap(Model):
                 tier=2, disclosure=configure, phases=browse,
             ),
             sch.section(
+                "Store",
+                sch.readonly("Sample store", "store_status", role="info"),
+                sch.button("Change store\u2026", "change_store"),
+                tier=2, disclosure=configure, phases=browse,
+            ),
+            sch.section(
                 "Diagnostics",
                 sch.log_stream("Samples", "samples_log"),
                 tier=3, disclosure="Diagnostics", phases=browse,
+            ),
+            # The store prompt (2026-10-07): the page with no store chosen,
+            # and Change store…. A new store always asks where.
+            sch.section(
+                "Where to save the sample database",
+                sch.readonly("Sample store", "store_status", role="info"),
+                sch.entry("Folder", "store_dir", P["store_dir"]),
+                sch.dropdown("Choose folder\u2026", "store_folder_pick",
+                             "pick_store_folder", "store_folder_options"),
+                sch.entry("Name", "store_name", P["store_name"]),
+                sch.button("New store", "new_store", role="go",
+                           inputs=("store_dir", "store_name")),
+                sch.entry("Existing store file", "store_path", P["store_path"]),
+                sch.button("Open store", "open_store", inputs=("store_path",)),
+                sch.readonly("Earlier database", "legacy_text"),
+                sch.button("Copy it here", "copy_legacy_store",
+                           inputs=("store_dir",)),
+                sch.button("Cancel", "cancel_store_choice"),
+                phases=(self.PROMPT,),
             ),
             sch.section(
                 "New sample",

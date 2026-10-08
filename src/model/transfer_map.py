@@ -115,6 +115,7 @@ from events import events
 from model import finalize
 from model import plot_data
 from model import shade_offline
+from model import store_choice
 from model import tip_shade
 from model import transfer_map_analysis as analysis
 from model.base import Model
@@ -841,7 +842,7 @@ class _Trial:
         self.shades = []
 
 
-class TransferMap(Model):
+class TransferMap(store_choice.StorePrompt, Model):
     NAME = "Transfer Map"
     IDENTITY = None
     NEEDS_PORT = False
@@ -863,6 +864,9 @@ class TransferMap(Model):
     #: controls only in it. `new_tip` is the New tip prompt, entered from
     #: `setup` and left back to it (Add tip or Cancel); it arms nothing.
     PHASES = ("setup", "new_tip", "region", "live", "marked", "finish")
+    #: The user setting (and the station choices key) that remembers the
+    #: store (`UserStore.put_setting(email, STORE_KEY, path)`).
+    STORE_KEY = "map_store"
 
     PARAMS = {p.name: p for p in (
         # The trial's tip: set by the Tip dropdown (`pick_tip`) or Add tip,
@@ -959,6 +963,7 @@ class TransferMap(Model):
         legacy = self.legacy_store_path()
         if legacy is not None and not self.store_path:
             self.store_path = str(legacy)
+        self._prefill_store_dir()
         self._trial = None
         #: Armed and waiting for the capture region (`_Pending`, the
         #: `region` step), or None.
@@ -1001,7 +1006,7 @@ class TransferMap(Model):
         configured = os.environ.get("STATION_MAP_DB")
         if configured:
             return Path(configured).expanduser().resolve()
-        chosen = cls.choices.read("map_store") if cls.choices is not None else None
+        chosen = cls.choices.read(cls.STORE_KEY) if cls.choices is not None else None
         return Path(chosen) if chosen else None
 
     @staticmethod
@@ -1097,8 +1102,22 @@ class TransferMap(Model):
         path = (Path(folder).expanduser() / name).resolve()
         self._refuse_inside_install(path)
         if path.exists():
-            raise Refused(f"{path} already exists. Press Open store to use it.")
+            raise Refused(f"{path} already exists. Type it under Store file and "
+                          "press Open store to use it.")
         return self._choose(path, created=True)
+
+    def _refuse_store_change(self):
+        if self.is_armed or self._pending is not None:
+            raise Refused("A trial is armed. Finish or abort it before choosing "
+                          "another store.")
+
+    def backup_sources(self):
+        """`[(database, [folders beside it])]` for the backup: the database's
+        pictures and videos (`pictures_root`) and the exports; [] with no
+        store."""
+        if not self._store_chosen:
+            return []
+        return [(self.db_path, [self.pictures_root, self.output_root / "exports"])]
 
     def _choose(self, path, created):
         if self.is_armed or self._pending is not None:
@@ -1113,13 +1132,14 @@ class TransferMap(Model):
         self.adopt_store(path)
         if self.choices is not None:
             try:
-                self.choices.write("map_store", str(path))
+                self.choices.write(self.STORE_KEY, str(path))
             except OSError as exc:
                 events.warn("Store Not Remembered", f"Trials go to {path}, but "
                             f"the choice could not be saved ({exc}); the station "
                             "will ask again next time.", source=self.NAME)
         events.info("Trial Store", f"Trials go to {path}: {store.count()} "
                     "trial(s).", source=self.NAME)
+        self._request_backup()
         return str(path)
 
     def adopt_store(self, path):
@@ -1128,9 +1148,17 @@ class TransferMap(Model):
         for writer in list(self._persisting):      # an abort still being written
             writer.join(self.THREAD_JOIN_TIMEOUT)
         self._adopt(Path(path))
+        self._choosing_store = False
         self._indices = {}
         self._figure_cache = None
         self._changed()
+        # The Sample DB reads this store for its trial listing: told here.
+        sample = self._peers.get(self.SAMPLE_MAP)
+        if sample is not None:
+            try:
+                sample.on_model_added(self.NAME, self)
+            except Exception as exc:
+                events.debug("Peer Not Told", repr(exc), source=self.NAME)
         return str(path)
 
     # -- the Model contract ------------------------------------------------
@@ -3550,6 +3578,10 @@ class TransferMap(Model):
     def _changed(self):
         self._revision += 1
         self._touch()
+        # The backup (2026-10-07): after a trial is saved or finalized, never
+        # while one is being recorded (its video is still being written).
+        if self._trial is None and self._pending is None:
+            self._request_backup()
 
     @property
     def figure(self):
