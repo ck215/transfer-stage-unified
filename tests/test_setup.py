@@ -2357,18 +2357,13 @@ def store_choice(tmp_path, monkeypatch):
     user_config.forget()
 
 
-def test_the_trial_store_row_block_builds_the_brief_shape(panel):
-    """What `_store_section()` builds; the schema inserts it just before
-    Launch once `tests/test_setup_registry.py`'s section pin allows (see
-    the handoff: that file is outside this write set)."""
-    store = panel._store_section()
-    assert store["title"] == "Trial store" and store["layout"] == "row"
-    assert [(e["type"], e.get("command") or e.get("model_attr"))
-            for e in store["elements"]] == [
-        ("readonly", "map_store_status"),
-        ("entry", "map_store_path"), ("button", "open_map_store"),
-        ("entry", "map_store_dir"), ("entry", "map_store_name"),
-        ("button", "new_map_store")]
+def test_setup_draws_no_trial_store_row(panel):
+    """The Trial store row (A3) was never drawn and its builder is gone
+    (architecture audit 2026-10-08): an operator chooses a store on the
+    map's own `new_store` prompt (`model.store_choice.StorePrompt`)."""
+    titles = [s["title"] for s in panel.schema["sections"]]
+    assert "Trial store" not in titles
+    assert not hasattr(panel, "_store_section")
 
 
 def test_the_store_row_says_nothing_is_chosen_then_what_was(store_choice, tmp_path):
