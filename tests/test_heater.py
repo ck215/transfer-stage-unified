@@ -41,8 +41,9 @@ def heater(port):
 
 @pytest.fixture(autouse=True)
 def reading_log_in_tmp(tmp_path, monkeypatch):
-    """P1: every parsed reading goes to a CSV under the data root. Keep the
-    suite's readings out of the operator's `~/transfer-stage-runs`."""
+    """Nothing in this suite may write under the operator's
+    `~/transfer-stage-runs` (the heater itself writes no file since
+    2026-10-08; this keeps it so if that ever changes)."""
     monkeypatch.setenv("TRANSFER_STAGE_DATA_ROOT", str(tmp_path))
 
 
