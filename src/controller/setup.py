@@ -2112,7 +2112,7 @@ class Setup(PortProbe, Panel):
         out = {}
         for model in self.controller.models.values():
             name = getattr(model, "NAME", None)
-            if not name or isinstance(model, User):
+            if not name:
                 continue
             values = profiles_module.current_params(model, names)
             if values:

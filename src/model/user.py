@@ -183,7 +183,7 @@ class User(Panel):
         except Exception:
             found = {}
         return {name: model for name, model in dict(found or {}).items()
-                if model is not self and not isinstance(model, User)}
+                if model is not self}
 
     def _params_for(self, model_name):
         found = self._params_of(model_name) if self._params_of else None
@@ -242,7 +242,7 @@ class User(Panel):
         refused = {}
         operator_id, auth = self.operator()
         for model in list((models or {}).values()):
-            if model is self or isinstance(model, User):
+            if model is self:
                 continue
             name = getattr(model, "NAME", None)
             apply = getattr(model, "apply_defaults", None)
