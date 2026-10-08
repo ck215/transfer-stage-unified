@@ -587,3 +587,54 @@ def test_a_checkout_never_looks_for_a_pending_update(exec_calls, fake_views, mon
                         lambda install: pytest.fail("looked in a checkout"))
     assert app.main(["--view", "desk"]) == 0
     assert len(FakeView.built) == 1
+
+
+# -- the device log (owner ruling 2026-10-08) ---------------------------------
+
+def test_launch_starts_the_device_log_under_the_data_root_and_closes_it_last(
+        fake_views, isolated_launch, tmp_path, monkeypatch):
+    """Started at launch, beside the text log; closed after the view has
+    closed the Controller (every device closed first), within its budget."""
+    import sqlite3
+    from controller import device_log
+    order = []
+    real_close = device_log.DeviceLog.close
+
+    def close(self, timeout=device_log.CLOSE_BUDGET_S):
+        order.append(("log.close", timeout))
+        return real_close(self, timeout)
+
+    def wait(self):
+        order.append("view.wait")
+        self.controller.close()
+        order.append("controller.closed")
+
+    monkeypatch.setattr(device_log.DeviceLog, "close", close)
+    monkeypatch.setattr(FakeView, "wait", wait, raising=False)
+    monkeypatch.setattr(Controller, "close",
+                        lambda self: order.append("controller.close"))
+    events.forget("View")       # a repeat inside the dedupe window is no event
+    app.launch("web")
+    assert order == ["view.wait", "controller.close", "controller.closed",
+                     ("log.close", device_log.CLOSE_BUDGET_S)]
+    path = tmp_path / "logs" / "device_log.sqlite"
+    with sqlite3.connect(path) as db:
+        titles = [r[0] for r in db.execute("SELECT title FROM events ORDER BY id")]
+    assert titles[0] == "Device Log Opened" and titles[-1] == "Device Log Closed"
+    assert "View" in titles                  # the station's own events
+
+
+def test_a_view_that_fails_to_open_still_closes_the_device_log(
+        fake_views, isolated_launch, monkeypatch):
+    from controller import device_log
+    closed = []
+    monkeypatch.setattr(device_log.DeviceLog, "close",
+                        lambda self, timeout=2.0: closed.append(self) or True)
+
+    def boom(self):
+        raise RuntimeError("no window")
+
+    monkeypatch.setattr(FakeView, "open", boom)
+    with pytest.raises(RuntimeError):
+        app.launch("web")
+    assert len(closed) == 1
