@@ -38,8 +38,13 @@ more run after it (requests coalesce per backup folder). A run stops at
 `RUN_BUDGET_S`. A failure (the mount missing, slow or read-only) is ONE
 warning per streak of failures, never a dialog; the next success says so.
 Restoring is in docs/rebuild/RECORDING_A_TRIAL.md, "Backups".
+
+The same thread writes a store that is a local working copy of one on the
+drive back to that drive file, its cloud home (`home_jobs`, owner ruling
+2026-10-08 morning; `model.store_choice`): the database over the home
+itself, the side folders beside it, never over a home changed elsewhere
+since the two were last the same (that is the one warning instead).
 """
-import hashlib
 import json
 import os
 import shutil
@@ -49,7 +54,9 @@ import time
 from pathlib import Path
 
 from events import events
-from model.store_choice import local_snapshot, user_folder
+from model.store_choice import (file_signature, home_changed, local_signature,
+                                local_snapshot, store_key, unchanged_since_sync, user_folder,
+                                write_home)
 
 SOURCE = "Backup"
 ENV = "STATION_BACKUP_DIR"
@@ -140,11 +147,35 @@ def _on_drive(folder, drive):
 def store_subfolder(db):
     """The backup subfolder of the store `db`: its file name without
     `.sqlite` and the first 8 hex digits of the SHA-1 of its full path, e.g.
-    `transfer_map-1a2b3c4d`. The same store always lands in the same place;
-    two stores of the same name in different folders never share one."""
-    db = Path(db)
-    digest = hashlib.sha1(str(db.resolve()).encode("utf-8")).hexdigest()[:8]
-    return f"{db.stem}-{digest}"
+    `transfer_map-1a2b3c4d` (`store_choice.store_key`). The same store always
+    lands in the same place; two stores of the same name in different
+    folders never share one."""
+    return store_key(db)
+
+
+def home_jobs(models, home=None):
+    """The write-back of each of `models` whose store is a local working
+    copy of a store on the drive (`model.store_home`, owner ruling
+    2026-10-08 morning): a `Job` into the home's own folder, the database
+    written over the home (`Job.home`) and the side folders beside it. A
+    home under `~/QMDL_Drive` is written only while the drive is mounted.
+    Independent of the backup folder and of STATION_BACKUP_DIR: this is
+    the store itself, not a backup."""
+    drive = (Path.home() if home is None else Path(home)) / DRIVE
+    jobs = []
+    for model in models:
+        where = getattr(model, "store_home", None)
+        if where is None:
+            continue
+        where = Path(where)
+        try:
+            sources = model.backup_sources()
+        except Exception as exc:
+            events.debug("Backup Sources Failed", repr(exc), source=SOURCE)
+            continue
+        if sources:
+            jobs.append(Job(_on_drive(where.parent, drive), sources, home=where))
+    return jobs
 
 
 def _clash(folder, sources):
@@ -166,20 +197,24 @@ class Job:
     """One backup to do: a `Target` and the stores, each `(database file,
     [folders beside it])`."""
 
-    def __init__(self, where, sources):
+    def __init__(self, where, sources, home=None):
         self.target = where
         self.sources = [(Path(db), [Path(f) for f in folders]) for db, folders in sources]
+        #: A working copy's write-back (`home_jobs`): the database is
+        #: written over this file (in `target.folder`, no subfolder), never
+        #: when it was changed elsewhere since the copy was last the same.
+        self.home = None if home is None else Path(home)
 
     @property
     def key(self):
-        return str(self.target.folder)
+        return str(self.target.folder) + (f"#{self.home}" if self.home else "")
 
     def merge(self, other):
         """This job with `other`'s stores added (a coalesced request)."""
         seen = {db: folders for db, folders in self.sources}
         for db, folders in other.sources:
             seen[db] = sorted({*seen.get(db, []), *folders})
-        return Job(other.target, list(seen.items()))
+        return Job(other.target, list(seen.items()), home=other.home)
 
 
 def _signature(path):
@@ -287,11 +322,16 @@ class BackupService:
                 for db, folders in job.sources:
                     if not db.is_file():
                         continue
-                    sub = store_subfolder(db)
-                    here = folder / sub
-                    here.mkdir(exist_ok=True)
-                    if self._copy_db(db, here, manifest, sub):
-                        copied.append(f"{sub}/{db.name}")
+                    if job.home is not None:
+                        sub, here = store_subfolder(db), folder
+                        if self._write_home(db, job.home, manifest, sub):
+                            copied.append(job.home.name)
+                    else:
+                        sub = store_subfolder(db)
+                        here = folder / sub
+                        here.mkdir(exist_ok=True)
+                        if self._copy_db(db, here, manifest, sub):
+                            copied.append(f"{sub}/{db.name}")
                     for side in folders:
                         copied += self._mirror(db.parent, side, here, manifest,
                                                deadline, sub)
@@ -313,16 +353,35 @@ class BackupService:
                      "copied", source=SOURCE)
         return True
 
-    def _copy_db(self, db, folder, manifest, sub):
+    def _write_home(self, db, home, manifest, sub):
+        """A working copy `db` written back over its `home` on the drive (as
+        `_copy_db` does a backup), then the copy's record says the two are
+        the same again. Refused (OSError, the one warning) when the home was
+        changed elsewhere since: that copy is never written over."""
+        if unchanged_since_sync(db) and home.exists():
+            return False                  # the two are the same: nothing to do
+        if home_changed(db):
+            raise OSError(f"{home} was changed elsewhere since this computer's "
+                          f"working copy {db} was last the same, so it was not "
+                          "written over. Open store on it to choose which copy "
+                          "to keep")
+        before = local_signature(db)       # a write during the copy syncs next time
+        if not self._copy_db(db, home.parent, manifest, sub, name=home.name):
+            return False
+        write_home(db, home, file_signature(home), before)
+        return True
+
+    def _copy_db(self, db, folder, manifest, sub, name=None):
         """The database, through a local snapshot, a part file and a rename
-        into `folder` (its subfolder `sub`); skipped while the file (and its
-        WAL) are as they were last time."""
-        key = f"db:{sub}/{db.name}"
+        into `folder` (its subfolder `sub`) as `name` (default: its own);
+        skipped while the file (and its WAL) are as they were last time."""
+        name = name or db.name
+        key = f"db:{sub}/{name}"
         signature = _signature(db)
         wal = db.with_name(db.name + "-wal")
         if wal.exists():
             signature += _signature(wal)
-        final = folder / db.name
+        final = folder / name
         if manifest.get(key) == signature and final.exists():
             return False
         local = local_snapshot(db)

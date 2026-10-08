@@ -5,7 +5,10 @@ chosen by the operator ... the choice is remembered").
     ~/transfer-stage-runs/station.json      ($STATION_CONFIG overrides)
 
 It holds `map_store` (the Transfer Map's SQLite file, an absolute path, or
-null) and `sample_store` (the Sample DB's, 2026-10-07): a Guest's choices;
+null) and `sample_store` (the Sample DB's, 2026-10-07), and with each its
+cloud home, `map_store_home` / `sample_store_home` (2026-10-08: the drive
+location a local working copy syncs back to; null for a local store,
+`model.store_choice`): a Guest's choices;
 a signed-in user's are in their account settings. With accounts on, a map
 never opens what this file holds for a signed-in user (owner ruling
 2026-10-08: no own setting -> the store prompt, never another user's data;
@@ -25,7 +28,7 @@ from pathlib import Path
 ENV = "STATION_CONFIG"
 DEFAULT = Path.home() / "transfer-stage-runs" / "station.json"
 #: The keys this file may hold; anything else is refused, not stored.
-KEYS = ("map_store", "sample_store")
+KEYS = ("map_store", "sample_store", "map_store_home", "sample_store_home")
 
 _lock = threading.Lock()
 _cache = {}                 # resolved path -> the dict read from it

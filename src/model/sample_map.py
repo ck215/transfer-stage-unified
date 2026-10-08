@@ -259,7 +259,7 @@ class SampleMap(store_choice.StorePrompt, Model):
         super().__init__()
         self.sim = sim
         self._lock = threading.RLock()
-        path = Path(db_path) if db_path else self.default_db_path()
+        path = self._startup_store(Path(db_path) if db_path else self.default_db_path())
         if path is None:
             self._no_store()
         else:
@@ -373,9 +373,11 @@ class SampleMap(store_choice.StorePrompt, Model):
         if self._phase != "browse":
             raise Refused("Finish or cancel the New prompt first.")
 
-    def open_store(self):
+    def open_store(self, confirmed=False):
         """Open store: the database typed under Existing store file becomes
-        this map's store, and is remembered."""
+        this map's store, and is remembered. One on the cloud drive is worked
+        on through a local copy (`StorePrompt._working_store`; `confirmed`
+        answers its question about a drive copy changed elsewhere)."""
         typed = (self.store_path or "").strip()
         if not typed:
             raise Refused("Type the path of an existing sample database under "
@@ -392,16 +394,28 @@ class SampleMap(store_choice.StorePrompt, Model):
         if not sqlite:
             raise Refused(f"{path} is not a sample database (not a database "
                           "file).")
-        return self._choose(path, created=False)
+        self._refuse_store_change()
+        return self._choose(self._working_store(path, confirmed), created=False)
 
     def new_store(self):
         """New store: `<folder>/<name>.sqlite`, made now (the folder too) and
-        remembered. Never over an existing file."""
+        remembered. Never over an existing file. On the cloud drive it is
+        made as a local working copy whose home is that path."""
         path = self._new_store_path()
         if path.exists():
             raise Refused(f"{path} already exists. Type it under Existing "
                           "store file and press Open store to use it.")
-        return self._choose(path, created=True)
+        self._refuse_store_change()
+        local = self._new_working_store(path)
+        try:
+            return self._choose(local, created=True)
+        except Refused:
+            if local != path:
+                store_choice.forget_home(local)
+            raise
+
+    def _side_names(self, db):
+        return self.SIDE_FOLDERS
 
     def _new_store_path(self):
         folder = (self.store_dir or "").strip()
@@ -429,6 +443,10 @@ class SampleMap(store_choice.StorePrompt, Model):
             raise Refused("Type or choose the folder to copy it to.")
         dest = (Path(folder).expanduser() / legacy.name).resolve()
         self._refuse_store_place(dest)
+        if store_choice.remote_reason(dest):
+            raise Refused(f"{dest} is on the cloud drive or a network folder: "
+                          "copy it to a folder on this computer (then Open "
+                          "store on the drive works on a local copy).")
         if dest.exists():
             raise Refused(f"{dest} already exists. Type it under Existing "
                           "store file and press Open store to use it.")
@@ -457,7 +475,8 @@ class SampleMap(store_choice.StorePrompt, Model):
                 events.warn("Store Not Remembered", f"Samples go to {path}, but "
                             f"the choice could not be saved ({exc}); the station "
                             "will ask again next time.", source=self.NAME)
-        events.info("Sample Store", f"Samples go to {path}: "
+        self._remember_home()
+        events.info("Sample Store",f"Samples go to {path}: "
                     f"{count(len(self._store.samples()), 'sample')}.", source=self.NAME,
                     resolves=events.SAMPLE_STORE_NOT_CHOSEN)
         self._request_backup()

@@ -28,7 +28,11 @@ or an existing file and Open store. "New session database…" and Change store�
 (Configure, Store) open the same prompt; a new file is never made without
 asking where, and a store's files are never moved or rewritten. The choice
 is remembered (a user's remembered store opens with no prompt), a store inside the station's own folder is refused (updates
-replace that folder), and `--map-db PATH` / `STATION_MAP_DB` override it. Pictures sit beside the
+replace that folder), and `--map-db PATH` / `STATION_MAP_DB` override it. A store on the
+cloud drive (`~/QMDL_Drive`, or any FUSE or network mount) is never opened live there
+(owner ruling 2026-10-08 morning: "Store on cloud is fine, just make a local copy for
+stability of db ops"): the station works on a local working copy and syncs it back to
+the drive; see "Backups" below. Pictures sit beside the
 file in `<folder>/<database name>/<trial id>/`, exports in `<folder>/exports/`.
 The store is at **version 8**, the lab's (adopted by the 2026-10-07 merge of the
 bench's stage push, tag `bench-2026-10-07-stage`): trials carry `chip_id`, `flake_id`,
@@ -198,6 +202,30 @@ last 5 s is left for the next backup (audit 2026-10-08). The account menu shows 
 is one warning per streak. A backup folder under `~/QMDL_Drive` is used only
 while the drive is mounted, and a backup folder that is a store's own folder
 (or inside the folders it mirrors) is refused.
+
+**A store on the cloud drive (2026-10-08).** New store or Open store on the drive
+(`~/QMDL_Drive/...`, or any FUSE or network mount), a remembered store there, or
+`--map-db` / `--sample-db` naming one, opens a LOCAL WORKING COPY instead (SQLite's
+locking over the rclone mount is unsafe): `<stores folder>/<name>-<8 hex>/<name>.sqlite`
+(the stores folder is `~/transfer-stage-runs/stores/<email>/`, under
+`TRANSFER_STAGE_DATA_ROOT` when set), the database copied with SQLite's online backup
+API and the store's folders (`<name>/` and `exports/`; `images/` and `sample_map/`)
+copied where the copy lacks a file. New store on the drive makes the store locally. One
+info line says where the working copy is and that it syncs to the drive. The user's
+setting (`map_store` / `sample_store`) then names the working copy, and the drive file
+is remembered as its cloud home (`map_store_home` / `sample_store_home`; a Guest's in
+`station.json`). After each save and at Quit (and on Back up now) the working copy is
+written back over its home, the same way as a backup (snapshot, part file, rename; the
+folders beside it copied when changed), whether or not the backup folder is set (it
+still gets its own copy). A hidden `.<name>.sqlite.home.json` beside the working copy
+records when the two were last the same, so neither side is ever silently overwritten:
+a working copy newer than the drive's is opened as it is; a drive copy changed
+elsewhere since (another computer) is never written over (the write-back warns
+instead), and opening the store says so and asks before replacing the working copy
+(confirmed: the old working copy is kept beside it as `<name>.local-<time>.sqlite`).
+At sign-in that question is not answered for anyone: the map shows its store prompt
+with the working copy under Existing store file, and Open store asks. A working copy
+that is gone (a new computer) is made again from its remembered home at sign-in.
 
 **To restore:** quit the station; pick the store's subfolder in the backup
 folder (`transfer_map-…/`, `sample_map-…/`: the name is the store's file name;

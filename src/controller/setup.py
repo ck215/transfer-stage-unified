@@ -2098,6 +2098,9 @@ class Setup(PortProbe, Panel):
         if isinstance(model, self.STORE_MODELS):
             model.choices = self._map_choices
             if not self.user.is_guest:
+                # A remembered store on the drive is copied into the user's
+                # own stores folder: the model knows it before it opens.
+                model.suggest_store_dir(self._suggested_store_dir())
                 self._open_users_store(model)
 
     def _warn_not_applied(self, refused):
@@ -2924,14 +2927,18 @@ class Setup(PortProbe, Panel):
             target.choices = self._map_choices
         return target
 
-    def open_map_store(self):
+    def open_map_store(self, confirmed=False):
         """Open store, from Setup: the Transfer Map's own command, on the
         open map (which then records there) or on a stand-in that only
         validates and remembers the choice - in the signed-in user's
-        settings, or the station's for a Guest."""
+        settings, or the station's for a Guest. Its question (a drive copy
+        changed elsewhere) is asked as this command's."""
         target = self._map_target()
         target.store_path = self.map_store_path
-        return target.open_store()
+        try:
+            return target.open_store(confirmed)
+        except NeedsConfirm as ask:
+            raise NeedsConfirm(ask.prompt, "open_map_store")
 
     def new_map_store(self):
         target = self._map_target()
@@ -2988,14 +2995,33 @@ class Setup(PortProbe, Panel):
             path = None
         else:
             if path and not Path(path).is_file():
-                events.warn(self._store_word(model) + " Missing", f"{self.user.user_name}'s {model.NAME} "
-                            f"store {path} is not there any more. The {model.NAME} "
-                            "asks where its store is; open or make one there.",
-                            source=self.NAME)
-                path = None
-        if path and self._open_store_on(model, path, f"{self.user.user_name}'s"):
+                home = self._store_home_setting(model)
+                if home and Path(home).is_file():
+                    # The local working copy is gone (a new computer, a
+                    # cleaned folder): a fresh one from its cloud home.
+                    path = home
+                else:
+                    events.warn(self._store_word(model) + " Missing", f"{self.user.user_name}'s {model.NAME} "
+                                f"store {path} is not there any more. The {model.NAME} "
+                                "asks where its store is; open or make one there.",
+                                source=self.NAME)
+                    path = None
+        opened = self._open_store_on(model, path, f"{self.user.user_name}'s") \
+            if path else False
+        if opened:
             return
         self._release_store(model)
+        if opened is None:
+            # Open store is one press away, and asks the same question.
+            model.store_path = str(path)
+
+    def _store_home_setting(self, model):
+        """The signed-in user's remembered cloud home of `model`'s store
+        (`<STORE_KEY>_home`), or None."""
+        try:
+            return self.users.setting(self.user.email, model.STORE_KEY + "_home")
+        except Exception:
+            return None
 
     def _release_store(self, model):
         """`model` back to its store prompt, for the signed-in user."""
@@ -3010,7 +3036,10 @@ class Setup(PortProbe, Panel):
 
     def _open_store_on(self, model, path, whose):
         """Open `path` on `model` the way Open store does; a refusal is a
-        warning, never a failed sign-in. True when `model` is on `path`."""
+        warning, never a failed sign-in. True when `model` is on `path`;
+        None when it asked (a working copy whose drive copy was changed
+        elsewhere: only the operator chooses which copy to keep); else
+        False."""
         current = getattr(model, "db_path", None)
         if (current is not None and getattr(model, "has_store", False)
                 and Path(current) == Path(path).expanduser().resolve()):
@@ -3018,6 +3047,11 @@ class Setup(PortProbe, Panel):
         model.store_path = str(path)
         try:
             model.open_store()
+        except NeedsConfirm as ask:
+            events.warn(self._store_word(model) + " Not Opened", f"{whose} "
+                        f"{model.NAME} store {path} was not opened: {ask.prompt} "
+                        "Press Open store to choose.", source=self.NAME)
+            return None
         except Refused as refusal:
             events.warn(self._store_word(model) + " Not Opened", f"{whose} {model.NAME} store {path} "
                         f"was not opened: {refusal.reason}", source=self.NAME)
@@ -3085,8 +3119,20 @@ class Setup(PortProbe, Panel):
         return backup_module.Job(where, sources)
 
     def _store_written(self, model):
-        """`backup_hook`: a store was written; back it up soon."""
-        self.backup.request(self._backup_job([model]))
+        """`backup_hook`: a store was written; back it up soon (and write a
+        working copy back to its cloud home)."""
+        self._request_backups([model])
+
+    def _request_backups(self, models=None):
+        """The backup of `models` (None: every open store) and the
+        write-back of each that is a working copy of a store on the drive
+        (`backup.home_jobs`, owner ruling 2026-10-08 morning; for a Guest
+        too, and with the backup off). True when anything was requested."""
+        models = self._store_models() if models is None else models
+        asked = self.backup.request(self._backup_job(models))
+        for job in backup_module.home_jobs(models):
+            asked = self.backup.request(job) or asked
+        return asked
 
     def _on_models_changed(self, event, name):
         """Remember the store models while they are open; when one is
@@ -3107,7 +3153,7 @@ class Setup(PortProbe, Panel):
         model = self._closing_store_models.pop(name, None)
         if model is None:
             return
-        if self.backup.request(self._backup_job([model])) and \
+        if self._request_backups([model]) and \
                 getattr(self.controller, "_closed", False):
             budget = min(self.backup.QUIT_WAIT_S, _QUIT_BACKUP_BUDGET_S)
             deadline = getattr(self, "_quit_backup_deadline", None)
@@ -3161,9 +3207,12 @@ class Setup(PortProbe, Panel):
         return str(where.folder) if where else ""
 
     def back_up_now(self, quiet=False):
-        """Back up now: every open store, on the backup thread."""
+        """Back up now: every open store, on the backup thread (and each
+        working copy written back to its cloud home)."""
         if self.user.is_guest:
             self._refuse("Sign in first: a Guest's stores are not backed up.")
+        for home in backup_module.home_jobs(self._store_models()):
+            self.backup.request(home)
         job = self._backup_job()
         if job is None:
             if quiet:
