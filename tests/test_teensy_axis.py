@@ -436,3 +436,198 @@ def test_the_log_level_is_bounded_like_the_firmwares():
     sim = AxisSimulator("Y")
     assert sim.ask("LOG 2") == ["OK LOG level=2"] and sim.log_level == 2
     assert sim.ask("LOG 3") == ["ERR LOG bad-arg-0|1|2"] and sim.log_level == 2
+
+
+# -- the axis firmware's learned limit ends, parked switch and host-silent disable ----------
+# Ported from firmware/xyz_stage_axis (PROTOCOL.md "Safety behaviour"; dev/firmware_sim/sim.cpp).
+
+def hold(sim, clock, command, seconds, every=0.1):
+    """Send `command` every `every` s (a dead-man host) for `seconds`; return every line printed."""
+    lines = []
+    for _ in range(round(seconds / every)):
+        lines += sim.ask(command)
+        clock.advance(every)
+    lines += sim.drain_lines()
+    return lines
+
+
+def enabled_board(clock, **kwargs):
+    sim = board(clock, **kwargs)
+    sim.ask("ENABLE")
+    return sim
+
+
+def test_a_trip_from_clear_while_moving_learns_that_direction_as_the_end(clock):
+    sim = enabled_board(clock)
+    sim.accel_mm_s2 = 1000.0
+    sim.ask("HOSTTIMEOUT 5000")
+    sim.ask("MOVE 5 2.5")
+    clock.advance(0.2)
+    sim.trip_limit(1)                    # LS1 closes while the carriage moves toward +
+    clock.advance(0.01)
+    events = sim.drain_lines()
+    assert any(line.startswith("EVT LIMIT ls1 tripped pos_mm=") and line.endswith("end=+1")
+               for line in events), events
+    assert sim.limit_end(1) == 1
+    assert sim.ask("MOVE 1") == ["ERR MOVE limit-ls1"]            # LS1 now guards +
+    assert sim.ask("MOVE -1")[0].startswith("OK MOVE")
+
+
+def test_a_release_while_moving_teaches_the_opposite_end(clock):
+    sim = enabled_board(clock, parked_on=1)
+    lines = hold(sim, clock, "JOGV 0.5", 1.5)     # off LS1 toward +, at the parked cap
+    assert sim.limit_end(1) == -1
+    assert not any(line.startswith("EVT LIMIT") for line in lines), lines
+    sim.ask("JOGV 0")
+    clock.advance(1.0)
+    assert sim.ask("JOGV 0.5") == ["OK JOGV mm_s=0.5000 clamped=0"]     # the cap lifted with the release
+    sim.ask("JOGV 0")
+    clock.advance(2.0)
+    sim.ask("MOVE -5 2.5")                                             # back toward LS1: halts on it
+    clock.advance(4.0)
+    events = sim.drain_lines()
+    assert any(line.startswith("EVT LIMIT ls1 tripped") and line.endswith("end=-1")
+               for line in events), events
+    assert sim.ask("MOVE -1") == ["ERR MOVE limit-ls1"]
+
+
+def test_a_retrip_after_reading_pressed_with_its_end_unknown_halts_and_teaches_nothing(clock):
+    sim = enabled_board(clock)
+    sim.accel_mm_s2 = 1000.0
+    sim.ask("HOSTTIMEOUT 5000")
+    sim.trip_limit(1)                    # pressed at rest: read pressed, end unknown
+    clock.advance(0.01)
+    sim.release_limit(1)                 # released at rest: no direction, nothing learned
+    clock.advance(0.01)
+    assert sim.limit_end(1) == 0
+    sim.ask("MOVE 5 2.5")
+    clock.advance(0.2)
+    sim.trip_limit(1)                    # pressed again while moving: maybe chatter
+    clock.advance(0.01)
+    events = sim.drain_lines()
+    assert any(line.startswith("EVT LIMIT ls1 tripped pos_mm=") and line.endswith("end=+0")
+               for line in events), events
+    assert sim.limit_end(1) == 0
+    assert not sim.moving
+
+
+def test_a_learned_end_halts_motion_toward_it_and_only_it(clock):
+    sim = enabled_board(clock, limits_mm=(-2.0, 2.0))
+    sim.ask("HOSTTIMEOUT 5000")
+    sim.ask("MOVE 5 2.5")
+    clock.advance(3.0)
+    events = sim.drain_lines()
+    assert any(line.startswith("EVT LIMIT ls2 tripped") and line.endswith("end=+1")
+               for line in events), events
+    assert sim.limit_end(2) == 1 and not sim.moving
+    assert sim.ask("MOVE 1") == ["ERR MOVE limit-ls2"]
+
+
+def test_a_parked_switch_refuses_moves_homes_and_tests_with_the_firmwares_reasons(clock):
+    sim = enabled_board(clock, parked_on=1)
+    off = "limit-ls1-end-unknown:jog-off-it"
+    assert sim.ask("MOVE 1") == [f"ERR MOVE {off}"]
+    assert sim.ask("MOVE -1") == [f"ERR MOVE {off}"]
+    assert sim.ask("MOVETO 5") == [f"ERR MOVETO {off}"]
+    assert sim.ask("HOME") == [f"ERR HOME {off}"]
+    assert sim.ask("TEST COILS") == ["ERR TEST limit-tripped:jog-off-it"]
+    assert sim.ask("STATUS")[0].count("ls1=1") == 1
+    other = enabled_board(clock, tag="Y", parked_on=2)
+    assert other.ask("MOVE -1") == ["ERR MOVE limit-ls2-end-unknown:jog-off-it"]
+
+
+def test_a_parked_jog_is_capped_at_the_parked_speed(clock):
+    sim = enabled_board(clock, parked_on=1)
+    assert sim.ask("JOGV 0.5") == ["OK JOGV mm_s=0.1000 clamped=1"]
+    clock.advance(0.1)
+    assert sim.velocity_mm_s <= 0.1001
+    sim.ask("JOGV 0")
+    sim2 = enabled_board(clock, tag="Y", parked_on=1)
+    assert sim2.ask("JOG 1") == ["OK JOG dir=1"]
+    clock.advance(0.2)
+    assert 0 < sim2.velocity_mm_s <= 0.1001
+
+
+def test_the_parked_travel_halts_and_learns_the_end_it_ran_into(clock):
+    sim = enabled_board(clock, parked_on=1)
+    lines = hold(sim, clock, "JOGV -0.5", 7.0)
+    hit = [line for line in lines if line.startswith("EVT LIMIT")]
+    assert len(hit) == 1 and hit[0].endswith("end=-1 learned=travel travel_mm=0.500"), hit
+    assert sim.position_mm == pytest.approx(-0.5, abs=0.002)
+    assert sim.limit_end(1) == -1 and not sim.moving
+    assert sim.ask("JOGV -0.5") == ["ERR JOGV limit-ls1"]
+    assert sim.ask("MOVE 1") == ["ERR MOVE limit-ls1-end-unknown:jog-off-it"]   # still parked
+    hold(sim, clock, "JOGV 0.5", 6.5)                                 # off it: 0.6 mm of pressed zone at 0.1 mm/s
+    sim.ask("JOGV 0")
+    clock.advance(0.5)
+    assert sim.ask("MOVE 1")[0].startswith("OK MOVE")                  # released: confirmed, no longer parked
+
+
+def test_a_stuck_switch_confines_the_axis_when_the_travel_runs_out_both_ways(clock):
+    sim = enabled_board(clock)
+    sim.trip_limit(1)                    # pressed at rest and never releasing
+    clock.advance(0.01)
+    hold(sim, clock, "JOGV -0.5", 7.0)
+    lines = hold(sim, clock, "JOGV 0.5", 12.0)
+    hit = [line for line in lines if line.startswith("EVT LIMIT")]
+    assert len(hit) == 1 and hit[0].endswith("pressed_both_ways=1 travel_mm=0.500"), hit
+    assert sim.ask("JOGV 0.5") == ["ERR JOGV limit-ls1-pressed-both-ways:check-switch"]
+    assert sim.ask("JOG 1") == ["ERR JOG limit-ls1-pressed-both-ways:check-switch"]
+    assert sim.ask("JOGV -0.5") == ["ERR JOGV limit-ls1"]
+    assert sim.ask("LIMITS NO")[0].startswith("OK LIMITS limits=NO")  # forgets the ends, window restarts here
+    assert sim.ask("JOGV 0.5") == ["OK JOGV mm_s=0.1000 clamped=1"]
+
+
+def test_a_silent_host_after_a_host_timeout_switches_the_outputs_off(clock):
+    sim = enabled_board(clock)
+    sim.ask("HOSTTIMEOUT 250")
+    sim.ask("MOVE 5 0.5")
+    clock.advance(0.6)
+    assert "EVT FAULT host-timeout" in sim.drain_lines()
+    clock.advance(9.5)
+    assert sim.drain_lines() == []                                    # holding, still energised
+    clock.advance(0.6)
+    lines = sim.drain_lines()
+    assert len(lines) == 1 and re.fullmatch(
+        r"EVT FAULT host-timeout-disabled silent_ms=10[0-9]{3}", lines[0]), lines
+    assert sim.ask("MOVE 1") == ["ERR MOVE not-enabled"]
+    assert sim.ask("ENABLE")[0].startswith("OK ENABLE")
+
+
+def test_any_line_in_the_ten_seconds_cancels_the_disable(clock):
+    sim = enabled_board(clock)
+    sim.ask("HOSTTIMEOUT 250")
+    sim.ask("MOVE 5 0.5")
+    clock.advance(0.6)
+    assert "EVT FAULT host-timeout" in sim.drain_lines()
+    clock.advance(5.0)
+    assert sim.ask("HB") == ["OK HB"]
+    clock.advance(30.0)
+    assert sim.drain_lines() == []
+    assert "enabled=1" in sim.ask("STATUS")[0]
+
+
+def test_info_carries_the_parked_and_host_silent_constants(clock):
+    sim = board(clock)
+    info = sim.ask("INFO")[0]
+    assert info.endswith(" parked_jog_mm_s=0.1000 parked_travel_mm=0.500 host_silent_off_ms=10000"), info
+    assert (AxisSimulator.PARKED_JOG_SPEED_MM, AxisSimulator.PARKED_TRAVEL_MM,
+            AxisSimulator.HOST_SILENT_OFF_MS) == (0.1, 0.5, 10000)
+
+
+def test_a_board_can_be_parked_by_a_hook_and_the_old_hooks_still_work(clock):
+    sim = enabled_board(clock)
+    assert "ls2=0" in sim.ask("STATUS")[0]
+    sim.park_on(2)
+    assert "ls2=1" in sim.ask("STATUS")[0]
+    sim.ask("ENABLE")
+    assert sim.ask("MOVE 1") == ["ERR MOVE limit-ls2-end-unknown:jog-off-it"]
+    sim.reboot()
+    assert sim.drain_lines()[0].startswith("EVT BOOT")
+    assert sim.limit_end(2) == 0                                      # RAM: the ends are forgotten
+
+
+def test_info_names_the_firmware_and_protocol_as_the_firmware_does(clock):
+    info = board(clock, tag="Y").ask("INFO")[0]
+    assert " fw=xyz_stage_axis proto=1 axis=Y " in info + " ", info
+    assert "protocol=" not in info
