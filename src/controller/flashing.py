@@ -85,6 +85,30 @@ FLASH_SECONDS = 900
 
 ARDUINO_CLI, TEENSY_LOADER = "arduino-cli", "teensy_loader_cli"
 
+#: A Teensy is put into its bootloader through ITS OWN USB serial port: the
+#: Teensy cores reboot when the host sets 134 baud on it (teensy3/usb_dev.c
+#: `line_coding[0] == 134`, teensy4/usb.c). Only that board reboots, so the
+#: loader that follows, run WITHOUT `-s`, programs only it. `-s` soft-reboots
+#: whichever Teensy the loader finds, and a station with the heater and the
+#: XYZ Stage's three axis boards attached could then write the wrong sketch
+#: to the wrong board (2026-10-09).
+TEENSY_REBOOT_BAUD = 134
+#: A `commands()` step that is not a process: reboot the Teensy on this port.
+REBOOT = "reboot"
+TEENSY_REBOOT_HINT = ("The Teensy could not be asked to reboot through its port: "
+                      "check that no program holds the port (close the station's "
+                      "models), or press the board's button and flash again.")
+
+
+def reboot_teensy(port):
+    """Ask the Teensy on `port` to enter its bootloader (134 baud, then close).
+    Raises when the port cannot be opened."""
+    import serial    # pyserial, the station's serial library
+    handle = serial.Serial()
+    handle.port, handle.baudrate = port, TEENSY_REBOOT_BAUD
+    handle.open()
+    handle.close()
+
 # -- where things are ---------------------------------------------------------
 
 def is_frozen():
@@ -315,10 +339,11 @@ def record_flash(path, board, digest, sketch, port, channel=STATION, version=Non
 # -- the commands ------------------------------------------------------------------
 
 def commands(board, port, sketch_root, tools):
-    """The argv lists that compile and upload `board` on `port`: one
-    arduino-cli compile+upload for a Mega; for the Teensy, a compile to a
-    .hex and teensy_loader_cli (-s soft reboot into the bootloader, -w keep
-    waiting so a button press also works)."""
+    """The steps that compile and upload `board` on `port`: one arduino-cli
+    compile+upload for a Mega; for a Teensy, a compile to a .hex, a reboot of
+    the Teensy on `port` into its bootloader (`(REBOOT, port)`, not a
+    process), and teensy_loader_cli -w (keep waiting, so a button press also
+    works) WITHOUT -s, so it programs only the board that rebooted."""
     sketch = sketch_dir(board, sketch_root)
     if BOARDS[board]["board"] == "mega":
         return [tools.arduino("compile", "--fqbn", MEGA_FQBN, "--upload",
@@ -326,8 +351,9 @@ def commands(board, port, sketch_root, tools):
     build = sketch / "build"
     return [tools.arduino("compile", "--fqbn", TEENSY_FQBN,
                           "--output-dir", str(build), str(sketch)),
+            (REBOOT, port),
             [tools.teensy_loader or TEENSY_LOADER, f"--mcu={TEENSY_MCU}",
-             "-w", "-s", "-v", str(build / f"{sketch.name}.ino.hex")]]
+             "-w", "-v", str(build / f"{sketch.name}.ino.hex")]]
 
 
 def install_deps_commands(tools):
@@ -554,6 +580,21 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
                 output.append(line)
                 say(line)
 
+            if isinstance(argv, tuple) and argv[0] == REBOOT:
+                say(f"  $ (reboot the Teensy on {argv[1]} into its bootloader, "
+                    f"{TEENSY_REBOOT_BAUD} baud)")
+                if dry_run:
+                    continue
+                try:
+                    reboot_teensy(argv[1])
+                except Exception as exc:
+                    said(f"Could not reboot the Teensy on {argv[1]}: {exc}")
+                    if TEENSY_REBOOT_HINT not in answer["hints"]:
+                        answer["hints"].append(TEENSY_REBOOT_HINT)
+                    say(f"[HINT] {TEENSY_REBOOT_HINT}")
+                    ok = False
+                    break
+                continue
             say("  $ " + " ".join(argv))
             if dry_run:
                 continue

@@ -67,6 +67,15 @@ def path_tools():
     return flashing.Tools("/usr/bin/arduino-cli", "/usr/bin/teensy_loader_cli")
 
 
+@pytest.fixture(autouse=True)
+def reboots(monkeypatch):
+    """No test opens a real port: the Teensy reboot (134 baud on the board's
+    own port) is recorded instead."""
+    seen = []
+    monkeypatch.setattr(flashing, "reboot_teensy", seen.append)
+    return seen
+
+
 # -- the board table ------------------------------------------------------------
 
 def test_the_board_table_matches_the_sketch_directories_on_disk():
@@ -147,7 +156,7 @@ def test_a_checkout_flashes_with_the_tools_on_path(tree, stamp, path_tools):
          "--upload", "-p", "/dev/ttyACM0", str(tree / "stepper_firmware")],
         ["/usr/bin/arduino-cli", "compile", "--fqbn", flashing.TEENSY_FQBN,
          "--output-dir", str(build), str(tree / "temp_controller")],
-        ["/usr/bin/teensy_loader_cli", f"--mcu={flashing.TEENSY_MCU}", "-w", "-s",
+        ["/usr/bin/teensy_loader_cli", f"--mcu={flashing.TEENSY_MCU}", "-w",
          "-v", str(build / "temp_controller.ino.hex")],
     ]
     assert all(c["env"] is None for c in run.calls)     # a checkout inherits
@@ -453,6 +462,76 @@ def test_a_tool_failure_names_what_to_do(tree, stamp, path_tools, board, line, w
     [hint] = answer["hints"]
     assert words in hint
     assert f"[HINT] {hint}" in lines
+
+
+# -- a Teensy is targeted by its own port, never "whichever Teensy answers" ------
+
+def test_the_teensy_is_rebooted_through_its_own_port_and_loaded_without_soft_reboot(
+        tree, stamp, path_tools, reboots):
+    """2026-10-09: `teensy_loader_cli -s` soft-reboots whichever Teensy it
+    finds; with the heater and three XYZ axis boards on one station that is
+    the wrong board. The station reboots the Teensy on the identified port
+    (134 baud) and the loader runs without -s, after that reboot."""
+    order = []
+    reboots_seen = reboots
+
+    def run(argv, cwd, on_line, timeout, env=None):
+        order.append(("run", argv[0]))
+        return 0
+
+    original = flashing.reboot_teensy
+
+    def reboot(port):
+        order.append(("reboot", port))
+        original(port)
+    flashing.reboot_teensy = reboot
+    try:
+        answer = flashing.flash(["Temperature Controller"], sketch_root=tree, stamp=stamp,
+                                tools=path_tools, run=run, ports=["/dev/ttyACM7"],
+                                identify=answering({"/dev/ttyACM7": "Temperature Controller"}))
+    finally:
+        flashing.reboot_teensy = original
+    assert answer["results"] == {"Temperature Controller": "ok"}
+    assert reboots_seen == ["/dev/ttyACM7"]
+    assert order == [("run", "/usr/bin/arduino-cli"), ("reboot", "/dev/ttyACM7"),
+                     ("run", "/usr/bin/teensy_loader_cli")]
+
+
+def test_no_teensy_command_soft_reboots_an_arbitrary_board(tree, path_tools):
+    steps = flashing.commands("Temperature Controller", "/dev/ttyACM7", tree, path_tools)
+    loader = [step for step in steps if isinstance(step, list)
+              and step[0].endswith("teensy_loader_cli")]
+    assert loader and all("-s" not in step for step in loader)
+    assert (flashing.REBOOT, "/dev/ttyACM7") in steps
+
+
+def test_a_teensy_that_cannot_be_rebooted_fails_without_running_the_loader(
+        tree, stamp, path_tools, monkeypatch):
+    ran = []
+
+    def run(argv, cwd, on_line, timeout, env=None):
+        ran.append(argv[0])
+        return 0
+
+    def refuse(port):
+        raise OSError(16, "Resource busy")
+    monkeypatch.setattr(flashing, "reboot_teensy", refuse)
+    answer = flashing.flash(["Temperature Controller"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=run, ports=["P"],
+                            identify=answering({"P": "Temperature Controller"}))
+    assert answer["results"] == {"Temperature Controller": "FAILED"}
+    assert answer["hints"] == [flashing.TEENSY_REBOOT_HINT]
+    assert not any("teensy_loader_cli" in tool for tool in ran)
+    assert not stamp.exists()          # nothing recorded for a failed upload
+
+
+def test_a_dry_run_names_the_reboot_and_reboots_nothing(tree, stamp, path_tools, reboots):
+    lines = []
+    flashing.flash(["Temperature Controller"], sketch_root=tree, stamp=stamp,
+                   tools=path_tools, run=lambda *a, **k: 0, ports=["P"], dry_run=True,
+                   identify=answering({"P": "Temperature Controller"}), on_line=lines.append)
+    assert any("reboot the Teensy on P into its bootloader" in line for line in lines)
+    assert reboots == []
 
 
 def test_a_teensy_that_never_reaches_its_bootloader_says_so(tree, stamp, path_tools):

@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from controller import firmware as fw
+from controller import flashing
 from controller.firmware import FirmwareCheck
 
 REPO = Path(__file__).resolve().parents[1]
@@ -73,6 +74,12 @@ def seed(stamp, **hashes):
                                          "flashed_at": "2026-09-28T10:00:00"}
                                  for board, digest in hashes.items()}))
     return stamp
+
+
+@pytest.fixture(autouse=True)
+def no_teensy_reboot(monkeypatch):
+    """No test opens a real port: the Teensy reboot is a no-op here."""
+    monkeypatch.setattr(flashing, "reboot_teensy", lambda port: None)
 
 
 @pytest.fixture
