@@ -28,6 +28,7 @@ motion write carries `abort_if=self._estop.is_set` so the latch is checked
 inside the transport's lock rather than before it.
 """
 import enum
+import math
 import struct
 import threading
 import time
@@ -39,6 +40,7 @@ from events import events
 from model.base import Model
 from model.gamepad_input import GamepadInput
 from model.idle import IdleInterlock
+from model.sample_frame import UM_PER_COUNT
 from param import Param
 from result import Refused
 
@@ -124,6 +126,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
     MAX_SPEED = MAX_SPEED
     NEEDS_PORT = True
     NEEDS_GAMEPAD = True
+    #: stored count Param -> the physical view the operator edits instead
+    #: (the Stepper Probe's um fields). The view carries the gate.
+    VIEW_OF = {}
 
     #: All three probe sketches run `Serial.begin(500000)`; SerialPort's
     #: default is the heater's 115200, which the boards read as garbage.
@@ -1203,7 +1208,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         if name not in self._gates:
             # The steps/s speeds have no control of their own any more: the
             # percent dial carries the gate for both representations.
-            wanted = (_PCT_OF.get(name), name)
+            wanted = (_PCT_OF.get(name), self.VIEW_OF.get(name), name)
             self._gates[name] = next(
                 (e for want in wanted if want for e in sch.elements(self.schema)
                  if e.get("model_attr") == want), None)
@@ -1460,17 +1465,197 @@ for _steps, _pct in _PCT_OF.items():
 del _name, _steps, _pct
 
 
+#: um per count of the Stepper Probe's axes: the repo's one constant
+#: (`sample_frame.UM_PER_COUNT`), a 1 mm lead screw over 1600 counts/rev
+#: (200 full steps x 8 microsteps, owner, 2026-10-09). The lead is NOT
+#: measured; the operator is told once (`StepperProbe.scale_note`).
+STEPPER_UM_PER_COUNT = UM_PER_COUNT["stepper"]
+
+
+def um_to_counts(um):
+    """Whole counts for a length in um: the nearest, exact halves away from
+    zero (0.9375 um is 1.5 counts -> 2; -0.9375 -> -2). The ratio is rounded
+    to 9 places first so float noise never decides a half."""
+    scaled = round(abs(float(um)) / STEPPER_UM_PER_COUNT, 9)
+    counts = int(math.floor(scaled + 0.5))
+    return -counts if float(um) < 0 else counts
+
+
+def counts_to_um(counts):
+    """A count's length in um (exact to 6 places: 0.625 = 5/8)."""
+    return round(float(counts) * STEPPER_UM_PER_COUNT, 6)
+
+
+def _um_property(counts_name, view_name):
+    """A physical view over a stored count Param: one value, two views.
+
+    Typing um converts to whole counts and stores THOSE (through the count's
+    own gated setter, so the mode gate and strict parse apply unchanged); the
+    getter reports the achieved length. Writing the length already displayed
+    changes nothing, so a Step that re-sends the readout keeps the counts."""
+
+    def getter(self):
+        return counts_to_um(self.PARAMS[counts_name].coerce(
+            self._param_store.get(counts_name)))
+
+    def setter(self, value):
+        ok, um = self.PARAMS[view_name].parse(value)
+        if not ok:
+            self._refuse(um)
+        counts = um_to_counts(um)
+        if counts == int(self.PARAMS[counts_name].coerce(
+                self._param_store.get(counts_name))):
+            return
+        setattr(self, counts_name, counts)
+
+    return property(getter, setter)
+
+
+def _position_um_property(index):
+    return property(lambda self: counts_to_um(self._position[index]))
+
+
 class StepperProbe(Probe):
-    """TMC2209 board."""
+    """TMC2209 board. The operator reads and types um and um/s (0.625 um per
+    count, lead unmeasured); the stored Params, the profile keys and every
+    byte on the wire stay whole counts and counts/s."""
 
     NAME = "Stepper Probe"
     IDENTITY = "s"
+
+    _MAX_UM_S = round(Probe.MAX_SPEED * STEPPER_UM_PER_COUNT, 6)
 
     PARAMS = {**Probe.PARAMS, **{p.name: p for p in (
         Param("x_step", "int", default=1, minimum=1, label="X Step Size"),
         Param("y_step", "int", default=1, minimum=1, label="Y Step Size"),
         Param("z_step", "int", default=1, minimum=1, label="Z Step Size"),
+        # The physical views (never seeded or stored; see `_defaults`).
+        *[Param(f"{a}_step_um", "float", default=STEPPER_UM_PER_COUNT,
+                minimum=STEPPER_UM_PER_COUNT, unit="um",
+                label=f"{a.upper()} Step Size") for a in "xyz"],
+        *[Param(f"{a}_dist_um", "float", default=0, unit="um",
+                label=f"Target {a.upper()} Dist") for a in "xyz"],
+        Param("full_speed_um_s", "float", default=400 * STEPPER_UM_PER_COUNT,
+              minimum=STEPPER_UM_PER_COUNT, maximum=_MAX_UM_S, unit="um/s",
+              label="Autonomous Speed"),
+        Param("man_full_speed_um_s", "float", default=400 * STEPPER_UM_PER_COUNT,
+              minimum=STEPPER_UM_PER_COUNT, maximum=_MAX_UM_S, unit="um/s",
+              label="Manual Speed"),
+        *[Param(f"position_{a}_um", "float", default=0, unit="um",
+                label=f"{a.upper()}:") for a in "xyz"],
     )}}
+
+    VIEW_OF = {**{f"{a}_{k}": f"{a}_{k}_um" for a in "xyz" for k in ("step", "dist")},
+               "full_speed": "full_speed_um_s",
+               "man_full_speed": "man_full_speed_um_s"}
+
+    ENTRY_PARAMS = ("x_step_um", "y_step_um", "z_step_um",
+                    "x_dist_um", "y_dist_um", "z_dist_um",
+                    "full_speed_um_s", "man_full_speed_um_s")
+    SPEED_PARAMS = ("full_speed_um_s", "man_full_speed_um_s")
+    TARGET_PARAMS = ("x_dist_um", "y_dist_um", "z_dist_um")
+    #: The slider travel, um/s: one count/s up to the ceiling (a slider may
+    #: not start below its Param's minimum).
+    SPEED_SLIDER = (STEPPER_UM_PER_COUNT, _MAX_UM_S)
+
+    @property
+    def scale_note(self):
+        """The one place the unmeasured lead is said."""
+        return f"{STEPPER_UM_PER_COUNT:g} um per count (lead unmeasured)"
+
+    def _defaults(self):
+        seeded = super()._defaults()
+        for name in self.VIEW_OF.values():
+            seeded.pop(name, None)      # derived from the stored counts
+        return seeded
+
+    @property
+    def schema(self):
+        P = self.PARAMS
+        gamepad_choice, gamepad_log = self._gamepad_elements()
+
+        def position(axis):
+            return [sch.readonly(f"{axis.upper()}:", f"position_{axis}_um",
+                                 param=P[f"position_{axis}_um"], rail=True),
+                    sch.readonly("steps", f"position_{axis}", secondary=True,
+                                 unit="steps")]
+
+        def physical(name, counts, gate, small_text="steps", small_unit="steps",
+                     slider=None):
+            """An entry in um with its count line directly beneath it."""
+            return [sch.entry(P[name].label + ":", name, P[name],
+                              disabled_when=gate, slider=slider),
+                    sch.readonly(small_text, counts, secondary=True,
+                                 unit=small_unit)]
+
+        return sch.schema(
+            sch.section(
+                "Position",
+                *[e for a in "xyz" for e in position(a)],
+                sch.readonly("Scale:", "scale_note", role="info"),
+            ),
+            sch.section(
+                "Autonomous",
+                *[e for a in "xyz" for e in physical(
+                    f"{a}_dist_um", f"{a}_dist", _MOTION_GATE)],
+                *physical("full_speed_um_s", "full_speed", _MOTION_GATE,
+                          "steps/s", "steps/s", slider=self.SPEED_SLIDER),
+                sch.toggle("Autonomous:", "is_auto", "set_mode",
+                           "Autonomous mode (press to stop)",
+                           "Enter Autonomous Mode",
+                           on_args=[ProbeMode.AUTO.value],
+                           off_args=[ProbeMode.DISABLED.value],
+                           disabled_when=("latched", "fault")),
+                sch.button("Step", "step",
+                           inputs=("x_dist_um", "y_dist_um", "z_dist_um",
+                                   "full_speed_um_s"),
+                           role="go", disabled_when=("manual", "latched",
+                                                     "fault")),
+                layout="group",
+            ),
+            sch.section(
+                "Manual",
+                gamepad_choice,
+                *physical("man_full_speed_um_s", "man_full_speed",
+                          _MANUAL_SPEED_GATE, "steps/s", "steps/s",
+                          slider=self.SPEED_SLIDER),
+                sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
+                           "Manual mode (press to stop)", "Enter Manual Mode",
+                           on_args=[ProbeMode.MANUAL.value],
+                           off_args=[ProbeMode.DISABLED.value],
+                           disabled_when=("latched", "fault")),
+                {"type": "internal", "command": "extend_idle", "writable": False,
+                 "role": "neutral"},
+                layout="group",
+            ),
+            sch.section(
+                "Configuration",
+                # One step size per axis: a D-pad press moves it and the
+                # Step command carries it.
+                *[e for a in "xyz" for e in physical(
+                    f"{a}_step_um", f"{a}_step", _MOTION_GATE)],
+                tier=2, disclosure=f"Configure {self.NAME}",
+            ),
+            sch.section(
+                "Diagnostics",
+                sch.readonly("Velocity (x, y, z):", "velocity_text"),
+                sch.readonly("Position age (s):", "position_age", role="info"),
+                gamepad_log,
+                tier=3, disclosure="Diagnostics",
+            ),
+            self._safety_section(),
+        )
+
+
+for _axis, _index in (("x", 0), ("y", 1), ("z", 2)):
+    setattr(StepperProbe, f"position_{_axis}_um", _position_um_property(_index))
+    for _kind in ("step", "dist"):
+        setattr(StepperProbe, f"{_axis}_{_kind}_um",
+                _um_property(f"{_axis}_{_kind}", f"{_axis}_{_kind}_um"))
+for _counts, _view in (("full_speed", "full_speed_um_s"),
+                       ("man_full_speed", "man_full_speed_um_s")):
+    setattr(StepperProbe, _view, _um_property(_counts, _view))
+del _axis, _index, _kind, _counts, _view
 
 
 class DCProbe(Probe):
