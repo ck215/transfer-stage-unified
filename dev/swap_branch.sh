@@ -98,6 +98,17 @@ if [ -n "${STATION_FLASH_ONLY:-}" ]; then
     done
 fi
 
+# A station still running holds the ports (exclusively): the flash could not
+# reach its boards, and the other app could not open them (2026-10-09: the
+# Classic icon started the original app over a running station, unflashed).
+INSTANCE="${TRANSFER_STAGE_DATA_ROOT:-$HOME/transfer-stage-runs}/station-instance.json"
+if [ "$DRY" != 1 ] && [ -f "$INSTANCE" ]; then
+    RUN_PID="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$INSTANCE")"
+    if [ -n "$RUN_PID" ] && kill -0 "$RUN_PID" 2>/dev/null; then
+        die "a station is running (PID $RUN_PID) and holds the boards' ports. Quit it (its Quit button), then start this again."
+    fi
+fi
+
 if [ "$TARGET" = legacy ]; then
     command -v git >/dev/null 2>&1 || die "git is not installed, so the legacy checkout cannot be made."
     command -v python3 >/dev/null 2>&1 || die "python3 is not installed, so the legacy venv cannot be made."
@@ -136,6 +147,8 @@ if [ "$TARGET" = legacy ]; then
         if [ ${#ONLY[@]} -gt 0 ]; then FLASH_CMD+=("${ONLY[@]}")
         else FLASH_CMD+=("${LEGACY_BOARDS[@]}")
         fi
+        # In the Classic icon's terminal, say what the quiet minute is.
+        [ -t 1 ] && [ "$DRY" != 1 ] && echo "Checking the Megas' firmware (flashing the original app's sketches if needed)..."
         step "flashing failed, so the legacy app was not launched (fix the error, or pass --no-flash)." \
             "${FLASH_CMD[@]}"
     fi

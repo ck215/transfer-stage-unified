@@ -469,3 +469,32 @@ def test_an_ordinary_failure_adds_no_hint(tree, stamp, path_tools):
                             run=Saying("avrdude: stk500v2_getsync(): timeout"),
                             ports=["P"], identify=answering({"P": "DC Probe"}))
     assert answer["results"] == {"DC Probe": "FAILED"} and answer["hints"] == []
+
+
+def test_a_board_behind_a_held_port_is_a_failure_not_a_silent_ok(tree, stamp, path_tools,
+                                                                   monkeypatch):
+    """2026-10-09: with a station still holding the ports, the Classic icon's
+    flash found nothing, said "ok", and the original app started on the
+    station's sketches. A needed board missing beside a port another program
+    holds now fails, names the port, and flashes nothing."""
+    class HeldProbe:
+        busy_ports = ["/dev/ttyACM0"]
+
+        def scan_ports(self):
+            return ["/dev/ttyACM0"]
+
+        def identify(self, port, should_abort=None):
+            return None                      # held: nothing could be asked
+
+    monkeypatch.setattr(flashing, "default_probe", lambda: HeldProbe())
+    lines, runner = [], Runner()
+    answer = flashing.flash(["Stepper Probe"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=runner, on_line=lines.append)
+    assert answer["returncode"] == 1
+    assert any("/dev/ttyACM0 is in use by another program" in line for line in lines), lines
+    assert runner.calls == [] and not stamp.exists()
+    # Nothing held: a board that is simply absent is still not a failure.
+    HeldProbe.busy_ports = []
+    answer = flashing.flash(["Stepper Probe"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=Runner(), on_line=lines.append)
+    assert answer["returncode"] == 0 and answer["absent"] == ["Stepper Probe"]
