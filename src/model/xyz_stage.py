@@ -1021,7 +1021,17 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         if not reply.ok:
             self._homing[axis] = None
             self._home_phase[axis] = f"not started ({reply.why})"
-            self._refuse(f"Axis {axis} would not start homing ({reply.why}).")
+            if reply.aborted:            # never written: nothing to stop
+                self._refuse(f"Axis {axis} would not start homing ({reply.why}).")
+            # R-7: the HOME was written, and a reply that came late (or not at
+            # all) is no proof the board is not homing: a late OK HOME means
+            # it is, for up to the firmware's own limit. Stop before refusing.
+            landed = self._broadcast("STOP")
+            missed = [a for a in AXES if not landed[a]]
+            outcome = (f"the stop did not reach axis {_and(missed)}, so treat the "
+                       "stage as live" if missed else "so all three axes were stopped")
+            self._refuse(f"Axis {axis} would not start homing ({reply.why}), "
+                         f"{outcome}.")
         return reply
 
     def home_all(self):

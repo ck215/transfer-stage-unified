@@ -564,6 +564,42 @@ def test_no_jog_reaches_an_axis_after_the_watchdogs_stop(make):
     assert not after and not sim(stage, "X").enabled
 
 
+# -- homing starts only when it may, and is stopped when it may have ----------------
+
+def _home_reply_lost(board):
+    """The board starts homing, but its `OK HOME` never reaches the station
+    in time (a reply later than REPLY_TIMEOUT)."""
+    real = board._cmd_home
+
+    def late(command, args):
+        emit = board._emit
+        board._emit = lambda text: None if text.startswith("OK HOME") else emit(text)
+        try:
+            real(command, args)
+        finally:
+            del board._emit
+
+    board._cmd_home = late
+
+
+def test_a_home_refused_for_a_late_reply_stops_the_axes(make):
+    """R-7: HOME answered later than REPLY_TIMEOUT. The operator is told it
+    would not start, but the board may home for minutes: the station sends
+    STOP after the HOME, before it refuses."""
+    stage = make()
+    board = sim(stage, "X")
+    board.home_seek_mm_s = 0.5
+    board.home_edge_mm = -5.0            # a long seek: ~10 s at 0.5 mm/s
+    stage.axes["X"].REPLY_TIMEOUT = 0.1
+    _home_reply_lost(board)
+    result = stage.run("home_axis", None, ("X",))
+    assert result.is_refused and "no reply" in result.reason
+    home_at = received_at(stage, "X", "HOME")[0]
+    assert [t for t in received_at(stage, "X", "STOP") if t > home_at]
+    assert wait_for(lambda: not board.moving, 1.0)
+    assert "stopped" in result.reason
+
+
 # == FEATURES ======================================================================
 
 # -- modes, parity with the Stepper Probe ------------------------------------------
