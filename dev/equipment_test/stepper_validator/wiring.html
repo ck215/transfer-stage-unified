@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Validator Bench Wiring</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Same tokens as "Stage DB9 Wiring.html": one wide schematic, then the connection list the schematic is drawn from */
+:root{--bg:#fbfbf9;--fg:#1c1f23;--muted:#5f6771;--line:#d5d9de;--panel:#f1f3f5;--edge:rgba(28,31,35,.35);--accent:#0064A4;--warn:#9a3412;--warnbg:#fff1e6;--body:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15181c;--fg:#e6e9ec;--muted:#9aa4ae;--line:#2d343c;--panel:#1d2228;--edge:rgba(230,233,236,.4);--accent:#6cb4ee;--warn:#fdba74;--warnbg:#3a2412;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#15181c;--fg:#e6e9ec;--muted:#9aa4ae;--line:#2d343c;--panel:#1d2228;--edge:rgba(230,233,236,.4);--accent:#6cb4ee;--warn:#fdba74;--warnbg:#3a2412;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);margin:0 auto;padding:28px 16px 56px;max-width:1180px;line-height:1.5}
+h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
+h2{font-size:16px;margin:32px 0 8px}
+p{margin:0 0 10px;max-width:76ch}
+.sub{color:var(--muted)}
+.warn{border-left:3px solid var(--warn);background:var(--warnbg);padding:10px 14px;margin:18px 0 0;border-radius:0 6px 6px 0}
+.warn ul{margin:0}
+figure{margin:20px 0 0}
+svg{max-width:100%;height:auto;display:block;font-family:var(--body)}
+figcaption{color:var(--muted);font-size:13px;margin-top:8px;max-width:84ch}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:680px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+td code,.mono,code{font-family:var(--mono);font-size:13px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid var(--edge);vertical-align:-1px;margin-right:6px}
+ul,ol{padding-left:22px;margin:0}
+li{margin-bottom:6px;max-width:84ch}
+.group td{background:var(--panel);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+svg text{font-family:var(--body)}
+.t{paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
+.m{font-family:var(--mono)}
+.schem{overflow-x:auto}.schem svg{min-width:760px}
+.note{border-left:3px solid var(--accent);background:var(--panel);padding:10px 14px;margin:12px 0 0;border-radius:0 6px 6px 0}
+.flag{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<h1>Validator Bench Wiring</h1>
+<p class="sub">Teensy 3.5 + one TMC2209 driving one axis of the 50 mm XYZ stage through its DB9 (motor, both limit switches, home photo-interrupter) for the stepper-motor-validator kit; one axis at a time.</p>
+<div class="warn" role="note"><ul>
+<li><strong>Never plug or unplug the DB9 or any coil wire with VM powered.</strong></li>
+<li><strong>Power order:</strong> USB first, then VM. Off: VM first, then USB.</li>
+<li><strong>C1 goes on VM only</strong> (across VM and GND at the driver), never on a signal line.</li>
+</ul></div>
+<figure>
+<div class="schem">
+<svg viewBox="0 0 1240 1085" role="img" aria-labelledby="sch-t sch-d">
+<title id="sch-t">Validator bench schematic</title><desc id="sch-d">Teensy 3.5 bottom row positions 1 to 9 and top row positions 1 and 3 wire to a BIGTREETECH TMC2209 V1.2 module (J1 left, J2 right, potentiometer at the top) and to the stage DB9. The motor supply feeds J2-1 VM and J2-2 GND with the 100 microfarad capacitor C1 across them at the module. A common ground rail joins Teensy GND, J1-2 MS1, J1-3 MS2 and J2-8 GND. Details are in the connection table below.</desc>
+<rect x="62" y="181" width="48" height="64" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/><text x="86" y="217" font-size="12" text-anchor="middle" fill="currentColor">USB</text>
+<rect x="110" y="110" width="716" height="206" rx="6" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/>
+<text x="468" y="230" font-size="13" font-weight="600" text-anchor="middle" fill="currentColor">Teensy 3.5 · positions count from the USB end (left)</text>
+<rect x="138" y="112" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="150" cy="124" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="150" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">1</text>
+<text transform="translate(150,160) rotate(90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">Vin</text>
+<circle cx="178" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="178" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">2</text>
+<text transform="translate(178,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">AGND</text>
+<rect x="194" y="112" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="206" cy="124" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="206" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">3</text>
+<text transform="translate(206,160) rotate(90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">3.3V</text>
+<circle cx="234" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="234" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">4</text>
+<text transform="translate(234,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">23</text>
+<circle cx="262" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="262" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">5</text>
+<text transform="translate(262,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">22</text>
+<circle cx="290" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="290" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">6</text>
+<text transform="translate(290,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">21</text>
+<circle cx="318" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="318" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">7</text>
+<text transform="translate(318,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">20</text>
+<circle cx="346" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="346" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">8</text>
+<text transform="translate(346,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">19</text>
+<circle cx="374" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="374" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">9</text>
+<text transform="translate(374,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">18</text>
+<circle cx="402" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="402" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">10</text>
+<text transform="translate(402,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">17</text>
+<circle cx="430" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="430" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">11</text>
+<text transform="translate(430,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">16</text>
+<circle cx="458" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="458" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">12</text>
+<text transform="translate(458,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">15</text>
+<circle cx="486" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="486" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">13</text>
+<text transform="translate(486,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">14</text>
+<circle cx="514" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="514" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">14</text>
+<text transform="translate(514,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">13 (LED)</text>
+<circle cx="542" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="542" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">15</text>
+<text transform="translate(542,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">GND</text>
+<circle cx="570" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="570" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">16</text>
+<text transform="translate(570,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">A22</text>
+<circle cx="598" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="598" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">17</text>
+<text transform="translate(598,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">A21</text>
+<circle cx="626" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="626" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">18</text>
+<text transform="translate(626,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">39</text>
+<circle cx="654" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="654" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">19</text>
+<text transform="translate(654,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">38</text>
+<circle cx="682" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="682" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">20</text>
+<text transform="translate(682,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">37</text>
+<circle cx="710" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="710" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">21</text>
+<text transform="translate(710,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">36</text>
+<circle cx="738" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="738" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">22</text>
+<text transform="translate(738,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">35</text>
+<circle cx="766" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="766" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">23</text>
+<text transform="translate(766,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">34</text>
+<circle cx="794" cy="124" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="794" y="146" font-size="9.5" text-anchor="middle" fill="var(--muted)">24</text>
+<text transform="translate(794,160) rotate(90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">33</text>
+<rect x="138" y="210" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="150" cy="302" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="150" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">1</text>
+<text transform="translate(150,266) rotate(-90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">GND</text>
+<circle cx="178" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="178" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">2</text>
+<text transform="translate(178,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">0</text>
+<rect x="194" y="210" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="206" cy="302" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="206" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">3</text>
+<text transform="translate(206,266) rotate(-90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">1</text>
+<rect x="222" y="210" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="234" cy="302" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="234" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">4</text>
+<text transform="translate(234,266) rotate(-90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">2</text>
+<rect x="250" y="210" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="262" cy="302" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="262" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">5</text>
+<text transform="translate(262,266) rotate(-90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">3</text>
+<rect x="278" y="210" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="290" cy="302" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="290" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">6</text>
+<text transform="translate(290,266) rotate(-90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">4</text>
+<rect x="306" y="210" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="318" cy="302" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="318" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">7</text>
+<text transform="translate(318,266) rotate(-90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">5</text>
+<rect x="334" y="210" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="346" cy="302" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="346" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">8</text>
+<text transform="translate(346,266) rotate(-90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">6</text>
+<rect x="362" y="210" width="24" height="104" rx="4" fill="var(--accent)" opacity=".14"/>
+<circle cx="374" cy="302" r="7" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="374" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">9</text>
+<text transform="translate(374,266) rotate(-90)" dy=".35em" class="m" font-size="11" font-weight="600" fill="var(--accent)">7</text>
+<circle cx="402" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="402" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">10</text>
+<text transform="translate(402,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">8</text>
+<circle cx="430" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="430" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">11</text>
+<text transform="translate(430,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">9</text>
+<circle cx="458" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="458" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">12</text>
+<text transform="translate(458,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">10</text>
+<circle cx="486" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="486" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">13</text>
+<text transform="translate(486,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">11</text>
+<circle cx="514" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="514" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">14</text>
+<text transform="translate(514,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">12</text>
+<circle cx="542" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="542" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">15</text>
+<text transform="translate(542,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">3.3V</text>
+<circle cx="570" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="570" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">16</text>
+<text transform="translate(570,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">24</text>
+<circle cx="598" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="598" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">17</text>
+<text transform="translate(598,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">25</text>
+<circle cx="626" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="626" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">18</text>
+<text transform="translate(626,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">26</text>
+<circle cx="654" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="654" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">19</text>
+<text transform="translate(654,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">27</text>
+<circle cx="682" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="682" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">20</text>
+<text transform="translate(682,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">28</text>
+<circle cx="710" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="710" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">21</text>
+<text transform="translate(710,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">29</text>
+<circle cx="738" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="738" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">22</text>
+<text transform="translate(738,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">30</text>
+<circle cx="766" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="766" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">23</text>
+<text transform="translate(766,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">31</text>
+<circle cx="794" cy="302" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="794" y="282" font-size="9.5" text-anchor="middle" fill="var(--muted)">24</text>
+<text transform="translate(794,266) rotate(-90)" dy=".35em" class="m" font-size="11" fill="var(--muted)">32</text>
+<text x="826" y="104" font-size="10.5" text-anchor="end" fill="var(--muted)">top row (24 pins)</text>
+<text x="826" y="332" font-size="10.5" text-anchor="end" fill="var(--muted)">bottom row (24 pins)</text>
+<rect x="540" y="500" width="220" height="400" rx="6" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/>
+<text x="650" y="518" font-size="12" font-weight="600" text-anchor="middle" fill="currentColor">BIGTREETECH TMC2209 V1.2</text>
+<text x="650" y="531" font-size="9.5" text-anchor="middle" fill="var(--muted)">top view · potentiometer at the top</text>
+<circle cx="600" cy="548" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<circle cx="618" cy="548" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<circle cx="636" cy="548" r="4" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="646" y="551" font-size="9" fill="var(--muted)">DIAG, INDEX, VREF: nc</text>
+<text x="566" y="578" font-size="9.5" font-weight="600" fill="var(--muted)">J1</text><text x="734" y="578" font-size="9.5" font-weight="600" text-anchor="end" fill="var(--muted)">J2</text>
+<circle cx="560" cy="596" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="572" y="596" dy=".35em" class="m" font-size="11" fill="currentColor">1 EN</text>
+<circle cx="740" cy="596" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="728" y="596" dy=".35em" class="m" font-size="11" text-anchor="end" fill="currentColor">VM 1</text>
+<circle cx="560" cy="636" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="572" y="636" dy=".35em" class="m" font-size="11" fill="currentColor">2 MS1</text>
+<circle cx="740" cy="636" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="728" y="636" dy=".35em" class="m" font-size="11" text-anchor="end" fill="currentColor">GND 2</text>
+<circle cx="560" cy="676" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="572" y="676" dy=".35em" class="m" font-size="11" fill="currentColor">3 MS2</text>
+<circle cx="740" cy="676" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="728" y="676" dy=".35em" class="m" font-size="11" text-anchor="end" fill="currentColor">A2 3</text>
+<circle cx="560" cy="716" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="572" y="716" dy=".35em" class="m" font-size="11" fill="currentColor">4 PDN (UART)</text>
+<circle cx="740" cy="716" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="728" y="716" dy=".35em" class="m" font-size="11" text-anchor="end" fill="currentColor">A1 4</text>
+<circle cx="560" cy="756" r="6" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="572" y="756" dy=".35em" class="m" font-size="11" fill="var(--muted)">5 PDN · nc</text>
+<circle cx="740" cy="756" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="728" y="756" dy=".35em" class="m" font-size="11" text-anchor="end" fill="currentColor">B1 5</text>
+<circle cx="560" cy="796" r="6" fill="var(--line)" stroke="currentColor" stroke-width="1"/>
+<text x="572" y="796" dy=".35em" class="m" font-size="11" fill="var(--muted)">6 CLK · nc</text>
+<circle cx="740" cy="796" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="728" y="796" dy=".35em" class="m" font-size="11" text-anchor="end" fill="currentColor">B2 6</text>
+<circle cx="560" cy="836" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="572" y="836" dy=".35em" class="m" font-size="11" fill="currentColor">7 STEP</text>
+<circle cx="740" cy="836" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="728" y="836" dy=".35em" class="m" font-size="11" text-anchor="end" fill="currentColor">VDD 7</text>
+<circle cx="560" cy="876" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="572" y="876" dy=".35em" class="m" font-size="11" fill="currentColor">8 DIR</text>
+<circle cx="740" cy="876" r="6" fill="var(--accent)" stroke="currentColor" stroke-width="1"/>
+<text x="728" y="876" dy=".35em" class="m" font-size="11" text-anchor="end" fill="currentColor">GND 8</text>
+<path d="M688,646 V866" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 3" fill="none"/>
+<text transform="translate(682,756) rotate(-90)" font-size="9" text-anchor="middle" fill="var(--muted)">J2-2 GND = J2-8 GND on the board</text>
+<rect x="560" y="404" width="160" height="86" rx="6" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/>
+<text x="568" y="422" font-size="12" font-weight="600" fill="currentColor">Motor supply</text><text x="568" y="436" font-size="9.5" fill="var(--muted)">12 V DC, at least 1 A</text>
+<text x="712" y="454" font-size="10" text-anchor="end" fill="currentColor">&#8722; black → J2-2 GND</text><text x="712" y="479" font-size="10" text-anchor="end" fill="currentColor">+ red → J2-1 VM</text>
+<rect x="944" y="420" width="106" height="406" rx="10" fill="var(--panel)" stroke="currentColor" stroke-width="1.4"/><text x="997" y="442" font-size="13" font-weight="600" text-anchor="middle" fill="currentColor">DB9 (stage)</text>
+<text x="997" y="456" font-size="9.5" text-anchor="middle" fill="var(--muted)">terminal numbers</text>
+<circle cx="962" cy="476" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="480" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">1</text>
+<text x="982" y="476" class="m" font-size="12" fill="currentColor" dy=".35em">Vcc</text>
+<text x="1075" y="470" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">yellow</text>
+<circle cx="962" cy="516" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="520" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">2</text>
+<text x="982" y="516" class="m" font-size="12" fill="currentColor" dy=".35em">LS1</text>
+<text x="1075" y="510" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">orange</text>
+<circle cx="962" cy="556" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="560" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">3</text>
+<text x="982" y="556" class="m" font-size="12" fill="currentColor" dy=".35em">LS2</text>
+<text x="1075" y="550" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">red</text>
+<circle cx="962" cy="596" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="600" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">4</text>
+<text x="982" y="596" class="m" font-size="12" fill="currentColor" dy=".35em">GND</text>
+<text x="1075" y="590" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">brown</text>
+<circle cx="962" cy="636" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="640" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">5</text>
+<text x="982" y="636" class="m" font-size="12" fill="currentColor" dy=".35em">Vo</text>
+<text x="1075" y="630" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">black</text>
+<circle cx="962" cy="676" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="680" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">6</text>
+<text x="982" y="676" class="m" font-size="12" fill="currentColor" dy=".35em">A+</text>
+<text x="1075" y="670" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">white</text>
+<circle cx="962" cy="716" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="720" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">7</text>
+<text x="982" y="716" class="m" font-size="12" fill="currentColor" dy=".35em">A-</text>
+<text x="1075" y="710" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">grey</text>
+<circle cx="962" cy="756" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="760" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">8</text>
+<text x="982" y="756" class="m" font-size="12" fill="currentColor" dy=".35em">B+</text>
+<text x="1075" y="750" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">blue</text>
+<circle cx="962" cy="796" r="11" fill="var(--bg)" stroke="currentColor" stroke-width="1.4"/><text x="962" y="800" class="m" font-size="12" font-weight="500" text-anchor="middle" fill="currentColor">9</text>
+<text x="982" y="796" class="m" font-size="12" fill="currentColor" dy=".35em">B-</text>
+<text x="1075" y="790" font-size="9.5" text-anchor="middle" class="t" fill="currentColor">green</text>
+<text x="1168" y="442" font-size="13" font-weight="600" text-anchor="middle" fill="currentColor">Stage axis</text><text x="1168" y="456" font-size="9.5" text-anchor="middle" fill="var(--muted)">50 mm XYZ stage</text>
+<rect x="1100" y="461" width="136" height="30" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"/><text x="1168" y="476" font-size="10.5" text-anchor="middle" fill="currentColor" dy=".35em">photo-interrupter Vcc</text>
+<rect x="1100" y="501" width="136" height="30" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"/><text x="1168" y="516" font-size="10.5" text-anchor="middle" fill="currentColor" dy=".35em">limit switch 1</text>
+<rect x="1100" y="541" width="136" height="30" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"/><text x="1168" y="556" font-size="10.5" text-anchor="middle" fill="currentColor" dy=".35em">limit switch 2</text>
+<rect x="1100" y="581" width="136" height="30" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"/><text x="1168" y="596" font-size="10.5" text-anchor="middle" fill="currentColor" dy=".35em">GND (common return)</text>
+<rect x="1100" y="621" width="136" height="30" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"/><text x="1168" y="636" font-size="10.5" text-anchor="middle" fill="currentColor" dy=".35em">photo-interrupter Vo</text>
+<rect x="1100" y="661" width="136" height="70" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"/><text x="1168" y="696" font-size="10.5" text-anchor="middle" fill="currentColor" dy=".35em">motor coil A (6-7)</text>
+<rect x="1100" y="741" width="136" height="70" rx="4" fill="var(--panel)" stroke="currentColor" stroke-width="1.2"/><text x="1168" y="776" font-size="10.5" text-anchor="middle" fill="currentColor" dy=".35em">motor coil B (8-9)</text>
+<g stroke="var(--edge)" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M290,302 L290,596 L560,596" stroke-width="6"/><path d="M206,302 L206,716 L226,716 A8,8 0 0 1 242,716 L254,716 A8,8 0 0 1 270,716 L512,716 A8,8 0 0 1 528,716 L560,716" stroke-width="6"/><path d="M234,302 L234,836 L254,836 A8,8 0 0 1 270,836 L512,836 A8,8 0 0 1 528,836 L560,836" stroke-width="6"/><path d="M262,302 L262,876 L512,876 A8,8 0 0 1 528,876 L560,876" stroke-width="6"/><path d="M150,302 L150,940 L780,940 L780,876 L740,876" stroke-width="7"/><path d="M560,636 L520,636 L520,940" stroke-width="6"/><path d="M560,676 L520,676" stroke-width="6"/><path d="M206,124 L206,50 L44,50 A8,8 0 0 0 28,50 L16,50 L16,980 L800,980 L800,836 L740,836" stroke-width="6"/><path d="M150,124 L150,74 L198,74 A8,8 0 0 1 214,74 L894,74 A8,8 0 0 1 910,74 L928,74 L928,476 L951,476" stroke-width="6"/><path d="M150,340 L36,340 L36,26 L902,26 L902,596 L951,596" stroke-width="6"/><path d="M374,302 L374,346 L850,346 L850,636 L951,636" stroke-width="6"/><path d="M346,302 L346,371 L842,371 A8,8 0 0 1 858,371 L876,371 L876,556 L894,556 A8,8 0 0 1 910,556 L951,556" stroke-width="6"/><path d="M318,302 L318,396 L830,396 L830,516 L842,516 A8,8 0 0 1 858,516 L868,516 A8,8 0 0 1 884,516 L894,516 A8,8 0 0 1 910,516 L951,516" stroke-width="6"/><path d="M740,676 L951,676" stroke-width="6"/><path d="M740,716 L951,716" stroke-width="6"/><path d="M740,756 L951,756" stroke-width="6"/><path d="M740,796 L951,796" stroke-width="6"/><path d="M740,596 L790,596 L790,475 L720,475" stroke-width="7"/><path d="M740,636 L810,636 L810,450 L720,450" stroke-width="7"/><path d="M765,596 L765,611" stroke-width="6"/><path d="M765,621 L765,636" stroke-width="6"/><path d="M1050,476 L1100,476" stroke-width="6"/><path d="M1050,516 L1100,516" stroke-width="6"/><path d="M1050,556 L1100,556" stroke-width="6"/><path d="M1050,596 L1100,596" stroke-width="6"/><path d="M1050,636 L1100,636" stroke-width="6"/><path d="M1050,676 L1100,676" stroke-width="6"/><path d="M1050,716 L1100,716" stroke-width="6"/><path d="M1050,756 L1100,756" stroke-width="6"/><path d="M1050,796 L1100,796" stroke-width="6"/></g>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M290,302 L290,596 L560,596" stroke="#7B3FBF" stroke-width="3"/><path d="M206,302 L206,716 L226,716 A8,8 0 0 1 242,716 L254,716 A8,8 0 0 1 270,716 L512,716 A8,8 0 0 1 528,716 L560,716" stroke="#0F8B8D" stroke-width="3"/><path d="M234,302 L234,836 L254,836 A8,8 0 0 1 270,836 L512,836 A8,8 0 0 1 528,836 L560,836" stroke="#E8760C" stroke-width="3"/><path d="M262,302 L262,876 L512,876 A8,8 0 0 1 528,876 L560,876" stroke="#E8C100" stroke-width="3"/><path d="M150,302 L150,940 L780,940 L780,876 L740,876" stroke="#111111" stroke-width="4"/><path d="M560,636 L520,636 L520,940" stroke="#111111" stroke-width="3"/><path d="M560,676 L520,676" stroke="#111111" stroke-width="3"/><path d="M206,124 L206,50 L44,50 A8,8 0 0 0 28,50 L16,50 L16,980 L800,980 L800,836 L740,836" stroke="#D62828" stroke-width="3"/><path d="M150,124 L150,74 L198,74 A8,8 0 0 1 214,74 L894,74 A8,8 0 0 1 910,74 L928,74 L928,476 L951,476" stroke="#E8C100" stroke-width="3"/><path d="M150,340 L36,340 L36,26 L902,26 L902,596 L951,596" stroke="#7B4A12" stroke-width="3"/><path d="M374,302 L374,346 L850,346 L850,636 L951,636" stroke="#111111" stroke-width="3"/><path d="M346,302 L346,371 L842,371 A8,8 0 0 1 858,371 L876,371 L876,556 L894,556 A8,8 0 0 1 910,556 L951,556" stroke="#D62828" stroke-width="3"/><path d="M318,302 L318,396 L830,396 L830,516 L842,516 A8,8 0 0 1 858,516 L868,516 A8,8 0 0 1 884,516 L894,516 A8,8 0 0 1 910,516 L951,516" stroke="#E8760C" stroke-width="3"/><path d="M740,676 L951,676" stroke="#FFFFFF" stroke-width="3"/><path d="M740,716 L951,716" stroke="#8C9196" stroke-width="3"/><path d="M740,756 L951,756" stroke="#1E63D6" stroke-width="3"/><path d="M740,796 L951,796" stroke="#2E9E44" stroke-width="3"/><path d="M740,596 L790,596 L790,475 L720,475" stroke="#9B1C1C" stroke-width="4"/><path d="M740,636 L810,636 L810,450 L720,450" stroke="#111111" stroke-width="4"/><path d="M765,596 L765,611" stroke="#9B1C1C" stroke-width="3"/><path d="M765,621 L765,636" stroke="#111111" stroke-width="3"/><path d="M1050,476 L1100,476" stroke="#E8C100" stroke-width="3"/><path d="M1050,516 L1100,516" stroke="#E8760C" stroke-width="3"/><path d="M1050,556 L1100,556" stroke="#D62828" stroke-width="3"/><path d="M1050,596 L1100,596" stroke="#7B4A12" stroke-width="3"/><path d="M1050,636 L1100,636" stroke="#111111" stroke-width="3"/><path d="M1050,676 L1100,676" stroke="#FFFFFF" stroke-width="3"/><path d="M1050,716 L1100,716" stroke="#8C9196" stroke-width="3"/><path d="M1050,756 L1100,756" stroke="#1E63D6" stroke-width="3"/><path d="M1050,796 L1100,796" stroke="#2E9E44" stroke-width="3"/></g>
+<g fill="currentColor"><circle cx="520" cy="676" r="4"/><circle cx="520" cy="940" r="4"/><circle cx="150" cy="340" r="4"/><circle cx="765" cy="596" r="4"/><circle cx="765" cy="636" r="4"/></g>
+<g fill="currentColor"><circle cx="720" cy="450" r="3.5"/><circle cx="720" cy="475" r="3.5"/></g>
+<path d="M753,611 H777" stroke="currentColor" stroke-width="2.4" fill="none"/><path d="M753,624 Q765,616 777,624" stroke="currentColor" stroke-width="2.4" fill="none"/>
+<text x="780" y="609" font-size="10" fill="currentColor">+</text><text x="768" y="588" font-size="10.5" font-weight="600" fill="currentColor">C1</text>
+<text x="300" y="590" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >bottom 6 = pin 4 → J1-1 EN</text>
+<text x="292" y="708" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >bottom 3 = pin 1 (TX1), direct → J1-4 PDN (single-wire UART)</text>
+<text x="292" y="828" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >bottom 4 = pin 2 → J1-7 STEP</text>
+<text x="292" y="868" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >bottom 5 = pin 3 → J1-8 DIR</text>
+<text x="512" y="628" font-size="10.5" text-anchor="end" class="t" fill="currentColor" >J1-2 MS1, J1-3 MS2 → GND rail</text>
+<text x="160" y="960" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >GND rail (common ground): Teensy GND · J1-2 MS1 · J1-3 MS2 · J2-8 GND</text>
+<text x="30" y="975" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >top 3 = 3.3V → J2-7 VDD (VCC_IO)</text>
+<text x="46" y="334" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >GND → DB9 pin 4</text>
+<text x="260" y="20" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >bottom row, position 1 = GND → DB9 pin 4 (brown) and the GND rail</text>
+<text x="240" y="68" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >top row, position 1 = Vin (5 V from USB) → DB9 pin 1 (Vcc)</text>
+<text x="232" y="45" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >3.3V</text>
+<text x="250" y="92" font-size="10.5" text-anchor="start" class="t"  fill="var(--warn)" font-weight="600">FLAG: Vin to DB9 Vcc is allowed only because Teensy 3.5 digital pins are 5 V tolerant.</text>
+<text x="250" y="104" font-size="10.5" text-anchor="start" class="t"  fill="var(--warn)" font-weight="600">On any Teensy 4.x use 3.3V (top row, position 3) instead.</text>
+<text x="420" y="340" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >bottom row, position 9 = pin 7 → DB9 pin 5 (Vo)</text>
+<text x="420" y="365" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >bottom row, position 8 = pin 6 → DB9 pin 3 (LS2)</text>
+<text x="420" y="390" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >bottom row, position 7 = pin 5 → DB9 pin 2 (LS1)</text>
+<text x="772" y="670" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >J2-3 A2 → DB9 6 (A+)</text>
+<text x="772" y="710" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >J2-4 A1 → DB9 7 (A-)</text>
+<text x="772" y="750" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >J2-5 B1 → DB9 8 (B+)</text>
+<text x="772" y="790" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >J2-6 B2 → DB9 9 (B-)</text>
+<text x="997" y="846" font-size="10.5" text-anchor="middle" class="t" fill="currentColor" >Wire by printed terminal numbers</text>
+<text x="20" y="1006" font-size="10.5" text-anchor="start" class="t"  fill="currentColor" font-weight="600">MOTOR POWER: PSU + (red) → J2-1 VM; PSU − (black) → J2-2 GND. 12 V DC, at least 1 A (bench supply: 12.0 V with a 1.0 A limit). Meter the polarity before connecting.</text>
+<text x="20" y="1023" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >C1 100 µF electrolytic across J2-1 VM and J2-2 GND, right at the module: long lead (+) to VM, stripe (−) to GND. Rated at least 25 V (12 V supply) or 35 V (24 V). Never on a signal line.</text>
+<text x="20" y="1040" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >COMMON GROUND: Teensy GND, J1-2 MS1, J1-3 MS2 and J2-8 GND share the GND rail; DB9 pin 4 joins Teensy GND by the brown wire; J2-2 and J2-8 are joined on the module,</text>
+<text x="20" y="1056" font-size="10.5" text-anchor="start" class="t" fill="currentColor" >so PSU − is common with all of them. Check once with a meter: J2-2 to J2-8 and Teensy GND to PSU − both read about 0 Ω.</text>
+<text x="20" y="1074" font-size="10.5" text-anchor="start" class="t"  fill="var(--muted)">Driver pins: BIGTREETECH TMC2209 V1.2 manual (J1 left, J2 right, potentiometer at the top). J2-3/4 are one coil and J2-5/6 the other on any labelling; check your silkscreen.</text>
+</svg>
+</div>
+<figcaption>Teensy positions count from the USB end, separately for each row. Highlighted pins are wired; muted pins are unused. The driver is drawn as the BIGTREETECH TMC2209 V1.2 from BTT's manual: J1 on the left, J2 on the right, potentiometer at the top, pins numbered 1-8 from the top. The DB9 is drawn as a numbered list (terminal numbers 1-9), not as the connector face. Every wire carries its label; colour is a second cue only.</figcaption>
+</figure>
+<div class="note"><strong>DB9:</strong> wire to a DB9 breakout by its printed terminal numbers, not by connector face position (the faces of male and female connectors are mirror images). TEST COILS cannot catch a breakout whose numbers are mirrored (pins 6-7 land on 9-8, still a coil); the LED diode test under Meter checks can.</div>
+<div class="note"><strong>Teensy pins not used (not drawn):</strong> the 5 interior holes near the SD card (Reset, Program, GND, 3.3V, VBat); the 5-hole USB host header near the USB end (5V, D-, D+, GND, GND); the bottom-side SMD pads (40-57, A10, A11, AREF, VUSB, debug). Top row, from the USB end: Vin, AGND, 3.3V, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13 (LED), GND, A22, A21, 39, 38, 37, 36, 35, 34, 33. Bottom row, from the USB end: GND, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 3.3V, 24, 25, 26, 27, 28, 29, 30, 31, 32.</div>
+<h2>Motor power: supply and C1</h2>
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-labelledby="pw-t pw-d" style="max-width:760px">
+<title id="pw-t">Motor power wiring</title>
+<desc id="pw-d">The motor supply's plus terminal goes to the driver's VM pin and its minus terminal to the driver's power-side GND. The 100 microfarad electrolytic capacitor C1 sits across VM and GND right at the driver: long lead to VM, striped lead to GND.</desc>
+<g fill="var(--panel)" stroke="currentColor" stroke-width="1.4"><rect x="20" y="50" width="170" height="160" rx="6"/><rect x="520" y="50" width="200" height="160" rx="6"/></g>
+<g fill="currentColor" font-size="13" font-weight="600" text-anchor="middle"><text x="105" y="80">Motor supply</text><text x="620" y="80">TMC2209</text></g>
+<g fill="var(--muted)" font-size="11" text-anchor="middle"><text x="105" y="98">12 V DC (12-24 V)</text><text x="105" y="113">at least 1 A</text><text x="620" y="98">power side</text></g>
+<g stroke="var(--edge)" stroke-width="8" fill="none" stroke-linecap="round"><path d="M190,130 H520"/><path d="M190,180 H520"/><path d="M400,130 V146"/><path d="M400,162 V180"/></g>
+<g fill="none" stroke-linecap="round" stroke-width="5"><path d="M190,130 H520" stroke="#D62828"/><path d="M190,180 H520" stroke="#111111"/></g>
+<g fill="none" stroke-width="3"><path d="M400,130 V146" stroke="#D62828"/><path d="M400,162 V180" stroke="#111111"/></g>
+<g stroke="currentColor" stroke-width="2.4" fill="none"><path d="M384,146 H416"/><path d="M384,163 Q400,155 416,163"/></g>
+<g fill="currentColor"><circle cx="400" cy="130" r="4.5"/><circle cx="400" cy="180" r="4.5"/></g>
+<g fill="currentColor" font-size="14" font-weight="600"><text x="196" y="124">+</text><text x="196" y="174">&#8722;</text><text x="420" y="146">+</text></g>
+<g font-family="var(--mono)" font-size="13" fill="currentColor" text-anchor="end"><text x="712" y="134">J2-1 VM</text><text x="712" y="184">J2-2 GND</text></g>
+<g font-size="11" fill="currentColor"><text x="230" y="122">red: supply + to VM</text><text x="230" y="198">black: supply &#8722; to GND</text></g>
+<g font-size="11" fill="currentColor"><text x="300" y="232" font-weight="600">C1 100 µF electrolytic, across VM and GND at the driver</text></g>
+<g font-size="10.5" fill="var(--muted)"><text x="300" y="246">long lead (+) to VM; stripe (&#8722;) to GND; at least 25 V (12 V supply) or 35 V (24 V)</text></g>
+<g font-size="10.5" fill="var(--muted)" text-anchor="middle"><text x="620" y="150">joined to logic GND</text><text x="620" y="164">on the module</text></g>
+</svg>
+<figcaption>C1 goes as close to the driver's VM and GND pins as you can get it: the same breadboard rows, or soldered across the two pins. Its job is to absorb the motor supply's spikes at the driver.</figcaption>
+</figure>
+<ol>
+<li><strong>Supply off</strong> while wiring. Bench supply: set 12.0 V and a 1.0 A current limit. A 12 V adapter of at least 1 A also works.</li>
+<li><strong>Meter the polarity</strong> at the leads before they touch the module: + (red) to VM, &minus; (black) to the power-side GND. A reversed VM destroys the TMC2209 instantly.</li>
+<li><strong>Fit C1</strong> across VM and GND at the module: the long lead and unmarked side to VM, the striped side to GND. A reversed electrolytic can vent.</li>
+<li><strong>Power on</strong> only after the Teensy is on USB; power off before unplugging USB. After switching off, wait about 5 s for C1 to drain before touching the DB9 or coil wires.</li>
+<li><strong>Expect</strong> well under 1 A from the supply at the 600 mA motor current; the driver draws from 12 V only what the coils need.</li>
+</ol>
+<h2>Connections</h2>
+<div class="tbl"><table>
+<thead><tr><th>#</th><th>From (physical position)</th><th>To</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Teensy bottom row, position 3 = pin 1 (TX1)</td><td>driver <code>J1-4 PDN</code></td><td>Direct, one wire: the firmware runs this UART half-duplex (it sends and receives on TX1). No resistor needed; a 47 Ω to 1 kΩ in series is also fine.</td></tr>
+<tr><td>2</td><td>Teensy bottom row, position 2 = pin 0 (RX1)</td><td>not connected</td><td>Unused in half-duplex.</td></tr>
+<tr><td>3</td><td>Teensy bottom row, position 4 = pin 2</td><td>driver <code>J1-7 STEP</code></td><td></td></tr>
+<tr><td>4</td><td>Teensy bottom row, position 5 = pin 3</td><td>driver <code>J1-8 DIR</code></td><td></td></tr>
+<tr><td>5</td><td>Teensy bottom row, position 6 = pin 4</td><td>driver <code>J1-1 EN</code></td><td>Active LOW. Firmware holds it HIGH (outputs off) from boot.</td></tr>
+<tr><td>6</td><td>Teensy top row, position 3 = 3.3V</td><td>driver <code>J2-7 VDD</code> (VCC_IO)</td><td>Logic supply only. Not 5 V.</td></tr>
+<tr><td>7</td><td>Teensy bottom row, position 1 = GND</td><td>GND rail: driver <code>J1-2 MS1</code>, <code>J1-3 MS2</code>, <code>J2-8 GND</code>; and DB9 pin 4 (brown)</td><td>The common ground. MS1 and MS2 on GND set UART address 0.</td></tr>
+<tr><td>8</td><td>Teensy bottom row, position 7 = pin 5</td><td>DB9 pin 2 (LS1, orange)</td><td></td></tr>
+<tr><td>9</td><td>Teensy bottom row, position 8 = pin 6</td><td>DB9 pin 3 (LS2, red)</td><td></td></tr>
+<tr><td>10</td><td>Teensy bottom row, position 9 = pin 7</td><td>DB9 pin 5 (Vo, black)</td><td>Photo-interrupter output.</td></tr>
+<tr><td>11</td><td>Teensy top row, position 1 = Vin (5 V from USB)</td><td>DB9 pin 1 (Vcc, yellow)</td><td><span class='flag'>Flag:</span> allowed only because Teensy 3.5 digital pins are 5 V tolerant. On any Teensy 4.x use 3.3V instead.</td></tr>
+<tr><td>12a</td><td>Motor supply <strong>+</strong> (red)</td><td>driver <code>J2-1 VM</code></td><td>12 V DC, at least 1 A (24 V also fine; driver max 28 V). Short, 22 AWG or heavier. Reversed polarity destroys the driver: meter it first.</td></tr>
+<tr><td>12b</td><td>Motor supply <strong>&minus;</strong> (black)</td><td>driver <code>J2-2 GND</code></td><td>Motor current returns here.</td></tr>
+<tr><td>13a</td><td>C1 100 µF <strong>+</strong> (long lead, unmarked side)</td><td>driver <code>J2-1 VM</code>, same point as 12a</td><td>Right at the module (same breadboard row as J2-1). Electrolytic: polarity matters.</td></tr>
+<tr><td>13b</td><td>C1 100 µF <strong>&minus;</strong> (short lead, stripe side)</td><td>driver <code>J2-2 GND</code>, same point as 12b</td><td>Rated at least 25 V for a 12 V supply, 35 V for 24 V. Motor-supply bulk capacitor: never on a signal line.</td></tr>
+<tr><td>14</td><td>Common ground</td><td><code>J2-2 GND</code> ↔ <code>J2-8 GND</code></td><td>Joined on the module, which ties the supply's &minus; to the GND rail (item 7). Meter once: J2-2 to J2-8, and Teensy GND to supply &minus;, both about 0 Ω.</td></tr>
+<tr><td>15a</td><td>driver <code>J2-3 A2</code></td><td>DB9 pin 6 (A+, white)</td><td>Coil A.</td></tr>
+<tr><td>15b</td><td>driver <code>J2-4 A1</code></td><td>DB9 pin 7 (A&minus;, grey)</td><td>Coil A. Swapping 6 and 7 only reverses direction.</td></tr>
+<tr><td>15c</td><td>driver <code>J2-5 B1</code></td><td>DB9 pin 8 (B+, blue)</td><td>Coil B.</td></tr>
+<tr><td>15d</td><td>driver <code>J2-6 B2</code></td><td>DB9 pin 9 (B&minus;, green)</td><td>Coil B. J2-3/4 are one coil and J2-5/6 the other, whatever your silkscreen calls them.</td></tr>
+<tr><td>16</td><td>Not connected</td><td>driver <code>J1-5 PDN</code> (second PDN, same net as J1-4), <code>J1-6 CLK</code>, DIAG, INDEX, VREF and the potentiometer; Teensy Vin/VUSB to VM (never); every unused Teensy pin</td><td>Nothing else is wired.</td></tr>
+</tbody></table></div>
+<h2>Parts</h2>
+<ul>
+<li>Teensy 3.5 and a USB cable.</li>
+<li>BIGTREETECH TMC2209 V1.2 (or V1.3; same headers, check the silkscreen) driver module.</li>
+<li>No UART resistor needed (half-duplex). A 47 Ω to 1 kΩ in series with TX1 is optional.</li>
+<li>C1: 100 µF electrolytic, rated at least 25 V (12 V supply) or 35 V (24 V supply).</li>
+<li>Motor supply: 12-24 V DC, at least 1 A (12 V recommended), with red and black leads, 22 AWG or heavier.</li>
+<li>The 50 mm XYZ stage with its DB9, and a DB9 breakout (wire by printed terminal numbers).</li>
+<li>Multimeter (for the checks below).</li>
+</ul>
+<h2>Meter checks before power</h2>
+<p>USB unplugged, VM off, stage plugged into the breakout. Pull the five sensor jumpers (Vin, the DB9 GND, pins 5, 6, 7) out of the Teensy header, leave their other ends in the breakout, and meter between the loose jumper tips: each reading then covers the jumper, the screw terminal, the mating and the cable.</p>
+<ul>
+<li>Coils: 6-7 and 8-9 each read about 1.5-2.5 Ω; 6 or 7 to 8 or 9 open; any coil pin to 4 or the shell open.</li>
+<li>Photo-interrupter LED, diode test, red on terminal 1, black on terminal 4: about 1.1-1.4 V, and OL with the leads reversed. This is the check that proves pins 1-5 are numbered right. If it reads OL: red 1 / black 5 shows the LED drop means the stage's GND is pin 5 (or your 4 and 5 wires are swapped); red 5 / black 2 shows it means the breakout's numbering is mirrored. No LED drop on any pair: pin 1 or pin 4 is open; re-seat and repeat.</li>
+<li>Limit switches: resistance 2 to 4 (LS1) and 3 to 4 (LS2), with the carriage at centre and then on that switch. The reading must change: open at rest and near 0 Ω on the switch is normally open (send <code>LIMITS NO</code>); near 0 Ω at rest and open on the switch is normally closed (firmware default <code>LIMITS NC</code>). Put the carriage on a switch by pressing it if you can reach it; otherwise keep the sensor jumpers out, power up as in Bring-up, send <code>LIMITS NO</code> (the loose inputs read open; NC would refuse every move), drive there with <code>MOVE</code> (15 mm, then 1 mm steps), meter between moves, and stop at 24 mm from centre if nothing changes.</li>
+<li>The stage's own sheet contradicts itself on whether the switches return to pin 4 or pin 5. If 2-4 never changes, test 2-5 and stop to report it: with a pin-5 return the firmware sees a switch only while the home slot is clear.</li>
+<li>Re-seat the jumpers (Teensy bottom row positions 1, 7, 8, 9 and top row position 1) when done.</li>
+</ul>
+<h2>Bring-up order</h2>
+<ol>
+<li><strong>Everything off.</strong> Wire it all.</li>
+<li><strong>Meter checks</strong> (above).</li>
+<li><strong>Connect the DB9</strong> with VM off and centre the axis about 25 mm from each end.</li>
+<li><strong>USB in, VM off.</strong> Flash <code>stepper_validator</code> for Teensy 3.5, open <code>stepper_validator.html</code> in Chrome or Edge and Connect. The boot line says <code>uart=FAIL</code>: expected, because the TMC2209's logic runs from VM. Set <code>LIMITS</code> to the type the meter check found. At centre both switches must read clear. Both TRIPPED under NC means normally-open switches <em>or an open circuit</em>, and NO shows both of those as clear, so a clear reading proves nothing by itself: press each switch (or drive onto it) and see that switch alone read TRIPPED and clear on release; block the photo-interrupter slot and see Home level change (bare phototransistor: 0 clear, 1 blocked). Run TEST LIMITS only after both switches and the home sensor have changed state at least once.</li>
+<li><strong>VM on</strong> (supply output on; see Motor power). TEST UART must PASS.</li>
+<li><strong>Enable.</strong></li>
+<li><strong>TEST COILS</strong>, <strong>TEST REVS</strong> n=2-5 (mark the carriage; it must return to the mark), <strong>TEST SWEEP</strong>, then <strong>TEST LIMITS</strong>: it seeks each switch at 1 mm/s (first search up to 30 mm), checks each releases on a 1 mm back-off, logs home-sensor edges, reports switch-to-switch travel, and parks midway. Watch the first run and press Esc if the carriage reaches an end without stopping.</li>
+<li><strong>Shut down:</strong> Disable, VM off, wait a few seconds for C1 to drain, then unplug the DB9 or move it to the next axis.</li>
+</ol>
+<h2>Optional</h2>
+<p>A 100 nF ceramic from each of Teensy pins 5, 6 and 7 to GND at the Teensy helps against noise from the motor wires in the same cable (the firmware also filters).</p>
+</body>
+</html>
