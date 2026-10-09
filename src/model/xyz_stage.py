@@ -1133,6 +1133,11 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                          f"{outcome}.")
         return reply
 
+    def _manual_motion_not_allowed(self):
+        """The in-lock gate of motion the gamepad starts: latched, or no
+        longer in MANUAL."""
+        return self._estop.is_set() or self._mode is not StageMode.MANUAL
+
     def _auto_motion_not_allowed(self):
         """The in-lock gate of motion the host starts in AUTO (a HOME, a
         Step's MOVEs): latched, or no longer in AUTO."""
@@ -1328,23 +1333,29 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         for axis in AXES:
             v = velocity[axis]
             if abs(v) > self.JOG_DEADBAND * speed:
-                self._jog_send(axis, f"JOGV {v / 1000:.4f}")
+                self._jog_send(axis, f"JOGV {v / 1000:.4f}", moves=True)
                 self._jogging[axis] = True
             elif self._jogging[axis]:
                 self._jogging[axis] = False
                 self._jog_send(axis, "JOGV 0")
             elif steps[axis]:
                 size = self._number(f"{axis.lower()}_step") * (1 if steps[axis] > 0 else -1)
-                self._jog_send(axis, f"MOVE {size / 1000:.4f} {speed / 1000:.4f}")
+                self._jog_send(axis, f"MOVE {size / 1000:.4f} {speed / 1000:.4f}",
+                               moves=True)
 
     @staticmethod
     def _level(levels, key, default):
         value = levels.get(key, default)
         return float(default if value is None else value)
 
-    def _jog_send(self, axis, line):
+    def _jog_send(self, axis, line, moves=False):
+        """`moves`: a jog or a D-pad step, gated inside the write lock on the
+        stage still being in MANUAL and unlatched (R-8's class), so leaving
+        manual between a gamepad tick's checks and the write moves nothing.
+        A neutral (`JOGV 0`) is a stop and is gated on the latch only."""
+        abort_if = self._manual_motion_not_allowed if moves else self._estop.is_set
         try:
-            return self.axes[axis].send(line, abort_if=self._estop.is_set)
+            return self.axes[axis].send(line, abort_if=abort_if)
         except TransportError as exc:
             if not self._is_link_down():
                 raise

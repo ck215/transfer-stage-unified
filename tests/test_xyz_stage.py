@@ -972,6 +972,24 @@ def test_dpad_and_bumpers_step_each_axis_by_its_step_size(make):
     assert wait_for(lambda: received(stage, "Z", "MOVE")[-1:] == ["MOVE -0.0200 0.5000"])
 
 
+@pytest.mark.parametrize("starts, press", [
+    (b"MOVE", lambda pad: pad.press("hat_x", 1)),             # a D-pad step
+    (b"JOGV 0.", lambda pad: pad.levels.update(axis_x=0.8))])  # a stick jog
+def test_a_manual_move_is_never_written_once_the_stage_left_manual(make, starts, press):
+    """The D-pad/bumper MOVE and a stick's JOGV were gated on the latch only
+    (R-8's class): the operator leaves manual between the gamepad tick's
+    checks and the write. The in-lock check must see it: nothing moves."""
+    pad = FakePad()
+    stage = make(gamepad=pad)
+    armed(stage, "manual")
+    _on_write(stage, "X", starts, lambda: stage.set_mode("idle"))
+    press(pad)
+    assert wait_for(lambda: stage.mode is StageMode.IDLE, 2.0)
+    time.sleep(0.2)
+    assert [l for l in received(stage, "X") if l.startswith(starts.decode())] == []
+    assert not sim(stage, "X").moving
+
+
 # -- zeroing and homing --------------------------------------------------------------------
 
 def test_zero_here_zeroes_one_axis(make):
