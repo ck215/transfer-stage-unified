@@ -174,7 +174,10 @@ def test_a_slider_drag_writes_nothing_until_the_next_tick(manual):
 def test_the_schema_leaves_manual_speed_live_in_manual_only(cls):
     probe, _port, _pad = make_probe(cls)
     # 2026-10-07: the dials are percent entries; steps/s sit under them as secondaries.
-    man, auto = _entry(probe, "man_full_speed_pct"), _entry(probe, "full_speed_pct")
+    # 2026-10-09: the Stepper's entries are um/s (same gates, same slider ceiling).
+    suffix = "_um_s" if cls is StepperProbe else "_pct"
+    man = _entry(probe, "man_full_speed" + suffix)
+    auto = _entry(probe, "full_speed" + suffix)
     assert man["disabled_when"] == ["autonomous"]
     assert sch.is_enabled(man, "manual")
     assert not sch.is_enabled(man, "autonomous")
@@ -231,7 +234,7 @@ def test_the_web_api_commits_manual_speed_while_manual():
         status, served = _get(view, "/api/schema?name=Stepper+Probe")
         assert status == 200
         man = next(e for e in sch.elements(served)
-                   if e.get("model_attr") == "man_full_speed_pct")   # the dial, not its steps/s secondary
+                   if e.get("model_attr") == "man_full_speed_um_s")   # the um/s entry, not its steps/s secondary
         assert man["disabled_when"] == ["autonomous"]
 
         _post(view, "/api/run", {"name": "Stepper Probe", "command": "set_mode",
@@ -239,18 +242,19 @@ def test_the_web_api_commits_manual_speed_while_manual():
         assert probe.is_manual
         status, data = _post(view, "/api/run", {
             "name": "Stepper Probe", "command": "_commit",
-            "inputs": {"man_full_speed": "180"}, "args": []})
+            "inputs": {"man_full_speed_um_s": "112.5"}, "args": []})   # 180 counts/s
         assert status == 200 and data["status"] == "ok", data
         assert probe._number("man_full_speed") == 180
         status, data = _post(view, "/api/run", {
             "name": "Stepper Probe", "command": "_commit",
-            "inputs": {"full_speed": "180"}, "args": []})
+            "inputs": {"full_speed_um_s": "112.5"}, "args": []})
         assert data["status"] == "refused"
         status, data = _post(view, "/api/run", {
             "name": "Stepper Probe", "command": "_commit",
-            "inputs": {"man_full_speed": "0"}, "args": []})
+            "inputs": {"man_full_speed_um_s": "0"}, "args": []})
         assert data["status"] == "refused"
         assert probe._number("man_full_speed") == 180
+        assert probe._number("full_speed") == 400
     finally:
         view.close()
         controller.close()
@@ -283,8 +287,8 @@ def test_the_tk_entry_is_live_in_manual_and_commits(monkeypatch):
         assert view._widgets[id(auto)]["is_enabled"] is False
         assert widget_of(view, auto).cget("state") == "disabled"
 
-        # The dial is a percent since 2026-10-07: 9 % of 3200 = 288 steps/s.
-        view._widgets[id(man)]["var"].set("9")
+        # The entry is um/s since 2026-10-09: 180 um/s = 288 counts/s.
+        view._widgets[id(man)]["var"].set("180")
         assert view._on_entry_commit(man).is_ok
         assert probe._number("man_full_speed") == 288
         assert _speed_of_next_frame(probe, port) == 288.0
