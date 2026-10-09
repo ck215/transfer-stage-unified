@@ -523,8 +523,10 @@ def test_entries_sit_on_a_six_column_sheet_overview_and_device_page():
     assert re.search(r"\.sheet\.is-overview\s*\{[^}]*grid-template-columns:\s*"
                      r"repeat\(var\(--tile-cols\)", STYLES)
     assert re.search(r"\.sheet\.is-overview\s*\{[^}]*grid-auto-rows:\s*var\(--tile-row\)", STYLES)
-    assert re.search(r"\.sheet\.is-overview > \.card\.is-wide\s*\{\s*grid-column:\s*"
-                     r"span var\(--tile-wide\)", STYLES)
+    # Updated (rb-ui-render): the tile's column is the one app.js packTiles
+    # writes (--tile-col), still `span var(--tile-wide)` wide.
+    assert re.search(r"\.sheet\.is-overview > \.card\.is-wide\s*\{\s*grid-column:[^;]*"
+                     r"/ span var\(--tile-wide\)", STYLES)
     assert "@media (max-width: 62.5rem)" in STYLES
     layout = _body(r"\n  layoutSheet\(\) \{(.*?)\n  \}")
     assert "this.sizeTiles();" in layout
