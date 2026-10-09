@@ -590,6 +590,7 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
     say(f"Needs flashing unless absent: {', '.join(needed)}")
 
     found = {}
+    probe = None
     if detect_ports:
         say("Scanning for connected boards...")
         if identify is None or ports is None:
@@ -609,6 +610,20 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
         answer["results"][board] = f"{FAULT}: {reason}, nothing flashed"
     absent = [b for b in needed if b not in found and b not in faulted]
     answer["absent"] = absent
+    # A port another program holds could not be asked who it is: a board
+    # missing from `found` may be on it. Flashing nothing and saying "ok"
+    # let the Classic icon start the original app on the station's sketches
+    # (2026-10-09), so a needed board missing beside a held port is a failure.
+    # An incomplete axis set is the same case: its missing board may be there.
+    busy = sorted(getattr(probe, "busy_ports", None) or ()) if probe else []
+    unchecked = absent + list(faulted)
+    if unchecked and busy:
+        say(f"[ERROR] {', '.join(busy)} {'is' if len(busy) == 1 else 'are'} in use by "
+            f"another program (a station still running?), so "
+            f"{', '.join(unchecked)} could not be checked. Quit it, then try again; "
+            "nothing was flashed.")
+        answer["hints"].append("ports in use: " + ", ".join(busy))
+        return answer
     if absent:
         say(f"Not connected (nothing flashed, nothing recorded): {', '.join(absent)}")
     if not found:

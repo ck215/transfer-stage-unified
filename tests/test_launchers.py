@@ -645,3 +645,24 @@ def test_a_failed_flash_keeps_the_launcher_from_starting_the_station(bench):
     assert ["python3", "src/app.py"] not in calls
     log = bench.tmp / "transfer-stage-runs" / "launcher.log"
     assert "flashing failed, so the station was not launched" in log.read_text()
+
+
+def test_swap_refuses_while_a_station_holds_the_ports(swap):
+    """2026-10-09: the Classic icon started the original app over a running
+    station: its flash could not reach the held ports. A running station
+    (its instance file names a live process) now stops both targets before
+    anything is flashed or started, in one sentence."""
+    legacy = swap.w / "legacy-app"
+    (legacy / "src").mkdir(parents=True)
+    (legacy / "src" / "mainGUI.py").write_text("")
+    (legacy / ".venv" / "bin").mkdir(parents=True)
+    _executable(legacy / ".venv" / "bin" / "python", "#!/bin/sh\n")
+    runs = swap.tmp / "transfer-stage-runs"
+    runs.mkdir(exist_ok=True)
+    (runs / "station-instance.json").write_text(
+        json.dumps({"pid": os.getpid(), "url": "http://127.0.0.1:8080"}))
+    for target in ("legacy", "station"):
+        done, calls = swap.run("../w/with-legacy/dev/swap_branch.sh", target,
+                               TRANSFER_STAGE_DATA_ROOT=None)
+        assert done.returncode == 1 and calls == [], (target, done.stderr)
+        assert done.stderr.startswith("swap_branch: a station is running")

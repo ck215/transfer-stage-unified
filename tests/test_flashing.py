@@ -743,3 +743,52 @@ def test_touch_that_cannot_open_is_a_transport_error(monkeypatch):
     monkeypatch.setattr(serial_port, "_open_serial", refused)
     with pytest.raises(serial_port.TransportError, match="COM5 at 134"):
         serial_port.touch("COM5", 134)
+
+
+def test_a_board_behind_a_held_port_is_a_failure_not_a_silent_ok(tree, stamp, path_tools,
+                                                                   monkeypatch):
+    """2026-10-09: with a station still holding the ports, the Classic icon's
+    flash found nothing, said "ok", and the original app started on the
+    station's sketches. A needed board missing beside a port another program
+    holds now fails, names the port, and flashes nothing."""
+    class HeldProbe:
+        busy_ports = ["/dev/ttyACM0"]
+
+        def scan_ports(self):
+            return ["/dev/ttyACM0"]
+
+        def identify(self, port, should_abort=None):
+            return None                      # held: nothing could be asked
+
+    monkeypatch.setattr(flashing, "default_probe", lambda: HeldProbe())
+    lines, runner = [], Runner()
+    answer = flashing.flash(["Stepper Probe"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=runner, on_line=lines.append)
+    assert answer["returncode"] == 1
+    assert any("/dev/ttyACM0 is in use by another program" in line for line in lines), lines
+    assert runner.calls == [] and not stamp.exists()
+    # Nothing held: a board that is simply absent is still not a failure.
+    HeldProbe.busy_ports = []
+    answer = flashing.flash(["Stepper Probe"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=Runner(), on_line=lines.append)
+    assert answer["returncode"] == 0 and answer["absent"] == ["Stepper Probe"]
+
+
+def test_an_incomplete_axis_set_beside_a_held_port_names_the_port(tree, stamp, path_tools,
+                                                                  monkeypatch):
+    """The missing axis board may be the one behind the held port: say so,
+    not just "Z missing", and flash nothing."""
+    class HeldAxes(AxisProbe):
+        busy_ports = ["/dev/ttyACM9"]
+
+        def scan_ports(self):
+            return ["/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM9"]
+
+    monkeypatch.setattr(flashing, "default_probe",
+                        lambda: HeldAxes({"/dev/ttyACM1": "X", "/dev/ttyACM2": "Y"}))
+    lines, runner = [], Runner()
+    answer = flashing.flash(["XYZ Stage"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=runner, on_line=lines.append)
+    assert answer["returncode"] == 1 and runner.calls == [] and not stamp.exists()
+    assert any("/dev/ttyACM9 is in use by another program" in line
+               and "XYZ Stage could not be checked" in line for line in lines), lines
