@@ -265,7 +265,8 @@ class TeensyAxis(SerialPort):
             self._waiters.setdefault(waiter.command, []).append(waiter)
         return waiter
 
-    def _forget(self, waiter):
+    def cancel(self, waiter):
+        """Withdraw a waiter from `expect` whose command was never sent."""
         with self._dispatch_lock:
             pending = self._waiters.get(waiter.command, [])
             if waiter in pending:
@@ -279,10 +280,10 @@ class TeensyAxis(SerialPort):
         try:
             sent = self.send(command, priority=priority, abort_if=abort_if)
         except Exception:
-            self._forget(waiter)
+            self.cancel(waiter)
             raise
         if not sent:
-            self._forget(waiter)
+            self.cancel(waiter)
             return Reply(waiter.command, False, aborted=True)
         return self.wait(waiter, timeout)
 
@@ -296,7 +297,7 @@ class TeensyAxis(SerialPort):
                 return waiter.reply
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self._forget(waiter)
+                self.cancel(waiter)
                 if waiter.event.is_set():          # answered at the wire
                     return waiter.reply
                 return Reply(waiter.command, False, timed_out=True)
@@ -544,9 +545,10 @@ class AxisSimulator:
                        f"axis={self.tag or '?'}")
 
     def unplug(self):
+        """The cable is out. As a real pyserial handle does, the handle still
+        says it is open; every read and write raises."""
         with self._lock:
             self.unplugged = True
-            self.is_open = False
 
     def replug(self):
         """Back on USB: a USB-powered board has rebooted."""
