@@ -9,7 +9,7 @@ You are auditing ONE subsystem. Your brief names the files on `main` you
 own and the `src/` files that inherit their job. This file is everything
 else and does not change between runs.
 
-First read `.claude/skills/station-map/SKILL.md` in `mvc-refactor/`. It has
+First read `.claude/skills/station-map/SKILL.md` in `main/`. It has
 the paths, the run/test commands, the owner rulings and the traps. Do not
 start reading code before you have read it.
 

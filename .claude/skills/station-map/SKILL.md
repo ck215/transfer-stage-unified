@@ -9,22 +9,19 @@ description: Orientation for any agent working on transfer-stage-unified — whe
 
 ```
 /Users/ianalbinogonzalez/GitHub/transfer-stage-unified/
-  mvc-refactor/     the one checkout (the clone itself; on this Mac the folder is still named
-                    after the branch until re-cloned, after which it is transfer-stage-unified/
-                    with no subfolder); it holds the ONE venv, .venv, the $PY below
-  main/             a PLAIN checkout of the lab's original app (NOT a worktree), kept for
-                    dev/swap_branch.sh; absent after a fresh clone (`dev/swap_branch.sh legacy`
-                    makes ../legacy-app from the `legacy` branch)
+  main/             the one checkout (branch main, tracking origin/main; on a fresh clone
+                    the clone itself); it holds the ONE venv, .venv, the $PY below.
+                    `dev/swap_branch.sh legacy` makes ../legacy-app from the `legacy` branch
   rb-<name>/        one worktree per agent while a fix round runs; removed after the merge
                     (no other worktrees exist between rounds)
 ```
 
 Branches: `main` is the station, the pre-release line (receives pull requests from
 short-lived `feat/*`, `fix/*`, `agent/*` branches; releases are tags on main cut with
-`dev/release.sh vX.Y.Z`); `mvc-refactor` is deleted once merged into main, not kept as an
+`dev/release.sh vX.Y.Z`); `mvc-refactor` was merged into main and deleted, not kept as an
 integration branch; `legacy` is the lab's original Tk app, frozen; `stable` is the
 original app's packaging ref. `.github/workflows/gate.yml` runs the fast gate,
-golden and a Web launch on every PR and push to main (the mvc-refactor trigger goes away with the branch). The
+golden and a Web launch on every PR and push to main. The
 version is the git tag (`station --version`, `packaging/release.py version`);
 `pyproject.toml` says 0.0.0. The lab deploys by git today (`git fetch && git
 checkout main` or a fresh `git clone --branch main <url>`, `pip install -e .`, `run.sh`); the first
@@ -37,9 +34,9 @@ Three generations of the app exist:
 
 | Generation | Where | Layout | Status |
 |---|---|---|---|
-| Original | branch `legacy` (the checkout `main/`) | flat Tk files: `mainGUI.py`, `stepper_frame.py`, `DC_frame.py`, `chuck_frame.py`, `controllerDrive.py`, `serialDrive.py`, `temp_control.py`, `rotator.py`, `lib/{smc100,redpercent,toupcam}.py` | The behaviour the lab knows. Reference for "what the app is supposed to do". Frozen. |
+| Original | branch `legacy` (`../legacy-app`, made by `dev/swap_branch.sh legacy`) | flat Tk files: `mainGUI.py`, `stepper_frame.py`, `DC_frame.py`, `chuck_frame.py`, `controllerDrive.py`, `serialDrive.py`, `temp_control.py`, `rotator.py`, `lib/{smc100,redpercent,toupcam}.py` | The behaviour the lab knows. Reference for "what the app is supposed to do". Frozen. |
 | MVC repair | removed from the tree (history: tag pre-root-cleanup-2026-10-07) | `controller/ model/ views/{tkinter,pyside,web} lib/` | Ran in the lab 2026-08-26 -> 09-22. Frozen; its wire bytes live on as `tests/golden/*.json`. |
-| Rebuild | `mvc-refactor/src/` (+ `tests/`) | `app.py`, `events panel param schema result palette`, `controller/{controller,setup,flashing,updater,user_config,firmware}.py`, `devices/{screen_recorder,camera,video,...}.py`, `views/{base,theme,web/}` (+ `tk.py`, `qt.py`, `qt_finalizer.py`: frozen, see below), and the models below | **The app.** Fast gate: see the `verify` skill for counts; 77 golden wire captures pinned by `tests/golden/`. |
+| Rebuild | `main/src/` (+ `tests/`) | `app.py`, `events panel param schema result palette`, `controller/{controller,setup,flashing,updater,user_config,firmware}.py`, `devices/{screen_recorder,camera,video,...}.py`, `views/{base,theme,web/}` (+ `tk.py`, `qt.py`, `qt_finalizer.py`: frozen, see below), and the models below | **The app.** Fast gate: see the `verify` skill for counts; 77 golden wire captures pinned by `tests/golden/`. |
 
 Models in `src/model/` (the registered ones have a Setup row; names are the operator's):
 Stepper Probe, DC Probe and Chuck Positioner (`probe.py`), Temperature Controller
@@ -80,10 +77,10 @@ banner maps them), `BUGFIX_PLAN.md` (Tier A code defects, B bench, C
 hygiene, D `legacy`-vs-rebuild regressions).
 `tests/TEST_PORTING.md` lists the VOID families (features removed on purpose).
 
-## Run and test (from `mvc-refactor/` or your `rb-*` worktree; the one venv is `mvc-refactor/.venv`)
+## Run and test (from `main/` or your `rb-*` worktree; the one venv is `main/.venv`)
 
 ```
-PY=/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor/.venv/bin/python
+PY=/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/main/.venv/bin/python
 $PY src/app.py --no-browser --port 8080          # the Web view, the only one; then set ports to "SIM" via /api/setup
 $PY src/app.py --version                         # the git tag; 0.0.0+<sha> before the first release
 $PY -m pytest tests -q -p no:cacheprovider -m "not qt"                  # the fast gate; counts in the verify skill (STATION_NO_WINDOWS=1 while anyone is at the display)

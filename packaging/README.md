@@ -81,15 +81,15 @@ build); the workflow sets it, so a release can never ship without them.
 `STATION_TOOLS_DIR` and `STATION_STABLE_DIST` point the assembly elsewhere;
 `STATION_STABLE_SRC` points `stable.spec` at another checkout.
 
-The stable ref is `stable`, the original app's packaging ref. Until `mvc-refactor` is merged into main and deleted, `origin/main` is still the
-lab's original app (the local branch `legacy` tracks it, and a plain checkout
-`main/` may run it); whether `origin/stable` carries that app's latest changes is
+The stable ref is `stable`, the original app's packaging ref. `origin/main` is
+the station; the lab's original app is `legacy` (`dev/swap_branch.sh legacy`
+runs it from `../legacy-app`); whether `origin/stable` carries that app's latest changes is
 unverified, so use whichever ref you mean in step 2 for a local build (the
 workflow's `stable_ref` input does the same).
 
 Output: `dist/station/` as above. Ship the whole folder, zipped
 (`release.py zip`). The repository's checkouts live under
-`~/GitHub/transfer-stage-unified/` (the one checkout, today the folder `mvc-refactor/`, holds the one venv, made from
+`~/GitHub/transfer-stage-unified/` (the one checkout, `main/`, holds the one venv, made from
 pyproject's `[dev]` extra). One-folder only: one-file mode unpacks the whole bundle to
 a temp dir on every launch and trips antivirus.
 
@@ -197,13 +197,13 @@ its section there.
 | Branch | What it is |
 |---|---|
 | `main` | The station, the pre-release line. It receives pull requests from short-lived branches. **Releases are tags on main**; `dev/release.sh` runs on main only. |
-| `mvc-refactor` | Deleted once it is merged into main; not kept as an integration branch. |
+| `mvc-refactor` | Merged into main and deleted (2026-10-07); not kept as an integration branch. |
 | `feat/<topic>`, `fix/<topic>`, `agent/<topic>` | Short-lived branches that open a pull request into main. |
-| `legacy` | The lab's original Tk app (the old main), frozen. `dev/swap_branch.sh legacy [--no-flash] [-- app args]` runs it on the same boards: it makes `../legacy-app` (a worktree of this checkout's `legacy` branch, else a clone of origin's) and its venv on first use, flashes the boards with that tree's own `firmware/flash_firmware.py`, then runs `src/mainGUI.py` there; `station` flashes from this tree and runs the Web view. It never switches branches in this checkout; `RUN_SWAP_DRY_RUN=1` prints the commands and runs none. |
+| `legacy` | The lab's original Tk app (the old main), frozen. `dev/swap_branch.sh legacy [--no-flash] [-- app args]` runs it on the same boards: it makes `../legacy-app` (a worktree of this checkout's `legacy` branch, else a clone of origin's) and its venv on first use, flashes the three Megas with that tree's sketches through this tree's `firmware/flash_firmware.py` (recorded in the stamp as `stable`, so the station's flash puts them back; 2026-10-08), then runs `src/mainGUI.py` there; `station` flashes from this tree and runs the Web view. It never switches branches in this checkout; `RUN_SWAP_DRY_RUN=1` prints the commands and runs none. |
 | `stable` | The original app's packaging ref: what `package.yml` freezes as `stable/` (`stable_ref`). Unchanged. |
 
 `.github/workflows/gate.yml` runs on every pull request into, and every
-push to, main (the mvc-refactor trigger is harmless and goes away with the branch): the fast suite, the golden wire gate and a
+push to, main: the fast suite, the golden wire gate and a
 launch of the Web view, on Ubuntu, within 30 minutes.
 
 A checkout's Update row, `update.sh` and `update.bat` take releases (tags on

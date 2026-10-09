@@ -58,13 +58,13 @@ from `src/`); it left the runtime requirements, and survives only in
 ## Branches and releases (owner, 2026-10-07)
 
 `main` is the station, the pre-release line; it receives pull requests from
-short-lived branches (`feat/*`, `fix/*`, `agent/*`); `mvc-refactor` is deleted
-once merged into it. A release is a tag `vX.Y.Z` on main, cut with `dev/release.sh`
+short-lived branches (`feat/*`, `fix/*`, `agent/*`); `mvc-refactor` was merged
+into it and deleted. A release is a tag `vX.Y.Z` on main, cut with `dev/release.sh`
 (CHANGELOG's Unreleased moves under the tag); the tag starts `package.yml`,
 which builds, uploads `SHA256SUMS` and publishes the draft itself. `legacy`
 is the lab's original Tk app, frozen; `stable` is the original app's
 packaging ref (frozen into the bundle as `stable/`). `gate.yml` runs the fast
-gate, golden and a Web launch on PRs and pushes to main (the mvc-refactor trigger goes away with the branch). The
+gate, golden and a Web launch on PRs and pushes to main. The
 version is the tag (`pyproject.toml` says 0.0.0). Details, the release
 steps and rollback: `packaging/README.md`.
 

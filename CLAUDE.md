@@ -1,4 +1,4 @@
-# transfer-stage-unified — mvc-refactor
+# transfer-stage-unified — main
 
 A lab-instrument control app, "the station": stepper and DC probes, a chuck
 positioner, a Temperature Controller, an SMC100 Rotator, and a
@@ -12,20 +12,19 @@ every byte on the wire is identical to the old app's (the repair tree
 the lab ran Aug 26–Sep 22, 2026; history: tag pre-root-cleanup-2026-10-07), pinned by `tests/golden/`.
 
 The repository lives at `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/`:
-one checkout, the clone itself (work here; it holds the one venv, `.venv`, the `$PY`
-below), with `rb-<name>/` agent worktrees as siblings only while a round runs. On the
-lead's Mac that folder is still named `mvc-refactor/` until it is re-cloned; a sibling
-`main/` there is a plain checkout of the lab's original app (for `dev/swap_branch.sh`).
-The lab PC clones fresh from `main` (`git clone --branch main <url>`); no sibling `main/` checkout exists after a fresh clone, and `dev/swap_branch.sh legacy` creates `../legacy-app` from the `legacy` branch when the old app is needed.
+one checkout, `main/` (on branch `main`, tracking origin/main; work here; it holds the one venv, `.venv`, the `$PY`
+below), with `rb-<name>/` agent worktrees as siblings only while a round runs. There is no
+other sibling checkout; `dev/swap_branch.sh legacy` creates `../legacy-app` from the `legacy`
+branch when the old app is needed. The lab PC clones fresh from `main` (`git clone --branch main <url>`).
 
 **Branch model** (owner, 2026-10-07): `main` is the station, the pre-release line; it receives
 pull requests from short-lived branches (`feat/*`, `fix/*`, `agent/*`). The
-`mvc-refactor` branch is deleted once it is merged into `main`; it is not kept as an
+`mvc-refactor` branch was merged into `main` and deleted; it is not kept as an
 integration branch. Releases are tags on main cut with
 `dev/release.sh vX.Y.Z` (CI builds, uploads `SHA256SUMS` and publishes the draft
 itself). `legacy` is the lab's original Tk app, frozen; `stable` is the original
 app's packaging ref. `.github/workflows/gate.yml` runs the fast gate, golden and a
-Web launch on PRs and pushes to main (the mvc-refactor trigger is harmless and goes away with the branch). The version is the git tag
+Web launch on PRs and pushes to main. The version is the git tag
 (`src/app.py --version`; pyproject says 0.0.0). The lab deploys by git today
 (a fresh `git clone --branch main <url>`, `pip install -e .`, `run.sh`); the first
 installed release comes after v1.0.0. Details: `packaging/README.md`.
@@ -55,7 +54,7 @@ and `tests/TEST_PORTING.md` (the second test wave). The finding ledger
 (`progress.md`, `carry.json`), the design data, the legacy audits and `docs/archive`
 are gone from the tree (history: tag pre-root-cleanup-2026-10-07).
 
-## Commands (from the checkout (today `mvc-refactor/`) or an `rb-*` worktree; `$PY` = `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor/.venv/bin/python`, see `station-map`)
+## Commands (from the checkout `main/` or an `rb-*` worktree; `$PY` = `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/main/.venv/bin/python`, see `station-map`)
 
 ```
 ./run.sh --no-browser --port 8080       # the Web view, the only one; python3 src/app.py ... in the venv
