@@ -482,3 +482,37 @@ def test_after_a_stable_flash_every_station_board_is_out_of_date(tmp_path, stamp
     assert {b: s for b, s in result["boards"].items()} == dict(
         {b: fw.OUT_OF_DATE for b in flashing.STABLE_BOARDS}, **{"XYZ Stage": fw.NEVER})
     assert result["to_flash"] == list(fw.BOARDS)
+
+
+# -- R-3 as Setup sees it: a Teensy left in its bootloader (2026-10-09) ----------
+
+class HeaterAndAxes:
+    """Setup's handshake over the heater and the three axis boards."""
+    probe_tags = {"COM4": "X", "COM5": "Y", "COM6": "Z"}
+
+    def identify(self, port):
+        if port in self.probe_tags:
+            return "XYZ Stage"
+        return {"COM3": "Temperature Controller"}.get(port)
+
+
+def test_a_teensy_left_in_its_bootloader_fails_the_flash_with_the_replug_hint(tree, stamp):
+    """The heater's upload fails after its reboot: Setup is told the flash
+    failed, why the axis boards were not flashed, and to replug the heater;
+    no axis board's loader runs (it would program the heater)."""
+    calls = []
+
+    def run(argv, cwd, on_line, timeout, env=None):
+        calls.append(list(argv))
+        return 1 if argv[-1].endswith("temp_controller.ino.hex") else 0
+    probe = HeaterAndAxes()
+    result = checker(tree, stamp, run=run, identify=probe.identify,
+                     ports=["COM3", "COM4", "COM5", "COM6"]).flash(
+        ["Temperature Controller", "XYZ Stage"])
+    assert result["ok"] is False and result["returncode"] == 1
+    assert [argv for argv in calls if "xyz_stage_axis.ino.hex" in argv[-1]] == []
+    for axis in "XYZ":
+        assert "bootloader" in result["results"][f"XYZ Stage {axis}"]
+    assert any("unplug" in hint and "Temperature Controller" in hint
+               for hint in result["hints"])
+    assert not stamp.exists()

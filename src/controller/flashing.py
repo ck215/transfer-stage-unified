@@ -118,6 +118,16 @@ REBOOT = "reboot"
 TEENSY_REBOOT_HINT = ("The Teensy could not be asked to reboot through its port: "
                       "check that no program holds the port (close the station's "
                       "models), or press the board's button and flash again.")
+#: The status of a unit this run would not flash (it says why); a failure.
+NOT_FLASHED = "NOT FLASHED"
+#: R-3 (2026-10-09): a Teensy whose upload failed once its reboot was tried
+#: may be waiting in its bootloader (HalfKay), and the loader, run without
+#: -s, programs the FIRST HalfKay device it finds: the next Teensy's sketch
+#: would go onto that board. So no later Teensy unit is flashed in that run.
+TEENSY_STUCK = "a Teensy may have been left in its bootloader ({unit})"
+TEENSY_STUCK_HINT = ("A Teensy may have been left in its bootloader ({unit}), so no "
+                     "further Teensy was flashed: unplug that board and plug it back "
+                     "in (or press its button), then flash again.")
 
 
 def reboot_teensy(port):
@@ -532,12 +542,14 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
     whose recorded hash differs from the sketch's, unless `force` - on the
     ports the handshake finds them on (`manual` {board: port} wins), and
     record each upload that succeeded in `stamp` with `channel` and
-    `version`. `confirm(board, port) -> bool` asks per board (None: yes).
+    `version`. `confirm(board, port) -> bool` asks per board (None: yes); a
+    tagged board is asked once, `port` naming every axis board's port.
 
     -> {"returncode": 0 | 1, "results": {board: status}, "found": {board:
     port}, "absent": [boards]}. Returns 1 when a sketch or a tool is
-    missing or any upload failed; a board that is not plugged in is said,
-    never a failure."""
+    missing, any upload failed or a unit was not flashed (NOT_FLASHED: a
+    Teensy may be in its bootloader, or a sibling axis board failed); a
+    board that is not plugged in is said, never a failure."""
     say = on_line or (lambda line: None)
     runner = run or stream_lines
     sketch_root = Path(sketch_root)
@@ -638,22 +650,20 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
         for label, port in _units(board, where):
             say(f"  {label:<24} {port:<20} {chip}")
 
-    deadline = time.monotonic() + timeout
-    results = answer["results"]
+    job = _Job(sketch_root=sketch_root, tools=tools, runner=runner, stamp=stamp,
+               digests=digests, dry_run=dry_run, deadline=time.monotonic() + timeout,
+               timeout=timeout, cwd=cwd, channel=channel, version=version,
+               answer=answer, say=say)
     for board in needed:
-        if board not in found:
-            continue
-        for label, port in _units(board, found[board]):
-            _flash_one(board, label, port, sketch_root, tools, runner, stamp, digests,
-                       confirm, dry_run, deadline, timeout, cwd, channel, version,
-                       answer, say)
+        if board in found:
+            _flash_board(job, board, found[board], confirm)
 
     return _summarise(answer, say)
 
 
 def _summarise(answer, say):
     """Say the per-board results and set the return code: 1 when an upload
-    failed or a tagged board's set was incomplete."""
+    failed, a unit was not flashed, or a tagged board's set was incomplete."""
     results = answer["results"]
     if results:
         say("")
@@ -661,7 +671,7 @@ def _summarise(answer, say):
         for board, status in results.items():
             say(f"  {board:<24} {status}")
     answer["returncode"] = 1 if any(
-        s == "FAILED" or s.startswith(FAULT) for s in results.values()) else 0
+        s == "FAILED" or s.startswith((FAULT, NOT_FLASHED)) for s in results.values()) else 0
     return answer
 
 
@@ -673,68 +683,143 @@ def _units(board, where):
     return [(board, where)]
 
 
-def _flash_one(board, label, port, sketch_root, tools, runner, stamp, digests,
-               confirm, dry_run, deadline, timeout, cwd, channel, version, answer, say):
-    """Compile and upload one board (or one axis board) on `port`, and record
-    it in the stamp under `label` when the upload succeeded."""
-    results = answer["results"]
+class _Job:
+    """One flash run: what every unit needs, and what an earlier unit left
+    behind. `stuck` names the Teensy unit that may be waiting in its
+    bootloader ("Temperature Controller on COM5"), or is None."""
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+        self.stuck = None
+
+
+def _hint(answer, say, hint):
+    if hint not in answer["hints"]:
+        answer["hints"].append(hint)
+    say(f"[HINT] {hint}")
+
+
+def _held_back(job, labels, why=None):
+    """Say why `labels` were not flashed and mark each NOT_FLASHED. `why`
+    None: a Teensy may be in its bootloader (`job.stuck`), and the run gets
+    the replug hint, once."""
+    stuck = why is None
+    if stuck:
+        why = TEENSY_STUCK.format(unit=job.stuck)
+    job.say(f"  Not flashed: {why}.")
+    for label in labels:
+        job.answer["results"][label] = f"{NOT_FLASHED}: {why}"
+    if stuck:
+        hint = TEENSY_STUCK_HINT.format(unit=job.stuck)
+        if hint not in job.answer["hints"]:
+            _hint(job.answer, job.say, hint)
+
+
+def _flash_board(job, board, where, confirm):
+    """Ask once, then flash each unit of `board`.
+
+    A tagged board (the XYZ Stage) is asked once for the whole set, every
+    port named, and flashed all or none: once one of its units fails, the
+    rest are not flashed and say so, and the board is reported FAILED
+    (R-6). No Teensy unit is flashed after one may have been left in its
+    bootloader (R-3), and such a board is not asked about at all."""
+    say, results = job.say, job.answer["results"]
+    units = _units(board, where)
+    tagged = isinstance(where, dict)
+    teensy = BOARDS[board]["board"] == "teensy"
     say("")
-    say(f"{label} on {port}:")
-    if confirm is not None and not confirm(label, port):
-        say("  skipped")
-        results[label] = "skipped"
+    if tagged:
+        ports = ", ".join(f"{tag} {where[tag]}" for tag in BOARDS[board]["tags"])
+        say(f"{board} on {ports} (all or none):")
+    else:
+        ports = where
+        say(f"{board} on {ports}:")
+    if teensy and job.stuck:
+        _held_back(job, [label for label, _port in units])
         return
-    ok = True
-    for argv in commands(board, port, sketch_root, tools):
+    if confirm is not None and not confirm(board, ports):
+        say("  skipped")
+        results[board] = "skipped"
+        return
+    failed = None
+    for label, port in units:
+        if tagged:
+            say("")
+            say(f"{label} on {port}:")
+        if teensy and job.stuck:
+            _held_back(job, [label])
+        elif failed:
+            _held_back(job, [label], f"{failed} failed, and {board} is flashed all or none")
+        elif not _flash_one(job, board, label, port):
+            failed = label
+    if tagged and failed:
+        results[board] = "FAILED"
+
+
+def _flash_one(job, board, label, port):
+    """Compile and upload one board (or one axis board) on `port`, and record
+    it in the stamp under `label` when the upload succeeded. -> True when it
+    did (or, in a dry run, would run).
+
+    A Teensy unit that fails once its reboot was tried sets `job.stuck`
+    (R-3). A reboot that raised counts as tried: the 134-baud open can
+    reboot the board and still raise, the board dropping off USB under the
+    port's next call."""
+    say, answer, tools = job.say, job.answer, job.tools
+    ok, rebooted = True, False
+    for argv in commands(board, port, job.sketch_root, tools):
         output = []
 
         def said(line, output=output):
             output.append(line)
             say(line)
 
-        if isinstance(argv, tuple) and argv[0] == REBOOT:
+        reboot = isinstance(argv, tuple) and argv[0] == REBOOT
+        if reboot:
             say(f"  $ (reboot the Teensy on {argv[1]} into its bootloader, "
                 f"{TEENSY_REBOOT_BAUD} baud)")
-            if dry_run:
-                continue
+        else:
+            say("  $ " + " ".join(argv))
+        if job.dry_run:
+            continue
+        # Before the reboot too: a Teensy rebooted past the deadline waits in
+        # its bootloader with no loader run for it.
+        left = job.deadline - time.monotonic()
+        if left <= 0:
+            say(f"The flash took longer than {job.timeout:g} s and was stopped.")
+            ok = False
+            break
+        if reboot:
+            rebooted = True
             try:
                 reboot_teensy(argv[1])
             except Exception as exc:
                 said(f"Could not reboot the Teensy on {argv[1]}: {exc}")
-                if TEENSY_REBOOT_HINT not in answer["hints"]:
-                    answer["hints"].append(TEENSY_REBOOT_HINT)
-                say(f"[HINT] {TEENSY_REBOOT_HINT}")
+                _hint(answer, say, TEENSY_REBOOT_HINT)
                 ok = False
                 break
             continue
-        say("  $ " + " ".join(argv))
-        if dry_run:
-            continue
-        left = deadline - time.monotonic()
-        if left <= 0:
-            say(f"The flash took longer than {timeout:g} s and was stopped.")
-            ok = False
-            break
         try:
-            code = runner(argv, tools.cwd or str(cwd or sketch_root), said,
-                          left, env=tools.env)
+            code = job.runner(argv, tools.cwd or str(job.cwd or job.sketch_root), said,
+                              left, env=tools.env)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             said(f"The flash tool could not start: {exc}")
             code = -1
         if code is None:
-            say(f"The flash took longer than {timeout:g} s and was stopped.")
+            say(f"The flash took longer than {job.timeout:g} s and was stopped.")
         if code != 0:
             hints = hints_for(output)
             if code is None and argv[0] == (tools.teensy_loader or TEENSY_LOADER):
                 hints.append(TEENSY_WAIT_HINT)
             for hint in hints:
-                if hint not in answer["hints"]:
-                    answer["hints"].append(hint)
-                say(f"[HINT] {hint}")
+                _hint(answer, say, hint)
             ok = False
             break
-    if ok and not dry_run:
+    if ok and not job.dry_run:
         # Recorded only after the upload reported success.
-        record_flash(stamp, label, digests[board], sketch_dir(board, sketch_root),
-                     port, channel=channel, version=version)
-    results[label] = ("ok (dry run)" if dry_run else "ok") if ok else "FAILED"
+        record_flash(job.stamp, label, job.digests[board], sketch_dir(board, job.sketch_root),
+                     port, channel=job.channel, version=job.version)
+    answer["results"][label] = ("ok (dry run)" if job.dry_run else "ok") if ok else "FAILED"
+    if not ok and rebooted:
+        job.stuck = f"{label} on {port}"
+    return ok
