@@ -390,6 +390,31 @@ Open, bench-only (owner):
   repeatability (within ±2 microsteps).
 - The axis tag survives an upload and a power cycle.
 - The sign of each stick and trigger per axis.
+- `PARKED_TRAVEL_MM` (0.5 mm, provisional) must be larger than each switch's
+  overtravel plus its differential travel.
+  - Park on LS1, then on LS2: jogging off must learn the right sign, and
+    jogging in must halt within 0.5 mm.
+  - Jog off each switch repeatedly and see no `EVT LIMIT`.
+  - Silence the host with the port open and see the axis disable after 10 s.
+- Stepper Probe's Mega: `int x_steps` wraps past 32767 steps. The station now
+  refuses such a Step. Changing it to `long` in the firmware is a bench change.
+
+Review of the branch (Opus, 2026-10-09), all fixed on the branch:
+- **R-1:** the µm target ignored the step-size multiplier the Mega applies, so
+  a step of 4 moved 4× the displayed distance.
+- **R-2:** a target past the 16-bit move could reverse the move.
+- **R-3, R-6:** after a failed Teensy upload, no further Teensy is flashed in
+  that run; the axis set is flashed all or none.
+- **R-4:** chatter while leaving a switch could learn its end backwards.
+- **R-5, R-7, R-8:** XYZ mode exit with a silent axis, a late Home reply, and
+  the Home all race.
+
+Owner rulings the same day:
+- A host silent 10 s after a host-timeout stop disables the driver.
+- A switch pressed with its end unknown allows only a slow jog off it
+  (0.1 mm/s, 0.5 mm budget).
+- Bench test tools live only in this repo, under `dev/`: `dev/equipment_test/`
+  and `dev/firmware_sim/`.
 
 **Stepper Probe in physical units.** Distances, step sizes and speeds are entered
 in µm and µm/s, over the same stored counts. Each count line sits beneath its
