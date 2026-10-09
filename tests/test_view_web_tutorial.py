@@ -255,6 +255,7 @@ from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from model.xyz_stage import StageMode, XyzStage
+from model.xyz_stage_mega import XyzStageMega
 from panel import Panel
 
 
@@ -422,10 +423,11 @@ DEVICE_TUTORIALS = {
                                     "Temperature Controller"),
     "rotator.json": ("Operating the Rotator", "Rotator"),
     "xyz-stage.json": ("Operating the XYZ Stage", "XYZ Stage"),
+    "xyz-stage-mega.json": ("Operating the XYZ Stage (Mega)", "XYZ Stage (Mega)"),
 }
 SHIPPED_TITLES = [title for title, _page in DEVICE_TUTORIALS.values()] + [
     "Register a sample", "Your first trial"]
-PROBES = ("Stepper Probe", "DC Probe", "Chuck Positioner", "XYZ Stage")
+PROBES = ("Stepper Probe", "DC Probe", "Chuck Positioner", "XYZ Stage", "XYZ Stage (Mega)")
 
 
 def test_the_shipped_tutorials_are_the_ones_named():
@@ -454,7 +456,8 @@ def _device_models():
             "Temperature Controller": Heater(port=None, sim=True),
             "Rotator": Rotator(port=None, sim=True),
             "XYZ Stage": XyzStage(sim=True, port_x="SIM", port_y="SIM", port_z="SIM",
-                                  gamepad=_Pad())}
+                                  gamepad=_Pad()),
+            "XYZ Stage (Mega)": XyzStageMega(sim=True, port="SIM", gamepad=_Pad())}
 
 
 def _words(schema_dict):

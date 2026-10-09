@@ -18,6 +18,16 @@ the bounded stop, the ordered close, the fault record — all from `Model`.
     jog         42-byte struct `<BBffffffffff`, START_MARKER first
     kill coils  b"k\\n"   (no firmware handles it; see can_kill_coils, D-7)
 
+**The Mega standard** (docs/rebuild/MEGA_STANDARD.md, 2026-10-09). A board
+may list capabilities in its identity answer (`DEV: m caps=ext1,...`). Only
+a board whose caps include `ext1` ever receives a `#` line: on link-up
+`#INFO`, `#LOG 2` and `#HOSTTIMEOUT 1000`, then `#HB` every 250 ms; Zero and
+Home per axis when the caps list `home`. Its `#` lines are routed: `#OK` /
+`#ERR` answer the pending request, `#EVT` is logged and LIMIT, FAULT,
+HOME/HOMED and REFUSED are acted on. A board that lists nothing (every
+board built before the standard, `DEV: s`) gets exactly the bytes and the
+schema it always did.
+
 `tests/test_probe_frames.py` drives the *old* classes in simulator
 mode and asserts these are byte-identical, per probe type, so a refactor here
 cannot quietly change what the boards receive.
@@ -27,6 +37,7 @@ goes out on the priority lane and never waits on a blocking lock, and every
 motion write carries `abort_if=self._estop.is_set` so the latch is checked
 inside the transport's lock rather than before it.
 """
+import collections
 import enum
 import math
 import struct
@@ -42,7 +53,7 @@ from model.gamepad_input import GamepadInput
 from model.idle import IdleInterlock
 from model.sample_frame import UM_PER_COUNT
 from param import Param
-from result import Refused
+from result import NeedsConfirm, Refused
 
 
 class ProbeMode(enum.Enum):
@@ -116,6 +127,78 @@ _PCT_OF = {"full_speed": "full_speed_pct", "man_full_speed": "man_full_speed_pct
 PACKET_FORMAT = "<BBffffffffff"
 START_MARKER = 0xAA
 
+#: The axes, in the order the extension channel names them.
+AXES = ("X", "Y", "Z")
+#: The capability that opens the `#` extension channel, protocol 1
+#: (MEGA_STANDARD section 2). No `#` byte goes to a board without it.
+EXT = "ext1"
+#: The features the schema offers when the caps list them (section 6).
+EXT_FEATURES = ("home", "limits")
+
+
+def caps_of(identity):
+    """The capability tokens of an identity answer (the text after `DEV:`).
+
+    `m caps=ext1,log` -> frozenset({"ext1", "log"}); a board that lists none
+    (`s`, `x X`) -> frozenset(); no answer yet (None, "") -> None, which is
+    "unknown", never "has none"."""
+    text = str(identity or "").strip()
+    if not text:
+        return None
+    for word in text.split()[1:]:
+        key, eq, value = word.partition("=")
+        if eq and key.lower() == "caps":
+            return frozenset(t.strip().lower() for t in value.split(",") if t.strip())
+    return frozenset()
+
+
+class ExtReply:
+    """The answer to one `#` command (`#OK <CMD> k=v ...` / `#ERR <CMD>
+    reason`), or the lack of one."""
+
+    __slots__ = ("command", "ok", "fields", "reason", "line", "timed_out", "aborted")
+
+    def __init__(self, command, ok, *, fields=None, reason="", line="",
+                 timed_out=False, aborted=False):
+        self.command = command
+        self.ok = bool(ok)
+        self.fields = dict(fields or {})
+        self.reason = reason
+        self.line = line
+        self.timed_out = timed_out
+        self.aborted = aborted
+
+    @property
+    def why(self):
+        """The reason in a few words, for an operator sentence."""
+        if self.ok:
+            return "ok"
+        if self.aborted:
+            return "not sent: it is stopped"
+        if self.timed_out:
+            return "no reply"
+        return self.reason or "refused"
+
+    def __repr__(self):
+        return f"<ExtReply {self.line or self.command} ok={self.ok}>"
+
+
+class _ExtWaiter:
+    __slots__ = ("command", "event", "reply")
+
+    def __init__(self, command):
+        self.command = command
+        self.event = threading.Event()
+        self.reply = None
+
+
+#: The board's reason words for a refused HOME, in an operator's words.
+_HOME_REASONS = {
+    "no-home-sensor": "No home sensor on {axis}",
+    "not-enabled": "its drives are not enabled",
+    "busy": "the board is still moving",
+}
+
 
 class Probe(GamepadInput, IdleInterlock, Model):
     """A three-axis probe: one SerialPort, one Gamepad, one mode."""
@@ -129,6 +212,21 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: stored count Param -> the physical view the operator edits instead
     #: (the Stepper Probe's um fields). The view carries the gate.
     VIEW_OF = {}
+    #: The caps the SCHEMA assumes while the board has not answered yet (a
+    #: Web card is built from the schema before the handshake ends). Never
+    #: the wire's: no `#` byte goes out on an assumption. The base assumes
+    #: none, so a board is today's until it says otherwise.
+    ASSUMED_CAPS = frozenset()
+
+    #: The extension channel (MEGA_STANDARD section 3), for ext1 boards only:
+    #: the log level and host timeout set at every link-up, the heartbeat
+    #: (four inside the 1 s window), and how long a `#` request waits.
+    EXT_LOG_LEVEL = 2
+    EXT_HOST_TIMEOUT_MS = 1000
+    EXT_HEARTBEAT_INTERVAL = 0.25
+    EXT_REPLY_TIMEOUT = 0.5
+    #: After the board's own ZERO or HOMED, a jump to 0 is not a reset (L6).
+    EXT_JUMP_GRACE = 0.5
 
     #: All three probe sketches run `Serial.begin(500000)`; SerialPort's
     #: default is the heater's 115200, which the boards read as garbage.
@@ -227,6 +325,21 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._outbox = threading.local()
         self._param_store = {}
         self._gates = {}
+        # The extension channel's state (ext1 boards only; inert otherwise).
+        self._ext_lock = threading.Lock()
+        self._ext_waiters = {}            # COMMAND -> [_ExtWaiter]
+        self._ext_replies = {}            # COMMAND -> latest ExtReply this link
+        self._ext_events = collections.deque(maxlen=256)
+        self._ext_epoch = None            # the link epoch configured
+        self._ext_beat_at = 0.0
+        self._ext_info = {}               # the latest #OK INFO fields
+        self._ext_warned = set()
+        self._homing = {axis: None for axis in AXES}   # None | starting | running
+        self._home_phase = {axis: "" for axis in AXES}
+        self._homed = {axis: False for axis in AXES}
+        self._last_limit = {axis: "" for axis in AXES}
+        self._limits_seen = set()
+        self._jump_ok_until = 0.0
         super().__init__()
 
         self.port = self._build_port(port, sim)
@@ -329,6 +442,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """
         if self._mode is not ProbeMode.AUTO:
             return False
+        if any(self._homing.values()):
+            return True               # a HOME this model started (ext1)
         deadline = self._moving_deadline
         return deadline is not None and time.monotonic() < deadline
 
@@ -438,6 +553,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
                              f"report for {silent_for:.0f} s. Reset the board "
                              "(or cut its power and reconnect it), then try "
                              "again.")
+            if self._ext_on:
+                self._check_ext_ready()
 
             self._energize(reason)
             if target is ProbeMode.MANUAL and previous is not ProbeMode.MANUAL:
@@ -460,6 +577,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
                              "disabled. Enter the mode again.")
             self._mode = target
             self._moving_deadline = None
+            self._clear_ext_motion()
             self._start_interlock()
             self._touch()
             events.debug("Mode", f"{previous.value} -> {target.value} ({reason}) "
@@ -509,6 +627,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """Stop motion, then de-energize. Each step isolated from the last."""
         previous = self._mode
         self._moving_deadline = None
+        self._clear_ext_motion()
         self._stop_interlock()
         try:
             self._send_zero_frame("leaving " + previous.value)
@@ -556,6 +675,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         previous = self._mode
         self._mode = ProbeMode.FAULT
         self._moving_deadline = None
+        self._clear_ext_motion()
         events.debug("Mode", f"{previous.value} -> fault ({reason}) "
                      f"at {self._position}",
                      source=self.NAME)
@@ -591,6 +711,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         trip, self._silent_trip = self._silent_trip, None
         self._halt_generation += 1
         self._moving_deadline = None
+        self._clear_ext_motion()
         self._stop_interlock()
         landed = {}
         for label, payload in (("zero", self._zero_frame()), ("d", b"d"),
@@ -656,6 +777,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         with self._mode_lock:
             previous = self._mode
             self._moving_deadline = None
+            self._clear_ext_motion()
             self._stop_interlock()
             if previous is not ProbeMode.FAULT:
                 self._mode = ProbeMode.DISABLED
@@ -885,6 +1007,13 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # loop, or positions freeze silently for the rest of the run.
                 events.debug("Sample Failed", str(exc), source=self.NAME,
                              exception=exc, every=5.0)
+            # The `#` channel (ext1 boards only): configure on link-up, act
+            # on what the board reported, keep its host timeout fed.
+            try:
+                self._service_ext()
+            except Exception as exc:
+                events.debug("Extension Failed", repr(exc), source=self.NAME,
+                             exception=exc, every=5.0)
             # Outside the try: a read that raises (the port went away) is
             # silence too, and the watchdog must still see it.
             try:
@@ -964,6 +1093,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
             line = line.strip()
             if not line or line.startswith("DEV:"):
                 continue   # the handshake's answer is not a dropped packet
+            if line.startswith("#") and self._ext_on:
+                self._on_ext_line(line)
+                continue
             if not line.startswith("POS:"):
                 if line.isascii() and line.isprintable():
                     # The board's own words (a boot banner, a log line): kept
@@ -1049,6 +1181,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """L6: warn when the position snaps to zero while enabled. Warning
         only: the mode is not touched (a false positive mid-move would be a
         stop the operator did not ask for)."""
+        if time.monotonic() < self._jump_ok_until:
+            return     # the board's own ZERO or HOMED: a jump the operator asked for
         if (tuple(position) != (0, 0, 0) or previous_time is None
                 or self._mode is ProbeMode.DISABLED
                 or now - previous_time > self.RESET_WINDOW
@@ -1198,6 +1332,517 @@ class Probe(GamepadInput, IdleInterlock, Model):
     def _idle_nothing_text(self):
         return f"Nothing to extend: {self.NAME} is not in a mode."
 
+
+    # -- the extension channel (MEGA_STANDARD, ext1 boards only) ------------
+    @property
+    def caps(self):
+        """The board's capability tokens, from its identity answer: a
+        frozenset (empty for a board that lists none), or None while it
+        has not answered."""
+        return caps_of(getattr(getattr(self, "port", None), "identity", None))
+
+    @property
+    def _ext_on(self):
+        """The board listed `ext1`: the only condition for a `#` byte."""
+        caps = self.caps
+        return bool(caps) and EXT in caps
+
+    def _schema_caps(self):
+        """The caps the schema draws from: the board's, or, before it has
+        answered, the class's assumption (never used for the wire)."""
+        caps = self.caps
+        return self.ASSUMED_CAPS if caps is None else caps
+
+    @property
+    def _ext_shown(self):
+        return EXT in self._schema_caps()
+
+    def _features_shown(self):
+        caps = self._schema_caps()
+        if EXT not in caps:
+            return frozenset()
+        return frozenset(f for f in EXT_FEATURES if f in caps)
+
+    def _with_ext(self, built):
+        """The schema, plus the standard features the caps list (section 6).
+        A board without ext1 gets `built` back untouched: today's schema."""
+        if not self._ext_shown:
+            return built
+        features = self._features_shown()
+        sections = built["sections"]
+        if "home" in features:
+            elements = [sch.button(f"Zero {axis} here", "zero_axis", args=(axis,),
+                                   disabled_when=("latched", "fault"))
+                        for axis in AXES]
+            for axis in AXES:
+                home = sch.button(f"Home {axis}", "home_axis", args=(axis,),
+                                  disabled_when=("manual", "latched", "fault"))
+                home["enabled_by"] = f"{axis.lower()}_home_ready"
+                home["enabled_by_reason"] = f"No home sensor on {axis}"
+                elements.append(home)
+            elements.append(sch.readonly("Homed:", "homed_text"))
+            section = sch.section("Zero and home", *elements, tier=2,
+                                  disclosure=f"Configure {self.NAME}")
+            at = next((i for i, s in enumerate(sections) if s["title"] == "Configuration"),
+                      len(sections) - 1)
+            sections.insert(at, section)
+        diagnostics = [sch.readonly("Board:", "board_text")]
+        if "limits" in features:
+            diagnostics.append(sch.readonly("Limit switches:", "limits_text"))
+        if "home" in features:
+            diagnostics.append(sch.readonly("Homing:", "home_text"))
+        found = next((s for s in sections if s["title"] == "Diagnostics"), None)
+        if found is None:
+            sections.insert(len(sections) - 1, sch.section(
+                "Diagnostics", *diagnostics, tier=3, disclosure="Diagnostics"))
+        else:
+            found["elements"].extend(diagnostics)
+        return built
+
+    def _clear_ext_motion(self):
+        """Nothing the model started on the board is in flight any more (a
+        stop, a mode change, a fault): a late HOME FAIL is not news."""
+        for axis in AXES:
+            self._homing[axis] = None
+
+    def _service_ext(self):
+        """The sampler's turn at the `#` channel: configure a link that came
+        up, act on what the board reported, keep its host timeout fed."""
+        if not self._ext_on or not self._link_up:
+            return
+        if self._ext_epoch != self._position_epoch:
+            self._ext_link_up()
+        while self._ext_events:
+            self._on_ext_event(self._ext_events.popleft())
+        now = time.monotonic()
+        if now - self._ext_beat_at >= self.EXT_HEARTBEAT_INTERVAL:
+            self._ext_beat_at = now
+            self._ext_send("HB")
+
+    def _ext_link_up(self):
+        """Once per link-up (a reconnected board may have rebooted and
+        forgotten everything): what the last board said is forgotten, then
+        INFO, the log level and the host timeout, in the standard's order."""
+        self._ext_epoch = self._position_epoch
+        with self._ext_lock:
+            self._ext_replies.clear()
+        self._ext_events.clear()
+        self._ext_info = {}
+        self._ext_warned.clear()
+        self._limits_seen.clear()
+        for axis in AXES:
+            self._homing[axis] = None
+            self._home_phase[axis] = ""
+            self._homed[axis] = False
+            self._last_limit[axis] = ""
+        for command in ("INFO", f"LOG {self.EXT_LOG_LEVEL}",
+                        f"HOSTTIMEOUT {self.EXT_HOST_TIMEOUT_MS}"):
+            if not self._ext_send(command):
+                self._ext_epoch = None          # try again on the next pass
+                return
+        self._ext_beat_at = time.monotonic()
+        events.debug("Board Configured", f"caps={sorted(self.caps or ())} link epoch "
+                     f"{self._position_epoch}", source=self.NAME)
+
+    def _ext_line(self, command):
+        return f"#{command}\n".encode("ascii")
+
+    def _ext_send(self, command):
+        """One `#` line on the ordinary lane, not waiting for its reply.
+        -> True when written. Never to a board without ext1."""
+        if self.port is None or not self._ext_on:
+            return False
+        try:
+            return bool(self.port.write(self._ext_line(command)))
+        except serial_device.TransportError as exc:
+            events.debug("Extension Not Sent", f"{command!r}: {exc}",
+                         source=self.NAME, every=5.0)
+            return False
+
+    def _ext_reply(self, command):
+        """The latest reply to `command` on this link, or None."""
+        with self._ext_lock:
+            return self._ext_replies.get(str(command).upper())
+
+    def _ext_request(self, command, *, abort_if=None, timeout=None):
+        """Send one `#` command and wait for its one reply. -> ExtReply.
+        Never raises for a refusal, a silent board, an abort or a failed
+        write (the reply says which). The sampler reads the reply; with
+        no sampler running, the wait reads the link itself."""
+        word = command.split()[0].upper()
+        if self.port is None or not self._ext_on:
+            return ExtReply(word, False, reason="the board has no extension channel")
+        waiter = _ExtWaiter(word)
+        with self._ext_lock:
+            self._ext_waiters.setdefault(word, []).append(waiter)
+        try:
+            written = self.port.write(self._ext_line(command), abort_if=abort_if)
+        except serial_device.TransportError as exc:
+            self._ext_cancel(waiter)
+            return ExtReply(word, False, reason=f"the link failed: {exc}")
+        if not written:
+            self._ext_cancel(waiter)
+            return ExtReply(word, False, aborted=True)
+        budget = self.EXT_REPLY_TIMEOUT if timeout is None else timeout
+        deadline = time.monotonic() + budget
+        while not waiter.event.wait(0.005):
+            if time.monotonic() >= deadline:
+                self._ext_cancel(waiter)
+                if waiter.event.is_set():
+                    return waiter.reply
+                return ExtReply(word, False, timed_out=True)
+            sampler = self._thread("sample")
+            if sampler is None or not sampler.is_alive():
+                try:
+                    position = self._read_position()
+                    if position is not None:
+                        self._note_position(position)
+                except Exception as exc:
+                    events.debug("Read Failed", repr(exc), source=self.NAME,
+                                 every=5.0)
+        return waiter.reply
+
+    def _ext_cancel(self, waiter):
+        with self._ext_lock:
+            pending = self._ext_waiters.get(waiter.command, [])
+            if waiter in pending:
+                pending.remove(waiter)
+
+    def _on_ext_line(self, line):
+        """One `#` line from the board, in wire order (the sampler's read).
+        A reply wakes its request now; an event waits for `_service_ext`."""
+        head, _, rest = line[1:].strip().partition(" ")
+        head = head.upper()
+        if head in ("OK", "ERR"):
+            words = rest.split()
+            command = words[0].upper() if words else ""
+            if head == "OK":
+                found = dict(w.split("=", 1) for w in words[1:] if "=" in w)
+                reply = ExtReply(command, True, fields=found, line=line)
+            else:
+                reply = ExtReply(command, False, reason=" ".join(words[1:]), line=line)
+            with self._ext_lock:
+                self._ext_replies[command] = reply
+                waiting = self._ext_waiters.pop(command, [])
+            if command != "HB":
+                events.debug("Board Reply", line[:200], source=self.NAME)
+            if command == "INFO" and reply.ok:
+                self._take_info(reply.fields)
+            if not reply.ok and command in ("INFO", "LOG", "HOSTTIMEOUT"):
+                self._warn_once(command, f"The {self.NAME} refused #{command} "
+                                f"({reply.reason or 'no reason'}).")
+            for waiter in waiting:
+                waiter.reply = reply
+                waiter.event.set()
+        elif head == "EVT":
+            events.debug("Board Event", rest[:200], source=self.NAME)
+            self._ext_events.append(rest)
+        else:
+            events.debug("Board Says", line[:200], source=self.NAME)
+
+    def _warn_once(self, key, text):
+        if key in self._ext_warned:
+            return
+        self._ext_warned.add(key)
+        events.warn("Board Refused Setup", text, source=self.NAME)
+
+    def _take_info(self, fields):
+        self._ext_info = dict(fields)
+        for axis in AXES:
+            homed = fields.get(f"{axis.lower()}_homed")
+            if homed in ("0", "1"):
+                self._homed[axis] = homed == "1"
+
+    def _check_ext_ready(self):
+        """Before anything is enabled on an ext1 board: its host timeout is
+        armed, so a station that goes quiet stops it (section 4). Asked
+        again here when the link-up's answer has not arrived."""
+        reply = self._ext_reply("HOSTTIMEOUT")
+        if reply is None or not reply.ok:
+            reply = self._ext_request(f"HOSTTIMEOUT {self.EXT_HOST_TIMEOUT_MS}")
+        if not reply.ok:
+            self._refuse(f"The {self.NAME} did not accept HOSTTIMEOUT "
+                         f"{self.EXT_HOST_TIMEOUT_MS} ({reply.why}), so it would not "
+                         "stop itself if the station went quiet. Reset the board, "
+                         "then try again.")
+
+    # -- what the board reports --------------------------------------------
+    def _on_ext_event(self, text):
+        """One `#EVT` line (without the prefix), already logged as the board
+        said it. The ones the station acts on are also said to the operator."""
+        words = text.split()
+        kind = words[0].upper() if words else ""
+        found = dict(w.split("=", 1) for w in words[1:] if "=" in w)
+        bare = [w for w in words[1:] if "=" not in w]
+        axis = next((w.upper() for w in bare if w.upper() in AXES), None)
+        if kind == "FAULT":
+            what = next((w for w in bare if w.upper() not in AXES), "no reason given")
+            if axis:
+                self._homing[axis] = None
+            self._board_fault(what, axis)
+        elif kind == "LIMIT" and axis:
+            switch = next((w for w in bare if w.lower().startswith("ls")), "a switch")
+            self._board_limit(axis, switch.upper(), found)
+        elif kind == "HOMED" and axis:
+            self._homing[axis] = None
+            self._homed[axis] = True
+            self._home_phase[axis] = "homed"
+            # Its jump to 0 is neither a reset (L6) nor a move to wait out.
+            self._jump_ok_until = time.monotonic() + self.EXT_JUMP_GRACE
+            if not any(self._homing.values()):
+                self._moving_deadline = None
+            events.info("Axis Homed", f"Axis {axis} of the {self.NAME} is homed (its "
+                        f"reference edge was at {found.get('edge', '?')} steps).",
+                        source=self.NAME)
+        elif kind == "HOME" and axis and bare and bare[0].upper() == "FAIL":
+            reason = found.get("reason", "no reason given")
+            ours = self._homing[axis] is not None
+            self._homing[axis] = None
+            self._home_phase[axis] = f"failed ({reason})"
+            if ours:
+                events.warn("Home Failed", f"Axis {axis} of the {self.NAME} did not "
+                            f"home ({reason}). It stopped and is holding.",
+                            source=self.NAME)
+        elif kind == "HOME" and axis and "phase" in found:
+            self._home_phase[axis] = found["phase"]
+            if self._homing[axis] == "starting":
+                self._homing[axis] = "running"
+        elif kind == "REFUSED":
+            reason = found.get("reason", "no reason given")
+            if self._mode is ProbeMode.AUTO:
+                self._moving_deadline = None     # the frame did not run
+            where = f"axis {axis}" if axis else "an axis"
+            events.warn("Move Refused", f"The {self.NAME} refused to move {where} "
+                        f"({reason}), so nothing moved.", source=self.NAME)
+
+    def _board_fault(self, what, axis):
+        """A FAULT latches the stop, as on the XYZ Stage: a person looks
+        before anything moves again."""
+        where = f" on axis {axis}" if axis else ""
+        if self._mode is ProbeMode.DISABLED or self._estop.is_set():
+            events.warn("Board Fault", f"The {self.NAME} reported {what}{where} while "
+                        "it was not running. Check it before you enable it.",
+                        source=self.NAME)
+            return
+        events.debug("Board Fault", f"{what}{where} in {self.mode_name}; stopping",
+                     source=self.NAME)
+        self.estop()
+        check = f"axis {axis}" if axis else "the board"
+        events.error("Board Fault", f"The {self.NAME} reported a fault ({what}{where}), "
+                     f"so the station stopped it. Check {check}, then clear the stop.",
+                     source=self.NAME)
+
+    def _board_limit(self, axis, switch, found):
+        """The board's interlock already stopped that axis. A Step must not
+        go on along the others: it is stopped too (the XYZ Stage's rule)."""
+        if found.get("seen") == "1":
+            self._limits_seen.add(axis)
+            events.info("Limit Switch Seen", f"Axis {axis} of the {self.NAME} has a "
+                        f"limit switch after all ({switch} tripped): its interlock is "
+                        "on for this session.", source=self.NAME)
+            self._ext_send("INFO")
+            return
+        position = found.get("pos", "?")
+        self._last_limit[axis] = f"{switch} at {position}"
+        if self._homing[axis] is not None:
+            events.debug("Limit", f"axis {axis} {switch} at {position} while homing",
+                         source=self.NAME)
+            return
+        stopped = ""
+        deadline = self._moving_deadline       # a Step in flight: its own clock
+        if (self._mode is ProbeMode.AUTO and deadline is not None
+                and time.monotonic() < deadline):
+            self._moving_deadline = None
+            try:
+                self._send_zero_frame(f"limit {switch} on axis {axis}")
+                stopped = " The Step was stopped there, on every axis."
+            except Exception as exc:
+                events.debug("Stop Frame Failed", repr(exc), source=self.NAME,
+                             exception=exc)
+        extra = ""
+        if found.get("learned") == "travel":
+            extra = " It learned which end that switch guards from the travel."
+        elif found.get("pressed_both_ways") == "1":
+            extra = " The switch reads pressed both ways: check it."
+        events.warn("Limit Reached", f"Axis {axis} of the {self.NAME} reached its "
+                    f"limit switch {switch} at {position} steps and stopped.{stopped}"
+                    f"{extra}", source=self.NAME)
+        self._ext_send("INFO")                  # its learned ends
+
+    # -- zero and home -----------------------------------------------------
+    def _ext_axis(self, axis):
+        name = str(axis).strip().upper()
+        if name not in AXES:
+            self._refuse(f"{axis} is not an axis of the {self.NAME}.")
+        return name
+
+    def _require_ext(self, feature, what):
+        caps = self.caps
+        if caps is None:
+            self._refuse(f"{what} is not available yet: the {self.NAME} has not "
+                         "said what it can do. Wait for its link, then try again.")
+        if EXT not in caps or feature not in caps:
+            self._refuse(f"{what} is not available: this {self.NAME}'s firmware "
+                         f"has no {feature.upper()}.")
+
+    def _hardware(self, axis):
+        """What INFO said about one axis: {tmc, limits, home} as True/False
+        (None before INFO) and the learned ends of LS1 and LS2."""
+        info, low = self._ext_info, axis.lower()
+
+        def flag(key):
+            value = info.get(f"{low}_{key}")
+            return None if value is None else value == "1"
+
+        def end(key):
+            try:
+                return int(info[f"{low}_{key}"])
+            except (KeyError, ValueError):
+                return None
+
+        limits = flag("limits")
+        if axis in self._limits_seen:
+            limits = True
+        return {"tmc": flag("tmc"), "limits": limits, "home": flag("home"),
+                "ls1_end": end("ls1_end"), "ls2_end": end("ls2_end")}
+
+    def _home_ready(self, axis):
+        """False when the board's caps lack HOME or INFO says the axis has no
+        home sensor; True otherwise (before INFO, the board decides)."""
+        caps = self.caps
+        if caps is not None and "home" not in caps:
+            return False
+        return self._hardware(axis)["home"] is not False
+
+    def _axis_busy(self, axis):
+        """Homing, a Step in flight, or jogging in manual. The board refuses
+        a ZERO of a moving axis itself (`busy`); this says so first."""
+        jogging = self.is_manual and abs(self._velocity[AXES.index(axis)]) > 0.0
+        return bool(self._homing[axis] or self.is_moving or jogging)
+
+    def _auto_motion_not_allowed(self):
+        """The in-lock gate of motion the host starts in AUTO (a HOME):
+        latched, or no longer in AUTO."""
+        return self._estop.is_set() or self._mode is not ProbeMode.AUTO
+
+    def zero_axis(self, axis, confirmed=False):
+        """Zero here (`#ZERO`): this axis reads 0 where it stands. A homed
+        axis asks first, since its home reference is replaced."""
+        axis = self._ext_axis(axis)
+        self._require_ext("home", f"Zero {axis}")
+        self._guard(f"Zero {axis}")
+        if self._axis_busy(axis):
+            self._refuse(f"Axis {axis} is moving. Wait for it to stop, then zero it.")
+        if self._homed[axis] and not confirmed:
+            raise NeedsConfirm(f"Zero axis {axis} here?\n\nAxis {axis} is homed; "
+                               "zeroing here replaces its home reference with this "
+                               "position.", "zero_axis", args=(axis,))
+        # Checked again inside the write lock, so a stop or a move that
+        # starts after the checks above never meets a ZERO.
+        reply = self._ext_request(f"ZERO {axis}", abort_if=lambda: (
+            self._estop.is_set() or self._axis_busy(axis)))
+        if not reply.ok:
+            if reply.aborted and not self._estop.is_set():
+                self._refuse(f"Axis {axis} is moving. Wait for it to stop, then "
+                             "zero it.")
+            self._refuse(f"Axis {axis} did not zero ({reply.why}).")
+        self._homed[axis] = False
+        # Its jump to 0 is neither a reset (L6) nor a move to wait out.
+        self._jump_ok_until = time.monotonic() + self.EXT_JUMP_GRACE
+        self._moving_deadline = None
+        events.info("Axis Zeroed", f"Axis {axis} of the {self.NAME} reads 0 here now.",
+                    source=self.NAME)
+        return 0
+
+    def home_axis(self, axis):
+        """Home one axis (`#HOME`): the board's sequence against its home
+        sensor. Enters AUTO (homing is motion the host started); the board
+        reports the phases, then HOMED or HOME FAIL."""
+        axis = self._ext_axis(axis)
+        what = f"Home {axis}"
+        self._require_ext("home", what)
+        self._guard(what)
+        if not self._home_ready(axis):
+            self._refuse(f"{what} is not available: No home sensor on {axis}.")
+        if self.is_manual:
+            self._refuse(f"{what} is not available in manual mode. Leave manual "
+                         "mode first.")
+        if self.is_moving:
+            self._refuse("The stage is still moving. Wait for it to stop, then home.")
+        self._set_mode(ProbeMode.AUTO, f"home {axis}", quiesce=False)
+        self._homing[axis] = "starting"
+        self._home_phase[axis] = "starting"
+        reply = self._ext_request(f"HOME {axis}", abort_if=self._auto_motion_not_allowed)
+        if reply.ok:
+            self._touch_activity()
+            return "started"
+        self._homing[axis] = None
+        self._home_phase[axis] = f"not started ({reply.why})"
+        if reply.aborted:                       # never written: nothing to stop
+            if not self._estop.is_set():
+                self._refuse(f"Axis {axis} did not start homing: the {self.NAME} "
+                             "left autonomous mode first.")
+            self._refuse(f"Axis {axis} would not start homing ({reply.why}).")
+        if reply.timed_out:
+            # Written, and no answer is no proof it is not homing: stop it.
+            try:
+                self._send_zero_frame(f"HOME {axis} unanswered")
+            except Exception as exc:
+                events.debug("Stop Frame Failed", repr(exc), source=self.NAME,
+                             exception=exc)
+            self._refuse(f"Axis {axis} did not answer HOME, so the {self.NAME} was "
+                         "stopped.")
+        words = _HOME_REASONS.get(reply.reason, reply.reason or "refused")
+        self._refuse(f"Axis {axis} would not start homing: {words.format(axis=axis)}.")
+
+    # -- what the page reads -----------------------------------------------
+    @property
+    def homed_text(self):
+        return ", ".join(f"{axis} {'yes' if self._homed[axis] else 'no'}"
+                         for axis in AXES)
+
+    @property
+    def home_text(self):
+        return "; ".join(f"{axis} {self._home_phase[axis] or '-'}" for axis in AXES)
+
+    @property
+    def limits_text(self):
+        def end(value):
+            return {1: "+ end", -1: "- end"}.get(value, "end unknown")
+
+        parts = []
+        for axis in AXES:
+            hw = self._hardware(axis)
+            if hw["limits"] is None:
+                text = f"{axis} ?"
+            elif not hw["limits"]:
+                text = f"{axis} none (no interlock)"
+            else:
+                text = f"{axis} LS1 {end(hw['ls1_end'])}, LS2 {end(hw['ls2_end'])}"
+            if self._last_limit[axis]:
+                text += f" (last: {self._last_limit[axis]})"
+            parts.append(text)
+        return "; ".join(parts)
+
+    @property
+    def board_text(self):
+        caps = self.caps
+        if caps is None:
+            return "waiting for the board to say what it is"
+        if EXT not in caps:
+            return "the frame protocol only (no extension channel)"
+        if not self._ext_info:
+            return f"caps {', '.join(sorted(caps))}; waiting for INFO"
+        parts = []
+        for axis in AXES:
+            hw = self._hardware(axis)
+            words = ["driver ok" if hw["tmc"] else "driver missing (will not enable)",
+                     "limit switches" if hw["limits"] else "no limit switches (no interlock)",
+                     "home sensor" if hw["home"] else "no home sensor"]
+            parts.append(f"{axis}: {', '.join(words)}")
+        return (f"{self._ext_info.get('fw', '?')} proto {self._ext_info.get('proto', '?')}; "
+                + "; ".join(parts))
+
     # -- params -----------------------------------------------------------
     def _number(self, name):
         """A motion parameter coerced against *this class's* declaration.
@@ -1283,7 +1928,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         # systems (a Step's distance and a D-pad press), so they stay in
         # Configure. Only the grouping moved: every element, gate and
         # command is the one it was.
-        return sch.schema(
+        return self._with_ext(sch.schema(
             sch.section(
                 "Position",
                 sch.readonly("X:", "position_x", rail=True, unit="steps"),
@@ -1369,7 +2014,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 tier=3, disclosure="Diagnostics",
             ),
             self._safety_section(),
-        )
+        ))
 
     #: Every editable field, in the order the D-5 command set travels.
     #: DCProbe adds two. The two speeds (with a slider) and the Step's
@@ -1437,6 +2082,21 @@ class Probe(GamepadInput, IdleInterlock, Model):
             "can_kill_coils": self.can_kill_coils,
             "board_silent": self.board_silent,
         })
+        if self._ext_shown:
+            caps = self.caps
+            features = self._features_shown()
+            if "home" in features:
+                # The Home buttons' `enabled_by` booleans (a view greys them
+                # from these; the Panel refuses with the element's reason).
+                for axis in AXES:
+                    snapshot["values"][f"{axis.lower()}_home_ready"] = self._home_ready(axis)
+            snapshot["board"] = {
+                "caps": sorted(caps) if caps is not None else None,
+                "fw": self._ext_info.get("fw"), "proto": self._ext_info.get("proto"),
+                "axes": {axis: self._hardware(axis) for axis in AXES},
+                "homed": dict(self._homed),
+                "homing": dict(self._homing),
+            }
         return snapshot
 
     # -- refusals ---------------------------------------------------------
@@ -1469,7 +2129,11 @@ for _name in Probe.PARAMS:
         setattr(Probe, _name, Probe._gated_param(_name))
 for _steps, _pct in _PCT_OF.items():
     setattr(Probe, _pct, _pct_property(_steps))
-del _name, _steps, _pct
+for _axis in AXES:
+    # The Home buttons' `enabled_by` (ext1 boards with HOME).
+    setattr(Probe, f"{_axis.lower()}_home_ready",
+            property(lambda self, _a=_axis: self._home_ready(_a)))
+del _name, _steps, _pct, _axis
 
 
 #: um per count of the Stepper Probe's axes: the repo's one constant
@@ -1681,7 +2345,7 @@ class StepperProbe(Probe):
                     sch.readonly(small_text, counts, secondary=True,
                                  unit=small_unit)]
 
-        return sch.schema(
+        return self._with_ext(sch.schema(
             sch.section(
                 "Position",
                 *[e for a in "xyz" for e in position(a)],
@@ -1737,7 +2401,7 @@ class StepperProbe(Probe):
                 tier=3, disclosure="Diagnostics",
             ),
             self._safety_section(),
-        )
+        ))
 
 
 for _axis, _index in (("x", 0), ("y", 1), ("z", 2)):

@@ -11,7 +11,7 @@
 #      piece fails by name.
 #   1. station-web.exe: /api/state 200; / is the bundle's index.html;
 #      /api/theme.css; every Setup row ticked and set to SIM; Launch builds
-#      seven models; /api/estop_all latches every one; Setup's station_version
+#      eight models; /api/estop_all latches every one; Setup's station_version
 #      is VERSION's tag and build date; /api/quit exits 0 within 5 s; the
 #      run's log names the stop, the quit and SDL teardown.
 param([string]$BundleDir = "")
@@ -26,14 +26,14 @@ $DataRoot = if ($env:TRANSFER_STAGE_DATA_ROOT) { $env:TRANSFER_STAGE_DATA_ROOT }
 $LogDir = Join-Path $DataRoot "logs"
 $Out = Join-Path ([IO.Path]::GetTempPath()) ("station-smoke-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $Out, $LogDir | Out-Null
-$PortRows = @("stepper_probe", "dc_probe", "chuck_positioner", "temperature_controller", "rotator", "xyz_stage")
+$PortRows = @("stepper_probe", "dc_probe", "chuck_positioner", "temperature_controller", "rotator", "xyz_stage", "xyz_stage_mega")
 # rgb_analysis (was red_percent) has no row since 2026-09-28: it launches with the Transfer Map.
 $AllRows = $PortRows + @("transfer_map", "sample_db")
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
-$Sketches = @("stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller", "xyz_stage_axis")
+$Sketches = @("stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller", "xyz_stage_axis", "xyz_stage_mega")
 # The stable app's sketches (controller.flashing.STABLE_BOARDS): the XYZ
-# Stage is station-only.
+# Stage and the XYZ Stage (Mega) are station-only.
 $StableSketches = @("stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller")
 $Cores = @("arduino:avr", "teensy:avr")
 $script:Failed = 0
@@ -166,14 +166,14 @@ if (-not $up) {
     }
     $r = Run-Setup "launch" @()
     Write-Host "     launch: $($r.value -join ', ')"
-    Check "Launch built all seven models" ($r.status -eq "ok")
+    Check "Launch built all eight models" ($r.status -eq "ok")
     $state = $null
     for ($i = 0; $i -lt 20; $i++) {
         $state = Invoke-RestMethod -Uri "$Base/api/state" -TimeoutSec 10
-        if (@($state.models.PSObject.Properties).Count -ge 7) { break }
+        if (@($state.models.PSObject.Properties).Count -ge 8) { break }
         Start-Sleep -Milliseconds 500
     }
-    Check "/api/state shows seven models" (@($state.models.PSObject.Properties).Count -ge 7)
+    Check "/api/state shows eight models" (@($state.models.PSObject.Properties).Count -ge 8)
 
     $r = Post-Route "/api/estop_all" @{}
     Check "estop_all answered and latched" ($r.is_estopped -eq $true)
