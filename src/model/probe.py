@@ -958,12 +958,19 @@ class Probe(GamepadInput, IdleInterlock, Model):
             if not line:
                 break
             if isinstance(line, bytes):
-                line = line.decode("utf-8", errors="ignore")
+                # "replace", not "ignore": a stray 0xFF must stay visible as
+                # garble, not vanish and leave a clean-looking line.
+                line = line.decode("utf-8", errors="replace")
             line = line.strip()
             if not line or line.startswith("DEV:"):
                 continue   # the handshake's answer is not a dropped packet
             if not line.startswith("POS:"):
-                self._note_dropped(line)
+                if line.isascii() and line.isprintable():
+                    # The board's own words (a boot banner, a log line): kept
+                    # in the log, not garble. Mirrors the axis link.
+                    events.debug("Board Says", line[:200], source=self.NAME)
+                else:
+                    self._note_dropped(line)
                 continue
             parts = line[4:].split(",")
             if len(parts) != 3:
