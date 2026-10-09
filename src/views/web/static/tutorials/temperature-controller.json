@@ -23,15 +23,15 @@
     },
     {
       "page": "Temperature Controller",
-      "anchor": {"text": "Configure Temperature Controller"},
-      "say": "The rest of what Enter settings sends sits one level down. Press Configure Temperature Controller to open it.",
-      "wait": {"click": true}
+      "anchor": {"text": "Ramp rate"},
+      "say": "Ramp rate, 1 to 20 seconds per degree, as on the board's display (RR): when heating, the board raises its working setpoint 1 °C every that many seconds until it reaches the setpoint. A lower setpoint is taken at once.",
+      "wait": null
     },
     {
       "page": "Temperature Controller",
-      "anchor": {"text": "Ramp rate"},
-      "say": "Ramp rate, in seconds per degree as on the board's display (RR): when heating, the board raises its working setpoint 1 °C every that many seconds until it reaches the setpoint. A lower setpoint is taken at once.",
-      "wait": null
+      "anchor": {"text": "Configure Temperature Controller"},
+      "say": "The remaining fields Enter settings sends (P, I, D and the offset) and the plot sit one level down. Press Configure Temperature Controller to open it.",
+      "wait": {"click": true}
     },
     {
       "page": "Temperature Controller",
