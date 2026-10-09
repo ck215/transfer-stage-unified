@@ -570,9 +570,11 @@ class PortProbe:
 
     def _tag_for_identity(self, identity):
         """The tag after the identity letter (`t X` -> "X"), or None: a board
-        that is one of several for one model says which one it is."""
-        words = self._text(identity).split()
-        return words[1].upper() if len(words) > 1 else None
+        that is one of several for one model says which one it is. A
+        `key=value` word is not a tag: `m caps=ext1,...` lists the board's
+        capabilities (MEGA_STANDARD section 2), which the model reads."""
+        words = [w for w in self._text(identity).split()[1:] if "=" not in w]
+        return words[0].upper() if words else None
 
     def _log_probe(self, port, name, started):
         events.debug("Probe", f"{port} -> {name or 'nothing'} in "

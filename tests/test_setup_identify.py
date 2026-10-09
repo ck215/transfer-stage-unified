@@ -173,6 +173,17 @@ def test_the_firmware_identity_falls_back_to_115200(panel, monkeypatch):
     assert FakePort.opened == [500000, 115200]
 
 
+def test_an_identity_with_caps_names_its_model_and_carries_no_tag(panel, monkeypatch):
+    """MEGA_STANDARD section 2: `DEV: s caps=ext1,...` is the Stepper Probe's
+    letter with its capabilities after it, never an axis tag."""
+    monkeypatch.setattr(station_setup, "SerialPort",
+                        port_answering({500000: "s caps=ext1,log,hostto"}))
+    assert panel.identify(PORT) == "Stepper Probe"
+    assert panel.probe_tags[PORT] is None
+    assert panel._tag_for_identity("x Y caps=ext1") == "Y"
+    assert panel._tag_for_identity("m caps=ext1,home") is None
+
+
 def test_an_identity_no_model_claims_is_not_a_device(panel, monkeypatch):
     monkeypatch.setattr(station_setup, "SerialPort",
                         port_answering({500000: "z"}))
