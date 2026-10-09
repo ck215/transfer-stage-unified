@@ -1522,6 +1522,22 @@ def _stored(self, name):
     return int(self.PARAMS[name].coerce(self._param_store.get(name)))
 
 
+#: The most steps one Step may move an axis: the Mega multiplies step size
+#: by distance into a 16-bit `int` (stepper_firmware.ino: x_steps =
+#: XAXIS_SIZE * XAXIS_DIST), so past this it wraps and the probe moves the
+#: other way. Review R-2, 2026-10-09.
+STEPPER_MAX_MOVE_STEPS = 32767
+
+
+def _refuse_past_the_move_limit(self, axis, units, step):
+    if abs(units * step) > STEPPER_MAX_MOVE_STEPS:
+        self._refuse(f"Target {axis.upper()} dist must stay within "
+                     f"{STEPPER_MAX_MOVE_STEPS * STEPPER_UM_PER_COUNT:g} µm "
+                     f"({STEPPER_MAX_MOVE_STEPS} steps) per Step: the board "
+                     "counts a move in 16 bits, and past that it would move "
+                     "the other way.")
+
+
 def _dist_um_property(axis):
     """The target distance in um: what the probe MOVES. The board moves
     step size x distance counts (stepper_firmware.ino: x_steps =
@@ -1539,6 +1555,7 @@ def _dist_um_property(axis):
         if not ok:
             self._refuse(um)
         units = um_to_counts(um, _stored(self, step) * STEPPER_UM_PER_COUNT)
+        _refuse_past_the_move_limit(self, axis, units, _stored(self, step))
         if units != _stored(self, dist):
             setattr(self, dist, units)
 
@@ -1564,8 +1581,9 @@ def _step_um_property(axis):
         if counts == old:
             return
         target_um = _stored(self, dist) * old * STEPPER_UM_PER_COUNT
-        setattr(self, step, counts)
         units = um_to_counts(target_um, counts * STEPPER_UM_PER_COUNT)
+        _refuse_past_the_move_limit(self, axis, units, counts)
+        setattr(self, step, counts)
         if units != _stored(self, dist):
             setattr(self, dist, units)
 
@@ -1623,6 +1641,15 @@ class StepperProbe(Probe):
     #: The slider travel, um/s: one count/s up to the ceiling (a slider may
     #: not start below its Param's minimum).
     SPEED_SLIDER = (STEPPER_UM_PER_COUNT, _MAX_UM_S)
+
+    def step(self):
+        """A Step, refused before anything is sent when an axis's move would
+        wrap the board's 16-bit step count (the count route, a loaded profile)."""
+        self._guard("Step")
+        for axis in "xyz":
+            _refuse_past_the_move_limit(self, axis, _stored(self, f"{axis}_dist"),
+                                        _stored(self, f"{axis}_step"))
+        return super().step()
 
     @property
     def scale_note(self):

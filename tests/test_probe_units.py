@@ -273,3 +273,41 @@ def test_a_step_with_a_step_size_moves_the_typed_distance(stepper):
     assert result.is_ok, result
     frame = stepper._frame()
     assert frame["x_step_size"] * frame["x_dist"] * UM == pytest.approx(100)
+
+
+# -- R-2: the Mega holds a move in a 16-bit int (stepper_firmware.ino:304,
+# `int x_steps = XAXIS_SIZE*XAXIS_DIST`): past 32767 steps it wraps and the
+# probe moves the other way. A target beyond it is refused, never sent. -----
+LIMIT = 32767
+
+
+@pytest.mark.params
+def test_a_target_past_the_boards_16_bit_move_is_refused(stepper):
+    stepper.x_dist_um = LIMIT * UM                       # exactly the limit: fine
+    assert stepper.x_dist == LIMIT
+    with pytest.raises(Refused, match="32767 steps"):
+        stepper.x_dist_um = 25000                         # 40000 steps would wrap
+    assert stepper.x_dist == LIMIT
+    with pytest.raises(Refused, match="32767 steps"):
+        stepper.y_dist_um = -25000
+
+
+@pytest.mark.params
+def test_a_step_size_that_would_push_the_target_past_the_limit_is_refused(stepper):
+    stepper.x_dist_um = LIMIT * UM                        # 32767 steps at step 1
+    # Step 2 keeps the target: 16383.5 units round away from zero to 16384,
+    # 32768 steps: one past the board's int. Refused; nothing changes.
+    with pytest.raises(Refused, match="32767 steps"):
+        stepper.x_step_um = 2 * UM
+    assert (stepper.x_step, stepper.x_dist) == (1, LIMIT)
+    stepper.x_step_um = 3 * UM                            # 10922 x 3 = 32766: fine
+    assert abs(stepper.x_dist * stepper.x_step) <= LIMIT
+
+
+@pytest.mark.params
+def test_a_step_past_the_limit_by_the_count_route_is_refused_and_sends_nothing(stepper):
+    stepper.x_step = 4
+    stepper.x_dist = 10000                                # 40000 steps
+    result = stepper.run("step")
+    assert result.is_refused and "32767 steps" in result.reason
+    assert not stepper.is_auto and not stepper.is_moving
