@@ -25,6 +25,7 @@ from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from model.xyz_stage import XyzStage
+from model.xyz_stage_mega import XyzStageMega
 from result import Refused
 
 from tests.test_setup import RecordingController
@@ -98,6 +99,7 @@ def warnings():
 BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
              "Temperature Controller", "Rotator",
              "XYZ Stage",      # 2026-10-09: three axis boards, one row
+             "XYZ Stage (Mega)",   # 2026-10-09: one standard Mega, MEGA_STANDARD
              "RGB Analysis",
              "Transfer Map",   # Tier S (2026-09-27)
              *(["Sample DB"] if station_setup.SAMPLE_MAP_ENABLED else [])]   # the flag: setup.py
@@ -111,7 +113,7 @@ def test_the_six_built_ins_are_registered_in_todays_display_order():
     assert list(station_setup.MODEL_TYPES) == BUILT_INS
     assert list(station_setup.MODEL_TYPES.values()) == [
         StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, XyzStage,
-        RgbAnalysis, TransferMap, *([SampleMap] if station_setup.SAMPLE_MAP_ENABLED else [])]
+        XyzStageMega, RgbAnalysis, TransferMap, *([SampleMap] if station_setup.SAMPLE_MAP_ENABLED else [])]
 
 
 def test_register_is_reachable_as_setup_register():

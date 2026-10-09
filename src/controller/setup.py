@@ -62,6 +62,7 @@ from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from model.xyz_stage import XyzStage
+from model.xyz_stage_mega import XyzStageMega
 from model.user import User
 from model.user_store import AccountError, UserStore
 from panel import Panel
@@ -271,8 +272,9 @@ PROFILES_ENABLED = os.environ.get("STATION_PROFILES") != "0"
 
 # The built-ins, in today's display order. The Sample DB (flake-coords,
 # 2026-10-04) follows the Transfer Map: its own page, no port.
+# The XYZ Stage (Mega) follows the Teensy XYZ Stage (MEGA_STANDARD, 2026-10-09).
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  XyzStage, RgbAnalysis, TransferMap,
+                  XyzStage, XyzStageMega, RgbAnalysis, TransferMap,
                   *((SampleMap,) if SAMPLE_MAP_ENABLED else ())):
     register(_built_in)
 del _built_in
