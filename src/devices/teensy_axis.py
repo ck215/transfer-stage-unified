@@ -399,6 +399,11 @@ class AxisSimulator:
     switches and the home edge are fixed in the stage's own frame, in which
     the board booted at 0: ZERO and HOME move the counter's origin, never
     the switches.
+
+    The limit interlock is the firmware's (xyz_stage_axis.ino, "stage sensors"
+    comment and `stepIsr`; PROTOCOL.md "Safety behaviour"): which end a switch
+    guards is unknown at boot and learned from its first filtered change while
+    the axis moves; a switch pressed with its end unconfirmed is "parked".
     """
 
     FULL_STEPS_PER_REV = 200
@@ -412,6 +417,16 @@ class AxisSimulator:
     DEFAULT_HOST_TIMEOUT_MS = 2500
     HOST_TIMEOUT_RANGE_MS = (250, 5000)
     MAX_STREAM_HZ = 50
+    #: The firmware's PARKED_JOG_SPEED_MM: the jog speed cap while a switch is
+    #: parked (pressed, its end not confirmed), mm/s.
+    PARKED_JOG_SPEED_MM = 0.1
+    #: The firmware's PARKED_TRAVEL_MM (provisional there too): the travel in
+    #: one direction, from where the switch was found pressed, after which a
+    #: still-pressed switch is taken to guard that direction.
+    PARKED_TRAVEL_MM = 0.5
+    #: The firmware's HOST_SILENT_OFF_MS: silence after EVT FAULT host-timeout
+    #: that switches the outputs off.
+    HOST_SILENT_OFF_MS = 10000
     #: The simulated HOME (time-compressed: a simulated session homes in a
     #: moment). The real sequence and its speeds are the firmware's.
     HOME_SEEK_MM_S = 5.0
@@ -425,7 +440,7 @@ class AxisSimulator:
     HISTORY = 20000
 
     def __init__(self, tag="X", *, clock=time.monotonic,
-                 limits_mm=(-25.0, 25.0), home_edge_mm=0.4):
+                 limits_mm=(-25.0, 25.0), home_edge_mm=0.4, parked_on=None):
         self.tag = None if tag in (None, "?") else str(tag).upper()
         self.clock = clock
         self.limits_mm = tuple(limits_mm)
@@ -451,6 +466,8 @@ class AxisSimulator:
         self._lock = threading.RLock()
         self._out = bytearray()
         self._rx = bytearray()
+        if parked_on is not None:                   # powered up on a switch
+            self._phys = self._pressed_position(parked_on)
         self._boot()
 
     # -- firmware state ----------------------------------------------------------
@@ -466,6 +483,7 @@ class AxisSimulator:
         self._target = None          # counter mm
         self._cruise = None
         self._jog = None             # mm/s, signed; 0.0 = decelerating to rest
+        self._jog_capped = False     # the jog was started while a switch was parked
         self._last_jog = now
         self.speed_mm_s = self.DEFAULT_SPEED_MM_S
         self.accel_mm_s2 = self.DEFAULT_ACCEL_MM_S2
@@ -480,6 +498,15 @@ class AxisSimulator:
         self._homing = None          # {"phase", "dir", "speed", "started", "reversed"}
         self._home_was_low = False   # a search saw the beam clear (so a rise is an edge)
         self._ls_was = [self._tripped(0), self._tripped(1)]
+        # The learned ends live in RAM: unknown at boot (s_lsEnd, s_lsFirm,
+        # s_lsSeen, s_lsLo/Hi, s_lsTravel, s_lsBoth). The travel window is
+        # kept in the stage frame, so ZERO and HOME do not move it.
+        self._ls_end = [0, 0]
+        self._ls_firm = [False, False]
+        self._ls_seen = [False, False]
+        self._ls_lo = [self._phys - self.PARKED_TRAVEL_MM] * 2
+        self._ls_hi = [self._phys + self.PARKED_TRAVEL_MM] * 2
+        self._timed_out_at = None    # when EVT FAULT host-timeout stopped the axis
         self._home_was = self._home_level()
 
     @property
@@ -499,9 +526,19 @@ class AxisSimulator:
             return True
         return self._phys <= low if index == 0 else self._phys >= high
 
-    @staticmethod
-    def _end(index):
-        return -1 if index == 0 else 1
+    def _pressed_position(self, number, depth_mm=0.1):
+        """A carriage position (stage frame) with switch `number` pressed."""
+        low, high = self.limits_mm
+        return low - depth_mm if int(number) == 1 else high + depth_mm
+
+    def _parked(self, index):
+        """Pressed with its end not confirmed (firmware lsParked)."""
+        return self._tripped(index) and not self._ls_firm[index]
+
+    def limit_end(self, number):
+        """The end switch `number` guards as the board has learned it: +1,
+        -1, or 0 for not learned (the firmware's ls1_end / ls2_end)."""
+        return self._ls_end[int(number) - 1]
 
     def _home_level(self):
         edge = self.home_edge_mm
@@ -539,6 +576,15 @@ class AxisSimulator:
 
     def release_limit(self, number):
         self.trip_limit(number, False)
+
+    def park_on(self, number, depth_mm=0.1):
+        """Power the board up on switch `number` (1 or 2): the carriage sits
+        `depth_mm` inside its pressed zone and the firmware restarts, so the
+        switch reads pressed with its end unknown (a parked switch)."""
+        with self._lock:
+            self._advance()
+            self._phys = self._pressed_position(number, depth_mm)
+            self._boot()
 
     def inject_fault(self, reason):
         """A driver fault: the board ESTOPs itself and says why."""
@@ -713,11 +759,34 @@ class AxisSimulator:
         except (IndexError, ValueError):
             return None
 
-    def _limit_block(self, direction):
+    def _limit_block(self, direction, jog=False):
+        """Why motion toward `direction` (+1/-1) is refused, or None
+        (firmware limitBlock). Only a JOG/JOGV may move while a switch is parked."""
+        tripped = [self._tripped(0), self._tripped(1)]
+        if all(tripped):
+            return "limits-both-tripped:check-wiring-or-LIMITS-NC|NO"
         for index in (0, 1):
-            if self._tripped(index) and self._end(index) == direction:
-                return f"limit-ls{index + 1}"
+            if not tripped[index]:
+                continue
+            name = f"ls{index + 1}"
+            if self._ls_end[index] == direction:
+                return f"limit-{name}"
+            if not self._parked(index):
+                continue
+            if not jog:
+                return f"limit-{name}-end-unknown:jog-off-it"
+            spent = (self._phys >= self._ls_hi[index] - 1e-9 if direction > 0
+                     else self._phys <= self._ls_lo[index] + 1e-9)
+            if spent:                                # the parked travel is spent this way too
+                return f"limit-{name}-pressed-both-ways:check-switch"
         return None
+
+    def _parked_jog_cap(self, speed):
+        """A jog's speed (positive mm/s), capped while a switch is parked
+        (firmware jogCapMm)."""
+        if self._parked(0) or self._parked(1):
+            return min(speed, self.PARKED_JOG_SPEED_MM, self.MAX_SPEED_MM_S)
+        return speed
 
     def _halt(self, *, disable, why):
         """Stop at once (the ISR halt); ESTOP and DISABLE also power down."""
@@ -742,7 +811,7 @@ class AxisSimulator:
         self._ok(command, f"uptime_ms={int((self.clock() - self._t0) * 1000)}")
 
     def _cmd_info(self, command, args):
-        self._ok(command, f"axis={self.tag or '?'} protocol=1 microsteps={self.microsteps} "
+        self._ok(command, f"fw=xyz_stage_axis proto=1 axis={self.tag or '?'} microsteps={self.microsteps} "
                           f"step_um={self.step_mm * 1000:.4f} lead_mm={self.LEAD_MM:.3f} "
                           f"max_move_mm={self.MAX_MOVE_MM:.3f} "
                           f"speed_mm_s={self.speed_mm_s:.4f} "
@@ -750,7 +819,10 @@ class AxisSimulator:
                           f"accel_mm_s2={self.accel_mm_s2:.4f} "
                           f"jog_timeout_ms={self.JOG_TIMEOUT_MS} "
                           f"host_timeout_ms={self.host_timeout_ms} "
-                          f"stream_hz={self.stream_hz} limits=NO")
+                          f"stream_hz={self.stream_hz} limits=NO "
+                          f"parked_jog_mm_s={self.PARKED_JOG_SPEED_MM:.4f} "
+                          f"parked_travel_mm={self.PARKED_TRAVEL_MM:.3f} "
+                          f"host_silent_off_ms={self.HOST_SILENT_OFF_MS}")
 
     def _cmd_status(self, command, args):
         target = self._target if self._target is not None else self._counter()
@@ -826,6 +898,11 @@ class AxisSimulator:
             return self._err(command, "bad-arg-NC|NO")
         if self._busy():
             return self._err(command, "busy")
+        self._ls_end = [0, 0]                # new meaning: forget the ends; a pressed switch is parked
+        self._ls_firm = [False, False]
+        self._ls_seen = [False, False]
+        self._ls_lo = [self._phys - self.PARKED_TRAVEL_MM] * 2
+        self._ls_hi = [self._phys + self.PARKED_TRAVEL_MM] * 2
         self._ok(command, f"limits={args[0]} ls1={int(self._tripped(0))} "
                           f"ls2={int(self._tripped(1))} ends=forgotten")
 
@@ -857,7 +934,7 @@ class AxisSimulator:
     def _cmd_moveto(self, command, args):
         self._cmd_move(command, args, absolute=True)
 
-    def _jog_to(self, command, velocity, echo):
+    def _jog_to(self, command, velocity, echo, keep_cap=False):
         if not self.enabled:
             return self._err(command, "not-enabled")
         if self._homing is not None or self._target is not None:
@@ -869,10 +946,21 @@ class AxisSimulator:
             return self._ok(command, echo(0.0, False))
         clamped = abs(velocity) > self.MAX_SPEED_MM_S
         velocity = math.copysign(min(abs(velocity), self.MAX_SPEED_MM_S), velocity)
-        why = self._limit_block(1 if velocity > 0 else -1)
+        keep = (keep_cap and self._jog_capped and self._jog
+                and (self._jog > 0) == (velocity > 0))
+        if keep:                                     # a JOG started while parked keeps its cap
+            velocity = self._jog
+        else:
+            capped = self._parked_jog_cap(abs(velocity))
+            if capped < abs(velocity):
+                velocity = math.copysign(capped, velocity)
+                clamped = True
+        why = self._limit_block(1 if velocity > 0 else -1, jog=True)
         if why:
             self._jog = 0.0 if abs(self._v) > 0 else None
             return self._err(command, why)
+        if not keep:
+            self._jog_capped = self._parked(0) or self._parked(1)
         self._jog = velocity
         self._last_jog = self.clock()
         self._ok(command, echo(velocity, clamped))
@@ -889,7 +977,7 @@ class AxisSimulator:
         if value not in (-1, 0, 1):
             return self._err(command, "bad-arg")
         self._jog_to(command, value * self.speed_mm_s,
-                     lambda v, c: f"dir={value}")
+                     lambda v, c: f"dir={value}", keep_cap=True)
 
     def _cmd_zero(self, command, args):
         if self._busy():
@@ -903,6 +991,11 @@ class AxisSimulator:
             return self._err(command, "not-enabled")
         if self._busy():
             return self._err(command, "busy")
+        if self._tripped(0) and self._tripped(1):
+            return self._err(command, "limits-both-tripped:check-wiring-or-LIMITS-NC|NO")
+        for index in (0, 1):                         # a parked switch could be either end
+            if self._parked(index):
+                return self._err(command, f"limit-ls{index + 1}-end-unknown:jog-off-it")
         self._homing = {"phase": "seek", "dir": -1, "speed": self.home_seek_mm_s,
                         "started": self.clock(), "reversed": False}
         self._ok(command, "started")
@@ -945,6 +1038,11 @@ class AxisSimulator:
         self._ok(command, f"axis={self.tag} stored=1")
 
     def _cmd_test(self, command, args):
+        if args and args[0] in ("COILS", "SWEEP", "LIMITS", "REVS"):
+            if not self.enabled:
+                return self._err(command, "not-enabled")
+            if self._tripped(0) or self._tripped(1):   # every motion test starts clear of both ends
+                return self._err(command, "limit-tripped:jog-off-it")
         self._err(command, "not-simulated")
 
     # -- time ---------------------------------------------------------------------------
@@ -981,8 +1079,16 @@ class AxisSimulator:
         if (self._busy() and not self._timed_out
                 and (t - self._last_rx) * 1000 > self.host_timeout_ms):
             self._timed_out = True
+            self._timed_out_at = t
             self._soft_stop("host-timeout")
             self._emit("EVT FAULT host-timeout")
+        # Still silent HOST_SILENT_OFF_MS after that stop (any line clears
+        # `_timed_out`): outputs off, ENABLE needed again.
+        if (self._timed_out and self.enabled
+                and (t - self._timed_out_at) * 1000 >= self.HOST_SILENT_OFF_MS):
+            self._halt(disable=True, why="host-timeout")
+            self._emit("EVT FAULT host-timeout-disabled "
+                       f"silent_ms={int((t - self._last_rx) * 1000)}")
 
     def _desired_velocity(self):
         if not self.enabled:
@@ -1020,24 +1126,66 @@ class AxisSimulator:
                 self._target = self._cruise = None
         if self._jog == 0.0 and self._v == 0.0:
             self._jog = None
-        for index in (0, 1):
-            tripped = self._tripped(index)
-            if tripped and not self._ls_was[index]:
-                self._emit(f"EVT LIMIT ls{index + 1} tripped "
-                           f"pos_mm={self._quantize(self._counter()):.4f} "
-                           f"end={self._end(index):+d}")
-            self._ls_was[index] = tripped
-            if tripped and self._v * self._end(index) > 0:
-                # The ISR interlock: no step toward a tripped end.
-                self._v = 0.0
-                self._target = self._cruise = None
-                if self._jog is not None:
-                    self._jog = None
+        self._limit_isr()
         level = self._home_level()
         if level != self._home_was:
             self._home_was = level
             self._emit(f"EVT HOME edge level={level} "
                        f"pos_mm={self._quantize(self._counter()):.4f}")
+
+    def _limit_isr(self):
+        """The firmware's step-ISR interlock (stepIsr), once per tick, with
+        the direction of the motion just made. Learns each switch's end, bounds
+        the parked travel, and halts; the halt is reported as EVT LIMIT."""
+        direction = (self._v > 0) - (self._v < 0)   # 0: at rest, nothing to learn from
+        tripped = [self._tripped(0), self._tripped(1)]
+        halt = direction != 0 and tripped[0] and tripped[1]
+        travel = [False, False]
+        both = [False, False]
+        for i in (0, 1):
+            now, was = tripped[i], self._ls_was[i]
+            new_trip, new_clear = now and not was, was and not now
+            if not self._ls_firm[i]:
+                if direction and new_clear:          # left it: it guards -dir
+                    self._ls_end[i], self._ls_firm[i] = -direction, True
+                elif (direction and new_trip and not self._ls_seen[i]
+                      and self._ls_end[i] == 0):     # reached from clear: it guards dir
+                    self._ls_end[i], self._ls_firm[i] = direction, True
+                elif new_trip:                       # pressed again, end not firm: maybe chatter
+                    self._ls_lo[i] = self._phys - self.PARKED_TRAVEL_MM
+                    self._ls_hi[i] = self._phys + self.PARKED_TRAVEL_MM
+                    halt = halt or direction != 0
+                elif now and direction and (
+                        self._phys >= self._ls_hi[i] - 1e-9 if direction > 0
+                        else self._phys <= self._ls_lo[i] + 1e-9):
+                    # Parked travel spent, still pressed: this way drives into it.
+                    self._phys = self._ls_hi[i] if direction > 0 else self._ls_lo[i]
+                    halt = True
+                    if self._ls_end[i] == 0:
+                        self._ls_end[i] = direction
+                        travel[i] = True
+                    elif self._ls_end[i] != direction:
+                        both[i] = True               # and the other way did too
+                if now and not self._ls_firm[i]:
+                    self._ls_seen[i] = True
+            if now and direction and self._ls_end[i] == direction:
+                halt = True
+            self._ls_was[i] = now
+        if not halt:
+            return
+        self._v = 0.0                                # zero speed, target here
+        self._target = self._cruise = self._jog = None
+        pos = self._quantize(self._counter())
+        for i in (0, 1):
+            if not tripped[i]:
+                continue
+            why = ""
+            if travel[i]:
+                why = f" learned=travel travel_mm={self.PARKED_TRAVEL_MM:.3f}"
+            elif both[i]:
+                why = f" pressed_both_ways=1 travel_mm={self.PARKED_TRAVEL_MM:.3f}"
+            self._emit(f"EVT LIMIT ls{i + 1} tripped pos_mm={pos:.4f} "
+                       f"end={self._ls_end[i]:+d}{why}")
 
     def _home_step(self, t):
         homing = self._homing
