@@ -266,7 +266,15 @@ def test_swap_legacy_dry_run_adds_a_worktree_and_runs_nothing(swap):
     assert f"+ python3 -m venv {legacy}/.venv" in lines
     pip = next(l for l in lines if "-m pip install" in l)
     assert pip.startswith(f"+ {legacy}/.venv/bin/python -m pip install --quiet pyserial==3.5")
-    assert f"+ {legacy}/.venv/bin/python {legacy}/firmware/flash_firmware.py --yes" in lines
+    # The station's flasher, over the legacy tree's sketches, recorded as
+    # `stable`, the Megas only (2026-10-08: the legacy tree's own flasher
+    # never wrote the stamp, so the Launcher then started the station on
+    # boards still running the legacy sketches).
+    repo = swap.w / "with-legacy"
+    assert (f"+ {swap.venv}/bin/python3 {repo}/firmware/flash_firmware.py --yes "
+            f"--sketch-root {legacy}/firmware --channel stable "
+            "--only Stepper\\ Probe DC\\ Probe Chuck\\ Positioner") in lines
+    assert f"{legacy}/firmware/flash_firmware.py" not in done.stdout
     assert lines[-2] == f"+ cd {legacy}"
     assert lines[-1] == f"+ {legacy}/.venv/bin/python src/mainGUI.py"
     assert lines.index(next(l for l in lines if "flash_firmware" in l)) < len(lines) - 2
@@ -299,9 +307,46 @@ def test_swap_legacy_with_a_finished_tree_only_flashes_and_launches(swap):
     assert done.returncode == 0, done.stderr
     lines = done.stdout.splitlines()
     assert len(lines) == 3
-    assert lines[0].endswith("flash_firmware.py --yes --only Stepper\\ Probe Chuck\\ Positioner")
+    repo = swap.w / "with-legacy"
+    assert lines[0] == (f"+ {swap.venv}/bin/python3 {repo}/firmware/flash_firmware.py --yes "
+                        f"--sketch-root {legacy}/firmware --channel stable "
+                        "--only Stepper\\ Probe Chuck\\ Positioner")
     assert "worktree" not in done.stdout and "-m venv" not in done.stdout
     assert "pip" not in done.stdout
+
+
+def test_swap_legacy_flashes_from_the_station_venv(swap):
+    """The flash is the station's (it keeps the stamp), so it needs the
+    station's venv; running the legacy app alone does not."""
+    legacy = swap.w / "legacy-app"
+    (legacy / "src").mkdir(parents=True)
+    (legacy / "src" / "mainGUI.py").write_text("")
+    (legacy / ".venv" / "bin").mkdir(parents=True)
+    _executable(legacy / ".venv" / "bin" / "python", "#!/bin/sh\n")
+    done, calls = swap.go("with-legacy", "legacy", VIRTUAL_ENV=None)
+    assert done.returncode == 1 and done.stdout == "" and calls == []
+    assert done.stderr.startswith("swap_branch: ") and "no .venv" in done.stderr
+    assert len(done.stderr.strip().splitlines()) == 1
+    done, _ = swap.go("with-legacy", "legacy", "--no-flash", VIRTUAL_ENV=None)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.splitlines()[-1] == f"+ {legacy}/.venv/bin/python src/mainGUI.py"
+
+
+def test_swap_legacy_stops_when_the_flash_fails(swap, tmp_path):
+    legacy = swap.w / "legacy-app"
+    (legacy / "src").mkdir(parents=True)
+    (legacy / "src" / "mainGUI.py").write_text("")
+    (legacy / ".venv" / "bin").mkdir(parents=True)
+    _executable(legacy / ".venv" / "bin" / "python", "#!/bin/sh\n")
+    failing = tmp_path / "failvenv"
+    (failing / "bin").mkdir(parents=True)
+    _executable(failing / "bin" / "python3", "#!/bin/sh\necho boom\nexit 3\n")
+    done, _ = swap.run("../w/with-legacy/dev/swap_branch.sh", "legacy",
+                       VIRTUAL_ENV=str(failing))
+    assert done.returncode == 1
+    err = done.stderr.strip().splitlines()
+    assert err[0] == "boom"
+    assert err[-1].startswith("swap_branch: flashing failed, so the legacy app was not launched")
 
 
 def test_swap_station_dry_run_flashes_in_process_then_runs_the_web_view(swap):

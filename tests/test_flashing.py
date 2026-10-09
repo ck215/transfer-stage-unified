@@ -9,6 +9,7 @@ same `SerialPort` stand-in `test_setup_identify.py` uses.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -326,6 +327,51 @@ def test_the_command_lines_dry_run_prints_the_commands_and_records_nothing(tree,
     assert "--upload -p COM7" in done.stdout
     assert "Stepper Probe            ok (dry run)" in done.stdout
     assert not stamp.exists()
+
+
+# -- Classic and the station on the same boards (2026-10-08) ---------------------
+# `dev/swap_branch.sh legacy` flashed with the legacy tree's own script, which
+# never wrote the stamp: the Launcher then read "already current" and started
+# the station on Megas still running the legacy sketches (the stepper took the
+# station's 'e' and 42-byte jog packets, logged the gamepad and never moved).
+# The swap now flashes through this command line, so both apps' flashes land
+# in the one stamp.
+
+def test_a_classic_flash_lands_in_the_stamp_so_the_station_reflashes_it(
+        tmp_path, stamp, path_tools):
+    from controller.firmware import FirmwareCheck
+    station = REPO / "firmware"
+    legacy = tmp_path / "legacy-app" / "firmware"
+    shutil.copytree(station, legacy, ignore=shutil.ignore_patterns(
+        "build", "__pycache__", "libraries"))
+    for name in ("stepper_firmware", "chuck_firmware"):
+        (legacy / name / f"{name}.ino").write_text(
+            "// the legacy sketch: 't' toggles enable, 28-byte jog packet\n")
+    megas = ["Stepper Probe", "DC Probe", "Chuck Positioner"]
+    boards = {"/dev/ttyACM0": "Stepper Probe", "/dev/ttyACM1": "DC Probe",
+              "/dev/ttyACM2": "Chuck Positioner"}
+
+    def flash(root, channel):
+        run = Runner()
+        answer = flashing.flash(megas, sketch_root=root, stamp=stamp,
+                                tools=path_tools, run=run, ports=list(boards),
+                                identify=answering(boards), channel=channel)
+        assert answer["returncode"] == 0
+        return [c["argv"][-1] for c in run.calls]
+
+    flash(station, flashing.STATION)                    # the Launcher
+    # Classic: the DC Probe's sketch is the same in both trees, so it stays.
+    assert flash(legacy, flashing.STABLE) == [str(legacy / "stepper_firmware"),
+                                              str(legacy / "chuck_firmware")]
+    recorded = json.loads(stamp.read_text())
+    assert recorded["Stepper Probe"]["channel"] == "stable"
+    assert recorded["DC Probe"]["channel"] == "station"
+    # What the Launcher's flash and Setup's Firmware row read next.
+    check = FirmwareCheck(root=REPO, stamp=stamp, tools=path_tools).check()
+    assert check["stale"] == ["Stepper Probe", "Chuck Positioner"]
+    assert flash(station, flashing.STATION) == [str(station / "stepper_firmware"),
+                                                str(station / "chuck_firmware")]
+    assert FirmwareCheck(root=REPO, stamp=stamp, tools=path_tools).check()["stale"] == []
 
 
 # -- rb-dist-build's findings: the table the bundle reads, the libraries -------

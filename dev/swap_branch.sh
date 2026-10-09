@@ -11,9 +11,19 @@
 #             with `git worktree add ../legacy-app legacy` when this checkout
 #             has the branch, else `git clone --branch legacy <origin>`; its
 #             venv ../legacy-app/.venv is made and filled on first use. The
-#             boards are flashed by THAT tree's own firmware/flash_firmware.py
-#             (its sketches, its wire format), then `python src/mainGUI.py`
-#             runs there with the app args.
+#             Megas are flashed with THAT tree's sketches (its wire format)
+#             by THIS tree's firmware/flash_firmware.py (--sketch-root
+#             ../legacy-app/firmware --channel stable), then `python
+#             src/mainGUI.py` runs there with the app args. This tree's
+#             flasher, because it keeps the stamp (~/transfer-stage-runs/
+#             flashed.json): the legacy tree's own never wrote it, so the
+#             Launcher, Setup and `station` read "already current" and ran the
+#             station on boards still holding the legacy sketches (2026-10-08:
+#             the stepper ignored 'e' and the 42-byte jog and never moved).
+#             The Megas only: the Temperature Controller's wire is the same in
+#             both trees (its watchdog rides on DTR), and the legacy heater
+#             sketch does not build beside this tree's libraries (both trees
+#             use a LiquidCrystal_I2C, with different APIs).
 #   station   this checkout: the boards are flashed from this tree's firmware
 #             (in-process controller.flashing: only boards whose sketch hash
 #             differs) and `src/app.py --web` runs from its venv. ./run.sh does
@@ -27,7 +37,8 @@
 #   RUN_SWAP_DRY_RUN=1         print every command, run none (no worktree, clone,
 #                              venv or flash)
 #   STATION_FLASH_ONLY="Stepper Probe,Chuck Positioner"
-#                              limit the flash step to these boards
+#                              limit the flash step to these boards (legacy:
+#                              in place of its three Megas)
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PARENT="$(dirname "$HERE")"
@@ -38,6 +49,8 @@ DRY="${RUN_SWAP_DRY_RUN:-0}"
 # requirements file), pinned as the station and packaging/requirements-stable.txt
 # pin them. tests/test_launchers.py checks these against pyproject.toml.
 LEGACY_PINS=(pyserial==3.5 pygame==2.6.1 mss==10.2.0 Pillow==12.3.0 numpy==2.5.2 gcodeparser==0.3.0)
+# What `legacy` flashes when STATION_FLASH_ONLY names nothing.
+LEGACY_BOARDS=("Stepper Probe" "DC Probe" "Chuck Positioner")
 
 die() { echo "swap_branch: $*" >&2; exit 1; }
 show() { local l; l="$(printf '%q ' "$@")"; echo "+ ${l% }"; }
@@ -47,6 +60,13 @@ step() {
     if [ "$DRY" = 1 ]; then show "$@"; return 0; fi
     local out
     out="$("$@" 2>&1)" || { printf '%s\n' "$out" | tail -n 15 >&2; die "$what"; }
+}
+# Sets PY to this checkout's venv python (both targets flash with it).
+find_station_py() {
+    if [ -x "$HERE/.venv/bin/python3" ]; then PY="$HERE/.venv/bin/python3"
+    elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python3" ]; then PY="$VIRTUAL_ENV/bin/python3"
+    else die "no .venv in $HERE and no virtualenv active; run ./run.sh once or create the venv first."
+    fi
 }
 
 TARGET="${1:-}"
@@ -81,6 +101,7 @@ fi
 if [ "$TARGET" = legacy ]; then
     command -v git >/dev/null 2>&1 || die "git is not installed, so the legacy checkout cannot be made."
     command -v python3 >/dev/null 2>&1 || die "python3 is not installed, so the legacy venv cannot be made."
+    [ "$FLASH" = 1 ] && find_station_py
     G=(git --no-optional-locks)
 
     if [ -e "$LEGACY" ]; then
@@ -110,8 +131,11 @@ if [ "$TARGET" = legacy ]; then
     fi
 
     if [ "$FLASH" = 1 ]; then
-        FLASH_CMD=("$LPY" "$LEGACY/firmware/flash_firmware.py" --yes)
-        [ ${#ONLY[@]} -gt 0 ] && FLASH_CMD+=(--only "${ONLY[@]}")
+        FLASH_CMD=("$PY" "$HERE/firmware/flash_firmware.py" --yes
+                   --sketch-root "$LEGACY/firmware" --channel stable --only)
+        if [ ${#ONLY[@]} -gt 0 ]; then FLASH_CMD+=("${ONLY[@]}")
+        else FLASH_CMD+=("${LEGACY_BOARDS[@]}")
+        fi
         step "flashing failed, so the legacy app was not launched (fix the error, or pass --no-flash)." \
             "${FLASH_CMD[@]}"
     fi
@@ -126,10 +150,7 @@ if [ "$TARGET" = legacy ]; then
 fi
 
 # station
-if [ -x "$HERE/.venv/bin/python3" ]; then PY="$HERE/.venv/bin/python3"
-elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python3" ]; then PY="$VIRTUAL_ENV/bin/python3"
-else die "no .venv in $HERE and no virtualenv active; run ./run.sh once or create the venv first."
-fi
+find_station_py
 if [ "$FLASH" = 1 ]; then
     FLASH_PY='import os, sys
 from controller import flashing as f
