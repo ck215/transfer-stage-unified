@@ -422,6 +422,59 @@ entry in small type, and the percent dials are gone for the Stepper. The wire
 bytes are unchanged (golden 77). The 0.625 µm/count scale is unverified because
 the lead screw is unmeasured, and the page says so.
 
+## Resume here (2026-10-09 evening, bench paused)
+
+Branch `fix/xyz-followups`, PR'd tonight. It holds:
+- the XYZ follow-ups: µsteps lines, gates, per-move acceleration, the favicon fix, the pin flicker fix;
+- the `firmware-safety` agent profile;
+- the **XYZ Mega**: `docs/rebuild/MEGA_STANDARD.md`, `firmware/xyz_stage_mega/`, the Probe-family caps and `#` channel, `XYZ Stage (Mega)`, its simulator, and the wiring sheet `dev/equipment_test/xyz_mega/`.
+
+Gate on the merged tip: 5011 passed. The 2 known macOS serial-lock failures and 1 load flake (passes alone 3/3) remain. Golden 77.
+
+**Bench (owner + lead, live, Teensy 3.5 validator, one axis at a time):**
+- **Axis 2 is validated:**
+  - TEST COILS PASS;
+  - LS1 and LS2 trip and the interlock stops on each;
+  - travel between switches 51.94 mm;
+  - TEST LIMITS parks it centred.
+- **Axis 1** carries a custom probe extension and **cannot reach its + switch (LS2)**. Only LS1 protects it. It needs a software travel limit measured from LS1 (not built yet).
+- **Wiring faults found and fixed:**
+  - the DB9 pin-4 return was on Teensy 3.3 V, not GND, so pressed switches read HIGH and were invisible to pull-up firmware;
+  - both coil-B wires (then coil A) had open contacts: TEST COILS showed open_a/open_b, and the motor wiggled while the step count advanced.
+- **Home photo-interrupter: not working.** A `limit_seek` sweep (pull-up and pull-down classification) shows Vo undriven (OPEN) across the full travel, so the sensor never turns on. Suspects:
+  - the emitter LED or R1 (the vendor drawing shows the LED anode on the pin-4 rail, which is reverse-biased with 5 V on pin 1);
+  - no supply on DB9 1-4.
+- **Owner's next steps** (Todoist, due Mon 2026-10-12):
+  - diode-test DB9 1↔4 both ways;
+  - meter DB9 1-4 for ~5 V;
+  - buy resistors: 200 Ω ×6, 10 kΩ ×12, 4.7 kΩ ×6, 1 kΩ ×4.
+- **The Teensy now runs `limit_seek`,** not the validator. Re-flash the validator before using the GUI.
+
+**Open, for the lead:**
+- **From the adversarial review of the home path:**
+  - Once the sensor works and its output type (sourcing or sinking) is measured, set the home pin mode to match in the validator, `xyz_stage_axis` and `xyz_stage_mega`.
+  - On the Mega, use INPUT plus an external pull resistor, never INPUT_PULLUP with a pull-down.
+  - Re-derive `HOME_FLAG_LEVEL`.
+  - Teach `dev/firmware_sim` pin modes (it cannot catch a wrong pull today).
+  - Fix `stage_db9_wiring.html`: the symbol beside Vo is a waveform (idle high, low pulse), not a ground.
+- **A soft travel limit** (per axis, from the LS1 end, in EEPROM) for probes like axis 1. Firmware, simulator and model; use the `firmware-safety` profile.
+- **XYZ Mega firmware departures from MEGA_STANDARD, awaiting the owner's ruling:**
+  - limits sampled in the 20 kHz step ISR rather than on the INT/PCINT vectors;
+  - HOME needs limits armed;
+  - a missing TMC is re-probed every 1 s (`#EVT TMC A detected`);
+  - new events `FAULT driver-readback-mismatch` and `FAULT pin-map`;
+  - no reply to an unknown `#` command before ext1;
+  - no `#LIMITS` command (fixed NO);
+  - frames or jogs while disabled are refused;
+  - the jog clamp is 4000 counts/s rather than 6400.
+- **Station-side departures:**
+  - the schema assumes the standard caps until the identity is read;
+  - nothing is armed until HOSTTIMEOUT is acked;
+  - the station never sends `#AXISCFG` or `#STOP`;
+  - the simulator refuses all axes on a refused frame.
+- **Phase 2:** retrofit the Stepper, DC and Chuck Megas with `station_std.h`, after the XYZ Mega has been on the bench.
+- **Bench values still PROVISIONAL:** `PARKED_TRAVEL_MM` (0.5 mm), HOME speeds, `HOME_DIR`, `HOME_FLAG_LEVEL`.
+
 ## Open items
 
 ### Classic and the station on the same boards (2026-10-08)
