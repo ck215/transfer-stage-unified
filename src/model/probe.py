@@ -174,7 +174,7 @@ class ExtReply:
         if self.ok:
             return "ok"
         if self.aborted:
-            return "not sent: the probe is stopped"
+            return "not sent: it is stopped"
         if self.timed_out:
             return "no reply"
         return self.reason or "refused"
@@ -1649,8 +1649,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
                          source=self.NAME)
             return
         stopped = ""
-        if (self._mode is ProbeMode.AUTO and self._moving_deadline is not None
-                and self.is_moving):
+        deadline = self._moving_deadline       # a Step in flight: its own clock
+        if (self._mode is ProbeMode.AUTO and deadline is not None
+                and time.monotonic() < deadline):
             self._moving_deadline = None
             try:
                 self._send_zero_frame(f"limit {switch} on axis {axis}")

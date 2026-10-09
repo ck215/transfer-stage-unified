@@ -598,3 +598,19 @@ def test_the_sim_goes_silent_but_keeps_moving():
     before = board.position[1]
     clock.run(0.5, board)
     assert board.ask("#HB") == [] and board.position[1] != before
+
+
+def test_a_limit_on_one_axis_while_another_homes_is_not_a_step(make):
+    """Only a Step in flight is stopped by a LIMIT: a stale Step clock plus a
+    HOME on another axis is not one."""
+    model, board = configured(*make(home_edge=40000, limits=(-50000, 50000)))
+    model.z_dist = 10
+    assert model.run("step", None).is_ok
+    assert wait_for(lambda: not model.is_moving, 3.0)
+    assert model.run("home_axis", None, ("Y",)).is_ok
+    with Collected() as seen:
+        model.gamepad.levels.update(axis_x=0.0)
+        board.emit_raw("#EVT LIMIT X ls1 pos=-5 end=-1")
+        assert wait_for(lambda: "Limit Reached" in seen.text("warning"), 2.0)
+    assert "Step was stopped" not in seen.text("warning")
+    assert model._homing["Y"] is not None, "the HOME on Y was stopped"
