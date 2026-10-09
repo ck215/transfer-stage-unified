@@ -61,6 +61,7 @@ from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
+from model.xyz_stage import XyzStage
 from model.user import User
 from model.user_store import AccountError, UserStore
 from panel import Panel
@@ -218,7 +219,7 @@ def register(model_class):
         raise ValueError(f"{name!r} declares a resource twice: {resources}")
     tags = _port_tags(model_class)
     if tags:
-        ports, _ = _split(resources)
+        ports = [r for r in resources if _kind(r) == "port"]   # _split is defined below
         if set(tags) != set(ports):
             raise ValueError(f"{name!r} tags {sorted(tags)} but declares the ports "
                              f"{ports}; PORT_TAGS must tag every port resource")
@@ -271,7 +272,7 @@ PROFILES_ENABLED = os.environ.get("STATION_PROFILES") != "0"
 # The built-ins, in today's display order. The Sample DB (flake-coords,
 # 2026-10-04) follows the Transfer Map: its own page, no port.
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  RgbAnalysis, TransferMap,
+                  XyzStage, RgbAnalysis, TransferMap,
                   *((SampleMap,) if SAMPLE_MAP_ENABLED else ())):
     register(_built_in)
 del _built_in

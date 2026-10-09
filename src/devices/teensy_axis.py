@@ -42,6 +42,9 @@ from events import events
 
 #: The three axes, in the order a model lists them.
 AXES = ("X", "Y", "Z")
+#: The letter every axis board answers the scan with (`DEV: x X`); the
+#: Temperature Controller already answers `t` (owner ruling 2026-10-09).
+IDENTITY_LETTER = "x"
 
 #: SerialPort statuses under which the board can be talked to.
 USABLE = ("verified", "unverified", "simulated")
@@ -197,10 +200,10 @@ class TeensyAxis(SerialPort):
     # -- what the board said ---------------------------------------------------
     @property
     def identity_tag(self):
-        """The axis letter from the identity answer (`DEV: t X` -> "X"), or
-        None when there was no handshake (SIM) or it was not a `t` board."""
+        """The axis letter from the identity answer (`DEV: x X` -> "X"), or
+        None when there was no handshake (SIM) or it was not an axis board."""
         words = str(self.identity or "").split()
-        if len(words) >= 2 and words[0].lower() == "t":
+        if len(words) >= 2 and words[0].lower() == IDENTITY_LETTER:
             return words[1].upper()
         return None
 
@@ -339,7 +342,7 @@ class TeensyAxis(SerialPort):
         dispatch lock is released."""
         now = time.monotonic()
         head = line.split(" ", 1)[0]
-        reply, wake, dropped = None, [], None
+        reply, wake, dropped, said = None, [], None, None
         with self._dispatch_lock:
             self._seq += 1
             seq = self._seq
@@ -367,9 +370,15 @@ class TeensyAxis(SerialPort):
                                   line=line, seq=seq)
                 self._replies[command] = reply
                 wake = self._waiters.pop(command, [])
-            elif not line.startswith("DEV:"):   # DEV: an identity answer, late
+            elif line.startswith("DEV:"):       # an identity answer, late
+                pass
+            elif line.isascii() and line.isprintable():
+                said = line                     # the board's own words: logged, not garble
+            else:
                 self.dropped += 1
                 dropped = self.dropped
+        if said is not None:
+            events.debug("Axis Board Says", said[:200], source=self._source)
         if dropped is not None:
             events.debug("Line Dropped", f"#{dropped}: {line[:80]!r}",
                          source=self._source)
@@ -465,6 +474,7 @@ class AxisSimulator:
         self._timed_out = False
         self._last_rx = now
         self.stream_hz = 0
+        self.log_level = 1
         self._next_p = None
         self.homed = False
         self._homing = None          # {"phase", "dir", "speed", "started", "reversed"}
@@ -680,7 +690,7 @@ class AxisSimulator:
         command = words[0].upper()
         args = [w.upper() for w in words[1:]]
         if command == "S":
-            self._emit(f"DEV: t {self.tag or '?'}")
+            self._emit(f"DEV: {IDENTITY_LETTER} {self.tag or '?'}")
             return
         handler = getattr(self, "_cmd_" + command.lower(), None)
         if handler is None or not command.isalpha():
@@ -908,6 +918,13 @@ class AxisSimulator:
 
     def _cmd_hb(self, command, args):
         self._ok(command)
+
+    def _cmd_log(self, command, args):
+        value = self._int(args, 0)
+        if value is None or not 0 <= value <= 2:
+            return self._err(command, "bad-arg-0|1|2")
+        self.log_level = value
+        self._ok(command, f"level={value}")
 
     def _cmd_stream(self, command, args):
         value = self._int(args, 0)

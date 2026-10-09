@@ -19,6 +19,7 @@ import time
 import pytest
 
 from devices.gamepad import Gamepad, NEUTRAL
+from devices import teensy_axis
 from devices.teensy_axis import AxisSimulator, TeensyAxis
 from events import events
 from model.xyz_stage import StageMode, XyzStage
@@ -170,7 +171,7 @@ def stopped(stage):
 
 def test_the_class_declares_three_tagged_ports_and_a_gamepad():
     assert XyzStage.NAME == "XYZ Stage"
-    assert XyzStage.IDENTITY == "t"
+    assert XyzStage.IDENTITY == "x" == teensy_axis.IDENTITY_LETTER
     assert XyzStage.NEEDS_PORT is True and XyzStage.NEEDS_GAMEPAD is True
     assert XyzStage.RESOURCES == ("port_x", "port_y", "port_z", "gamepad")
     assert XyzStage.PORT_TAGS == {"port_x": "X", "port_y": "Y", "port_z": "Z"}
@@ -418,7 +419,7 @@ def test_the_identity_answer_is_checked_on_a_real_port(plugged):
 def test_open_sets_the_heartbeat_window_and_the_stream_on_every_axis(make):
     stage = make()
     for axis in AXES:
-        assert wait_for(lambda a=axis: {"HOSTTIMEOUT 1000", "STREAM 20"}
+        assert wait_for(lambda a=axis: {"HOSTTIMEOUT 1000", "STREAM 20", "LOG 2"}
                         <= set(received(stage, a)), 2.0), received(stage, axis)
     # And the heartbeat keeps every board inside it.
     assert wait_for(lambda: all(len(received(stage, a, "HB")) >= 2 for a in AXES), 2.0)
@@ -762,3 +763,16 @@ def test_position_source_duck_type_for_the_maps_and_rgb_analysis(make):
     assert stage.position_age is not None and stage.position_age < 1.0
     assert len(stage.velocity) == 3
     assert stage.position_epoch >= 3
+
+
+def test_every_firmware_event_lands_in_the_station_log(make, monkeypatch):
+    """The board's own account of a run (LOG 2's `EVT DBG` lines among it)
+    is kept in the station's log file, never left on the board."""
+    from model import xyz_stage
+    logged = []
+    real = xyz_stage.events.debug
+    monkeypatch.setattr(xyz_stage.events, "debug", lambda title, message, **kw: (
+        logged.append((title, message)), real(title, message, **kw)))
+    stage = make()
+    sim(stage, "Y").emit_raw("EVT DBG driver on cs=9")
+    assert wait_for(lambda: ("Axis Event", "axis Y: DBG driver on cs=9") in logged, 2.0)

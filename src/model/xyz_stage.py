@@ -24,7 +24,7 @@ structure here:
 * A powered mode enables all three or none: one refusal disables the others
   and faults.
 * Each board is asked which axis it is (`AXIS`, and on a real port the
-  identity answer `DEV: t X`); a board on the wrong resource, or untagged,
+  identity answer `DEV: x X`); a board on the wrong resource, or untagged,
   is never enabled.
 * On every link-up the station sets `HOSTTIMEOUT 1000` and `STREAM 20` on
   each axis and keeps every board inside the window with `HB`, so a station
@@ -94,7 +94,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
     """Three axis boards, one per serial link; one gamepad; one mode."""
 
     NAME = "XYZ Stage"
-    IDENTITY = "t"
+    IDENTITY = "x"
     NEEDS_PORT = True
     NEEDS_GAMEPAD = True
     RESOURCES = ("port_x", "port_y", "port_z", "gamepad")
@@ -112,6 +112,11 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
     #: What every board is told at each link-up (SPEC).
     HOST_TIMEOUT_MS = 1000
     STREAM_HZ = 20
+    #: The firmware's log level on open: 2 adds `EVT DBG` lines (each command
+    #: received, driver on/off and configured, where each motion ended).
+    #: Every EVT line lands in the station's log, so the board's own account
+    #: of a run is kept instead of dying on the board.
+    FIRMWARE_LOG_LEVEL = 2
     #: Seconds without a P line, while driven, after which an axis is "not
     #: answering" and the stage is stopped: the Stepper Probe's number
     #: (twenty P periods at 20 Hz).
@@ -586,7 +591,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             return
         self._configured[axis] = link.epoch
         for line in ("AXIS", f"HOSTTIMEOUT {self.HOST_TIMEOUT_MS}",
-                     f"STREAM {self.STREAM_HZ}", "INFO"):
+                     f"STREAM {self.STREAM_HZ}", f"LOG {self.FIRMWARE_LOG_LEVEL}", "INFO"):
             try:
                 link.send(line)
             except TransportError as exc:
@@ -708,7 +713,10 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                              source=self.NAME, every=5.0)
 
     def _on_axis_event(self, axis, text):
-        """One `EVT` line from one axis (without the prefix)."""
+        """One `EVT` line from one axis (without the prefix). Every one is
+        logged as the board said it; the ones the station acts on are also
+        said to the operator below."""
+        events.debug("Axis Event", f"axis {axis}: {text}", source=self.NAME)
         words = text.split()
         kind = words[0].upper() if words else ""
         found = dict(w.split("=", 1) for w in words[1:] if "=" in w)
@@ -742,8 +750,6 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         elif kind == "BOOT":
             self._configured.pop(axis, None)     # it has forgotten every setting
             self._axis_fault(axis, "the board restarted")
-        else:
-            events.debug("Axis Event", f"axis {axis}: {text}", source=self.NAME)
 
     def _axis_fault(self, axis, reason):
         """A fault on one axis halts all three (SPEC): the latch, so a person

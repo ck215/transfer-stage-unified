@@ -3,7 +3,7 @@
 The simulator (`AxisSimulator`) speaks the axis firmware protocol, version 1
 (the lead's SPEC of 2026-10-09): one reply per command (`OK <CMD> k=v ...` or
 `ERR <CMD> reason`), the `P` position stream, `EVT` lines, the identity
-answer `DEV: t X`, the JOGV dead-man, the host-timeout heartbeat window, the
+answer `DEV: x X`, the JOGV dead-man, the host-timeout heartbeat window, the
 limit interlock and a HOME sequence. It is shaped like the pyserial handle
 `SerialPort` drives, so a `"SIM"` port runs the real transport.
 
@@ -20,6 +20,7 @@ import time
 import pytest
 
 from devices.serial_port import SerialPort
+from devices import teensy_axis
 from devices.teensy_axis import AxisSimulator, TeensyAxis
 
 #: The SPEC's P line, field for field: pos and tgt %.5f mm, v %.4f mm/s,
@@ -63,16 +64,16 @@ def fields(line):
 
 # -- identity and the axis tag ------------------------------------------------
 
-def test_identity_query_answers_dev_t_and_the_axis_tag(clock):
+def test_identity_query_answers_dev_x_and_the_axis_tag(clock):
     sim = board(clock, tag="Y")
-    assert sim.ask("S") == ["DEV: t Y"]
+    assert sim.ask("S") == ["DEV: x Y"]
     # The station's scan sends lower-case `s`; commands are case-insensitive.
-    assert sim.ask("s") == ["DEV: t Y"]
+    assert sim.ask("s") == ["DEV: x Y"]
 
 
 def test_an_untagged_board_answers_a_question_mark(clock):
     sim = board(clock, tag=None)
-    assert sim.ask("S") == ["DEV: t ?"]
+    assert sim.ask("S") == ["DEV: x ?"]
     assert sim.ask("AXIS") == ["OK AXIS axis=?"]
 
 
@@ -80,7 +81,7 @@ def test_the_axis_tag_is_queried_stored_and_refused_while_enabled(clock):
     sim = board(clock, tag="X")
     assert sim.ask("AXIS") == ["OK AXIS axis=X"]
     assert sim.ask("AXIS Z") == ["OK AXIS axis=Z stored=1"]
-    assert sim.ask("S") == ["DEV: t Z"]
+    assert sim.ask("S") == ["DEV: x Z"]
     sim.ask("ENABLE")
     assert sim.ask("AXIS Y") == ["ERR AXIS busy"]
     assert sim.ask("AXIS Q") == ["ERR AXIS bad-arg"]
@@ -365,7 +366,7 @@ def test_poll_parses_p_lines_queues_events_and_counts_garbage():
 
 def test_a_real_port_handshake_reports_the_boards_tag(monkeypatch):
     """A port that is not "SIM" runs the full connect: open, the identity
-    query `s`, `DEV: t X`. The simulator stands in for the board."""
+    query `s`, `DEV: x X`. The simulator stands in for the board."""
     monkeypatch.setattr(TeensyAxis, "BOOTLOADER_WAIT", 0.0)
     sim = AxisSimulator("Y")
     link = TeensyAxis("/dev/cu.usbmodemTEST", "X", simulator=sim)
@@ -373,7 +374,7 @@ def test_a_real_port_handshake_reports_the_boards_tag(monkeypatch):
     try:
         assert link.wait_open(2.0)
         assert link.status == "verified"
-        assert link.identity == "t Y"
+        assert link.identity == "x Y"
         assert link.identity_tag == "Y"
         assert b"s\n" in list(sim.writes)
     finally:
@@ -407,3 +408,31 @@ def test_the_simulated_link_is_a_serial_port_handle_with_every_method_it_calls()
         assert callable(getattr(sim, name)), name
     assert hasattr(sim, "in_waiting") and hasattr(sim, "is_open")
     assert not hasattr(sim, "fd")      # _close_serial's TIOCNXCL is for a real tty only
+
+
+# -- the board's own words reach the station's log (lead, 2026-10-09) ------------
+
+def test_the_boards_own_words_are_logged_and_only_garble_is_dropped(monkeypatch):
+    logged = []
+    monkeypatch.setattr(teensy_axis.events, "debug",
+                        lambda title, message, **kw: logged.append((title, message)))
+    link = TeensyAxis("SIM", "X")
+    link.open()
+    try:
+        link.simulator.emit_raw("tmc2209 version=0x21 addr=0")
+        link.simulator.emit_raw("\x00\xffgarble")
+        deadline = time.monotonic() + 1.0
+        while link.dropped == 0 and time.monotonic() < deadline:
+            link.poll()
+            time.sleep(0.01)
+        assert ("Axis Board Says", "tmc2209 version=0x21 addr=0") in logged
+        assert link.dropped == 1
+        assert [t for t, _ in logged if t == "Line Dropped"] == ["Line Dropped"]
+    finally:
+        link.close()
+
+
+def test_the_log_level_is_bounded_like_the_firmwares():
+    sim = AxisSimulator("Y")
+    assert sim.ask("LOG 2") == ["OK LOG level=2"] and sim.log_level == 2
+    assert sim.ask("LOG 3") == ["ERR LOG bad-arg-0|1|2"] and sim.log_level == 2

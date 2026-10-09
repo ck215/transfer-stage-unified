@@ -106,18 +106,19 @@ REQUIRED = {
 COMMAND_KEYS = ("command", "data_command", "source_command", "options_command")
 
 
+def _build(cls):
+    """Setup's call (model_from_config): sim=True and only the resources the
+    class declares, every port* "SIM" and every gamepad* None, so a model
+    with one port per axis is built the way Setup builds it."""
+    if cls in (MinimalModel, PhasedModel):
+        return cls()
+    return cls(sim=True, **{name: ("SIM" if name.startswith("port") else None)
+                            for name in resources_of(cls)})
+
+
 @pytest.fixture(params=sorted(CLASSES), ids=lambda n: n.replace(" ", "_"))
 def model(request):
-    cls = CLASSES[request.param]
-    if cls in (MinimalModel, PhasedModel):
-        built = cls()
-    else:
-        # Setup's call (model_from_config): sim=True and only the resources
-        # the class declares, every port* "SIM" and every gamepad* None, so a
-        # model with one port per axis is built the way Setup builds it.
-        resources = {name: ("SIM" if name.startswith("port") else None)
-                     for name in resources_of(cls)}
-        built = cls(sim=True, **resources)
+    built = _build(CLASSES[request.param])
     built.open()
     try:
         yield built
@@ -409,7 +410,7 @@ def test_window_focus_gates_every_manual_input_device(model):
     `set_gate` is never told."""
     from controller.controller import Controller
     cls = type(model)
-    fresh = cls() if cls in (MinimalModel, PhasedModel) else cls(port="SIM", gamepad=None, sim=True)
+    fresh = _build(cls)
     station = Controller()
     station.add("under test", fresh)
     try:
@@ -443,7 +444,7 @@ def test_loops_are_stopped_by_the_base_join(model):
 
 def test_close_leaves_no_spawned_loop_running(model):
     cls = type(model)
-    fresh = cls() if cls in (MinimalModel, PhasedModel) else cls(port="SIM", gamepad=None, sim=True)
+    fresh = _build(cls)
     fresh.open()
     spawned = list(fresh._spawned_threads())
     fresh.close()
