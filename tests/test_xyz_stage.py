@@ -425,6 +425,22 @@ def test_open_sets_the_heartbeat_window_and_the_stream_on_every_axis(make):
     assert wait_for(lambda: all(len(received(stage, a, "HB")) >= 2 for a in AXES), 2.0)
 
 
+@pytest.mark.parametrize("info", ["axis=Y fw=stepper_validator proto=1",
+                                  "axis=Y fw=xyz_stage_axis proto=2",
+                                  "axis=Y protocol=1"])
+def test_a_board_not_running_this_firmware_and_protocol_is_refused(make, info):
+    """R-6: INFO must say fw=xyz_stage_axis proto=1. The bench validator, a
+    newer protocol or an old board answers HOSTTIMEOUT and STREAM too, so
+    those alone never prove it; nothing is enabled."""
+    stage = make(opened=False)
+    board = sim(stage, "Y")
+    board._cmd_info = lambda command, args: board._ok(command, info)
+    stage.open()
+    result = stage.run("set_mode", None, ("autonomous",))
+    assert result.is_refused and "Axis Y" in result.reason and "xyz_stage_axis" in result.reason
+    assert not any(received(stage, axis, "ENABLE") for axis in AXES)
+
+
 def test_a_board_without_the_v1_commands_is_refused(make):
     stage = make(opened=False)
     board = sim(stage, "Y")

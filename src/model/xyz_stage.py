@@ -111,6 +111,8 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
     HEARTBEAT_INTERVAL = 0.25    # HB to each board: four inside the 1 s window
     #: What every board is told at each link-up (SPEC).
     HOST_TIMEOUT_MS = 1000
+    #: What INFO must say before an axis is enabled (review R-6).
+    FIRMWARE, PROTOCOL = "xyz_stage_axis", "1"
     STREAM_HZ = 20
     #: The firmware's log level on open: 2 adds `EVT DBG` lines (each command
     #: received, driver on/off and configured, where each motion ended).
@@ -383,6 +385,18 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                     self._refuse(f"Axis {axis} did not accept {line} ({reply.why}). "
                                  "Its firmware may not be the XYZ Stage's "
                                  "(protocol 1): flash it, then try again.")
+            # R-6: answering HOSTTIMEOUT and STREAM is no proof (the bench
+            # validator does too); INFO names the sketch and its protocol.
+            info = link.last_reply("INFO")
+            if info is None or not info.ok:
+                info = self._request(link, "INFO")
+            found = info.fields if info.ok else {}
+            if (found.get("fw"), found.get("proto")) != (self.FIRMWARE, self.PROTOCOL):
+                self._refuse(f"Axis {axis} is not running the XYZ Stage's firmware "
+                             f"(it says fw={found.get('fw', '?')} proto="
+                             f"{found.get('proto', '?')}; this station needs "
+                             f"fw={self.FIRMWARE} proto={self.PROTOCOL}). Flash it "
+                             "from Settings, then try again.")
             deadline = time.monotonic() + self.READY_WAIT
             while link.p_time is None and time.monotonic() < deadline:
                 self._poll(link, blocking=False)
