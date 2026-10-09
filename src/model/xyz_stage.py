@@ -131,6 +131,9 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
     #: An axis with a tiny share of a vector Step still gets a speed the
     #: firmware can parse (0.001 mm/s); its share of the path is tiny too.
     AXIS_SPEED_FLOOR_UM_S = 1.0
+    #: ... and an acceleration it can parse (the board clamps it up to its
+    #: own MIN_ACCEL_MM, 0.25 mm/s^2).
+    AXIS_ACCEL_FLOOR_MM_S2 = 0.001
     #: A stick level this close to 0 is neutral.
     JOG_DEADBAND = 1e-3
     #: Home all (provisional): Z first (clear of the work), then X and Y.
@@ -184,6 +187,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         self._configured = {}        # axis -> link epoch the config went out for
         self._checked = {}           # axis -> link epoch whose tag was checked
         self._reported = {}          # axis -> link epoch whose board problem was announced
+        self._accel_warned = {}      # axis -> link epoch whose ignored per-move ACCEL was announced
         #: axis -> sequence number of its MOVE reply, for the Step in flight.
         self._step_seq = {}
         #: axis -> None | "starting" | "running": a HOME this model started.
@@ -931,9 +935,11 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
     # -- motion: the autonomous Step -------------------------------------------------------
     def step(self):
         """One relative move of (x_dist, y_dist, z_dist) um at the vector
-        speed: each axis gets |d_i| / |d| of it, so all three arrive
-        together. Available while AUTO (repeated stepping); refused while a
-        move is in flight."""
+        speed: each axis gets |d_i| / |d| of the speed and of the boards'
+        ACCEL (`_step_accel`), so every axis runs the same trapezoid scaled
+        to its distance and all three arrive together on the straight line
+        (the speed share alone does that only at cruise). Available while
+        AUTO (repeated stepping); refused while a move is in flight."""
         self._guard("Step")
         if self.is_moving:
             self._refuse("The stage is still moving. Wait for it to stop, then "
@@ -944,11 +950,15 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             self._refuse("Every target distance is 0. Set a distance, then step.")
         speed = self._number("full_speed")
         self._set_mode(StageMode.AUTO, "step", quiesce=False)
+        accel = self._step_accel([axis for axis, distance in moves.items() if distance])
         lines = {}
         for axis, distance in moves.items():
             if distance:
-                share = max(abs(distance) / length * speed, self.AXIS_SPEED_FLOOR_UM_S)
+                ratio = abs(distance) / length
+                share = max(ratio * speed, self.AXIS_SPEED_FLOOR_UM_S)
                 lines[axis] = f"MOVE {distance / 1000:.4f} {share / 1000:.4f}"
+                if accel is not None:
+                    lines[axis] += f" {max(ratio * accel, self.AXIS_ACCEL_FLOOR_MM_S2):.4f}"
         # R-8's class: each MOVE is gated inside its write lock, so a mode
         # change or a stop between the checks above and the write cannot
         # start an axis outside AUTO (where the watchdog is off).
@@ -966,8 +976,44 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                          "axes were stopped.")
         self._step_seq = {axis: reply.seq for axis, reply in replies.items()}
         self._touch_activity()
-        events.debug("Step", f"{lines} at {speed} um/s", source=self.NAME)
+        if accel is not None:
+            self._warn_if_accel_ignored(replies)
+        events.debug("Step", f"{lines} at {speed} um/s, ACCEL {accel} mm/s^2",
+                     source=self.NAME)
         return list(self.position)
+
+    def _step_accel(self, axes):
+        """The one ACCEL a vector Step scales, mm/s^2: the lowest the moving
+        boards report in INFO (`accel_mm_s2`), so no axis ramps harder than
+        its own board is set to. None when one of them has not said: the
+        Step then goes with the speed share alone (the station never invents
+        a bench value)."""
+        found = []
+        for axis in axes:
+            reply = self.axes[axis].last_reply("INFO")
+            try:
+                value = float(reply.fields["accel_mm_s2"])
+            except (AttributeError, KeyError, ValueError):
+                return None
+            if not reply.ok or not math.isfinite(value) or value <= 0:
+                return None
+            found.append(value)
+        return min(found) if found else None
+
+    def _warn_if_accel_ignored(self, replies):
+        """A board whose MOVE reply does not echo `accel_mm_s2` runs firmware
+        from before the per-move acceleration: it took the MOVE and ramps at
+        its own ACCEL. Said once per link."""
+        for axis, reply in replies.items():
+            epoch = self.axes[axis].epoch
+            if "accel_mm_s2" in reply.fields or self._accel_warned.get(axis) == epoch:
+                continue
+            self._accel_warned[axis] = epoch
+            events.warn("Axis Firmware Out Of Date", f"Axis {axis} of the {self.NAME} "
+                        "ignored the Step's acceleration: its firmware predates it, so "
+                        "the axes of a Step can arrive apart and leave the straight "
+                        "line. Flash the XYZ Stage firmware from Settings.",
+                        source=self.NAME)
 
     def _send_together(self, lines, *, abort_if):
         """{axis: line} written back to back, then every reply collected, so

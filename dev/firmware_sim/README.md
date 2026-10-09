@@ -16,7 +16,10 @@ dev/firmware_sim/run.sh /tmp/sim-validator /tmp/sim-logs-v
 
 `expected-station.txt` and `expected-validator.txt` are the passing runs at
 the fix (14 of 14 each). Before the fix both sketches failed 8 of 14, seven by
-driving into the hard stop. Set `ACCELSTEPPER_SRC` if AccelStepper is not in
+driving into the hard stop. The station sketch has a fifteenth scenario,
+`move-accel-coarrival` (2026-10-09: MOVE/MOVETO's optional per-move
+acceleration, and how close a vector Step's axes arrive with it); the
+validator, which has no per-move speed or acceleration, does not list it. Set `ACCELSTEPPER_SRC` if AccelStepper is not in
 `~/Documents/Arduino/libraries`. Build output goes beside the binary you name
 and in `obj/` here (ignored). Run it after any change to a sketch's interlock,
 HOME or host-timeout code. It is a host model: bench checks stay the owner's.

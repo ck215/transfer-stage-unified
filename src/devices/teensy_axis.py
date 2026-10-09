@@ -412,6 +412,9 @@ class AxisSimulator:
     MAX_SPEED_MM_S = 2.5
     DEFAULT_SPEED_MM_S = 0.5
     DEFAULT_ACCEL_MM_S2 = 2.5
+    #: ACCEL's clamp (MIN_ACCEL_MM, MAX_ACCEL_MM), which MOVE's per-move
+    #: acceleration shares.
+    ACCEL_RANGE_MM_S2 = (0.25, 25.0)
     MAX_CURRENT_MA = 1000
     JOG_TIMEOUT_MS = 250
     DEFAULT_HOST_TIMEOUT_MS = 2500
@@ -482,6 +485,8 @@ class AxisSimulator:
         self._v = 0.0
         self._target = None          # counter mm
         self._cruise = None
+        #: A MOVE's own acceleration (mm/s^2), until that motion is at rest.
+        self._ramp = None
         self._jog = None             # mm/s, signed; 0.0 = decelerating to rest
         self._jog_capped = False     # the jog was started while a switch was parked
         self._last_jog = now
@@ -543,6 +548,11 @@ class AxisSimulator:
     def _home_level(self):
         edge = self.home_edge_mm
         return 1 if edge is not None and self._phys >= edge else 0
+
+    def _accel(self):
+        """The ramp in force: a MOVE's own acceleration while that motion
+        lasts (a STOP decelerates at it too), else ACCEL."""
+        return self._ramp or self.accel_mm_s2
 
     def _busy(self):
         return (self._target is not None or self._homing is not None
@@ -792,7 +802,7 @@ class AxisSimulator:
         """Stop at once (the ISR halt); ESTOP and DISABLE also power down."""
         self._abort_home(why)
         self._v = 0.0
-        self._target = self._cruise = self._jog = None
+        self._target = self._cruise = self._jog = self._ramp = None
         if disable:
             self.enabled = False
 
@@ -866,7 +876,7 @@ class AxisSimulator:
         value = self._float(args, 0)
         if value is None or value <= 0:
             return self._err(command, "bad-arg")
-        self.accel_mm_s2 = min(max(value, 0.25), 25.0)
+        self.accel_mm_s2 = min(max(value, self.ACCEL_RANGE_MM_S2[0]), self.ACCEL_RANGE_MM_S2[1])
         self._ok(command, f"accel_mm_s2={self.accel_mm_s2:.4f} "
                           f"clamped={int(self.accel_mm_s2 != value)} applies=now")
 
@@ -915,6 +925,14 @@ class AxisSimulator:
         speed = self._float(args, 1) if len(args) > 1 else None
         if value is None or (len(args) > 1 and (speed is None or speed <= 0)):
             return self._err(command, "bad-arg")
+        accel = None                 # MOVE <mm> [mm_s [mm_s2]]: an acceleration for this move only
+        if len(args) > 2:
+            accel = self._float(args, 2)
+            if accel is None or accel <= 0:
+                return self._err(command, "bad-accel")
+            low, high = self.ACCEL_RANGE_MM_S2
+            accel_clamped = not low <= accel <= high
+            accel = min(max(accel, low), high)
         here = self._counter()
         distance = value - here if absolute else value
         clamped = abs(distance) > self.MAX_MOVE_MM
@@ -929,7 +947,11 @@ class AxisSimulator:
                 return self._err(command, why)
             self._target = target
             self._cruise = min(speed or self.speed_mm_s, self.MAX_SPEED_MM_S)
-        self._ok(command, f"mm={distance:.5f} target_mm={target:.5f} clamped={int(clamped)}")
+            self._ramp = accel
+        detail = f"mm={distance:.5f} target_mm={target:.5f} clamped={int(clamped)}"
+        if accel is not None:
+            detail += f" accel_mm_s2={accel:.4f} accel_clamped={int(accel_clamped)}"
+        self._ok(command, detail)
 
     def _cmd_moveto(self, command, args):
         self._cmd_move(command, args, absolute=True)
@@ -962,6 +984,7 @@ class AxisSimulator:
         if not keep:
             self._jog_capped = self._parked(0) or self._parked(1)
         self._jog = velocity
+        self._ramp = None                            # a jog ramps at ACCEL
         self._last_jog = self.clock()
         self._ok(command, echo(velocity, clamped))
 
@@ -1097,7 +1120,7 @@ class AxisSimulator:
             return self._homing["dir"] * self._homing["speed"]
         if self._target is not None:
             remaining = self._target - self._counter()
-            stopping = math.sqrt(2.0 * self.accel_mm_s2 * abs(remaining))
+            stopping = math.sqrt(2.0 * self._accel() * abs(remaining))
             speed = min(self._cruise, max(stopping, min(self._cruise, 0.005)))
             return math.copysign(speed, remaining)
         if self._jog is not None:
@@ -1109,7 +1132,7 @@ class AxisSimulator:
             self._v = 0.0
             self._target = self._cruise = self._jog = None
         wanted = self._desired_velocity()
-        step = self.accel_mm_s2 * dt
+        step = self._accel() * dt
         if self._homing is not None:
             self._v = wanted                         # homing speeds are slow
         elif self._v < wanted:
@@ -1126,6 +1149,8 @@ class AxisSimulator:
                 self._target = self._cruise = None
         if self._jog == 0.0 and self._v == 0.0:
             self._jog = None
+        if self._ramp is not None and self._target is None and self._jog is None and self._v == 0.0:
+            self._ramp = None                        # at rest: the board's ACCEL is back
         self._limit_isr()
         level = self._home_level()
         if level != self._home_was:
@@ -1174,7 +1199,7 @@ class AxisSimulator:
         if not halt:
             return
         self._v = 0.0                                # zero speed, target here
-        self._target = self._cruise = self._jog = None
+        self._target = self._cruise = self._jog = self._ramp = None
         pos = self._quantize(self._counter())
         for i in (0, 1):
             if not tripped[i]:

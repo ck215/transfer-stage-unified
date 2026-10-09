@@ -99,3 +99,25 @@ jog-off then jog/MOVE back; first trips; TEST LIMITS and HOME; both tripped at b
 into (normal, deep in the overtravel, short overtravel, ZERO and MICROSTEPS while parked); host timeout with and
 without the host returning; DTR drop; a release at rest followed by chatter. The pre-fix sketches fail 8 of 14 (into
 the hard stop at 0.5 mm/s in seven); the fixed ones pass 14 of 14. Not run on hardware.
+
+## 2026-10-09: per-move acceleration for MOVE and MOVETO (co-arrival of a vector Step)
+
+The station's vector Step gives each axis `|d_i|/|d| x speed`, so the axes arrive together at cruise. All three
+boards ramp at one ACCEL, though, so on any move that ramps the shorter legs finish first and the path bows (host
+simulation, a 0.6 x 0.2 mm Step at 2.5 mm/s: 421 ms apart, 96 um off the straight line).
+
+| Where | Change | Why |
+| --- | --- | --- |
+| `handleLine` | A third argument is tokenised (`a3`, upper-cased like the others; the LOG 2 `rx` line shows it). Every command but MOVE and MOVETO ignores it, as before. | MOVE/MOVETO `<mm> [mm_s [mm_s2]]`. |
+| MOVE, MOVETO | `mm_s2` sets the acceleration for this move only: not a number above 0 -> `ERR <cmd> bad-accel` (nothing moves); clamped to `MIN_ACCEL_MM..MAX_ACCEL_MM` (0.25..25, ACCEL's bounds); the reply appends `accel_mm_s2= accel_clamped=`; `g_applyPending` puts the board's SPEED and ACCEL back once the move has stopped. | The station sends `|d_i|/|d| x ACCEL` with the speed share, so every axis runs the same trapezoid scaled. A two-argument MOVE, its reply and REVS are byte-for-byte unchanged. |
+
+Bench values are unchanged (`DEFAULT_ACCEL_MM`, `MIN_ACCEL_MM`, `MAX_ACCEL_MM`, speeds). The validator has no
+per-move speed or acceleration and is unchanged.
+
+Verification: `arduino-cli compile --warnings all`, zero warnings: Teensy 3.5 90692 bytes flash, 5876 bytes RAM;
+Teensy 4.1 code 79284, data 13256, RAM1 variables 15424, RAM2 variables 12416. `dev/firmware_sim` scenario
+`move-accel-coarrival` (22 checks: red 12 on the sketch before this change, green after; the other 14 scenarios still
+pass, and the validator's 14): the same Step finishes 41 ms apart and 8 um off the line (23 ms and 3 um at 0.5 mm/s,
+was 128 ms and 10 um). What is left is AccelStepper's ramp start (PROTOCOL.md, "Per-move acceleration"). After a
+per-move-acceleration move, by arrival or by STOP, a two-argument MOVE takes exactly as long as before one; INFO's
+`accel_mm_s2` is unchanged; out-of-range values are clamped and bad ones refused. Not run on hardware.

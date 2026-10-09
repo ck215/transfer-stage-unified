@@ -124,10 +124,14 @@ def record_writes(stage):
     return seen
 
 
+#: The fastest ramp a board accepts (the firmware's MAX_ACCEL_MM), mm/s^2.
+FAST_ACCEL = AxisSimulator.ACCEL_RANGE_MM_S2[1]
+
+
 def fast(stage):
     for link in stage.axes.values():
         if link.simulator is not None:
-            link.simulator.accel_mm_s2 = 1000.0
+            link.simulator.accel_mm_s2 = FAST_ACCEL
     return stage
 
 
@@ -782,9 +786,10 @@ def test_a_step_gives_each_axis_its_share_of_the_vector_speed(make):
                                 "full_speed": 1000})
     assert result.is_ok, result
     assert stage.mode is StageMode.AUTO
-    # |d| = 500 um; X gets 300/500 of 1000 um/s, Y 400/500; Z does not move.
-    assert received(stage, "X", "MOVE") == ["MOVE 0.3000 0.6000"]
-    assert received(stage, "Y", "MOVE") == ["MOVE -0.4000 0.8000"]
+    # |d| = 500 um; X gets 300/500 of 1000 um/s and of the boards' ACCEL
+    # (25 mm/s^2 here), Y 400/500; Z does not move.
+    assert received(stage, "X", "MOVE") == ["MOVE 0.3000 0.6000 15.0000"]
+    assert received(stage, "Y", "MOVE") == ["MOVE -0.4000 0.8000 20.0000"]
     assert received(stage, "Z", "MOVE") == []
     assert stage.is_moving
     assert wait_for(lambda: not stage.is_moving, 3.0)
@@ -806,6 +811,92 @@ def test_the_axes_of_a_step_arrive_together(make):
 
     assert wait_for(note, 3.0)
     assert max(finished.values()) - min(finished.values()) < 0.12
+
+
+def _boards_at(make, accel):
+    """A stage whose three boards ramp at `accel` mm/s^2 (INFO says so)."""
+    stage = make(opened=False)
+    for axis, value in zip(AXES, accel):
+        sim(stage, axis).accel_mm_s2 = value
+    stage.open()
+    return stage
+
+
+def _finish_times(stage, axes):
+    """{axis: when its P stream first said it stopped, away from 0}."""
+    finished = {}
+
+    def note():
+        for axis in axes:
+            p = stage.axes[axis].p
+            if axis not in finished and p and not p["mv"] and p["pos"] != 0:
+                finished[axis] = time.monotonic()
+        return len(finished) == len(axes)
+
+    assert wait_for(note, 5.0), finished
+    return finished
+
+
+def test_a_step_scales_each_axis_ramp_too_so_a_short_diagonal_arrives_together(make):
+    """Item 3: a short diagonal at full speed, at the boards' own ACCEL (2.5
+    mm/s^2, the firmware's boot value): each axis gets |d_i|/|d| of the speed
+    AND of ACCEL, so every axis runs the same trapezoid scaled. With the
+    speed share alone they ramp alike and X finishes ~0.4 s after Y."""
+    stage = _boards_at(make, (2.5, 2.5, 2.5))
+    result = stage.run("step", {"x_dist": 600, "y_dist": 200, "z_dist": 0,
+                                "full_speed": 2500})
+    assert result.is_ok, result
+    assert received(stage, "X", "MOVE") == ["MOVE 0.6000 2.3717 2.3717"]
+    assert received(stage, "Y", "MOVE") == ["MOVE 0.2000 0.7906 0.7906"]
+    finished = _finish_times(stage, ("X", "Y"))
+    assert abs(finished["X"] - finished["Y"]) < 0.12, finished
+    assert stage.position[0] == pytest.approx(600.0, abs=0.7)
+    assert stage.position[1] == pytest.approx(200.0, abs=0.7)
+
+
+def test_a_step_scales_the_gentlest_moving_boards_accel(make):
+    """No axis ramps harder than its own board is set to: the Step scales
+    the lowest ACCEL among the boards that move (Z, still, does not count)."""
+    stage = _boards_at(make, (2.5, 1.0, 0.5))
+    assert stage.run("step", {"x_dist": 300, "y_dist": -400, "z_dist": 0,
+                              "full_speed": 1000}).is_ok
+    assert received(stage, "X", "MOVE") == ["MOVE 0.3000 0.6000 0.6000"]
+    assert received(stage, "Y", "MOVE") == ["MOVE -0.4000 0.8000 0.8000"]
+
+
+def test_a_board_that_has_not_said_its_accel_gets_the_two_argument_move(make):
+    """The station never invents a bench value: without INFO's accel_mm_s2
+    from every moving board, the Step goes as before, speed share only."""
+    stage = make(opened=False)
+    board = sim(stage, "Y")
+    real = board._cmd_info
+
+    def info(command, args):
+        real(command, args)
+        board._out[:] = board._out.replace(b" accel_mm_s2=", b" accel=")
+
+    board._cmd_info = info
+    stage.open()
+    assert stage.run("step", {"x_dist": 300, "y_dist": -400, "full_speed": 1000}).is_ok
+    assert received(stage, "X", "MOVE") == ["MOVE 0.3000 0.6000"]
+    assert received(stage, "Y", "MOVE") == ["MOVE -0.4000 0.8000"]
+
+
+def test_a_board_that_ignores_the_accel_is_reported_once(make):
+    """A board on firmware from before the per-move acceleration takes the
+    MOVE and ignores the third argument; its reply has no accel_mm_s2. The
+    operator is told once per link that its Step can arrive apart."""
+    stage = make()
+    board = sim(stage, "Y")
+    real = board._cmd_move
+    board._cmd_move = lambda command, args, absolute=False: real(command, args[:2], absolute)
+    with Collected() as seen:
+        assert stage.run("step", {"x_dist": 300, "y_dist": 400, "full_speed": 1000}).is_ok
+        assert wait_for(lambda: not stage.is_moving, 3.0)
+        assert stage.run("step").is_ok
+    warned = [e for e in seen.of("warning") if "Axis Y" in e.message and "firmware" in e.message]
+    assert len(warned) == 1, seen.text("warning")
+    assert not [e for e in seen.of("warning") if "Axis X" in e.message]
 
 
 def test_a_step_is_refused_while_moving_and_repeats_once_arrived(make):
