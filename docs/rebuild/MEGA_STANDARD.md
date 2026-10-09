@@ -173,5 +173,5 @@ from one constants block.
 - Parked jog-off on each switch, then the 0.5 mm budget.
 - HOME per axis, and its repeatability.
 - The 10 s host-silent disable.
-- An old station build drives the board as a plain Stepper-Probe-protocol
-  board (no `#` bytes).
+- With no `#` command sent, frames, jog packets, `e`/`d` and the POS stream
+  behave exactly as on the Stepper Probe.
