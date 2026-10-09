@@ -4065,6 +4065,44 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
 
 
 @needs_browser
+def test_o15_the_pin_does_not_flicker_at_the_limit(sim_station, tmp_path):
+    """O15: at 800 tall the XYZ Stage's tier 1 (435 px unpinned, 460 pinned)
+    sits next to the pin limit (445.8 px). The decision measures tier 1 as
+    it would be unpinned, so the pinned state never changes over 2.5 s,
+    through resizes that re-run it."""
+    view, controller = sim_station
+    out = _browse(view, r"""
+      await page.setViewport({ width: 1400, height: 800 });
+      await until(() => document.querySelector('#model-nav [data-model="XYZ Stage"]'), 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await page.click('#model-nav [data-model="XYZ Stage"]');
+      await until(() => document.querySelector('.card.is-opened .disclosure[data-tier="3"]'), 8000);
+      await sleep(500);
+      await page.evaluate(() => {
+        const c = document.querySelector('.card.is-opened');
+        window.__pinFlips = 0;
+        window.__pinStart = c.classList.contains('is-pinned');
+        new MutationObserver(() => {
+          const now = c.classList.contains('is-pinned');
+          if (now !== window.__pinLast) window.__pinFlips++;
+          window.__pinLast = now;
+        }).observe(c, { attributes: true, attributeFilter: ['class'] });
+        window.__pinLast = window.__pinStart;
+      });
+      for (let i = 0; i < 10; i++) {
+        await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+        await sleep(250);
+      }
+      return await page.evaluate(() => ({ flips: window.__pinFlips, start: window.__pinStart,
+        end: document.querySelector('.card.is-opened').classList.contains('is-pinned') }));
+    """, tmp_path)
+    assert out["flips"] == 0 and out["start"] == out["end"], out
+    assert out["end"], "tier 1 (435 px) is under the 445.8 px limit: pinned"
+
+
+@needs_browser
 def test_o16_one_word_per_stop_and_marks_that_differ_by_shape(two_probes, tmp_path):
     """O16 (PM8-8, A11Y-6, WDG8-7/9): the per-model switch reads "Stop this
     model" and, latched, "Stopped"; the rail's stopped mark is a square and
