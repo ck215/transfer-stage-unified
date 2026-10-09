@@ -162,7 +162,8 @@ def test_the_out_of_date_rule_is_the_scripts_own(tree, stamp):
     line = next(l for l in done.stdout.splitlines() if l.startswith("Needs flashing"))
     scripts = line.split(":", 1)[1].strip().split(", ")
     result = check.check()
-    assert result["to_flash"] == scripts == ["DC Probe", "Chuck Positioner", "XYZ Stage"]
+    assert result["to_flash"] == scripts == ["DC Probe", "Chuck Positioner", "XYZ Stage",
+                                             "XYZ Stage (Mega)"]
     assert stamp.read_text() == before
 
 
@@ -477,10 +478,11 @@ def test_after_a_stable_flash_every_station_board_is_out_of_date(tmp_path, stamp
     assert flashed["ok"]
     assert {e["channel"] for e in json.loads(stamp.read_text()).values()} == {"stable"}
     result = checker(station, stamp).check()
-    # The XYZ Stage is station-only: stable never flashes it, so here it was
-    # never flashed rather than out of date.
+    # The XYZ Stage and the XYZ Stage (Mega) are station-only: stable never
+    # flashes them, so here they were never flashed rather than out of date.
     assert {b: s for b, s in result["boards"].items()} == dict(
-        {b: fw.OUT_OF_DATE for b in flashing.STABLE_BOARDS}, **{"XYZ Stage": fw.NEVER})
+        {b: fw.OUT_OF_DATE for b in flashing.STABLE_BOARDS},
+        **{"XYZ Stage": fw.NEVER, "XYZ Stage (Mega)": fw.NEVER})
     assert result["to_flash"] == list(fw.BOARDS)
 
 

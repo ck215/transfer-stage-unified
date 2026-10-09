@@ -24,11 +24,14 @@ import pytest
 
 from controller.firmware import BOARDS
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
+from model.xyz_stage_mega import XyzStageMega
 
 REPO = Path(__file__).resolve().parents[1]
 FIRMWARE = REPO / "firmware"
 
-PROBES = (StepperProbe, DCProbe, ChuckPositioner)
+#: The XYZ Stage (Mega) speaks the Stepper Probe's frame protocol byte for
+#: byte (MEGA_STANDARD section 1): its sketch must handle `d`, `e`, `s`.
+PROBES = (StepperProbe, DCProbe, ChuckPositioner, XyzStageMega)
 
 KILL_COILS = ord("k")   # 0x6B
 
