@@ -1,7 +1,10 @@
 # Equipment test kit
 
 Bench tools for checking stage hardware one axis at a time, before it joins
-the station. Nothing here is part of the app: the station's flash and
+the station. This folder is the kit's only home: every later addition to it
+(a new sketch, diagnostic, GUI or wiring sheet) lands here under `dev/`,
+never as a loose copy elsewhere. The first bench copy lived in `~/Downloads`
+until 2026-10-09 and has been retired. Nothing here is part of the app: the station's flash and
 packaging pipeline reads `firmware/` only, so these sketches are never
 flashed by Setup and never shipped in a release.
 
@@ -14,6 +17,8 @@ flashed by Setup and never shipped in a release.
 | `stepper_validator/stage_db9_wiring.html` | The stage's own DB9 pinout sheet, with our annotations. Its pin 4 vs pin 5 contradiction for the limit-switch return is called out; settle it with the meter check in `wiring.html`. |
 | `diagnostics/uart_diag/` | Tries the driver UART both ways (single-wire half-duplex, then TX/RX) at addresses 0-3 and prints the raw bytes. Driver held off. |
 | `diagnostics/limits_diag/` | Prints the raw level of Teensy pins 5-9 every 100 ms with no pull, pull-up and pull-down, so a switch press or a blocked slot shows as a state change. Driver held off. |
+| `reference/42BYGH613-01B_motor_datasheet.jpg` | The axis motor's datasheet (the seller's listing image): 1.8 deg, 1.7 A, 1.5 ohm, 3.2 mH, 0.4 N.m; leads black/green = A, red/blue = B. The source of the driver current limits. |
+| `reference/xyz_stage_db9_schematic.jpg` | The stage vendor's DB9 schematic (listing image): limit switches, photo-interrupter (200 ohm LED resistor, 5 V 15 mA) and motor on the nine pins. `stage_db9_wiring.html` is our annotated reading of it. |
 
 ## Flashing (arduino-cli with the Teensy core)
 

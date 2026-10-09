@@ -1,6 +1,8 @@
 # Changes from stepper_validator.ino
 
-Base: `~/Downloads/stepper-motor-validator/stepper_validator/stepper_validator.ino` (sha1 a0d42374, 939 lines), copied
+Base: the bench validator, which now lives at
+`dev/equipment_test/stepper_validator/stepper_validator/stepper_validator.ino`. It was copied from the pre-repo
+bench copy (sha1 a0d42374, 939 lines; the repo copy differs from it only in one comment)
 unedited, then changed as below. The motion core is untouched: the 25 us step ISR, the limit interlock with learned
 ends, the TMC2209 configuration and driver-reset re-configure, the R-1..R-8 fixes, the `extern "C" _write` fix and
 `DRIVER_HALF_DUPLEX = true`. No validator command, reply key or line format was removed or renamed.
