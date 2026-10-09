@@ -113,13 +113,16 @@ To begin using the system in any operational mode, the **Enable System** button 
 
 This mode is used to move the probe by fixed, precise step amounts. Ensure **Enable System** has been clicked prior to attempting stepping.
 
-- **Step Sizes**: This applies a multiplier to the input. The minimum verified step size for each system is as follows:
-  > - **Stepper**: `4` (approximately 2.5 micrometers). For example, with a step size of 5, an input of 100 steps will move the probe 500 counts. (The firmware runs 8 *microsteps* per full step, and a full step is 5 microns, so one count is 0.625 microns.)
-  > - **DC**: UNVERIFIED
-  > - **Chuck**: UNVERIFIED
-- **Relative Step Counts**: Enter the desired X, Y, and Z step increments. The probe will move to the resulting coordinate. 
+- **Stepper Probe (µm)**: since 2026-10-09 the Stepper Probe speaks physical units. Each count is 0.625 µm: the firmware runs 8 *microsteps* per full step, and a full step is 5 µm. This scale is unverified until the lead screw is measured, and the page says so.
+  - **Target dist** is the distance the probe moves, in µm. It already includes the step size, and the small line beneath says how many steps that is.
+  - **Step size** (under Configure) is in µm. It is one D-pad or bumper press, and also the unit the board counts a Step in. Changing it keeps the typed target.
+  - Distances are rounded to whole step sizes, and the box shows the distance actually achieved.
+  - One Step moves an axis at most 32767 steps (about 20.48 mm). Beyond that the board's count would wrap, so the station refuses the Step.
+  - **Autonomous speed** is in µm/s, up to 2000 µm/s (3200 steps/s), with the steps/s in small type beneath.
+- **Step Sizes (DC and Chuck)**: a multiplier on the input, in steps. The minimum verified step size is UNVERIFIED for both.
+- **Relative Step Counts (DC and Chuck)**: enter the desired X, Y and Z step increments. The probe moves to the resulting coordinate.
   > **Note**: Diagonal (multi-axis) movement is unverified. Restrict movement to a single axis at a time.
-- **Autonomous Speed**: Sets the constant speed of the probe during movement, as a percent of the device's ceiling (stepper 3200 steps/s, chuck 600 steps/s); the steps per second it means appear in small type under the dial.
+- **Autonomous Speed (Chuck)**: a percent of the device's ceiling (600 steps/s), with the steps per second it means in small type under the dial.
 - **Execution**: Click **Start Stepping** to send the command. The probe will move first in the x, then y, then z directions in successive order. If a field is left at zero, no steps will occur in that direction. 
 
 > **Important**: Once a command is sent, it cannot be updated. To correct a mistake, click **FULL STOP**, wait for the probe to stop completely, and send a new command.
@@ -129,7 +132,7 @@ This mode is used to move the probe by fixed, precise step amounts. Ensure **Ena
 Manual mode allows for real-time movement of the stages using the Xbox controller or Thrustmaster Joystick. Ensure **Enable System** has been clicked prior to attempting joystick inputs.
 
 - **Input Controls**: Use the analog thumbsticks to move along the X (left thumbstick) and Y (right thumbstick) axes. Use the analog triggers to move along the Z axis; left trigger to raise, right trigger to lower the probe. The D-pad and bummpers an also be used for discrete directional inputs in the x/y and z directions, respectively.
-- **Speed Limits**: The maximum speed during manual operation is determined by the **Manual Speed** dial. For Stepper and Chuck controllers, this is a percent of the device's ceiling (stepper 3200 steps/s, chuck 600 steps/s), with the steps per second shown beneath. For DC controllers, this sets the maximum *PWM* signal on a scale from 30 to 255. Lower values may be possible, but are not officially supported on the DC probe and may result in stalling.
+- **Speed Limits**: The maximum speed during manual operation is determined by the **Manual Speed** dial. For the Stepper it is in µm/s, up to 2000 µm/s (3200 steps/s). For the Chuck it is a percent of the ceiling (600 steps/s). Both show the steps per second beneath. For DC controllers, this sets the maximum *PWM* signal on a scale from 30 to 255. Lower values may be possible, but are not officially supported on the DC probe and may result in stalling.
 - **Stopping**: To halt continuous movement from the controller, click the **Full Stop** button. This will stop the system from reading controller inputs and halt the motors safely.
 
 ## Temperature Controller
