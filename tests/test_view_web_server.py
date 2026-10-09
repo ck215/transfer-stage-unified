@@ -1789,7 +1789,7 @@ def sim_station():
     signed = setup.run("sign_in", {"account_email": "sim@uci.edu",
                                    "account_password": "correct-horse-4821"})
     assert signed.is_ok, signed.reason
-    assert len(setup.launch()) == 8   # + the Transfer Map (Tier S) and the Sample DB
+    assert len(setup.launch()) == 9   # the devices (XYZ Stage 2026-10-09), the Transfer Map (Tier S), the Sample DB
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open(), "the server did not bind an ephemeral port"
     try:
@@ -2723,9 +2723,9 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     assert out["device"]["shown"] == ["Rotator"], out
     after = out["after"]
     assert after["current"] == ["Dashboard"] and "Rotator" not in after["nav"], after
-    # Eight models (Tier S, the Sample DB), one closed; Red Percent is on
-    # the Map's entry (D).
-    assert len(after["shown"]) == 6 and after["wells"] == 0, after
+    # Nine models (Tier S, the Sample DB, the XYZ Stage), one closed; Red
+    # Percent is on the Map's entry (D).
+    assert len(after["shown"]) == 7 and after["wells"] == 0, after
 
 
 # --------------------------------------------------------------------------
@@ -3003,7 +3003,7 @@ def test_every_pressable_is_a_real_target(sim_station, tmp_path):
         assert not small, (key, small)
         short = [t for t in out[key] if t["command"] and t["h"] < 35.5]
         assert not short, (key, short)
-    assert out["setup"]["ticks"] == 0 and out["setup"]["resets"] == 5, out["setup"]
+    assert out["setup"]["ticks"] == 0 and out["setup"]["resets"] == 6, out["setup"]   # one per port row
 
 
 @needs_browser
@@ -4016,16 +4016,17 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
     body stay in view while the details under them scroll."""
     view, controller = sim_station
     out = _browse(view, r"""
-      // 760 tall: the Stepper Probe's tier 1 grew with the Autonomous and
-      // Manual groups (305d047) to ~375 px, past 60% of a 600 px window, so
-      // at 600 it is (rightly, pinOpened's rule) not pinned. At 760 it pins
-      // and tiers 2 and 3 still leave well over 60 px to scroll.
-      await page.setViewport({ width: 1400, height: 760 });
-      await until(() => document.querySelector('#model-nav [data-model="Stepper Probe"]'), 8000);
+      // The XYZ Stage's page at 800 tall: its tier 1 is under 60% of the
+      // window (pinOpened's rule), and tiers 2 and 3 leave over 60 px to
+      // scroll. The Stepper Probe's page no longer can: since its entries
+      // speak um with a steps line beneath (2026-10-09) its tier 1 is ~470 px,
+      // which pins only from ~785 px, and its whole page is ~820 px.
+      await page.setViewport({ width: 1400, height: 800 });
+      await until(() => document.querySelector('#model-nav [data-model="XYZ Stage"]'), 8000);
       if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
         await page.click('#drawer-close'); await sleep(300);
       }
-      await page.click('#model-nav [data-model="Stepper Probe"]');
+      await page.click('#model-nav [data-model="XYZ Stage"]');
       await until(() => document.querySelector('.card.is-opened .disclosure[data-tier="3"]'), 8000);
       await page.click('.card.is-opened .disclosure[data-tier="2"]');
       await page.click('.card.is-opened .disclosure[data-tier="3"]');
@@ -4140,9 +4141,9 @@ def test_o16_under_640_the_chord_hint_and_every_stop_mark_stay_visible(sim_stati
       });
     """, tmp_path)
     assert out["hint"], out
-    # Eight models (Tier S, the Sample DB), seven links: Red Percent's stop
-    # is folded into the Transfer Map's link (D, 2026-09-28).
-    assert len(out["marks"]) == 7 and all(out["marks"]), out
+    # Nine models (Tier S, the Sample DB, the XYZ Stage), eight links: Red
+    # Percent's stop is folded into the Transfer Map's link (D, 2026-09-28).
+    assert len(out["marks"]) == 8 and all(out["marks"]), out
     assert not out["sideways"], out
 
 
