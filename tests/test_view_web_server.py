@@ -1789,7 +1789,7 @@ def sim_station():
     signed = setup.run("sign_in", {"account_email": "sim@uci.edu",
                                    "account_password": "correct-horse-4821"})
     assert signed.is_ok, signed.reason
-    assert len(setup.launch()) == 9   # the devices (XYZ Stage 2026-10-09), the Transfer Map (Tier S), the Sample DB
+    assert len(setup.launch()) == 10  # the devices (XYZ Stage and XYZ Stage (Mega), 2026-10-09), the Transfer Map (Tier S), the Sample DB
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open(), "the server did not bind an ephemeral port"
     try:
@@ -2723,9 +2723,9 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     assert out["device"]["shown"] == ["Rotator"], out
     after = out["after"]
     assert after["current"] == ["Dashboard"] and "Rotator" not in after["nav"], after
-    # Nine models (Tier S, the Sample DB, the XYZ Stage), one closed; Red
+    # Ten models (Tier S, the Sample DB, the two XYZ Stages), one closed; Red
     # Percent is on the Map's entry (D).
-    assert len(after["shown"]) == 7 and after["wells"] == 0, after
+    assert len(after["shown"]) == 8 and after["wells"] == 0, after
 
 
 # --------------------------------------------------------------------------
@@ -3003,7 +3003,7 @@ def test_every_pressable_is_a_real_target(sim_station, tmp_path):
         assert not small, (key, small)
         short = [t for t in out[key] if t["command"] and t["h"] < 35.5]
         assert not short, (key, short)
-    assert out["setup"]["ticks"] == 0 and out["setup"]["resets"] == 6, out["setup"]   # one per port row
+    assert out["setup"]["ticks"] == 0 and out["setup"]["resets"] == 7, out["setup"]   # one per port row
 
 
 @needs_browser
@@ -4179,9 +4179,9 @@ def test_o16_under_640_the_chord_hint_and_every_stop_mark_stay_visible(sim_stati
       });
     """, tmp_path)
     assert out["hint"], out
-    # Nine models (Tier S, the Sample DB, the XYZ Stage), eight links: Red
+    # Ten models (Tier S, the Sample DB, the two XYZ Stages), nine links: Red
     # Percent's stop is folded into the Transfer Map's link (D, 2026-09-28).
-    assert len(out["marks"]) == 8 and all(out["marks"]), out
+    assert len(out["marks"]) == 9 and all(out["marks"]), out
     assert not out["sideways"], out
 
 
