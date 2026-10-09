@@ -216,6 +216,18 @@ def register(model_class):
                              "fills only port* and gamepad* resources")
     if len(set(resources)) != len(resources):
         raise ValueError(f"{name!r} declares a resource twice: {resources}")
+    tags = _port_tags(model_class)
+    if tags:
+        ports, _ = _split(resources)
+        if set(tags) != set(ports):
+            raise ValueError(f"{name!r} tags {sorted(tags)} but declares the ports "
+                             f"{ports}; PORT_TAGS must tag every port resource")
+        if len(set(tags.values())) != len(tags) or not all(tags.values()):
+            raise ValueError(f"{name!r} declares PORT_TAGS {tags}; each tag must "
+                             "be distinct and non-empty")
+        if not identity:
+            raise ValueError(f"{name!r} declares PORT_TAGS but no IDENTITY letter "
+                             "for its boards to answer with")
     if getattr(model_class, "HOST", None) and resources:
         # A hosted model has no Setup row (owner ruling 2026-09-28: "it should
         # just be Transfer Map that calls both those tools"), so nothing could
@@ -224,6 +236,19 @@ def register(model_class):
                          f"has no Setup row; it cannot declare resources {resources}")
     types[name] = model_class
     return model_class
+
+
+def _port_tags(model_class):
+    """`PORT_TAGS` of a model that owns one board per tagged port, else {}.
+
+    The map is port resource -> the tag its board reports after the identity
+    letter (`{"port_x": "X", ...}`; the board answers the scan with
+    `DEV: t X`). The scan places each board by its tag, and the row launches
+    only when every tag answered on exactly one port; anything else is a
+    fault, never a partial launch (owner ruling 2026-10-09, the XYZ Stage:
+    one Teensy per axis)."""
+    return {resource: str(tag).upper() for resource, tag in
+            (_declared(model_class, "PORT_TAGS") or {}).items()}
 
 
 def _key_for(name):
@@ -319,6 +344,7 @@ class PortProbe:
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
         self._busy_ports = set()    # held by another program, this scan
+        self.probe_tags = {}        # port -> tag after the identity letter
 
     def scan_ports(self):
         """Attached serial ports as the wizard shows them.
@@ -464,7 +490,9 @@ class PortProbe:
                 # a port that could not be opened at all is worth saying out
                 # loud rather than reporting as an empty socket.
                 self._warn_probe(port, f"could not open at {baud} baud")
-            return self._name_for_identity(identity)
+            name = self._name_for_identity(identity)
+            self.probe_tags[port] = self._tag_for_identity(identity) if name else None
+            return name
         except Exception as exc:
             self._warn_probe(port, exc)
             return None
@@ -531,10 +559,19 @@ class PortProbe:
                       if _declared(cls, "IDENTITY")}
         if text.lower() in identities:
             return identities[text.lower()]
+        first = text.split()[0].lower()
+        if first in identities:
+            return identities[first]    # `DEV: t X`: the letter, then a tag
         match = IDENTITY_PATTERN.search(text)
         if match and match.group(1).lower() in identities:
             return identities[match.group(1).lower()]
         return None
+
+    def _tag_for_identity(self, identity):
+        """The tag after the identity letter (`t X` -> "X"), or None: a board
+        that is one of several for one model says which one it is."""
+        words = self._text(identity).split()
+        return words[1].upper() if len(words) > 1 else None
 
     def _log_probe(self, port, name, started):
         events.debug("Probe", f"{port} -> {name or 'nothing'} in "
@@ -661,6 +698,7 @@ class Setup(PortProbe, Panel):
         self._ports = []
         self._gamepads = ["None"]
         self._found = {}            # port -> model name the handshake gave
+        self._found_tag = {}        # port -> the tag it gave after the name
         self._chosen = set()        # rows the operator set by hand
         self._warned_ports = set()  # one warning per port per scan
         self._warned_missing = set()
@@ -688,8 +726,11 @@ class Setup(PortProbe, Panel):
             setattr(self, f"{key}_gamepad", "None")
             for field, kind, _, _ in row["columns"]:
                 if field != "gamepad":
+                    # A tagged port (one board per axis) is not connected
+                    # until its board answers; it never defaults to SIM.
                     setattr(self, f"{key}_{field}",
-                            SIM if kind == "port" else "None")
+                            "None" if kind != "port" else
+                            NOT_CONNECTED if field in row["tags"] else SIM)
             setattr(self, f"{key}_status", "off")
         # The selection commands are per row, because a view sends a dropdown
         # choice as the command's only argument and nothing else identifies
@@ -1091,6 +1132,8 @@ class Setup(PortProbe, Panel):
             held = self._held_ports()
             self._found = {port: name for port, name in self._found.items()
                            if port in held}
+            self._found_tag = {port: tag for port, tag in self._found_tag.items()
+                               if port in held}
             self.scan_phase = self.LISTING
             self.scan_status = "scanning for ports..."
             self.scan_progress = 0
@@ -1137,6 +1180,7 @@ class Setup(PortProbe, Panel):
                 self._scan_port = self._port_started = None
             with self._lock:
                 self._found[port] = found
+                self._found_tag[port] = self.probe_tags.pop(port, None) if found else None
             if found:
                 events.info("Device Found", f"{found} on {port}", source=self.NAME)
             self.scan_progress = int(((index + 1) / len(targets)) * 100)
@@ -1195,12 +1239,14 @@ class Setup(PortProbe, Panel):
         assigned, kept, taken, seen = [], [], {}, []
         with self._lock:
             found = dict(self._found)
+            found_tag = dict(self._found_tag)
             chosen = set(self._chosen)
         running = set(self._running_names())
+        tagged = {key for key, row in self._rows.items() if row["tags"]}
         for port, name in found.items():
             key = self._key_of(name)
-            if key is None:
-                continue
+            if key is None or key in tagged:
+                continue        # a tagged row is placed by its tags, below
             if name in running:
                 continue        # launched: its port is held, its row stands
             if self._is_launched:
@@ -1237,6 +1283,8 @@ class Setup(PortProbe, Panel):
             # A board that answered is a row that launches.
             setattr(self, f"{key}_port", port)
             assigned.append(f"{name} on {port}")
+        self._assign_tagged(tagged, found, found_tag, chosen, running, force,
+                            assigned, kept, seen)
         self._refresh_rows()
         if assigned:
             events.info("Auto-assign", ", ".join(assigned), source=self.NAME)
@@ -1445,7 +1493,9 @@ class Setup(PortProbe, Panel):
                 continue
         self.validate([c for c in others if c.get("model")] + [config])
         self._check_identities([config])
-        if not config.get("sim"):
+        if not config.get("sim") and row["tags"]:
+            self._check_tags(key, row)
+        elif not config.get("sim"):
             with self._lock:
                 answered = self._found.get(config.get("port"))
             if answered != name:
@@ -1550,7 +1600,9 @@ class Setup(PortProbe, Panel):
                 continue
         self.validate([c for c in others if c.get("model")] + [wanted])
         self._check_identities([wanted])
-        if not wanted.get("sim"):
+        if not wanted.get("sim") and self._rows[key]["tags"]:
+            self._check_tags(key, self._rows[key])
+        elif not wanted.get("sim"):
             with self._lock:
                 answered = self._found.get(wanted.get("port"))
             if answered != name:
@@ -2215,7 +2267,7 @@ class Setup(PortProbe, Panel):
         mistake, not a build to attempt. A port that answered nothing is not:
         a handshake can miss a live board, and it always could."""
         with self._lock:
-            found = dict(self._found)
+            found, found_tag = dict(self._found), dict(self._found_tag)
         for config in configs:
             if config.get("sim"):
                 continue
@@ -2223,6 +2275,16 @@ class Setup(PortProbe, Panel):
             if answered and answered != config["model"]:
                 self._refuse(f"{config['model']} port: {config['port']} "
                              f"answered as {answered}")
+            model_class = MODEL_TYPES.get(config.get("model"))
+            for resource, tag in (_port_tags(model_class) if model_class else {}).items():
+                port = _resource_value(config, model_class, resource)
+                theirs = found.get(port)
+                if theirs and theirs != config["model"]:
+                    self._refuse(f"{config['model']} {resource}: {port} answered "
+                                 f"as {theirs}")
+                if theirs == config["model"] and found_tag.get(port) not in (None, tag):
+                    self._refuse(f"{config['model']} {resource}: {port} is the "
+                                 f"{found_tag[port]} board, not {tag}")
 
     def _roll_back(self, built):
         for name in reversed(built):
@@ -3238,8 +3300,11 @@ class Setup(PortProbe, Panel):
                 else:
                     columns.append((resource, _kind(resource),
                                     resource.replace("_", " ").title(), resource))
+            row_tags = {("port" if resource == port_resource else resource): tag
+                        for resource, tag in _port_tags(model_class).items()}
             rows[_key_for(name)] = {
                 "name": name,
+                "tags": row_tags,      # field -> tag, for a one-board-per-port model
                 "needs_port": bool(ports),
                 "needs_gamepad": bool(gamepads),
                 "options_command": "port_options" if ports else "device_options",
@@ -3371,16 +3436,141 @@ class Setup(PortProbe, Panel):
 
     def _will_launch(self, key, row, found):
         """A row launches when its board answered as this model on its port,
-        when it is set to SIM, or when it needs no port. Nothing else."""
+        when it is set to SIM, or when it needs no port. Nothing else. A
+        tagged row (one board per axis) launches only with every tag found."""
         choice = getattr(self, f"{key}_port")
         if choice == SIM or not row["needs_port"]:
             return True
+        if row["tags"]:
+            return self._tags_answered(key, row, found, dict(self._found_tag))
         return bool(choice) and found.get(choice) == row["name"]
+
+    # -- one board per tagged port (the XYZ Stage, owner ruling 2026-10-09) --
+    def _tagged_ports(self, row, found, found_tag):
+        """A tagged row's boards as the scan found them: ({field: port} when
+        every tag answered on exactly one port, else None, and the fault in
+        words when something answered but not one board per tag, else None).
+        Nothing answering at all is "not connected", not a fault."""
+        name, tags = row["name"], row["tags"]
+        by_tag, stray = {}, []
+        for port, answered in found.items():
+            if answered != name:
+                continue
+            tag = found_tag.get(port)
+            if tag in tags.values():
+                by_tag.setdefault(tag, []).append(port)
+            else:
+                stray.append(port)
+        if not by_tag and not stray:
+            return None, None
+        problems = []
+        missing = [tag for tag in tags.values() if tag not in by_tag]
+        if missing:
+            problems.append(f"{'/'.join(missing)} missing")
+        for tag in tags.values():
+            if len(by_tag.get(tag, ())) > 1:
+                problems.append(f"two boards answered as {tag} "
+                                f"({_and(sorted(by_tag[tag]))})")
+        if stray:
+            problems.append(f"no {'/'.join(tags.values())} tag on "
+                            f"{_and(sorted(stray))}")
+        if problems:
+            return None, "; ".join(problems)
+        return {field: by_tag[tag][0] for field, tag in tags.items()}, None
+
+    def _tags_answered(self, key, row, found, found_tag):
+        """Every tagged port the row holds answered as this model with its
+        own tag."""
+        for field, tag in row["tags"].items():
+            port = getattr(self, f"{key}_{field}")
+            if not port or found.get(port) != row["name"] or found_tag.get(port) != tag:
+                return False
+        return True
+
+    def _assign_tagged(self, tagged, found, found_tag, chosen, running, force,
+                       assigned, kept, seen):
+        """auto_assign for tagged rows: all of a row's boards are placed by
+        their tags, or none are. A partial set is a fault the operator reads
+        in the row and in a warning, never a partial launch."""
+        closed = list(getattr(self.controller, "closed_names", ()) or ())
+        for key in sorted(tagged):
+            row = self._rows[key]
+            name = row["name"]
+            if name in running:
+                continue
+            ports, fault = self._tagged_ports(row, found, found_tag)
+            if key in chosen and not force:
+                if ports or fault:
+                    kept.append(f"{name}: operator chose {getattr(self, f'{key}_port')}")
+                continue
+            if fault:
+                events.warn("Axis Boards", f"{name} is not assigned: {fault}. It "
+                            "launches only with one board per axis "
+                            f"({', '.join(row['tags'].values())}).", source=self.NAME)
+                for field in row["tags"]:
+                    if getattr(self, f"{key}_{field}") != SIM:
+                        setattr(self, f"{key}_{field}", NOT_CONNECTED)
+                continue
+            if ports is None:
+                continue
+            if all(getattr(self, f"{key}_{field}") == port for field, port in ports.items()):
+                continue
+            for field, port in ports.items():
+                setattr(self, f"{key}_{field}", port)
+            where = _and([ports[field] for field in row["tags"]])
+            if self._is_launched:
+                # As for one board: plugged in after the launch, the row is
+                # pointed at its boards and Settings' Start starts it.
+                with self._lock:
+                    is_new = self._seen.get(key) != ports["port"]
+                    self._seen[key] = ports["port"]
+                if is_new and name not in closed:
+                    seen.append((name, where))
+            else:
+                assigned.append(f"{name} on {where}")
+
+    def _check_tags(self, key, row):
+        """Refuse to build a tagged row unless every axis answered as itself."""
+        with self._lock:
+            found, found_tag = dict(self._found), dict(self._found_tag)
+        if self._tags_answered(key, row, found, found_tag):
+            return
+        _, fault = self._tagged_ports(row, found, found_tag)
+        self._refuse(f"{row['name']} starts only with one board per axis "
+                     f"({', '.join(row['tags'].values())})"
+                     + (f": {fault}." if fault else
+                        ": not every axis has answered. Press Refresh to scan them."))
+
+    def _tagged_status(self, key, row, found):
+        """`_row_status` for a tagged row that is not SIM."""
+        found_tag = dict(self._found_tag)
+        with self._lock:
+            seen = self._seen.get(key)
+        ok = self._tags_answered(key, row, found, found_tag)
+        if seen and self._can_start(key):
+            return f"seen on {seen}: press Start"
+        if self._pending_config(key) is not None:
+            return ("changed: hard reset to apply" if ok else
+                    "changed: not identified there; press Refresh")
+        if ok and self._can_start(key):
+            return "not running: press Start"
+        if self.guest_locked and is_signed_in_only(row["name"]):
+            return "sign in to use"
+        _, fault = self._tagged_ports(row, found, found_tag)
+        if fault:
+            return f"fault: {fault}"
+        if ok:
+            return f"detected: {row['name']} ({', '.join(row['tags'].values())})"
+        if all(getattr(self, f"{key}_{field}") == NOT_CONNECTED for field in row["tags"]):
+            return "not connected"
+        return "not scanned"
 
     def _row_status(self, key, row, found):
         """What the row's Status cell says: simulated / on / detected: X /
         not connected / not scanned, and a board seen after the launch. The
         one sentence the operator reads to know whether the row launches."""
+        if row["tags"] and getattr(self, f"{key}_port") != SIM:
+            return self._tagged_status(key, row, found)
         with self._lock:
             seen = self._seen.get(key)
         if seen and self._can_start(key):
@@ -3430,7 +3620,8 @@ class Setup(PortProbe, Panel):
                 if field == "gamepad":
                     continue
                 if kind == "port" and getattr(self, f"{key}_{field}") not in self.port_options():
-                    setattr(self, f"{key}_{field}", SIM)
+                    setattr(self, f"{key}_{field}",
+                            NOT_CONNECTED if field in row["tags"] else SIM)
                 elif kind == "gamepad" and getattr(self, f"{key}_{field}") not in gamepads:
                     setattr(self, f"{key}_{field}", "None")
 
