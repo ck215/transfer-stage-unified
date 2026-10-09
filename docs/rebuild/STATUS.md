@@ -354,6 +354,29 @@ then lower; newest wins) on the Sample DB and the trial setup.
 
 ## Open items
 
+### Classic and the station on the same boards (2026-10-08)
+
+At the bench: Classic's flash failed ("flashing failed, so the legacy app was
+not launched") and the station's Stepper Probe logged the gamepad ("Axis 5
+changed") but never moved. Cause: `dev/swap_branch.sh legacy`, rebuilt
+2026-10-07, flashed with the legacy tree's own `flash_firmware.py`, which
+never writes `~/transfer-stage-runs/flashed.json`, and flashed all four
+boards. A Mega it reached kept the legacy sketch (`'t'` toggles enable,
+28-byte jog) while the stamp still said "station", so the Launcher's flash,
+`swap_branch.sh station` and Setup's Firmware row all read "already current";
+the station's `'e'` and 42-byte jog went to a board that ignores them. The
+legacy heater sketch cannot build beside the station's libraries (Adafruit
+`max6675.h` and the NewLiquidCrystal `LiquidCrystal_I2C` against Tillaart's
+`MAX6675.h` and the registry `LiquidCrystal_I2C`; compiled 2026-10-08 with
+arduino-cli 1.1.1, avr 1.8.8: all six Mega sketches of both trees build, the
+legacy `temp_controller` stops at `max6675.h`). Fixed on `fix/classic-flash-stamp`:
+the legacy swap flashes with THIS tree's `firmware/flash_firmware.py
+--sketch-root ../legacy-app/firmware --channel stable`, the three Megas only,
+as the bench-validated `run_swap.sh` of 2026-09-28 did (the heater's wire is
+the same in both trees). Bench recovery once, for boards flashed before the
+fix: run Classic once (it now records what it flashes), then the Launcher;
+or move `flashed.json` aside and start the Launcher (it flashes every board).
+
 ### Tip-shade force, held features, the finalizer (2026-10-06)
 
 - **The force is read from the tip's shade, not the red percent** (owner ruling). Median green of the right half of the recorded tip region; contact is the shade rising off its baseline, and the force is where the shade stands on its peak at the Mark (`model/tip_shade.py`, `docs/rebuild/RECORDING_A_TRIAL.md`). The sheet's **Force** field reads No contact, Contact, Low, Medium or High live; schema v8 stores `force_position`, `force_class`, `contact_lowered`, `shade_*`; the map's default definition is `shade_position`; the video index gains a `shade` column. Recording is unchanged (the whole tip region). The red-percent profile only logs when the rounded value changes by 0.1, so its force indices (`at_operator_mark` and the rest) are not to be trusted. `rebuild_force` recomputes the columns from footage; run on the bench database on 2026-10-06 for the four valid trials. The thresholds (contact line, 0.10, the thirds) are bench values, the owner's.

@@ -40,10 +40,10 @@ long form). Delete this file in the commit that closes the last item below.
    Needs headless Chrome (puppeteer); the test skips without it.
 2. **Bench-only checks, on this PC with the hardware** (not delegable):
    - `dev/swap_branch.sh legacy` for real: makes `../legacy-app`, its venv,
-     flashes with the legacy tree's own flasher, runs `src/mainGUI.py`.
-     If the Teensy sketch fails to build, rerun with
-     `STATION_FLASH_ONLY="Stepper Probe,DC Probe,Chuck Positioner"`.
-     Then `dev/swap_branch.sh station` to come back.
+     flashes the three Megas with the legacy sketches through this tree's
+     flasher (recorded in the stamp as `stable`), runs `src/mainGUI.py`.
+     Then the Launcher, or `dev/swap_branch.sh station`, reflashes them.
+     (2026-10-08: see STATUS "Classic and the station on the same boards".)
    - Settled-frame capture on the Mint box: Diagnostics shows the counts
      (accepted / black / stale / unsettled). Confirm the rate sits near the
      viewer's ~7 fps and that a trial's `screen.mp4`, `frames.csv` and

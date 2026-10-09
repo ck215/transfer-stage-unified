@@ -11,9 +11,9 @@
 #   Transfer Stage Launcher   dev/launch_desktop.sh          = ./run.sh (Qt, the
 #                             default view), no terminal; a failed launch is
 #                             shown in a dialog.
-#   Transfer Stage Classic    dev/launch_desktop.sh classic  = the stable app on
-#                             `legacy` (dev/swap_branch.sh legacy, flashing the
-#                             Megas to its firmware first) in a terminal.
+#   Transfer Stage Classic    dev/launch_desktop.sh classic  = the lab's original
+#                             app on `legacy` (dev/swap_branch.sh legacy, flashing
+#                             the Megas to its firmware first) in a terminal.
 #
 # macOS and Windows have no .desktop files; this script does nothing there.
 set -e
@@ -40,7 +40,7 @@ cat > "$DEST/Transfer Stage Classic.desktop" <<DESKTOP
 Version=1.0
 Type=Application
 Name=Transfer Stage Classic
-Comment=Stable app (main); reflashes the Megas to main's firmware first
+Comment=The lab's original app (legacy branch); flashes the Megas to its firmware first
 Exec=$REPO/dev/launch_desktop.sh classic
 Path=$REPO
 Icon=emblem-important

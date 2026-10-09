@@ -14,9 +14,12 @@
 #                                      With a station already running, the
 #                                      app opens that station's page and
 #                                      exits 0: no second server, no dialog.
-#   dev/launch_desktop.sh classic      "Transfer Stage Classic": the stable app
-#                                      on `main` through dev/swap_branch.sh, in
-#                                      a terminal (its flash step talks).
+#   dev/launch_desktop.sh classic      "Transfer Stage Classic": the lab's
+#                                      original app (the `legacy` branch)
+#                                      through dev/swap_branch.sh legacy, in a
+#                                      terminal; it flashes the Megas to the
+#                                      legacy sketches and records them, so
+#                                      this icon's flash puts them back.
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
