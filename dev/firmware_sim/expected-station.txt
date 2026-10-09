@@ -12,4 +12,5 @@ SCENARIO host-timeout-disables                PASS  (7 checks, 0 failed)
 SCENARIO host-timeout-host-returns            PASS  (3 checks, 0 failed)
 SCENARIO dtr-drop-unchanged                   PASS  (2 checks, 0 failed)
 SCENARIO release-at-rest-then-chatter         PASS  (6 checks, 0 failed)
+SCENARIO move-accel-coarrival                 PASS  (22 checks, 0 failed)
 failed scenarios: 0

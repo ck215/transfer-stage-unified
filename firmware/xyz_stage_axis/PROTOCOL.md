@@ -53,8 +53,8 @@ homing), `MODE STEALTH|SPREAD`, `LIMITS NC|NO` (`limits= ls1= ls2= ends=forgotte
 
 | Command | Reply | Notes |
 | --- | --- | --- |
-| `MOVE <mm> [mm_s]` | `OK MOVE mm=<applied> target_mm=<abs> clamped=<0\|1> speed_mm_s=<used> speed_clamped=<0\|1>` | Relative. Clamp +-50 mm (`MAX_MOVE_MM`, the full travel; the limit interlock stops an axis at its ends). The optional speed applies to this move only (else SPEED); it is clamped to the step-rate ceiling (2.5 mm/s at 8 microsteps) and up to 1 step/s. |
-| `MOVETO <mm> [mm_s]` | `OK MOVETO mm=<distance> target_mm=<abs> clamped= speed_mm_s= speed_clamped=` | Absolute. The distance is clamped to +-50 mm (`clamped=1`, target moved accordingly). `|mm| > 10000`: `ERR MOVETO bad-arg`. |
+| `MOVE <mm> [mm_s [mm_s2]]` | `OK MOVE mm=<applied> target_mm=<abs> clamped=<0\|1> speed_mm_s=<used> speed_clamped=<0\|1>`, then ` accel_mm_s2=<used> accel_clamped=<0\|1>` when `mm_s2` was given | Relative. Clamp +-50 mm (`MAX_MOVE_MM`, the full travel; the limit interlock stops an axis at its ends). The optional speed applies to this move only (else SPEED); it is clamped to the step-rate ceiling (2.5 mm/s at 8 microsteps) and up to 1 step/s. The optional acceleration (added 2026-10-09; it needs the speed before it) applies to this move only (else ACCEL), clamped to ACCEL's own bounds, 0.25..25 mm/s^2; see "Per-move acceleration" below. A two-argument MOVE is unchanged, reply included. |
+| `MOVETO <mm> [mm_s [mm_s2]]` | `OK MOVETO mm=<distance> target_mm=<abs> clamped= speed_mm_s= speed_clamped=` [` accel_mm_s2= accel_clamped=`] | Absolute. The distance is clamped to +-50 mm (`clamped=1`, target moved accordingly). `|mm| > 10000`: `ERR MOVETO bad-arg`. Speed and acceleration as for MOVE. |
 | `REVS <n>` | `OK REVS mm= target_mm= clamped=` | Validator command, unchanged (clamp 15 revolutions). |
 | `JOG <-1\|0\|1>` | `OK JOG dir=<n>` | Validator dead-man jog at SPEED, unchanged; `JOG 0` stops any motion except a TEST or HOME (refused while homing: `ERR JOG busy`). |
 | `JOGV <mm_s>` | `OK JOGV mm_s=<applied> clamped=<0\|1>` | Signed velocity jog (analog stick). See below. |
@@ -65,10 +65,25 @@ homing), `MODE STEALTH|SPREAD`, `LIMITS NC|NO` (`limits= ls1= ls2= ends=forgotte
 | `TEST UART\|COILS\|REVS [n]\|SWEEP\|LIMITS` | validator replies | Unchanged. |
 
 Motion errors: `not-enabled`, `test-running`, `busy` (a move, jog, HOME or deceleration in progress; one move at a
-time), `bad-arg`, `bad-speed`, and the limit reasons: `limit-ls1`/`limit-ls2` (that switch is tripped and guards the
+time), `bad-arg`, `bad-speed`, `bad-accel` (MOVE/MOVETO's third argument is not a number above 0; nothing moves), and
+the limit reasons: `limit-ls1`/`limit-ls2` (that switch is tripped and guards the
 end the move heads for), `limit-lsN-end-unknown:jog-off-it` (the switch is parked: tripped with its end not confirmed,
 see Safety behaviour; only a slow JOG/JOGV may move), `limit-lsN-pressed-both-ways:check-switch` (a jog while parked:
 the parked travel is spent in this direction too), `limits-both-tripped:check-wiring-or-LIMITS-NC|NO`.
+
+**Per-move acceleration.** `MOVE <mm> <mm_s> <mm_s2>` ramps this move up and down at `mm_s2` instead of ACCEL. The
+board's SPEED and ACCEL are put back once the move has stopped, however it stopped (arrival, STOP, a host timeout, a
+limit halt); INFO and STATUS always report the board's own values, and the next move without the argument ramps at
+ACCEL. A STOP during such a move decelerates at the move's acceleration. The clamp is ACCEL's own (0.25..25), so the
+argument allows no ramp, and no stopping distance (v^2 / 2a), that SPEED and ACCEL could not already set. Its use: for
+a vector move the station sends each axis `|d_i|/|d| x speed` and `|d_i|/|d| x ACCEL`, so every axis runs the same
+trapezoid scaled to its distance and the axes arrive together on the straight line; with the speed alone they share
+one ACCEL, the shorter legs finish first on any move that ramps, and the path bows. What is left is AccelStepper's ramp
+start (its first step goes at once, its first interval is c0 = 0.676 sqrt(2/a)): the gentler leg leads by a few c0, a
+few tens of ms that do not grow with the move (host simulation, a 0.6 x 0.2 mm Step: 41 ms apart and 8 um off the line
+at 2.5 mm/s, 23 ms and 3 um at 0.5 mm/s; with the speed alone 421 ms and 96 um, 128 ms and 10 um). An axis whose
+share would need less than 0.25 mm/s^2 is clamped up and leads a little more. These numbers are a host model's; the
+owner checks them on the bench.
 
 **JOGV.** `JOGV v` with `|v|` at least 1 step/s (0.000625 mm/s at 8 microsteps) starts or retargets a velocity jog;
 `|v|` is clamped to the step-rate ceiling. A new JOGV while jogging changes the speed at the current ACCEL with no step
@@ -157,7 +172,8 @@ firmware logs generously. `LOG <0|1|2>` -> `OK LOG level=N` (default 1):
 - **Driver reset / faults:** halt, outputs off, `EVT FAULT ...`, TEST/HOME ended; a reset driver is reconfigured and
   stays disabled until ENABLE.
 - **Speed changes** never lower AccelStepper's max speed below the current speed (review R-6): SPEED/ACCEL during
-  motion apply on stop; JOGV decelerates first; HOME and tests restore the user's SPEED/ACCEL once stopped.
+  motion apply on stop; JOGV decelerates first; HOME, tests and a MOVE with its own acceleration restore the user's
+  SPEED/ACCEL once stopped.
 
 ## homed
 

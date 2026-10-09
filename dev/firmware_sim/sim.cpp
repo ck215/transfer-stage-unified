@@ -514,6 +514,91 @@ static void s_parked_rebase() {
   expect(k != (size_t)-1, "EVT LIMIT ... learned=travel");
 }
 
+// 7. The station's vector Step (co-arrival). Each axis is its own board, so one board runs the X leg, then the Y leg,
+// of one short diagonal Step; each leg's steps are kept relative to its command time and start position, and the two
+// are laid side by side as the stage would run them. MOVE <mm> <mm_s> scales the speed only: every axis ramps at the
+// board's ACCEL, so the shorter leg finishes first and the path bows. MOVE <mm> <mm_s> <mm_s2> with a_i = |d_i|/|d| x
+// ACCEL scales the whole trapezoid. What is left is AccelStepper's own ramp start (its first step goes at once and its
+// c0 is 0.676 sqrt(2/a)): a time lead of a few c0 per leg, larger on the gentler leg, that does not grow with the move
+// (0.6 x 0.2 mm: 421 -> 41 ms apart and 96 -> 8 um off the line at 2.5 mm/s; 128 -> 23 ms and 10 -> 3 um at 0.5 mm/s).
+struct Leg { std::vector<std::pair<double, double>> pts; double mm = 0; std::string reply; };
+static Leg runLeg(const std::string &c) {
+  size_t k0 = st.log.size(); uint64_t t0 = g_simUs; double x0 = st.x;
+  Leg leg; leg.reply = cmd(c);
+  waitIdle(10000);
+  for (size_t k = k0; k < st.log.size(); k++) leg.pts.push_back({(st.log[k].us - t0) / 1e6, st.log[k].x - x0});
+  leg.mm = st.x - x0;
+  return leg;
+}
+static double legEnd(const Leg &l) { return l.pts.empty() ? 0 : l.pts.back().first; }
+static double legAt(const Leg &l, double t) {          // position at t: the last step taken at or before it
+  double x = 0;
+  for (const auto &p : l.pts) { if (p.first > t) break; x = p.second; }
+  return x;
+}
+// Largest distance (mm) from the straight line of the Step (dx, dy) over every step of either leg.
+static double pathError(const Leg &a, const Leg &b, double dx, double dy) {
+  double len = sqrt(dx * dx + dy * dy), worst = 0;
+  std::vector<double> ts;
+  for (const auto &p : a.pts) ts.push_back(p.first);
+  for (const auto &p : b.pts) ts.push_back(p.first);
+  for (double t : ts) worst = fmax(worst, fabs(legAt(a, t) * dy - legAt(b, t) * dx) / len);
+  return worst;
+}
+// One diagonal Step (dx, dy) at vector speed v, board ACCEL a: the old pair, then the new pair.
+static void coarrival(double dx, double dy, double v, double a) {
+  const double len = sqrt(dx * dx + dy * dy), kx = dx / len, ky = dy / len;
+  char b[96];
+  std::string at = fmt(" (%.1f mm/s)", v);
+  snprintf(b, sizeof b, "MOVE %.4f %.4f", dx, kx * v); Leg ox = runLeg(b);
+  snprintf(b, sizeof b, "MOVE %.4f %.4f", dy, ky * v); Leg oy = runLeg(b);
+  snprintf(b, sizeof b, "MOVE %.4f %.4f %.4f", dx, kx * v, kx * a); Leg nx = runLeg(b);
+  snprintf(b, sizeof b, "MOVE %.4f %.4f %.4f", dy, ky * v, ky * a); Leg ny = runLeg(b);
+  double oldGap = fabs(legEnd(ox) - legEnd(oy)), oldErr = pathError(ox, oy, dx, dy);
+  double gap = fabs(legEnd(nx) - legEnd(ny)), err = pathError(nx, ny, dx, dy);
+  double c0 = 0.676 * sqrt(2.0 / (ky * a * st.spm()));   // AccelStepper's first interval on the gentler leg, s
+  expect(oldGap > 0.1, "old MOVE: the legs finish apart" + at, fmt("%.1f ms", oldGap * 1e3));
+  expect(gap <= 2 * c0, "new MOVE: the legs finish within two c0 of the gentler leg (AccelStepper's ramp start)" + at,
+         fmt("%.1f ms apart", gap * 1e3) + fmt(" (old %.1f ms", oldGap * 1e3) + fmt(", c0 %.1f ms)", c0 * 1e3));
+  expect(err < 0.5 * oldErr, "new MOVE: the path keeps closer to the line" + at,
+         fmt("%.2f um off it", err * 1e3) + fmt(" (old %.2f um)", oldErr * 1e3));
+  expect(has(nx.reply, "OK MOVE") && has(nx.reply, fmt(" accel_mm_s2=%.4f accel_clamped=0", kx * a)),
+         "OK MOVE echoes the move's ACCEL" + at, nx.reply);
+  expect(fabs(nx.mm - dx) < 1e-6 && fabs(ny.mm - dy) < 1e-6, "both legs travel their whole distance" + at,
+         fmt("x %.5f", nx.mm) + fmt(" y %.5f", ny.mm));
+}
+static void s_move_accel_coarrival() {
+  boot(25.0);
+  cmd("ENABLE");
+  char b[96];
+  Leg ref = runLeg("MOVE 0.3 2.5");                       // a two-argument MOVE before any per-move ACCEL
+  coarrival(0.6, 0.2, 2.5, 2.5);                          // short, full speed: a triangle at the boot ACCEL
+  coarrival(0.6, 0.2, 0.5, 2.5);                          // the same at the station's default speed: a trapezoid
+  // The per-move ACCEL is that move's only: the board's comes back once it has stopped, by arrival or by STOP.
+  Leg again = runLeg("MOVE 0.3 2.5");
+  expect(fabs(legEnd(again) - legEnd(ref)) < 1e-3, "after it, a two-argument MOVE ramps at ACCEL again",
+         fmt("%.2f ms", legEnd(again) * 1e3) + fmt(" vs %.2f ms", legEnd(ref) * 1e3));
+  expect(again.reply.find("accel") == std::string::npos, "and its reply is the two-argument one", again.reply);
+  cmd("MOVE 5 0.5 0.25"); runMs(500);
+  expect(has(cmd("STOP"), "OK STOP"), "STOP during a per-move ACCEL move"); waitIdle(10000);
+  again = runLeg("MOVE 0.3 2.5");
+  expect(fabs(legEnd(again) - legEnd(ref)) < 1e-3, "after a STOP, too", fmt("%.2f ms", legEnd(again) * 1e3));
+  expect(has(cmd("INFO"), " accel_mm_s2=2.5000 "), "INFO: the board's ACCEL is unchanged");
+  // Bounds and refusals, as for the speed argument.
+  std::string r = cmd("MOVE 0.01 0.5 100"); waitIdle(3000);
+  expect(has(r, "accel_mm_s2=25.0000 accel_clamped=1"), "clamped to MAX_ACCEL_MM", r);
+  snprintf(b, sizeof b, "MOVETO %.4f 0.5 0.01", atof(status("pos_mm").c_str()) + 0.2);
+  r = cmd(b); waitIdle(10000);
+  expect(has(r, "OK MOVETO") && has(r, "accel_mm_s2=0.2500 accel_clamped=1"), "MOVETO takes it too, clamped to MIN_ACCEL_MM", r);
+  for (const char *bad : {"MOVE 1 0.5 0", "MOVE 1 0.5 -2", "MOVE 1 0.5 fast", "MOVETO 3 0.5 nan"}) {
+    size_t k0 = st.log.size();
+    r = cmd(bad); runMs(200);
+    std::string word = upperWord(bad);
+    expect(r == "ERR " + word + " bad-accel" && st.log.size() == k0, std::string(bad) + ": refused, nothing moves", r);
+  }
+  expect(st.lostSteps == 0, "no hard-stop contact", crashTxt());
+}
+
 struct Scenario { const char *name; void (*fn)(); bool stationOnly; };
 static void s1() { s_r4_jogoff_chatter(false); }
 static void s1b() { s_r4_jogoff_chatter(true); }
@@ -534,11 +619,12 @@ static const Scenario SCENARIOS[] = {
   {"host-timeout-host-returns", s5b, false},
   {"dtr-drop-unchanged", s_dtr_drop, false},
   {"release-at-rest-then-chatter", s_release_at_rest, false},
+  {"move-accel-coarrival", s_move_accel_coarrival, true},
 };
 
 int main(int argc, char **argv) {
   if (argc < 2 || !strcmp(argv[1], "list")) {
-    for (const Scenario &s : SCENARIOS) printf("%s\n", s.name);
+    for (const Scenario &s : SCENARIOS) if (!(s.stationOnly && VALIDATOR)) printf("%s\n", s.name);
     return 0;
   }
   if (argc > 2 && !strcmp(argv[2], "-q")) g_verbose = false;

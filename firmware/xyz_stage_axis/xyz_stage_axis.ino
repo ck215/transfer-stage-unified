@@ -1186,11 +1186,13 @@ static void handleLine(char *line) {
   for (char *p = cmd; *p; p++) *p = toupper((unsigned char)*p);
   char *a1 = strtok_r(nullptr, " \t", &saveptr);
   char *a2 = strtok_r(nullptr, " \t", &saveptr);
+  char *a3 = strtok_r(nullptr, " \t", &saveptr);        // MOVE/MOVETO's per-move acceleration; every other command ignores it
   if (a1) for (char *p = a1; *p; p++) *p = toupper((unsigned char)*p);
   if (a2) for (char *p = a2; *p; p++) *p = toupper((unsigned char)*p);
+  if (a3) for (char *p = a3; *p; p++) *p = toupper((unsigned char)*p);
   long iv; float fv;
   if (strcmp(cmd, "JOG") && strcmp(cmd, "JOGV") && strcmp(cmd, "HB") && strcmp(cmd, "STATUS") && strcmp(cmd, "S"))
-    dbg("rx %s%s%s%s%s", cmd, a1 ? " " : "", a1 ? a1 : "", a2 ? " " : "", a2 ? a2 : "");
+    dbg("rx %s%s%s%s%s%s%s", cmd, a1 ? " " : "", a1 ? a1 : "", a2 ? " " : "", a2 ? a2 : "", a3 ? " " : "", a3 ? a3 : "");
 
   if (!strcmp(cmd, "S")) {                               // the station's port scan: exactly "DEV: x X", no OK prefix
     Serial.print("DEV: "); Serial.print(IDENTITY_LETTER); Serial.print(' '); Serial.print(g_axis); Serial.print('\n');
@@ -1300,11 +1302,20 @@ static void handleLine(char *line) {
       if (!parseFloat(a1, fv)) { err(cmd, "bad-arg"); return; }
       mm = fv;
     }
-    float vMm = g_speedMm; bool vClamped = false;         // MOVE/MOVETO <mm> [mm_s]: a speed for this move only
+    float vMm = g_speedMm; bool vClamped = false;         // MOVE/MOVETO <mm> [mm_s [mm_s2]]: a speed for this move only
     if (!isRevs && a2) {
       if (!parseFloat(a2, fv) || fv <= 0) { err(cmd, "bad-speed"); return; }
       vClamped = fv > maxSpeedMm() || fv < minSpeedMm();
       vMm = fv > maxSpeedMm() ? maxSpeedMm() : fv < minSpeedMm() ? minSpeedMm() : fv;
+    }
+    // ... and an acceleration for this move only, inside ACCEL's own bounds. The station sends |d_i|/|d| x ACCEL with
+    // |d_i|/|d| x speed, so every axis of a vector move runs the same trapezoid scaled: they arrive together, on the line.
+    float aMm = g_accelMm; bool aGiven = false, aClamped = false;
+    if (!isRevs && a3) {
+      if (!parseFloat(a3, fv) || fv <= 0) { err(cmd, "bad-accel"); return; }
+      aClamped = fv < MIN_ACCEL_MM || fv > MAX_ACCEL_MM;
+      aMm = fv < MIN_ACCEL_MM ? MIN_ACCEL_MM : fv > MAX_ACCEL_MM ? MAX_ACCEL_MM : fv;
+      aGiven = true;
     }
     if (isBusy()) { err(cmd, "busy"); return; }           // one move at a time; a move never re-ramps one in progress
     long steps;
@@ -1320,10 +1331,14 @@ static void handleLine(char *line) {
       steps = toSteps(mm);
     }
     if (steps != 0) { const char *why = limitBlock(steps > 0 ? 1 : -1, false); if (why) { err(cmd, why); return; } }
-    spSetMaxSpeed(vMm * stepsPerMm());                    // applyMotion() with this move's speed
-    spSetAccel(g_accelMm * stepsPerMm());
+    spSetMaxSpeed(vMm * stepsPerMm());                    // applyMotion() with this move's speed and acceleration
+    spSetAccel(aMm * stepsPerMm());
     spMove(steps);
+    if (aGiven) g_applyPending = true;                    // the board's SPEED and ACCEL come back once this move has stopped
     if (isRevs) reply(cmd, "mm=%.5f target_mm=%.5f clamped=%d", (double)toMm(steps), (double)toMm(spTarget()), clamped);
+    else if (aGiven)
+      reply(cmd, "mm=%.5f target_mm=%.5f clamped=%d speed_mm_s=%.4f speed_clamped=%d accel_mm_s2=%.4f accel_clamped=%d",
+            (double)toMm(steps), (double)toMm(spTarget()), clamped, (double)vMm, vClamped, (double)aMm, aClamped);
     else reply(cmd, "mm=%.5f target_mm=%.5f clamped=%d speed_mm_s=%.4f speed_clamped=%d", (double)toMm(steps),
                (double)toMm(spTarget()), clamped, (double)vMm, vClamped);
   }
