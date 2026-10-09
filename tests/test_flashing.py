@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -581,11 +582,11 @@ class AxisProbe:
         return "XYZ Stage" if port in self.probe_tags else None
 
 
-def flash_xyz(tree, stamp, tools, tags, run=None, lines=None):
+def flash_xyz(tree, stamp, tools, tags, run=None, lines=None, **kwargs):
     return flashing.flash(["XYZ Stage"], sketch_root=tree, stamp=stamp, tools=tools,
                           run=run or Runner(), ports=list(tags),
                           identify=AxisProbe(tags).identify,
-                          on_line=(lines.append if lines is not None else None))
+                          on_line=(lines.append if lines is not None else None), **kwargs)
 
 
 def test_detect_places_a_complete_set_by_tag_not_by_port_order():
@@ -792,3 +793,211 @@ def test_an_incomplete_axis_set_beside_a_held_port_names_the_port(tree, stamp, p
     assert answer["returncode"] == 1 and runner.calls == [] and not stamp.exists()
     assert any("/dev/ttyACM9 is in use by another program" in line
                and "XYZ Stage could not be checked" in line for line in lines), lines
+
+
+# -- R-3: a Teensy left in its bootloader stops every later Teensy (2026-10-09) --
+# The loader runs without -s and programs the first HalfKay device it finds. A
+# Teensy whose upload failed after its 134-baud reboot may still be waiting in
+# HalfKay, so the next Teensy's loader could write ITS sketch onto that board.
+
+HEATER = {"/dev/ttyACM0": "Temperature Controller"}
+
+
+class StationProbe(AxisProbe):
+    """The heater (or any untagged board) and the three axis boards on one
+    station, as Setup's handshake answers them."""
+
+    def __init__(self, tags, others):
+        super().__init__(tags)
+        self.others = dict(others)
+
+    def identify(self, port):
+        return self.others.get(port) or super().identify(port)
+
+
+def flash_station(tree, stamp, tools, run, boards=("Temperature Controller", "XYZ Stage"),
+                  others=HEATER, tags=XYZ, **kwargs):
+    probe = StationProbe(tags, others)
+    return flashing.flash(list(boards), sketch_root=tree, stamp=stamp, tools=tools,
+                          run=run, ports=list(others) + list(tags),
+                          identify=probe.identify, **kwargs)
+
+
+class Nth(Runner):
+    """Fails the `n`-th call (1-based) whose argv `pick` accepts; 0 otherwise."""
+
+    def __init__(self, pick, n=1, code=1):
+        super().__init__(code=code)
+        self.pick, self.n, self.picked = pick, n, 0
+
+    def __call__(self, argv, cwd, on_line, timeout, env=None):
+        self.calls.append({"argv": list(argv), "cwd": cwd, "env": env,
+                           "timeout": timeout})
+        on_line("tool output")
+        if self.pick(list(argv)):
+            self.picked += 1
+            if self.picked == self.n:
+                return self.code
+        return 0
+
+
+def is_loader(argv):
+    return argv[0].endswith("teensy_loader_cli")
+
+
+def is_compile(argv):
+    return "compile" in argv
+
+
+def test_r3_a_teensy_that_failed_after_its_reboot_stops_every_later_teensy(
+        tree, stamp, path_tools, reboots):
+    """The heater's upload fails after its reboot, so it waits in HalfKay. The
+    run went on to reboot "XYZ Stage X", whose loader found the heater first:
+    xyz_stage_axis on the heater, and the stamp said "XYZ Stage X ok"."""
+    run, lines = Runner(fail=["temp_controller.ino.hex"]), []
+    answer = flash_station(tree, stamp, path_tools, run, on_line=lines.append)
+    assert reboots == ["/dev/ttyACM0"]
+    assert len([c for c in run.calls if is_loader(c["argv"])]) == 1
+    assert answer["returncode"] == 1
+    assert answer["results"]["Temperature Controller"] == "FAILED"
+    for axis in "XYZ":
+        status = answer["results"][f"XYZ Stage {axis}"]
+        assert status.startswith("NOT FLASHED") and "bootloader" in status, status
+        assert "Temperature Controller" in status
+    assert not stamp.exists()
+    [hint] = [h for h in answer["hints"] if "unplug" in h]
+    assert "Temperature Controller on /dev/ttyACM0" in hint and "press its button" in hint
+    assert f"[HINT] {hint}" in lines
+
+
+def test_r3_a_reboot_that_raised_may_still_have_reached_the_board(
+        tree, stamp, path_tools, monkeypatch):
+    """The 134-baud open can reboot the Teensy and still raise (it drops off
+    USB under pyserial's next ioctl), so the heater may be in HalfKay: no
+    later Teensy is touched."""
+    touched = []
+
+    def reboot(port):
+        touched.append(port)
+        if port == "/dev/ttyACM0":
+            raise OSError(5, "Input/output error")
+    monkeypatch.setattr(flashing, "reboot_teensy", reboot)
+    run = Runner()
+    answer = flash_station(tree, stamp, path_tools, run)
+    assert touched == ["/dev/ttyACM0"]
+    assert not any(is_loader(c["argv"]) for c in run.calls)
+    assert answer["returncode"] == 1
+    assert all("bootloader" in answer["results"][f"XYZ Stage {axis}"] for axis in "XYZ")
+    assert flashing.TEENSY_REBOOT_HINT in answer["hints"]
+
+
+def test_r3_the_deadline_is_checked_before_the_reboot(tree, stamp, path_tools, reboots,
+                                                     monkeypatch):
+    """The compile used the whole budget: the Teensy is not rebooted into a
+    bootloader no loader will be run for."""
+    clock = [0.0]
+    monkeypatch.setattr(flashing, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def run(argv, cwd, on_line, timeout, env=None):
+        clock[0] += 1000.0              # the compile ran past the deadline
+        return 0
+    lines = []
+    answer = flashing.flash(["Temperature Controller"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=run, ports=["P"], timeout=100,
+                            identify=answering({"P": "Temperature Controller"}),
+                            on_line=lines.append)
+    assert reboots == []
+    assert answer["results"] == {"Temperature Controller": "FAILED"}
+    assert "The flash took longer than 100 s and was stopped." in lines
+    assert not stamp.exists()
+
+
+def test_r3_a_mega_after_a_teensy_left_in_its_bootloader_still_flashes(
+        tree, stamp, path_tools, reboots):
+    """A Mega is uploaded by avrdude on its own serial port: HalfKay is not in
+    its way."""
+    run = Runner(fail=["temp_controller.ino.hex"])
+    answer = flash_station(tree, stamp, path_tools, run,
+                           boards=("Temperature Controller", "DC Probe"),
+                           others={"/dev/ttyACM0": "Temperature Controller",
+                                   "/dev/ttyACM5": "DC Probe"}, tags={})
+    assert answer["results"] == {"Temperature Controller": "FAILED", "DC Probe": "ok"}
+    assert answer["returncode"] == 1
+    assert set(json.loads(stamp.read_text())) == {"DC Probe"}
+
+
+def test_r3_a_teensy_that_failed_before_its_reboot_does_not_stop_the_next(
+        tree, stamp, path_tools, reboots):
+    """The heater's compile failed: it was never rebooted, so it is running
+    its old sketch, not waiting in HalfKay, and the axis set still flashes."""
+    run = Runner(fail=["temp_controller"])
+    answer = flash_station(tree, stamp, path_tools, run)
+    assert answer["results"] == {"Temperature Controller": "FAILED", "XYZ Stage X": "ok",
+                                 "XYZ Stage Y": "ok", "XYZ Stage Z": "ok"}
+    assert reboots == list(XYZ)
+
+
+# -- R-6: the axis set is asked once and flashed all or none (2026-10-09) --------
+
+def test_r6_the_axis_set_is_confirmed_once_with_every_port_named(tree, stamp, path_tools):
+    asked = []
+
+    def confirm(board, port):
+        asked.append((board, port))
+        return True
+    answer = flash_xyz(tree, stamp, path_tools, XYZ, confirm=confirm)
+    assert [board for board, _ in asked] == ["XYZ Stage"]
+    assert all(f"{tag} {port}" in asked[0][1] for port, tag in XYZ.items())
+    assert answer["returncode"] == 0
+    assert set(answer["results"]) == {"XYZ Stage X", "XYZ Stage Y", "XYZ Stage Z"}
+
+
+def test_r6_declining_the_set_flashes_none_of_it(tree, stamp, path_tools, reboots):
+    run = Runner()
+    answer = flash_xyz(tree, stamp, path_tools, XYZ, run=run, confirm=lambda b, p: False)
+    assert answer["results"] == {"XYZ Stage": "skipped"}
+    assert answer["returncode"] == 0
+    assert run.calls == [] and reboots == [] and not stamp.exists()
+
+
+def test_r6_once_an_axis_board_fails_the_rest_of_the_set_is_not_flashed(
+        tree, stamp, path_tools, reboots):
+    """X fails before its reboot (no HalfKay): Y and Z still are not flashed,
+    and say why; the board is reported as failed."""
+    run, lines = Nth(is_compile, n=1), []
+    answer = flash_xyz(tree, stamp, path_tools, XYZ, run=run, lines=lines)
+    assert len(run.calls) == 1 and reboots == []
+    results = answer["results"]
+    assert results["XYZ Stage X"] == "FAILED"
+    for axis in "YZ":
+        assert results[f"XYZ Stage {axis}"].startswith("NOT FLASHED")
+        assert "XYZ Stage X failed" in results[f"XYZ Stage {axis}"]
+    assert results["XYZ Stage"] == "FAILED"
+    assert answer["returncode"] == 1 and not stamp.exists()
+    assert any("not flashed" in line.lower() and "XYZ Stage X failed" in line
+               for line in lines if not line.startswith("  XYZ Stage")), lines
+
+
+def test_r6_a_set_that_fails_partway_stops_there(tree, stamp, path_tools, reboots):
+    """Y's upload fails after X's went on: X stays recorded (it does run the
+    new sketch), Z is not touched, the board is reported as failed."""
+    run = Nth(is_loader, n=2)
+    answer = flash_xyz(tree, stamp, path_tools, XYZ, run=run)
+    assert reboots == ["/dev/ttyACM1", "/dev/ttyACM2"]
+    results = answer["results"]
+    assert results["XYZ Stage X"] == "ok" and results["XYZ Stage Y"] == "FAILED"
+    assert results["XYZ Stage Z"].startswith("NOT FLASHED")
+    assert results["XYZ Stage"] == "FAILED" and answer["returncode"] == 1
+    assert set(json.loads(stamp.read_text())) == {"XYZ Stage X"}
+
+
+def test_a_dry_run_of_the_axis_set_names_the_set_then_each_board(tree, stamp, path_tools,
+                                                                 reboots):
+    lines = []
+    answer = flash_xyz(tree, stamp, path_tools, XYZ, lines=lines, dry_run=True)
+    assert answer["returncode"] == 0 and reboots == [] and not stamp.exists()
+    set_line = "XYZ Stage on X /dev/ttyACM1, Y /dev/ttyACM2, Z /dev/ttyACM3 (all or none):"
+    units = [f"XYZ Stage {tag} on {port}:" for port, tag in XYZ.items()]
+    assert lines.index(set_line) < lines.index(units[0]) < lines.index(units[1]) \
+        < lines.index(units[2])
+    assert answer["results"] == {f"XYZ Stage {tag}": "ok (dry run)" for tag in "XYZ"}
