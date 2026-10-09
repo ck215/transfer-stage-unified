@@ -12,19 +12,19 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "X"},
-      "say": "X, Y and Z are the board's step counts, reported about ten times a second. They count from when the link came up: a reconnect or a board reset starts them again at zero.",
+      "say": "X, Y and Z are the probe's position in µm, reported about ten times a second, with the step count in small type beneath. They count from when the link came up: a reconnect or a board reset starts them again at zero.",
       "wait": null
     },
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Target X dist"},
-      "say": "Control system 1 is the Autonomous group. Target X, Y and Z dist are the move one Step makes, relative to where the probe is now, in step-size units. The sign picks the direction; 0 leaves that axis still.",
+      "say": "Control system 1 is the Autonomous group. Target X, Y and Z dist are the move one Step makes, in µm, relative to where the probe is now; the step count it becomes shows beneath. The sign picks the direction; 0 leaves that axis still.",
       "wait": null
     },
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Autonomous speed"},
-      "say": "Autonomous speed is how fast a Step moves, as a percent of the board's 3200 steps/s ceiling; the steps/s figure with it is what is sent. It is locked while the probe is in a mode.",
+      "say": "Autonomous speed is how fast a Step moves, typed in µm/s up to the board's ceiling; the steps/s figure beneath it is what is sent. It is locked while the probe is in a mode.",
       "wait": null
     },
     {
@@ -36,7 +36,7 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "X step size"},
-      "say": "A step size multiplies every move on its axis: a Step travels target dist × step size, and one D-pad or bumper press moves one step size. These fields are locked while the probe is in a mode.",
+      "say": "A step size is in µm, with its step count beneath: one D-pad or bumper press moves its axis by one step size. These fields are locked while the probe is in a mode.",
       "wait": null
     },
     {
@@ -66,7 +66,7 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Manual speed"},
-      "say": "Manual speed is the gamepad's jog speed, on the autonomous speed's scale. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
+      "say": "Manual speed is the gamepad's jog speed, in µm/s like the autonomous speed. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
       "wait": null
     },
     {

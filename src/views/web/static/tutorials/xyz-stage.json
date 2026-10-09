@@ -1,0 +1,163 @@
+{
+  "id": "xyz-stage",
+  "title": "Operating the XYZ Stage",
+  "requires": "any",
+  "steps": [
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "XYZ Stage"},
+      "say": "The XYZ Stage is the three-axis stage: one board per axis, X, Y and Z, all driven together. Once Launch in Setup has started it, it appears in the sidebar under its name; press the name to open this page.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "X"},
+      "say": "X, Y and Z are the stage's position in µm, reported about ten times a second, with the microstep count in small type beneath. They count from when the link came up, until you press Zero here or Home on an axis.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "X"},
+      "say": "Setup finds the three boards by the axis each stores, not by port order. The row launches only when all three answer, one per axis; otherwise it shows a fault (\"fault: Z missing\") and the stage does not start.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Target X dist"},
+      "say": "Control system 1 is the Autonomous group. Target X, Y and Z dist are the move one Step makes, in µm, relative to where the stage is now. The sign picks the direction; 0 leaves that axis still. The axes move together and arrive together.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Autonomous speed"},
+      "say": "Autonomous speed is how fast a Step moves, in µm/s, along the whole move. It is locked while the stage is in a mode.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Configure XYZ Stage"},
+      "say": "The step sizes, and Zero here and Home, sit one level down. Press Configure XYZ Stage to open them.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "X step size"},
+      "say": "A step size is in µm: one D-pad or bumper press moves its axis by one step size. These fields are locked while the stage is in a mode.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Enter autonomous mode"},
+      "say": "Now press Enter autonomous mode. It powers all three axes but moves nothing; the stage then waits for Step.",
+      "wait": {"state": {"name": "XYZ Stage", "key": "model_mode", "equals": "autonomous"}}
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Step"},
+      "say": "Step sends one move, in µm, to all three axes at the autonomous speed (it enters autonomous mode by itself if needed). Let the stage settle before the next Step: one pressed while it still moves is refused.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Autonomous mode"},
+      "say": "Press Autonomous mode to leave it. Leaving any mode stops the axes, then powers them down: there is no 'stop but hold' setting.",
+      "wait": {"state": {"name": "XYZ Stage", "key": "model_mode", "equals": "disabled"}}
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Gamepad"},
+      "say": "Control system 2 is the Manual group: a gamepad jogs the stage. First choose your controller in the Gamepad list; it shows the pads plugged in that no other device has taken. Manual mode is refused until one is chosen.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Manual speed"},
+      "say": "Manual speed is the gamepad's jog speed, in µm/s. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Enter manual mode"},
+      "say": "Now press Enter manual mode. The axes power up and the station streams the pad to the boards 50 times a second. Step is greyed out while in manual.",
+      "wait": {"state": {"name": "XYZ Stage", "key": "model_mode", "equals": "manual"}}
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Manual mode"},
+      "say": "Left stick (left/right): X. Right stick (up/down): Y. Smooth, at the manual speed. Left trigger raises Z, right trigger lowers it. D-pad: one step on X (left, right) or Y (up, down) per press. Bumpers: one Z step per press.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Manual / gamepad"},
+      "say": "A mode times out: after 5 minutes with no motion and no gamepad input the stage powers down. In the last minute a countdown with Extend shows on the rail; Extend gives it another 5 minutes.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Manual mode"},
+      "say": "Press Manual mode to leave it: the axes stop, then power down. Unplugging the pad, or choosing another pad or None in the list, also ends manual mode and powers down.",
+      "wait": {"state": {"name": "XYZ Stage", "key": "model_mode", "equals": "disabled"}}
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Zero X here"},
+      "say": "Zero X here sets X to 0 where it stands, after asking: nothing moves, only the reading changes. Zero Y here and Zero Z here do the same for their axes. Use it to mark a starting point.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Home X"},
+      "say": "Home X drives X to its optical reference and zeros it there, so X then reads from a known place. It moves the axis, and it is refused in manual mode. Home Y and Home Z do the same; the Homed line says which axes have been homed.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Home all (provisional)"},
+      "say": "Home all homes Z first, so the stage clears the work, then X and Y together. It is provisional: it has not been checked on the bench yet, so watch the stage and keep a hand near the stop. Home all is refused in manual mode.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"selector": "#full-stop"},
+      "say": "The stop: the Stop disc on the rail, or Ctrl+. from anywhere on the page, stops every device at once and latches it. The stage leaves its mode, all three axes power down, and its controls grey out.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"selector": "#full-stop"},
+      "say": "When every device is stopped the disc reads Clear; pressing it asks, then clears. Clearing restarts nothing: enter a mode again. Ctrl+. only ever stops.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Diagnostics"},
+      "say": "Open Diagnostics for this stage's own stop, its fault, how old the last position is, the limit switches, and the Gamepad log, which shows whether the pad is bound and reacting.",
+      "wait": {"click": true}
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Stop this model"},
+      "say": "Stop this model latches only this stage. Pressed again (it then reads Stopped) it clears just this stage, after asking.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Fault reason"},
+      "say": "A fault on any one axis, a lost link, or an axis that stops reporting while driven stops all three axes. Treat the stage as powered if a disable or a stop cannot be confirmed. Clear the stop before moving again.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Position age (s)"},
+      "say": "A board that has stopped answering cannot be armed. Use Hard reset on its row in Settings, or cut its power and reconnect, then clear the stop. Each board also stops itself if the station goes quiet.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
+      "anchor": {"text": "Manual / gamepad"},
+      "say": "Keep the station in its own browser window while the stage is in a mode: if no browser checks in for 15 s while a device is energized, the station stops every device.",
+      "wait": null
+    }
+  ]
+}

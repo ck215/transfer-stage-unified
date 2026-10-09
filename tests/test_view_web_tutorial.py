@@ -254,6 +254,7 @@ from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
+from model.xyz_stage import StageMode, XyzStage
 from panel import Panel
 
 
@@ -420,10 +421,11 @@ DEVICE_TUTORIALS = {
     "temperature-controller.json": ("Operating the Temperature Controller",
                                     "Temperature Controller"),
     "rotator.json": ("Operating the Rotator", "Rotator"),
+    "xyz-stage.json": ("Operating the XYZ Stage", "XYZ Stage"),
 }
 SHIPPED_TITLES = [title for title, _page in DEVICE_TUTORIALS.values()] + [
     "Register a sample", "Your first trial"]
-PROBES = ("Stepper Probe", "DC Probe", "Chuck Positioner")
+PROBES = ("Stepper Probe", "DC Probe", "Chuck Positioner", "XYZ Stage")
 
 
 def test_the_shipped_tutorials_are_the_ones_named():
@@ -450,7 +452,9 @@ def _device_models():
             "DC Probe": DCProbe(port=None, gamepad=_Pad(), sim=True),
             "Chuck Positioner": ChuckPositioner(port=None, gamepad=_Pad(), sim=True),
             "Temperature Controller": Heater(port=None, sim=True),
-            "Rotator": Rotator(port=None, sim=True)}
+            "Rotator": Rotator(port=None, sim=True),
+            "XYZ Stage": XyzStage(sim=True, port_x="SIM", port_y="SIM", port_z="SIM",
+                                  gamepad=_Pad())}
 
 
 def _words(schema_dict):
@@ -506,6 +510,7 @@ def test_every_anchor_text_is_in_the_real_schema_of_its_sim_model(sim_station):
                 else:
                     assert wait["key"] == "model_mode" and wait["name"] in PROBES, wait
                     assert wait["equals"] in {m.value for m in ProbeMode} - {"fault"}, wait
+                    assert wait["equals"] in {m.value for m in StageMode} - {"fault"}, wait
     assert not missing, missing
 
 
