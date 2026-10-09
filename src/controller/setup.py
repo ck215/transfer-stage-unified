@@ -2943,7 +2943,7 @@ class Setup(PortProbe, Panel):
             if line.strip():
                 self.firmware_progress = line.strip()
 
-        boards = list(flashing.BOARDS)
+        boards = list(flashing.STABLE_BOARDS)
         try:
             outcome = self._stable_check().flash(boards, on_line=on_line)
         except Exception as exc:        # never let a worker die silently

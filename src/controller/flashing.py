@@ -64,7 +64,27 @@ BOARDS = {
     "DC Probe": {"dir": "high_polling_rate", "board": "mega"},
     "Chuck Positioner": {"dir": "chuck_firmware", "board": "mega"},
     "Temperature Controller": {"dir": "temp_controller", "board": "teensy"},
+    # One sketch on three Teensy boards, one per axis; each answers the scan
+    # `DEV: x <axis>` (its EEPROM tag). All three are flashed, each on its own
+    # port, or none (owner ruling 2026-10-09). Its libraries are MEGA_LIBS'
+    # (TMCStepper, AccelStepper): arduino-cli libraries serve every core.
+    "XYZ Stage": {"dir": "xyz_stage_axis", "board": "teensy", "tags": ["X", "Y", "Z"]},
 }
+
+#: The boards the stable app (the lab's original app, frozen) has firmware
+#: for. The XYZ Stage is station-only: a switch to stable leaves its boards
+#: on the station's firmware.
+STABLE_BOARDS = ("Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller")
+
+#: The status a tagged board gets when detection found an incomplete set.
+FAULT = "FAULT"
+
+
+def stamp_keys(board):
+    """The stamp entries one board's flash writes: its name, or one per tag
+    for a board that is several boards ("XYZ Stage X", ...)."""
+    tags = BOARDS[board].get("tags")
+    return [f"{board} {tag}" for tag in tags] if tags else [board]
 
 #: The checkout this file lives in: src/controller/flashing.py -> the repo.
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -103,11 +123,8 @@ TEENSY_REBOOT_HINT = ("The Teensy could not be asked to reboot through its port:
 def reboot_teensy(port):
     """Ask the Teensy on `port` to enter its bootloader (134 baud, then close).
     Raises when the port cannot be opened."""
-    import serial    # pyserial, the station's serial library
-    handle = serial.Serial()
-    handle.port, handle.baudrate = port, TEENSY_REBOOT_BAUD
-    handle.open()
-    handle.close()
+    from devices import serial_port     # the one owner of pyserial
+    serial_port.touch(port, TEENSY_REBOOT_BAUD)
 
 # -- where things are ---------------------------------------------------------
 
@@ -443,13 +460,22 @@ def default_probe():
     return PortProbe()
 
 
-def detect(ports, identify, on_line=None, targets=None):
+def detect(ports, identify, on_line=None, targets=None, tag_of=None, faults=None):
     """{board: port} for every port whose identity handshake names a flash
     target. `identify(port) -> model name or None` is Setup's handshake;
     `ports` are whatever Setup's listing offers (COM ports included: the old
-    script skipped them, so Flash now found nothing on the lab PC, OP-12)."""
+    script skipped them, so Flash now found nothing on the lab PC, OP-12).
+
+    A board with `tags` (the XYZ Stage) is found only as a complete set:
+    {board: {tag: port}} with each tag on exactly one port. `tag_of(port)`
+    gives the tag the handshake reported (default: the probe's
+    `probe_tags`). A missing, repeated or absent tag puts the reason in
+    `faults[board]` and the board is not found, so nothing of it is flashed."""
     say = on_line or (lambda line: None)
-    found = {}
+    if tag_of is None:
+        known = getattr(getattr(identify, "__self__", None), "probe_tags", None)
+        tag_of = (lambda port: known.get(port)) if isinstance(known, dict) else (lambda port: None)
+    found, tagged = {}, {}
     for port in ports:
         if port in ("SIM", "On", "Headless"):
             continue
@@ -467,8 +493,32 @@ def detect(ports, identify, on_line=None, targets=None):
         if targets is not None and device not in targets:
             say(f"  probing {port} ... identified as {device} (not asked for)")
             continue
+        if BOARDS[device].get("tags"):
+            tag = tag_of(port)
+            say(f"  probing {port} ... identified as {device} {tag or '(no axis tag)'}")
+            tagged.setdefault(device, []).append((tag, port))
+            continue
         say(f"  probing {port} ... identified as {device}")
         found.setdefault(device, port)
+    for device, seen in tagged.items():
+        wanted = list(BOARDS[device]["tags"])
+        by_tag = {}
+        for tag, port in seen:
+            by_tag.setdefault(tag, []).append(port)
+        problems = [f"{tag} missing" for tag in wanted if tag not in by_tag]
+        problems += [f"two boards answered as {tag} ({', '.join(by_tag[tag])})"
+                     for tag in wanted if len(by_tag.get(tag, ())) > 1]
+        stray = [port for tag, ports_ in by_tag.items() if tag not in wanted for port in ports_]
+        if stray:
+            problems.append(f"no {'/'.join(wanted)} tag on {', '.join(stray)}")
+        if problems:
+            reason = "; ".join(problems)
+            say(f"  {device}: NOT flashed: {reason}. All {len(wanted)} boards must "
+                "answer, one per axis.")
+            if faults is not None:
+                faults[device] = reason
+            continue
+        found[device] = {tag: by_tag[tag][0] for tag in wanted}
     return found
 
 
@@ -492,7 +542,8 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
     runner = run or stream_lines
     sketch_root = Path(sketch_root)
     manual = dict(manual or {})
-    answer = {"returncode": 1, "results": {}, "found": {}, "absent": [], "hints": []}
+    answer = {"returncode": 1, "results": {}, "found": {}, "absent": [], "hints": [],
+              "faults": {}}
     targets = list(BOARDS) if boards is None else list(boards)
     unknown = [b for b in targets + list(manual) if b not in BOARDS]
     if not targets or unknown:
@@ -502,8 +553,14 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
     if channel not in CHANNELS:
         raise ValueError(f"channel must be one of {CHANNELS}, got {channel!r}")
 
+    tagged_by_hand = [b for b in manual if BOARDS[b].get("tags")]
+    if tagged_by_hand:
+        say(f"[ERROR] {', '.join(tagged_by_hand)} is one board per axis: it is "
+            "flashed only by detection, with every axis board answering.")
+        return answer
+    # Only the boards asked for need a sketch: the stable tree has no XYZ Stage.
     missing = [f"{b}: {sketch_dir(b, sketch_root) / (BOARDS[b]['dir'] + '.ino')}"
-               for b in BOARDS if not has_sketch(b, sketch_root)]
+               for b in targets if not has_sketch(b, sketch_root)]
     if missing:
         say(f"[ERROR] sketches missing under {sketch_root}:")
         for line in missing:
@@ -520,9 +577,9 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
     recorded = load_stamp(stamp, say)
     current = set()
     for board in targets:
-        theirs = (recorded.get(board) or {}).get("hash") if isinstance(
-            recorded.get(board), dict) else None
-        if theirs == digests[board] and not force:
+        theirs = {(recorded.get(key) or {}).get("hash") if isinstance(
+            recorded.get(key), dict) else None for key in stamp_keys(board)}
+        if theirs == {digests[board]} and not force:
             current.add(board)
             say(f"  {board:<24} already current ({digests[board][:12]}), skipping")
     needed = [b for b in targets if b not in current]
@@ -540,97 +597,129 @@ def flash(boards=None, *, sketch_root, stamp, tools, run=None, identify=None,
             identify = identify or probe.identify
             ports = probe.scan_ports() if ports is None else ports
         found = detect(list(ports() if callable(ports) else ports), identify,
-                       say, targets=needed)
+                       say, targets=needed, faults=answer["faults"])
     found.update(manual)
     found = {b: p for b, p in found.items() if b in needed}
     answer["found"] = dict(found)
-    absent = [b for b in needed if b not in found]
+    # An incomplete set of axis boards is a fault, not "not connected": the
+    # board is named FAULT in the results and the flash returns 1.
+    faulted = {b: reason for b, reason in answer["faults"].items()
+               if b in needed and b not in found}
+    for board, reason in faulted.items():
+        answer["results"][board] = f"{FAULT}: {reason}, nothing flashed"
+    absent = [b for b in needed if b not in found and b not in faulted]
     answer["absent"] = absent
     if absent:
         say(f"Not connected (nothing flashed, nothing recorded): {', '.join(absent)}")
     if not found:
         say("No flashable boards identified. Use --port DEVICE=PORT to assign one manually.")
-        answer["returncode"] = 0
-        return answer
+        return _summarise(answer, say)
 
     say("")
     say("Identified:")
-    for board, port in found.items():
+    for board, where in found.items():
         chip = (MEGA_FQBN if BOARDS[board]["board"] == "mega"
                 else f"{TEENSY_FQBN} (mcu={TEENSY_MCU})")
-        say(f"  {board:<24} {port:<20} {chip}")
+        for label, port in _units(board, where):
+            say(f"  {label:<24} {port:<20} {chip}")
 
     deadline = time.monotonic() + timeout
     results = answer["results"]
     for board in needed:
         if board not in found:
             continue
-        port = found[board]
+        for label, port in _units(board, found[board]):
+            _flash_one(board, label, port, sketch_root, tools, runner, stamp, digests,
+                       confirm, dry_run, deadline, timeout, cwd, channel, version,
+                       answer, say)
+
+    return _summarise(answer, say)
+
+
+def _summarise(answer, say):
+    """Say the per-board results and set the return code: 1 when an upload
+    failed or a tagged board's set was incomplete."""
+    results = answer["results"]
+    if results:
         say("")
-        say(f"{board} on {port}:")
-        if confirm is not None and not confirm(board, port):
-            say("  skipped")
-            results[board] = "skipped"
-            continue
-        ok = True
-        for argv in commands(board, port, sketch_root, tools):
-            output = []
-
-            def said(line, output=output):
-                output.append(line)
-                say(line)
-
-            if isinstance(argv, tuple) and argv[0] == REBOOT:
-                say(f"  $ (reboot the Teensy on {argv[1]} into its bootloader, "
-                    f"{TEENSY_REBOOT_BAUD} baud)")
-                if dry_run:
-                    continue
-                try:
-                    reboot_teensy(argv[1])
-                except Exception as exc:
-                    said(f"Could not reboot the Teensy on {argv[1]}: {exc}")
-                    if TEENSY_REBOOT_HINT not in answer["hints"]:
-                        answer["hints"].append(TEENSY_REBOOT_HINT)
-                    say(f"[HINT] {TEENSY_REBOOT_HINT}")
-                    ok = False
-                    break
-                continue
-            say("  $ " + " ".join(argv))
-            if dry_run:
-                continue
-            left = deadline - time.monotonic()
-            if left <= 0:
-                say(f"The flash took longer than {timeout:g} s and was stopped.")
-                ok = False
-                break
-            try:
-                code = runner(argv, tools.cwd or str(cwd or sketch_root), said,
-                              left, env=tools.env)
-            except (OSError, subprocess.SubprocessError, ValueError) as exc:
-                said(f"The flash tool could not start: {exc}")
-                code = -1
-            if code is None:
-                say(f"The flash took longer than {timeout:g} s and was stopped.")
-            if code != 0:
-                hints = hints_for(output)
-                if code is None and argv[0] == (tools.teensy_loader or TEENSY_LOADER):
-                    hints.append(TEENSY_WAIT_HINT)
-                for hint in hints:
-                    if hint not in answer["hints"]:
-                        answer["hints"].append(hint)
-                    say(f"[HINT] {hint}")
-                ok = False
-                break
-        if ok and not dry_run:
-            # Recorded only after the upload reported success.
-            record_flash(stamp, board, digests[board], sketch_dir(board, sketch_root),
-                         port, channel=channel, version=version)
-        results[board] = ("ok (dry run)" if dry_run else "ok") if ok else "FAILED"
-
-    say("")
-    say("Summary:")
-    for board, status in results.items():
-        say(f"  {board:<24} {status}")
-    answer["returncode"] = 1 if any(s == "FAILED" for s in results.values()) else 0
+        say("Summary:")
+        for board, status in results.items():
+            say(f"  {board:<24} {status}")
+    answer["returncode"] = 1 if any(
+        s == "FAILED" or s.startswith(FAULT) for s in results.values()) else 0
     return answer
 
+
+def _units(board, where):
+    """(label, port) per upload: one for a board, one per tag for a tagged
+    board ("XYZ Stage X" on its port, ...)."""
+    if isinstance(where, dict):
+        return [(f"{board} {tag}", where[tag]) for tag in BOARDS[board]["tags"]]
+    return [(board, where)]
+
+
+def _flash_one(board, label, port, sketch_root, tools, runner, stamp, digests,
+               confirm, dry_run, deadline, timeout, cwd, channel, version, answer, say):
+    """Compile and upload one board (or one axis board) on `port`, and record
+    it in the stamp under `label` when the upload succeeded."""
+    results = answer["results"]
+    say("")
+    say(f"{label} on {port}:")
+    if confirm is not None and not confirm(label, port):
+        say("  skipped")
+        results[label] = "skipped"
+        return
+    ok = True
+    for argv in commands(board, port, sketch_root, tools):
+        output = []
+
+        def said(line, output=output):
+            output.append(line)
+            say(line)
+
+        if isinstance(argv, tuple) and argv[0] == REBOOT:
+            say(f"  $ (reboot the Teensy on {argv[1]} into its bootloader, "
+                f"{TEENSY_REBOOT_BAUD} baud)")
+            if dry_run:
+                continue
+            try:
+                reboot_teensy(argv[1])
+            except Exception as exc:
+                said(f"Could not reboot the Teensy on {argv[1]}: {exc}")
+                if TEENSY_REBOOT_HINT not in answer["hints"]:
+                    answer["hints"].append(TEENSY_REBOOT_HINT)
+                say(f"[HINT] {TEENSY_REBOOT_HINT}")
+                ok = False
+                break
+            continue
+        say("  $ " + " ".join(argv))
+        if dry_run:
+            continue
+        left = deadline - time.monotonic()
+        if left <= 0:
+            say(f"The flash took longer than {timeout:g} s and was stopped.")
+            ok = False
+            break
+        try:
+            code = runner(argv, tools.cwd or str(cwd or sketch_root), said,
+                          left, env=tools.env)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            said(f"The flash tool could not start: {exc}")
+            code = -1
+        if code is None:
+            say(f"The flash took longer than {timeout:g} s and was stopped.")
+        if code != 0:
+            hints = hints_for(output)
+            if code is None and argv[0] == (tools.teensy_loader or TEENSY_LOADER):
+                hints.append(TEENSY_WAIT_HINT)
+            for hint in hints:
+                if hint not in answer["hints"]:
+                    answer["hints"].append(hint)
+                say(f"[HINT] {hint}")
+            ok = False
+            break
+    if ok and not dry_run:
+        # Recorded only after the upload reported success.
+        record_flash(stamp, label, digests[board], sketch_dir(board, sketch_root),
+                     port, channel=channel, version=version)
+    results[label] = ("ok (dry run)" if dry_run else "ok") if ok else "FAILED"

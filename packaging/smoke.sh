@@ -41,7 +41,10 @@ PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotato
 ALL_ROWS="$PORT_ROWS transfer_map sample_db"
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
-SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller"
+SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller xyz_stage_axis"
+# The stable app's sketches (controller.flashing.STABLE_BOARDS): the XYZ
+# Stage is station-only.
+STABLE_SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller"
 # arduino:avr and teensy:avr: the platforms of the flasher's two FQBNs.
 CORES="arduino:avr teensy:avr"
 
@@ -114,6 +117,8 @@ BUILT="$(sed -n 3p "$BUNDLE/VERSION" 2>/dev/null)"
 EXPECTED_VERSION="$TAG"
 for sketch in $SKETCHES; do
     check "firmware/$sketch/$sketch.ino" test -f "$BUNDLE/firmware/$sketch/$sketch.ino"
+done
+for sketch in $STABLE_SKETCHES; do
     check "stable/firmware/$sketch/$sketch.ino" test -f "$BUNDLE/stable/firmware/$sketch/$sketch.ino"
 done
 check "firmware/libraries/" test -d "$BUNDLE/firmware/libraries"

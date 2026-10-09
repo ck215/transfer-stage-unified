@@ -115,12 +115,18 @@ class FirmwareCheck:
             if not self._has_sketch(board):
                 boards[board] = NO_SKETCH
                 continue
-            entry = recorded.get(board)
-            theirs = entry.get("hash") if isinstance(entry, dict) else None
-            if theirs is None:
-                boards[board] = NEVER
+            # A board that is several boards (the XYZ Stage's axes) is current
+            # only when every one of its stamp entries is; an axis whose entry
+            # differs makes it out of date, an axis never flashed never flashed.
+            digest = self.sketch_hash(board)
+            hashes = [entry.get("hash") if isinstance(entry, dict) else None
+                      for entry in (recorded.get(key) for key in flashing.stamp_keys(board))]
+            if any(h is not None and h != digest for h in hashes):
+                boards[board] = OUT_OF_DATE
+            elif all(h == digest for h in hashes):
+                boards[board] = CURRENT
             else:
-                boards[board] = CURRENT if theirs == self.sketch_hash(board) else OUT_OF_DATE
+                boards[board] = NEVER
         stale = [b for b, s in boards.items() if s == OUT_OF_DATE]
         never = [b for b, s in boards.items() if s == NEVER]
         missing = self.tools.missing

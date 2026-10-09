@@ -31,7 +31,10 @@ $PortRows = @("stepper_probe", "dc_probe", "chuck_positioner", "temperature_cont
 $AllRows = $PortRows + @("transfer_map", "sample_db")
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
-$Sketches = @("stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller")
+$Sketches = @("stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller", "xyz_stage_axis")
+# The stable app's sketches (controller.flashing.STABLE_BOARDS): the XYZ
+# Stage is station-only.
+$StableSketches = @("stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller")
 $Cores = @("arduino:avr", "teensy:avr")
 $script:Failed = 0
 
@@ -78,6 +81,8 @@ $Stamp = @(Get-Content (Join-Path $Bundle "VERSION") -ErrorAction SilentlyContin
 $ExpectedVersion = if ($Stamp.Count -ge 1) { "$($Stamp[0])" } else { "(no VERSION)" }
 foreach ($sketch in $Sketches) {
     Check "firmware\$sketch\$sketch.ino" (Test-Path (Join-Path $Bundle "firmware\$sketch\$sketch.ino"))
+}
+foreach ($sketch in $StableSketches) {
     Check "stable\firmware\$sketch\$sketch.ino" (Test-Path (Join-Path $Bundle "stable\firmware\$sketch\$sketch.ino"))
 }
 Check "firmware\libraries\" (Test-Path (Join-Path $Bundle "firmware\libraries"))

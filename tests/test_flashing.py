@@ -20,6 +20,8 @@ from controller import flashing
 from controller import setup as station_setup
 
 REPO = Path(__file__).resolve().parents[1]
+#: The real reboot, before the autouse fixture replaces it.
+REAL_REBOOT = flashing.reboot_teensy
 
 
 def make_tree(root, boards=flashing.BOARDS):
@@ -89,9 +91,17 @@ def test_the_board_table_matches_the_sketch_directories_on_disk():
     assert on_disk == {cfg["dir"] for cfg in flashing.BOARDS.values()}
 
 
-def test_the_chips_are_three_megas_and_one_teensy():
+def test_the_chips_are_three_megas_and_the_teensy_boards():
     assert [cfg["board"] for cfg in flashing.BOARDS.values()] == [
-        "mega", "mega", "mega", "teensy"]
+        "mega", "mega", "mega", "teensy", "teensy"]
+
+
+def test_the_xyz_stage_is_three_tagged_boards_and_station_only():
+    assert flashing.BOARDS["XYZ Stage"]["tags"] == ["X", "Y", "Z"]
+    assert flashing.stamp_keys("XYZ Stage") == ["XYZ Stage X", "XYZ Stage Y", "XYZ Stage Z"]
+    assert flashing.stamp_keys("DC Probe") == ["DC Probe"]
+    assert "XYZ Stage" not in flashing.STABLE_BOARDS
+    assert set(flashing.STABLE_BOARDS) == set(flashing.BOARDS) - {"XYZ Stage"}
 
 
 # -- detection: Setup's handshake, COM ports included (OP-12) -------------------
@@ -548,3 +558,188 @@ def test_an_ordinary_failure_adds_no_hint(tree, stamp, path_tools):
                             run=Saying("avrdude: stk500v2_getsync(): timeout"),
                             ports=["P"], identify=answering({"P": "DC Probe"}))
     assert answer["results"] == {"DC Probe": "FAILED"} and answer["hints"] == []
+
+
+# -- the XYZ Stage: three boards, one per axis tag, all or none (2026-10-09) -----
+
+XYZ = {"/dev/ttyACM1": "X", "/dev/ttyACM2": "Y", "/dev/ttyACM3": "Z"}
+
+
+def axis_boards(tags):
+    """identify= and tag_of= for {port: tag}: every port answers XYZ Stage."""
+    return (lambda port: "XYZ Stage" if port in tags else None), tags.get
+
+
+class AxisProbe:
+    """Setup's handshake as flashing sees it: `identify` names the model and
+    leaves the tag the board answered in `probe_tags`."""
+
+    def __init__(self, tags):
+        self.probe_tags = dict(tags)
+
+    def identify(self, port):
+        return "XYZ Stage" if port in self.probe_tags else None
+
+
+def flash_xyz(tree, stamp, tools, tags, run=None, lines=None):
+    return flashing.flash(["XYZ Stage"], sketch_root=tree, stamp=stamp, tools=tools,
+                          run=run or Runner(), ports=list(tags),
+                          identify=AxisProbe(tags).identify,
+                          on_line=(lines.append if lines is not None else None))
+
+
+def test_detect_places_a_complete_set_by_tag_not_by_port_order():
+    tags = {"/dev/ttyACM1": "Z", "/dev/ttyACM2": "X", "/dev/ttyACM3": "Y"}
+    identify, tag_of = axis_boards(tags)
+    faults = {}
+    found = flashing.detect(list(tags), identify, tag_of=tag_of, faults=faults)
+    assert found == {"XYZ Stage": {"X": "/dev/ttyACM2", "Y": "/dev/ttyACM3",
+                                   "Z": "/dev/ttyACM1"}}
+    assert faults == {}
+
+
+@pytest.mark.parametrize("tags, reason", [
+    ({"/dev/ttyACM1": "X", "/dev/ttyACM2": "Y"}, "Z missing"),
+    ({"/dev/ttyACM1": "X", "/dev/ttyACM2": "X", "/dev/ttyACM3": "Y",
+      "/dev/ttyACM4": "Z"}, "two boards answered as X (/dev/ttyACM1, /dev/ttyACM2)"),
+    ({"/dev/ttyACM1": "X", "/dev/ttyACM2": "Y", "/dev/ttyACM3": None},
+     "Z missing; no X/Y/Z tag on /dev/ttyACM3"),
+])
+def test_detect_finds_no_partial_set_and_names_the_fault(tags, reason):
+    identify, tag_of = axis_boards(tags)
+    faults, lines = {}, []
+    found = flashing.detect(list(tags), identify, lines.append, tag_of=tag_of,
+                            faults=faults)
+    assert found == {}
+    assert faults == {"XYZ Stage": reason}
+    assert any("NOT flashed" in line and reason in line for line in lines)
+
+
+def test_detect_reads_the_tags_the_probes_handshake_recorded():
+    probe = AxisProbe({"COM4": "X", "COM5": "Y", "COM6": "Z"})
+    found = flashing.detect(["COM4", "COM5", "COM6"], probe.identify)
+    assert found == {"XYZ Stage": {"X": "COM4", "Y": "COM5", "Z": "COM6"}}
+
+
+def test_all_three_axis_boards_are_flashed_each_on_its_own_port_and_stamped(
+        tree, stamp, path_tools, reboots):
+    run = Runner()
+    answer = flash_xyz(tree, stamp, path_tools, XYZ, run=run)
+    assert answer["returncode"] == 0
+    assert answer["results"] == {"XYZ Stage X": "ok", "XYZ Stage Y": "ok",
+                                 "XYZ Stage Z": "ok"}
+    # Each axis board is rebooted through its own port, never "whichever answers".
+    assert reboots == ["/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3"]
+    loads = [c["argv"] for c in run.calls if c["argv"][0].endswith("teensy_loader_cli")]
+    assert len(loads) == 3 and all("-s" not in argv for argv in loads)
+    recorded = json.loads(stamp.read_text())
+    digest = flashing.sketch_hash(tree, "XYZ Stage")
+    assert {k: (v["hash"], v["port"]) for k, v in recorded.items()} == {
+        "XYZ Stage X": (digest, "/dev/ttyACM1"), "XYZ Stage Y": (digest, "/dev/ttyACM2"),
+        "XYZ Stage Z": (digest, "/dev/ttyACM3")}
+
+
+def test_a_partial_set_is_a_fault_that_flashes_nothing(tree, stamp, path_tools,
+                                                         reboots):
+    run, lines = Runner(), []
+    answer = flash_xyz(tree, stamp, path_tools, {"/dev/ttyACM1": "X", "/dev/ttyACM2": "Y"},
+                       run=run, lines=lines)
+    assert answer["returncode"] == 1
+    assert answer["faults"] == {"XYZ Stage": "Z missing"}
+    assert answer["results"] == {"XYZ Stage": "FAULT: Z missing, nothing flashed"}
+    assert answer["absent"] == []
+    assert run.calls == [] and reboots == [] and not stamp.exists()
+    assert lines[-1].strip() == "XYZ Stage                FAULT: Z missing, nothing flashed"
+
+
+def test_no_axis_board_at_all_is_not_connected_not_a_fault(tree, stamp, path_tools):
+    answer = flash_xyz(tree, stamp, path_tools, {})
+    assert answer["returncode"] == 0 and answer["absent"] == ["XYZ Stage"]
+    assert answer["results"] == {}
+
+
+def test_a_set_with_one_axis_behind_reflashes_all_three(tree, stamp, path_tools):
+    digest = flashing.sketch_hash(tree, "XYZ Stage")
+    for tag, hashed in (("X", digest), ("Y", digest), ("Z", "0" * 64)):
+        flashing.record_flash(stamp, f"XYZ Stage {tag}", hashed,
+                              tree / "xyz_stage_axis", f"/dev/ttyACM{tag}")
+    run = Runner()
+    answer = flash_xyz(tree, stamp, path_tools, XYZ, run=run)
+    assert set(answer["results"]) == {"XYZ Stage X", "XYZ Stage Y", "XYZ Stage Z"}
+
+
+def test_a_current_set_runs_nothing(tree, stamp, path_tools):
+    digest = flashing.sketch_hash(tree, "XYZ Stage")
+    for tag in "XYZ":
+        flashing.record_flash(stamp, f"XYZ Stage {tag}", digest,
+                              tree / "xyz_stage_axis", "p")
+    run = Runner()
+    answer = flash_xyz(tree, stamp, path_tools, XYZ, run=run)
+    assert answer["returncode"] == 0 and run.calls == []
+
+
+def test_an_axis_board_is_never_assigned_by_hand(tree, stamp, path_tools):
+    lines, run = [], Runner()
+    answer = flashing.flash(["XYZ Stage"], sketch_root=tree, stamp=stamp,
+                            tools=path_tools, run=run, manual={"XYZ Stage": "COM9"},
+                            detect_ports=False, on_line=lines.append)
+    assert answer["returncode"] == 1 and run.calls == []
+    assert any("flashed only by detection" in line for line in lines)
+
+
+def test_only_the_boards_asked_for_need_a_sketch(tmp_path, stamp, path_tools):
+    """The stable tree has no XYZ Stage sketch: flashing its four boards
+    must not refuse over the fifth."""
+    stable = make_tree(tmp_path / "stable", {b: flashing.BOARDS[b]
+                                             for b in flashing.STABLE_BOARDS})
+    answer = flashing.flash(["DC Probe"], sketch_root=stable, stamp=stamp,
+                            tools=path_tools, run=Runner(), ports=["COM2"],
+                            identify=answering({"COM2": "DC Probe"}), channel="stable")
+    assert answer["results"] == {"DC Probe": "ok"}
+    missing = flashing.flash(["XYZ Stage"], sketch_root=stable, stamp=stamp,
+                             tools=path_tools, run=Runner(), ports=[],
+                             identify=answering({}))
+    assert missing["returncode"] == 1 and missing["results"] == {}
+
+
+def test_the_reboot_opens_only_that_port_at_134_baud_through_the_serial_owner(monkeypatch):
+    from devices import serial_port
+    opened = []
+    monkeypatch.setattr(serial_port, "touch", lambda port, baud: opened.append((port, baud)))
+    REAL_REBOOT("/dev/ttyACM2")
+    assert opened == [("/dev/ttyACM2", 134)]
+
+
+def test_touch_opens_at_the_baud_sends_nothing_and_closes(monkeypatch):
+    from devices import serial_port
+
+    class Handle:
+        closed = False
+        written = b""
+
+        def write(self, data):
+            self.written += data
+
+        def close(self):
+            self.closed = True
+    handle, settings = Handle(), {}
+
+    def opened(**kwargs):
+        settings.update(kwargs)
+        return handle
+    monkeypatch.setattr(serial_port, "pyserial", object())
+    monkeypatch.setattr(serial_port, "_open_serial", opened)
+    serial_port.touch("COM5", 134)
+    assert settings["port"] == "COM5" and settings["baudrate"] == 134
+    assert handle.closed and handle.written == b""
+
+
+def test_touch_that_cannot_open_is_a_transport_error(monkeypatch):
+    from devices import serial_port
+
+    def refused(**kwargs):
+        raise OSError(16, "Resource busy")
+    monkeypatch.setattr(serial_port, "pyserial", object())
+    monkeypatch.setattr(serial_port, "_open_serial", refused)
+    with pytest.raises(serial_port.TransportError, match="COM5 at 134"):
+        serial_port.touch("COM5", 134)
