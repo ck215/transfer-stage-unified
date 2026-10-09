@@ -13,7 +13,7 @@ everything else.
 
 ## Read first, in this order
 
-1. `.claude/skills/station-map/SKILL.md` in `mvc-refactor/` (absolute path in
+1. `.claude/skills/station-map/SKILL.md` in `main/` (absolute path in
    the brief) — the tree, the commands, the owner rulings.
 2. `docs/rebuild/DESIGN_BRIEF.md` — **the brief wins**. Its colour tokens, typefaces, "one red", sentence
    case, copy rules, motion rules and the procedure section bind the Web view,

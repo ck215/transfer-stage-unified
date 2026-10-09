@@ -5,8 +5,8 @@ description: Run the right test gates for the station at the right time — the 
 
 # Verifying
 
-Run from the repo root (`mvc-refactor/` or your `rb-*` worktree). `$PY` is the
-one venv's python, `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor/.venv/bin/python`
+Run from the repo root (`main/` or your `rb-*` worktree). `$PY` is the
+one venv's python, `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/main/.venv/bin/python`
 (made from pyproject's `[dev]` extra); `$S` is the session scratch directory.
 
 ## The working loop

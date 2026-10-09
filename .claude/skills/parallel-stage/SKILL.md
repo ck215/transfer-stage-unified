@@ -36,15 +36,15 @@ belongs to the lead, who is editing it right now" is not.
 ## 2. Worktrees
 
 Siblings of the repo, under `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/`. The parent directory is not a git repo, so create
-them from the checkout (today `mvc-refactor/`; after a re-clone, `transfer-stage-unified/`); rounds merge back by pull request into `main`:
+them from the checkout (`main/`); rounds merge back by pull request into `main`:
 
 ```
-git -C ../mvc-refactor worktree add ../rb-probes -b rb-probes
+git -C ../main worktree add ../rb-probes -b rb-probes
 ```
 
 Agents **commit but never push**. One commit per item. The lead merges.
 Profiles and skills under `.claude/` are read by absolute path from
-`mvc-refactor/`, since a fresh worktree carries only what is committed.
+`main/`, since a fresh worktree carries only what is committed.
 
 ## 3. Brief them
 

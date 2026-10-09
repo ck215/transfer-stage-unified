@@ -11,7 +11,7 @@ else.
 
 ## Read first
 
-1. `.claude/skills/station-map/SKILL.md` in `mvc-refactor/` (absolute path in
+1. `.claude/skills/station-map/SKILL.md` in `main/` (absolute path in
    the brief): the tree, the run commands, the owner rulings.
 2. `docs/rebuild/DESIGN_BRIEF.md`: **the brief wins** over any skill's
    taste. Its six colour tokens, one typeface, "one red", sentence case and

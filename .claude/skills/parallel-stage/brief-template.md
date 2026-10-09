@@ -10,7 +10,7 @@ A brief carries only what changes between runs. Substitute `<...>`.
 # <batch name> — <one-line scope>. Worktree brief.
 
 Worktree: <../rb-probes>   Branch: <rb-probes>   Base: <sha>
-Python: /Users/ianalbinogonzalez/GitHub/transfer-stage-unified/mvc-refactor/.venv/bin/python   Handoff: <handoff/fix-probes.md>
+Python: /Users/ianalbinogonzalez/GitHub/transfer-stage-unified/main/.venv/bin/python   Handoff: <handoff/fix-probes.md>
 
 ## THE WRITE SET — a hard contract
 
