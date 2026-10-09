@@ -159,9 +159,10 @@ def test_the_per_baud_probe_budget_is_the_one_probe_device_at_spent():
 def test_model_types_is_every_model_class_keyed_by_its_name():
     assert list(MODEL_TYPES) == ["Stepper Probe", "DC Probe",
                                  "Chuck Positioner", "Temperature Controller",
-                                 "Rotator", "RGB Analysis", "Transfer Map",   # Tier S; RG-3
+                                 "Rotator", "XYZ Stage",                       # 2026-10-09
+                                 "RGB Analysis", "Transfer Map",               # Tier S; RG-3
                                  *(["Sample DB"] if station_setup.SAMPLE_MAP_ENABLED else [])]
-    assert len(set(MODEL_TYPES.values())) == 7 + station_setup.SAMPLE_MAP_ENABLED
+    assert len(set(MODEL_TYPES.values())) == 8 + station_setup.SAMPLE_MAP_ENABLED
 
 
 def test_model_types_is_the_only_list_of_models(panel, fake_types):
@@ -294,7 +295,9 @@ def test_scan_ports_falls_back_when_the_serial_module_offers_no_listing(
 
 def test_scan_ports_filters_bluetooth_and_puts_usb_first(panel, monkeypatch):
     """The sort is today's, unchanged: the `/dev/cu.usb*` family and anything
-    with a literal "USB" in its name come first, then the rest by name."""
+    with a literal "USB" in its name come first, then the rest by name.
+    macOS's debug console is dropped (2026-10-09): probing it at 57600 fails
+    with EINVAL and warned "Probe failed" on every launch on a Mac."""
     monkeypatch.setattr(serial_port_module, "list_ports", lambda: [
         ("/dev/cu.Bluetooth-Incoming-Port", "n/a"),
         ("/dev/cu.usbmodem1101", "USB VID:PID=2341"),
@@ -302,7 +305,7 @@ def test_scan_ports_filters_bluetooth_and_puts_usb_first(panel, monkeypatch):
     ], raising=False)
     ports = panel.scan_ports()
     assert "/dev/cu.Bluetooth-Incoming-Port" not in ports
-    assert ports == ["/dev/cu.usbmodem1101", "/dev/cu.debug-console"]
+    assert ports == ["/dev/cu.usbmodem1101"]
 
 
 def test_scan_ports_drops_linux_ttys_without_a_hwid(panel, monkeypatch):
@@ -2786,3 +2789,4 @@ def test_answering_the_sign_in_screen_rescans_when_the_station_has_scanned(
     panel._scan_thread = threading.Thread(target=lambda: None)   # one ran and ended
     panel.open_as_guest()
     assert scans == [1]
+

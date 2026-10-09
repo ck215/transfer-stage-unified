@@ -1023,7 +1023,7 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
   align-items: stretch;
 }
 
-.sheet.is-overview > .card.is-wide { grid-column: span var(--tile-wide); }
+.sheet.is-overview > .card.is-wide { grid-column: min(var(--tile-col, 1), calc(var(--tile-cols) - var(--tile-wide) + 1)) / span var(--tile-wide); }
 
 /* The tile keys - Wide and Move - sit beside the head, in the entry's
    first row after it, never inside it (the head's one button is Open, and
@@ -1099,8 +1099,10 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
    lives inside its host's box (it is not drawn here at all). */
 .sheet.is-overview > .card {
   /* A tile (above): one column, whole rows. */
-  grid-column: span 1;
-  grid-row: span var(--tile-rows, 1);
+  /* The packed column is clamped to the columns there are now: a resize
+     is drawn before the next packing, and a stale column made one. */
+  grid-column: min(var(--tile-col, 1), var(--tile-cols)) / span 1;
+  grid-row: var(--tile-at, auto) / span var(--tile-rows, 1);
   padding-right: var(--space-6);
   padding-bottom: var(--space-6);
   padding-left: var(--space-6);
@@ -1788,14 +1790,23 @@ span.value.is-word,
 .card.is-opened .axis-line { gap: var(--space-2) var(--space-9); }
 
 .row.reading-axis {
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: auto auto auto;
+  justify-content: start;
   align-items: baseline;
-  gap: var(--space-3);
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
 }
 
+/* A secondary readout after the axis ("0 steps" under X) is a quiet line
+   under the number: its own line, in the number's column, never beside it
+   (MODEL_CONTRACT, Secondary readouts). */
+.row.reading-axis > .row.secondary,
+.row.stat > .row.secondary { grid-column: 2 / -1; align-self: start; }
+.row.stat:not(.reading-axis) > .row.secondary { grid-column: 1 / -1; }
+
 /* Axis letters: 14/700 muted, engraved. */
-.row.reading-axis > .label { order: 0; font-size: var(--axis-letter-size); font-weight: 700; }
+.row.reading-axis > .label { order: 0; grid-column: 1; grid-row: 1; font-size: var(--axis-letter-size); font-weight: 700; }
 
 /* A tier-2 statistic (a rate, a count, rows): 24 px in the numeral face. */
 .tier-well > .section .row.stat > .value:not(.is-word):not(.is-empty) { font-size: var(--statistic-size); }
@@ -1886,6 +1897,17 @@ span.value.role-danger:not(.is-empty)::before { width: 0.875rem; height: 0.875re
 .input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
 .row.has-slider .input[type="number"] { width: 4.75rem; }
+
+/* An entry that knows its widest value (app.js writes --entry-chars) is
+   that many numerals wide plus its padding and a half-numeral of air, and
+   never narrower than the width above. */
+.input[type="number"][style*="--entry-chars"],
+.row.has-slider .input[type="number"][style*="--entry-chars"] {
+  width: max(5.5rem, calc(var(--entry-chars) * 1ch + 2 * var(--space-3) + 1ch));
+}
+.row.has-slider .input[type="number"][style*="--entry-chars"] {
+  width: max(4.75rem, calc(var(--entry-chars) * 1ch + 2 * var(--space-3) + 1ch));
+}
 
 .input:disabled {
   border: var(--line) dashed var(--edge);

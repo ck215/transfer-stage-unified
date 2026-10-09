@@ -206,8 +206,48 @@ in at least one step, and a model without a procedure hides nothing.
   section `hosted_tier=1`. A section without it follows its own tier on the
   host's page.
 - **Speed dials** are percent in the schema (`Param(unit="%")`, 0-100) over a
-  per-class ceiling (`MAX_SPEED`: stepper 3200, chuck 600 steps/s); the stored
-  value stays steps/s and the wire is unchanged.
+  per-class ceiling (`MAX_SPEED`: chuck 600 steps/s); the stored value stays
+  steps/s and the wire is unchanged. The DC Probe and the Chuck keep them.
+- **Physical units over counts** (Stepper Probe, owner ruling 2026-10-09). The
+  editable entries are µm and µm/s: `x/y/z_dist_um`, `x/y/z_step_um`,
+  `full_speed_um_s` and `man_full_speed_um_s`.
+  - Each is a view over the stored count Param (`Probe.VIEW_OF`), at 0.625 µm
+    per count. That scale is flagged on the page as "lead unmeasured".
+  - Each entry has its count line beneath it as a secondary readout (steps,
+    steps/s).
+  - A typed value rounds to whole counts, and the readout shows the achieved
+    value.
+  - The ceiling is 2000 µm/s (3200 counts/s). The stored Params, their names
+    and the wire bytes are unchanged.
+
+## One board per axis: tagged ports (2026-10-09)
+
+A model may own several boards, one per port resource. The XYZ Stage
+(`src/model/xyz_stage.py`) owns three Teensy boards: `RESOURCES = ("port_x",
+"port_y", "port_z", "gamepad")`.
+
+- **`PORT_TAGS = {resource: tag}`** must tag every port resource, with
+  distinct tags, and the class needs an `IDENTITY`. `register()` refuses
+  anything else. Each board answers the scan `DEV: <letter> <tag>` (the XYZ
+  Stage's boards answer `DEV: x X`, from a tag stored in their EEPROM).
+- **Setup places boards by tag, not by port order.** The row launches only
+  when every tag answered on exactly one port. A missing, repeated or
+  untagged board is a fault: the row's status says so ("fault: Z missing"),
+  and Launch and start refuse it. A board on the wrong resource is refused
+  too ("is the Y board, not X"). Choosing SIM simulates every port.
+- **Flashing follows the same rule.** A `flashing.BOARDS` entry with
+  `"tags"` is flashed all or none. Detection must find the complete set,
+  or the board is a FAULT that flashes nothing and fails the flash. Each
+  board is rebooted through its own port and stamped `"<board> <tag>"`.
+  The check calls the board current only when every one is.
+- **Devices in state.** Each link carries a `state_key` (`"Axis X"`), so
+  `state["devices"]` names one entry per board. The model's link state is
+  the worst of its ports.
+- **The contract** builds every class from its declared resources (every
+  `port*` "SIM", every `gamepad*` None).
+- **A board's own log.** The XYZ Stage sets `LOG 2` on each link-up and
+  writes every `EVT` line an axis sends to the log file, at debug. The
+  board's account of a run is kept rather than lost on the board.
 
 ## Operator words (accounts)
 

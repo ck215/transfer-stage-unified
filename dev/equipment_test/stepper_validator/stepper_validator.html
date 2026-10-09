@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stepper Motor Validator</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--ink:#1b1f24;--mute:#5b6570;--line:#cfd5dc;--ok:#116329;--okbg:#dafbe1;--bad:#a40e26;--badbg:#ffdce0;--warn:#7d4e00;--warnbg:#fff1cc;--btn:#e8ebef;--accent:#0b57d0}
+@media (prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2126;--ink:#e6e9ec;--mute:#9aa4ae;--line:#38404a;--ok:#7ee2a0;--okbg:#12361f;--bad:#ff9aa8;--badbg:#4a1620;--warn:#ffd277;--warnbg:#41300a;--btn:#2a3037;--accent:#8ab4f8}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:12px 16px 40px}
+h1{font-size:20px;margin:8px 0 4px}
+h2{font-size:15px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute)}
+.note{color:var(--mute);font-size:13px;margin:2px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px;margin-top:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0}
+label{display:flex;flex-direction:column;font-size:12px;color:var(--mute);gap:2px}
+input,select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:110px}
+button{font:inherit;color:var(--ink);background:var(--btn);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--accent)}
+button:disabled,input:disabled,select:disabled{opacity:.45;cursor:not-allowed}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#stopbar{position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 0}
+#stopbtn{width:100%;font-size:30px;font-weight:800;padding:18px;background:#c1121f;color:#fff;border:3px solid #7a0b13;border-radius:10px;letter-spacing:.1em}
+#stopbtn:hover:not(:disabled){background:#e01626;border-color:#7a0b13}
+.jog{display:flex;gap:10px}
+.jog button{flex:1;font-size:26px;padding:16px;touch-action:none;user-select:none}
+.jog button.held{background:var(--accent);color:var(--bg)}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-weight:700;font-size:13px;border:1px solid currentColor}
+.pass{color:var(--ok);background:var(--okbg)}.fail{color:var(--bad);background:var(--badbg)}.abort{color:var(--warn);background:var(--warnbg)}
+table{border-collapse:collapse;width:100%}td,th{padding:3px 6px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
+.flags{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px 10px}
+.flags div{display:flex;justify-content:space-between;gap:6px;border-bottom:1px solid var(--line);padding:2px 0}
+.big{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+#log{height:240px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px;font:12px/1.35 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+.tx{color:var(--accent)}.evt{color:var(--warn)}.errl{color:var(--bad)}
+#banner{display:none;padding:8px 12px;border-radius:6px;margin:8px 0;background:var(--badbg);color:var(--bad);font-weight:600}
+.result{border:1px solid var(--line);border-radius:6px;padding:8px;margin:6px 0}
+.result .kv{font:12px ui-monospace,Menlo,Consolas,monospace;color:var(--mute);word-break:break-all}
+</style>
+</head>
+<body>
+<main>
+<h1>Stepper Motor Validator</h1>
+<p class="note">Needs the Web Serial API: use <b>Chrome or Edge</b> (not Firefox or Safari). Opening this file directly (<code>file://</code>) works. If your browser refuses, serve it with <code>python3 -m http.server</code> and open <code>http://localhost:8000/stepper_validator.html</code>.</p>
+<p class="note"><b>Esc = emergency stop</b> (ESTOP: halts and disables the driver). The firmware never moves on its own; the page keeps a 250 ms STATUS heartbeat and the firmware stops if it stops arriving.</p>
+<div id="banner" role="alert"></div>
+
+<div id="stopbar"><button id="stopbtn" disabled>STOP</button></div>
+
+<div class="card">
+  <div class="row">
+    <label>Baud<input id="baud" type="number" value="115200"></label>
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <span id="conn" class="pill abort">DISCONNECTED</span>
+    <button id="estopbtn" disabled>ESTOP (Esc)</button>
+  </div>
+</div>
+
+<div class="grid">
+  <section class="card">
+    <h2>Drive</h2>
+    <div class="row"><button id="enable" data-need>Enable</button><span id="enstate" class="pill abort">DISABLED</span></div>
+    <div class="row">
+      <label>Current (mA)<input id="current" type="number" value="600" min="0"></label><button data-need data-apply="current">Apply</button>
+    </div>
+    <div class="row">
+      <label>Step resolution (pulses per full step)<select id="microsteps"><option value="1">1 (5 µm)</option><option value="2">2 (2.5 µm)</option><option value="4">4 (1.25 µm)</option><option value="8" selected>8 (0.625 µm)</option><option value="16">16 (0.313 µm)</option><option value="32">32 (0.156 µm)</option><option value="64">64 (0.078 µm)</option><option value="128">128 (0.039 µm)</option><option value="256">256 (0.020 µm)</option></select></label><button data-need data-apply="microsteps">Apply</button>
+    </div>
+    <div class="row">
+      <label>Speed (mm/s)<input id="speed" type="number" value="0.5" min="0.001" step="any"></label><button data-need data-apply="speed">Apply</button>
+    </div>
+    <div class="row">
+      <label>Accel (mm/s²)<input id="accel" type="number" value="2.5" min="0.001" step="any"></label><button data-need data-apply="accel">Apply</button>
+    </div>
+    <div class="row">
+      <label>Mode<select id="mode"><option value="SPREAD">SPREAD (spreadCycle)</option><option value="STEALTH">STEALTH (StealthChop)</option></select></label><button data-need data-apply="mode">Apply</button>
+    </div>
+    <div class="row">
+      <label>Limit switches<select id="limits"><option value="NC" selected>NC (closed at rest)</option><option value="NO">NO (open at rest)</option></select></label><button data-need data-apply="limits">Apply</button>
+    </div>
+    <p class="note">Distances in mm, speeds in mm/s (1 motor rev = 1 mm on this stage). Step resolution only sets the size of one commanded step: the driver interpolates every setting to 1/256, so smoothness, torque and heat do not change. Fine resolutions lower the top speed (step-rate ceiling). The firmware clamps values, replies with what it applied, and these fields follow its replies.</p>
+  </section>
+
+  <section class="card">
+    <h2>Motion</h2>
+    <p class="note">Hold to jog (sends JOG every 100 ms; release stops it).</p>
+    <div class="jog"><button id="jogl" data-need aria-label="Jog backward">◀</button><button id="jogr" data-need aria-label="Jog forward">▶</button></div>
+    <div class="row">
+      <label>Move (mm)<input id="movesteps" type="number" value="1" step="any"></label><button data-need id="move">Move</button>
+    </div>
+    <div class="row">
+      <label>Move (revs)<input id="moverevs" type="number" value="1"></label><button data-need id="revs">Move revs</button>
+    </div>
+    <div class="row"><button data-need id="zero">Zero position</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Tests</h2>
+    <div class="row"><button data-need data-test="UART">UART</button><button data-need data-test="COILS">COILS</button><button data-need data-test="SWEEP">SWEEP</button><button data-need data-test="LIMITS">LIMITS</button></div>
+    <div class="row"><label>n revs<input id="testn" type="number" value="2" min="1"></label><button data-need data-test="REVS">REVS</button></div>
+    <p class="note">Run in order: UART, COILS, REVS, SWEEP, LIMITS. All but UART need the driver enabled and both limit switches clear. LIMITS drives to each switch at 1 mm/s: watch the first run and press Esc if the carriage reaches an end without stopping. Running: <b id="runtest">none</b></p>
+    <div id="results"></div>
+  </section>
+
+  <section class="card">
+    <h2>Live status</h2>
+    <div class="row">
+      <div>Position (mm)<div class="big" id="s_pos">-</div></div>
+      <div>Step (µm)<div class="big" id="s_step">-</div></div>
+      <div>cs_actual<div class="big" id="s_cs">-</div></div>
+      <div>sg_result<div class="big" id="s_sg">-</div></div>
+      <div>tstep<div class="big" id="s_tstep">-</div></div>
+    </div>
+    <div class="row">
+      <div>LS1<div class="big" id="s_ls1">-</div></div>
+      <div>LS2<div class="big" id="s_ls2">-</div></div>
+      <div>Home level<div class="big" id="s_home">-</div></div>
+      <div>Contacts<div class="big" id="s_limits">-</div></div>
+    </div>
+    <div class="flags" id="flags"></div>
+    <p class="note">LS1/LS2 show TRIPPED or clear, and the end each guards once learned (+ or −, from its first trip while moving). Both TRIPPED at centre under NC means normally-open switches or an open circuit (cable, GND); NO shows both as clear, so press each switch and see it read TRIPPED before trusting it. Home level is the raw Vo pin (bare phototransistor: 0 slot clear, 1 blocked or no signal): block the slot and see it change. ola/olb are only meaningful while moving in spreadCycle. reset = 1 after boot means the driver lost power or reset (check VM and VIO).</p>
+  </section>
+</div>
+
+<section class="card" style="margin-top:12px">
+  <h2>Log</h2>
+  <div id="log" aria-live="off"></div>
+  <div class="row"><button id="clearlog">Clear log</button></div>
+</section>
+</main>
+
+<script>
+"use strict";
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const FLAGS = [
+    ["ot", "Overtemp (ot)"], ["otpw", "Temp warning (otpw)"], ["s2ga", "Short GND A (s2ga)"], ["s2gb", "Short GND B (s2gb)"],
+    ["s2vsa", "Short VS A (s2vsa)"], ["s2vsb", "Short VS B (s2vsb)"], ["ola", "Open load A (ola)"], ["olb", "Open load B (olb)"],
+    ["reset", "GSTAT reset"], ["drv_err", "GSTAT drv_err"], ["uv_cp", "GSTAT uv_cp"]
+  ];
+  const flagEls = {};
+  FLAGS.forEach(([k, label]) => {
+    const d = document.createElement("div");
+    const l = document.createElement("span"); l.textContent = label;
+    const v = document.createElement("span"); v.className = "pill abort"; v.textContent = "--";
+    d.append(l, v); $("flags").append(d); flagEls[k] = v;
+  });
+  const stst = document.createElement("div");
+  stst.innerHTML = "<span>Standstill (stst)</span>";
+  const ststV = document.createElement("span"); ststV.textContent = "--"; stst.append(ststV); $("flags").append(stst);
+
+  let port = null, writer = null, reader = null, connected = false, pollTimer = null, jogTimer = null, jogDir = 0, pendingStatus = 0;
+  const enc = new TextEncoder();
+  const needEls = () => document.querySelectorAll("[data-need], #stopbtn, #estopbtn, #disconnect");
+
+  function log(cls, text) {
+    const log = $("log");
+    const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+    const d = document.createElement("div");
+    d.className = cls; d.textContent = text; log.append(d);
+    while (log.childElementCount > 600) log.firstChild.remove();
+    if (stick) log.scrollTop = log.scrollHeight;
+  }
+  function banner(msg, k) { const b = $("banner"); b.textContent = msg || ""; b.dataset.k = k || ""; b.style.display = msg ? "block" : "none"; }
+  function setConnected(on) {
+    connected = on;
+    needEls().forEach((e) => { e.disabled = !on; });
+    $("connect").disabled = on; $("baud").disabled = on;
+    const c = $("conn"); c.textContent = on ? "CONNECTED" : "DISCONNECTED"; c.className = "pill " + (on ? "pass" : "abort");
+    if (!on) { $("enstate").textContent = "DISABLED"; $("enstate").className = "pill abort"; $("enable").textContent = "Enable"; }
+  }
+
+  async function send(line, quiet) {
+    if (!connected || !writer) return;
+    try { await writer.write(enc.encode(line + "\n")); if (!quiet) log("tx", "> " + line); }
+    catch (e) { log("errl", "write failed: " + e.message); }
+  }
+
+  function parseKV(parts) {
+    const o = {};
+    parts.forEach((p) => { const i = p.indexOf("="); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); });
+    return o;
+  }
+
+  function syncFields(kv) {   // keep the inputs on what the firmware actually applied
+    if (kv.speed_mm_s) $("speed").value = parseFloat(kv.speed_mm_s);
+    if (kv.accel_mm_s2) $("accel").value = parseFloat(kv.accel_mm_s2);
+    if (kv.microsteps) $("microsteps").value = kv.microsteps;
+    if (kv.ma) $("current").value = kv.ma;
+    if (kv.limits) $("limits").value = kv.limits;
+  }
+
+  function setFlag(el, bad) { el.textContent = bad ? "FAULT" : "OK"; el.className = "pill " + (bad ? "fail" : "pass"); }
+
+  function onStatus(kv) {
+    $("s_pos").textContent = kv.pos_mm; $("s_step").textContent = kv.step_um;
+    const lsTxt = (t, e) => (t === "1" ? "TRIPPED" : "clear") + (e && e !== "0" ? " (" + (e === "1" ? "+" : "−") + " end)" : "");
+    $("s_ls1").textContent = lsTxt(kv.ls1, kv.ls1_end); $("s_ls2").textContent = lsTxt(kv.ls2, kv.ls2_end);
+    $("s_home").textContent = kv.home; $("s_limits").textContent = kv.limits; $("s_cs").textContent = kv.cs_actual; $("s_sg").textContent = kv.sg_result; $("s_tstep").textContent = kv.tstep;
+    FLAGS.forEach(([k]) => setFlag(flagEls[k], kv[k] === "1"));
+    ststV.textContent = kv.stst === "1" ? "yes" : "no";
+    const en = kv.enabled === "1";
+    $("enstate").textContent = en ? "ENABLED" : "DISABLED"; $("enstate").className = "pill " + (en ? "pass" : "abort");
+    $("enable").textContent = en ? "Disable" : "Enable";
+    $("runtest").textContent = kv.test || "none";
+    if (kv.uart === "FAIL") banner("Driver UART is not answering (check VM is on, TX1 direct to PDN_UART, VIO 3.3 V, MS1/MS2 to GND).", "uart"); else if ($("banner").dataset.k === "uart") banner("");
+  }
+
+  function addResult(name, verdict, rest) {
+    const cls = verdict === "PASS" ? "pass" : verdict === "FAIL" ? "fail" : "abort";  // verdict word always shown, colour is secondary
+    const d = document.createElement("div"); d.className = "result";
+    const head = document.createElement("div");
+    const p = document.createElement("span"); p.className = "pill " + cls; p.textContent = verdict;
+    const t = document.createElement("b"); t.textContent = "  " + name + "  ";
+    const tm = document.createElement("span"); tm.className = "note"; tm.textContent = new Date().toLocaleTimeString();
+    head.append(p, t, tm);
+    const kv = document.createElement("div"); kv.className = "kv"; kv.textContent = rest;
+    d.append(head, kv); $("results").prepend(d);
+  }
+
+  function onLine(line) {
+    if (!line) return;
+    const parts = line.trim().split(/\s+/);
+    let cls = "";
+    if (parts[0] === "EVT") cls = "evt"; else if (parts[0] === "ERR") cls = "errl";
+    log(cls, "< " + line);
+    if (parts[0] === "OK" && parts[1] === "STATUS") { pendingStatus = 0; onStatus(parseKV(parts.slice(2))); }
+    else if (parts[0] === "ERR" && parts[1] === "STATUS") pendingStatus = 0;
+    else if (parts[0] === "EVT" && parts[1] === "RESULT") addResult(parts[2], parts[3], parts.slice(4).join(" "));
+    else if (parts[0] === "EVT" && parts[1] === "SWEEP") addResult("SWEEP stage", "STAGE", parts.slice(2).join(" "));
+    else if (parts[0] === "EVT" && parts[1] === "FAULT") banner("FAULT: " + parts.slice(2).join(" "));
+    else if (parts[0] === "EVT" && parts[1] === "BOOT") { if (/uart=FAIL/.test(line)) banner("Boot: driver UART check FAILED (IOIN VERSION != 0x21)."); }
+    else if (parts[0] === "EVT" && parts[1] === "LIMIT") banner("Limit: " + parts.slice(2).join(" "), "limit");
+    if (parts[0] === "OK" && ["INFO", "MICROSTEPS", "SPEED", "ACCEL", "CURRENT", "LIMITS"].includes(parts[1])) syncFields(parseKV(parts.slice(2)));
+  }
+
+  async function readLoop() {
+    const dec = new TextDecoder(); let buf = "";
+    try {
+      while (port && port.readable) {
+        reader = port.readable.getReader();
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let i;
+            while ((i = buf.indexOf("\n")) >= 0) { onLine(buf.slice(0, i).replace(/\r$/, "")); buf = buf.slice(i + 1); }
+            if (buf.length > 4000) buf = "";
+          }
+        } finally { reader.releaseLock(); reader = null; }
+        break;
+      }
+    } catch (e) { log("errl", "read error: " + e.message); }
+    if (connected) await doDisconnect(true);
+  }
+
+  async function connect() {
+    if (!("serial" in navigator)) { banner("Web Serial is not available. Use Chrome or Edge, over file:// or http://localhost."); return; }
+    banner("");
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: parseInt($("baud").value, 10) || 115200 });
+      try { await port.setSignals({ dataTerminalReady: true }); } catch (_) { /* optional */ }
+      writer = port.writable.getWriter();
+      setConnected(true);
+      log("", "connected");
+      readLoop();
+      await send("PING"); await send("INFO");
+      pollTimer = setInterval(() => {
+        if (pendingStatus > 2) { pendingStatus = 0; }
+        pendingStatus++; send("STATUS", true);
+      }, 250);
+    } catch (e) {
+      log("errl", "connect failed: " + e.message); banner("Connect failed: " + e.message);
+      port = null; setConnected(false);
+    }
+  }
+
+  async function doDisconnect(already) {
+    if (!connected && !port) return;
+    if (!already) { try { await send("ESTOP"); } catch (_) {} }
+    clearInterval(pollTimer); pollTimer = null; stopJogLocal();
+    connected = false;
+    try { if (reader) await reader.cancel(); } catch (_) {}
+    try { if (writer) { await writer.close().catch(() => {}); writer.releaseLock(); } } catch (_) {}
+    try { if (port) await port.close(); } catch (_) {}
+    writer = null; port = null; setConnected(false); log("", "disconnected");
+  }
+
+  // ---- jogging ----
+  function stopJogLocal() { clearInterval(jogTimer); jogTimer = null; jogDir = 0; $("jogl").classList.remove("held"); $("jogr").classList.remove("held"); }
+  function jogStop() { if (jogDir !== 0 || jogTimer) { stopJogLocal(); send("JOG 0"); } }
+  function jogStart(dir, btn, ev) {
+    if (!connected) return;
+    try { btn.setPointerCapture(ev.pointerId); } catch (_) {}
+    stopJogLocal(); jogDir = dir; btn.classList.add("held");
+    send("JOG " + dir, true); log("tx", "> JOG " + dir + " (repeating every 100 ms)");
+    jogTimer = setInterval(() => send("JOG " + dir, true), 100);
+  }
+  [["jogl", -1], ["jogr", 1]].forEach(([id, dir]) => {
+    const b = $(id);
+    b.addEventListener("pointerdown", (e) => { e.preventDefault(); jogStart(dir, b, e); });
+    ["pointerup", "pointerleave", "pointercancel"].forEach((n) => b.addEventListener(n, jogStop));
+    b.addEventListener("contextmenu", (e) => e.preventDefault());
+  });
+  window.addEventListener("blur", jogStop);
+  document.addEventListener("visibilitychange", jogStop);
+
+  // ---- controls ----
+  $("connect").addEventListener("click", connect);
+  $("disconnect").addEventListener("click", () => doDisconnect(false));
+  $("stopbtn").addEventListener("click", () => send("STOP"));
+  $("estopbtn").addEventListener("click", () => send("ESTOP"));
+  $("enable").addEventListener("click", () => send($("enable").textContent === "Disable" ? "DISABLE" : "ENABLE"));
+  $("move").addEventListener("click", () => send("MOVE " + parseFloat($("movesteps").value)));
+  $("revs").addEventListener("click", () => send("REVS " + parseInt($("moverevs").value, 10)));
+  $("zero").addEventListener("click", () => send("ZERO"));
+  $("clearlog").addEventListener("click", () => { $("log").textContent = ""; });
+  document.querySelectorAll("[data-apply]").forEach((b) => b.addEventListener("click", () => {
+    const k = b.dataset.apply, v = $(k).value;
+    const cmd = { current: "CURRENT", microsteps: "MICROSTEPS", speed: "SPEED", accel: "ACCEL", mode: "MODE", limits: "LIMITS" }[k];
+    send(cmd + " " + v);
+  }));
+  document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", () => {
+    const t = b.dataset.test;
+    send("TEST " + t + (t === "REVS" ? " " + parseInt($("testn").value, 10) : ""));
+  }));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); stopJogLocal(); send("ESTOP"); } });
+  window.addEventListener("beforeunload", () => { if (connected && writer) { try { writer.write(enc.encode("ESTOP\n")); } catch (_) {} } });
+
+  setConnected(false);
+})();
+</script>
+</body>
+</html>

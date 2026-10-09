@@ -15,8 +15,13 @@ Board split:
     Stepper Probe, DC Probe, Chuck Positioner  -> Mega2560, via arduino-cli
     Temperature Controller                     -> Teensy, compiled with
                                                    arduino-cli's Teensy core,
-                                                   uploaded with the
-                                                   dedicated teensy_loader_cli
+                                                   rebooted through its own
+                                                   port, uploaded with
+                                                   teensy_loader_cli (no -s)
+    XYZ Stage                                  -> three Teensy boards, one
+                                                   per axis (DEV: x X|Y|Z):
+                                                   all three, each on its own
+                                                   port, or none
 
 The SMC100 Rotator is a purchased Newport motion controller, not one of
 our own firmwares -- it is identified by the handshake but never a flash
@@ -82,6 +87,7 @@ DEVICES = {
     "DC Probe": {"dir": "high_polling_rate", "board": "mega"},
     "Chuck Positioner": {"dir": "chuck_firmware", "board": "mega"},
     "Temperature Controller": {"dir": "temp_controller", "board": "teensy"},
+    "XYZ Stage": {"dir": "xyz_stage_axis", "board": "teensy", "tags": ["X", "Y", "Z"]},
 }
 
 

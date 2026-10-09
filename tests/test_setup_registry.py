@@ -24,6 +24,7 @@ from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
+from model.xyz_stage import XyzStage
 from result import Refused
 
 from tests.test_setup import RecordingController
@@ -95,7 +96,9 @@ def warnings():
 # -- 1. register ------------------------------------------------------------
 
 BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
-             "Temperature Controller", "Rotator", "RGB Analysis",
+             "Temperature Controller", "Rotator",
+             "XYZ Stage",      # 2026-10-09: three axis boards, one row
+             "RGB Analysis",
              "Transfer Map",   # Tier S (2026-09-27)
              *(["Sample DB"] if station_setup.SAMPLE_MAP_ENABLED else [])]   # the flag: setup.py
 #: The built-in Setup rows: RGB Analysis is registered but has no row of its
@@ -107,8 +110,8 @@ BUILT_IN_ROWS = [name for name in BUILT_INS if name != "RGB Analysis"]
 def test_the_six_built_ins_are_registered_in_todays_display_order():
     assert list(station_setup.MODEL_TYPES) == BUILT_INS
     assert list(station_setup.MODEL_TYPES.values()) == [
-        StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, RgbAnalysis,
-        TransferMap, *([SampleMap] if station_setup.SAMPLE_MAP_ENABLED else [])]
+        StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, XyzStage,
+        RgbAnalysis, TransferMap, *([SampleMap] if station_setup.SAMPLE_MAP_ENABLED else [])]
 
 
 def test_register_is_reachable_as_setup_register():

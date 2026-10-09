@@ -21,11 +21,12 @@ from pathlib import Path
 import pytest
 
 from controller import firmware as fw
+from controller import flashing
 from controller.firmware import FirmwareCheck
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "firmware" / "flash_firmware.py"
-BOARDS = ("Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller")
+BOARDS = tuple(fw.BOARDS)
 
 
 # -- a sketch tree and a stamp file in tmp_path -------------------------------
@@ -75,6 +76,12 @@ def seed(stamp, **hashes):
     return stamp
 
 
+@pytest.fixture(autouse=True)
+def no_teensy_reboot(monkeypatch):
+    """No test opens a real port: the Teensy reboot is a no-op here."""
+    monkeypatch.setattr(flashing, "reboot_teensy", lambda port: None)
+
+
 @pytest.fixture
 def tree(tmp_path):
     return make_tree(tmp_path / "firmware")
@@ -95,7 +102,10 @@ def checker(tree, stamp, **kwargs):
 
 
 def all_current(check):
-    return {board: check.sketch_hash(board) for board in BOARDS}
+    """Every stamp entry current: one per board, one per axis for the XYZ
+    Stage ("XYZ Stage X", ...)."""
+    return {key: check.sketch_hash(board) for board in BOARDS
+            for key in flashing.stamp_keys(board)}
 
 
 # -- the hash rule, pinned against the script ---------------------------------
@@ -152,7 +162,7 @@ def test_the_out_of_date_rule_is_the_scripts_own(tree, stamp):
     line = next(l for l in done.stdout.splitlines() if l.startswith("Needs flashing"))
     scripts = line.split(":", 1)[1].strip().split(", ")
     result = check.check()
-    assert result["to_flash"] == scripts == ["DC Probe", "Chuck Positioner"]
+    assert result["to_flash"] == scripts == ["DC Probe", "Chuck Positioner", "XYZ Stage"]
     assert stamp.read_text() == before
 
 
@@ -207,6 +217,30 @@ def test_behind_and_never_flashed_are_both_said(tree, stamp):
     seed(stamp, **hashes)
     assert check.check()["summary"] == ("DC Probe out of date; "
                                         "Temperature Controller never flashed here")
+
+
+def test_one_axis_board_behind_makes_the_xyz_stage_out_of_date(tree, stamp):
+    check = checker(tree, stamp)
+    seed(stamp, **dict(all_current(check), **{"XYZ Stage Y": "f" * 64}))
+    result = check.check()
+    assert result["boards"]["XYZ Stage"] == fw.OUT_OF_DATE
+    assert result["summary"] == "XYZ Stage out of date"
+
+
+def test_an_axis_board_missing_from_the_stamp_is_never_flashed(tree, stamp):
+    check = checker(tree, stamp)
+    hashes = all_current(check)
+    del hashes["XYZ Stage Z"]
+    seed(stamp, **hashes)
+    assert check.check()["summary"] == "XYZ Stage never flashed here"
+
+
+def test_an_axis_behind_outranks_an_axis_never_flashed(tree, stamp):
+    check = checker(tree, stamp)
+    hashes = dict(all_current(check), **{"XYZ Stage X": "a"})
+    del hashes["XYZ Stage Z"]
+    seed(stamp, **hashes)
+    assert check.check()["boards"]["XYZ Stage"] == fw.OUT_OF_DATE
 
 
 def test_an_unreadable_stamp_is_never_flashed_and_never_raises(tree, stamp):
@@ -432,15 +466,53 @@ def test_after_a_stable_flash_every_station_board_is_out_of_date(tmp_path, stamp
     now - the way back."""
     station = make_tree(tmp_path / "station")
     stable = tmp_path / "stable"
-    for board, directory in fw.BOARDS.items():
+    for board in flashing.STABLE_BOARDS:
+        directory = fw.BOARDS[board]
         (stable / directory).mkdir(parents=True)
         (stable / directory / f"{directory}.ino").write_text(f"// stable {board}\n")
-    ports = {f"COM{i}": board for i, board in enumerate(fw.BOARDS, 1)}
+    ports = {f"COM{i}": board for i, board in enumerate(flashing.STABLE_BOARDS, 1)}
     flashed = FirmwareCheck(sketch_root=stable, stamp=stamp, which=everything_found,
                             run=FakeRun(), identify=ports.get, ports=list(ports),
-                            channel="stable").flash(list(fw.BOARDS))
+                            channel="stable").flash(list(flashing.STABLE_BOARDS))
     assert flashed["ok"]
     assert {e["channel"] for e in json.loads(stamp.read_text()).values()} == {"stable"}
     result = checker(station, stamp).check()
-    assert set(result["boards"].values()) == {fw.OUT_OF_DATE}
+    # The XYZ Stage is station-only: stable never flashes it, so here it was
+    # never flashed rather than out of date.
+    assert {b: s for b, s in result["boards"].items()} == dict(
+        {b: fw.OUT_OF_DATE for b in flashing.STABLE_BOARDS}, **{"XYZ Stage": fw.NEVER})
     assert result["to_flash"] == list(fw.BOARDS)
+
+
+# -- R-3 as Setup sees it: a Teensy left in its bootloader (2026-10-09) ----------
+
+class HeaterAndAxes:
+    """Setup's handshake over the heater and the three axis boards."""
+    probe_tags = {"COM4": "X", "COM5": "Y", "COM6": "Z"}
+
+    def identify(self, port):
+        if port in self.probe_tags:
+            return "XYZ Stage"
+        return {"COM3": "Temperature Controller"}.get(port)
+
+
+def test_a_teensy_left_in_its_bootloader_fails_the_flash_with_the_replug_hint(tree, stamp):
+    """The heater's upload fails after its reboot: Setup is told the flash
+    failed, why the axis boards were not flashed, and to replug the heater;
+    no axis board's loader runs (it would program the heater)."""
+    calls = []
+
+    def run(argv, cwd, on_line, timeout, env=None):
+        calls.append(list(argv))
+        return 1 if argv[-1].endswith("temp_controller.ino.hex") else 0
+    probe = HeaterAndAxes()
+    result = checker(tree, stamp, run=run, identify=probe.identify,
+                     ports=["COM3", "COM4", "COM5", "COM6"]).flash(
+        ["Temperature Controller", "XYZ Stage"])
+    assert result["ok"] is False and result["returncode"] == 1
+    assert [argv for argv in calls if "xyz_stage_axis.ino.hex" in argv[-1]] == []
+    for axis in "XYZ":
+        assert "bootloader" in result["results"][f"XYZ Stage {axis}"]
+    assert any("unplug" in hint and "Temperature Controller" in hint
+               for hint in result["hints"])
+    assert not stamp.exists()

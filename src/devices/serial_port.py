@@ -181,6 +181,23 @@ def list_ports():
     return [(entry.device, entry.hwid or "") for entry in _list_ports.comports()]
 
 
+def touch(port, baud_rate):
+    """Open `port` at `baud_rate` and close it, sending nothing. Raises
+    TransportError when the port cannot be opened.
+
+    A Teensy reboots into its bootloader when its USB serial port is opened
+    at 134 baud (teensy3/usb_dev.c, teensy4/usb.c): the flasher's reboot of
+    one identified board. Not a transport, like `query`."""
+    if pyserial is None:
+        raise TransportError("pyserial is not installed")
+    try:
+        handle = _open_serial(port=port, baudrate=baud_rate, timeout=0.2,
+                              write_timeout=0.2)
+    except Exception as exc:
+        raise TransportError(f"opening {port} at {baud_rate} failed: {exc}") from exc
+    _close_serial(handle)
+
+
 def query(port, baud_rate, payload, *, wait=0.1, xonxoff=False, timeout=0.2):
     """One-shot ask-and-listen on a raw port. -> str (the reply, possibly "")
 

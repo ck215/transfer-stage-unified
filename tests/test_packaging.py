@@ -470,7 +470,8 @@ def _tree(base):
 
 def test_the_layout_reads_the_sketch_table_without_importing_the_flasher(layout):
     assert layout.sketch_dirs() == sorted(
-        ["stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller"])
+        ["stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller",
+         "xyz_stage_axis"])
     constants = layout.flash_constants()
     assert constants["MEGA_FQBN"].startswith("arduino:avr:")
     assert constants["TEENSY_FQBN"].startswith("teensy:avr:")
@@ -1011,8 +1012,12 @@ def _smoke_list(name, text, variable):
 
 
 def test_the_smokes_check_every_sketch_dir_the_board_table_names(smoke, layout):
+    from controller import flashing
     name, text = smoke
     assert sorted(_smoke_list(name, text, "Sketches")) == layout.sketch_dirs()
+    stable = "Stable_Sketches" if name == "smoke.sh" else "StableSketches"
+    assert _smoke_list(name, text, stable) == [
+        flashing.BOARDS[b]["dir"] for b in flashing.STABLE_BOARDS]
     for piece in ("firmware", "stable", "libraries"):
         assert piece in text
 

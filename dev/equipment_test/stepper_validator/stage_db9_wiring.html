@@ -1,0 +1,218 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Stage DB9 Wiring</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one wide schematic (controller | DB9 | field devices) followed by the pin map the firmware reads from */
+:root{--bg:#fbfbf9;--fg:#1c1f23;--muted:#5f6771;--line:#d5d9de;--panel:#f1f3f5;--edge:rgba(28,31,35,.35);--accent:#0064A4;--body:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15181c;--fg:#e6e9ec;--muted:#9aa4ae;--line:#2d343c;--panel:#1d2228;--edge:rgba(230,233,236,.4);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#15181c;--fg:#e6e9ec;--muted:#9aa4ae;--line:#2d343c;--panel:#1d2228;--edge:rgba(230,233,236,.4);color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);padding-inline:16px;padding-block:28px 56px;max-width:1120px;margin:0 auto;line-height:1.5}
+h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
+h2{font-size:16px;margin:32px 0 8px}
+p{margin:0 0 10px;max-width:72ch}
+.sub{color:var(--muted)}
+figure{margin:20px 0 0}
+svg{max-width:100%;height:auto;display:block;font-family:var(--body)}
+figcaption{color:var(--muted);font-size:13px;margin-top:8px;max-width:80ch}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:640px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+td code,.mono{font-family:var(--mono);font-size:13px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid var(--edge);vertical-align:-1px;margin-right:6px}
+ul{padding-left:20px;margin:0}
+li{margin-bottom:6px;max-width:80ch}
+/* Annotations: validator build notes layered on the original sheet */
+.ann{border-left:3px solid var(--accent);background:var(--panel);padding:12px 16px;margin:20px 0 0;border-radius:0 6px 6px 0}
+.ann h2{margin:0 0 8px;color:var(--accent)}
+.ann p{max-width:80ch}
+td.v,th.v{border-left:2px solid var(--accent)}
+.flag{color:var(--accent);font-weight:600}
+</style>
+
+<h1>Stage DB9 Wiring</h1>
+<p class="sub">Transfer-stage cable: two limit switches, one photoelectric switch and a bipolar stepper on a single DB9, with the controller-side connections the firmware will assume.</p>
+
+<section class="ann" aria-labelledby="ann-h">
+<h2 id="ann-h">Annotations: one-axis validator build (2026-10-09)</h2>
+<p>Bench check of one stage axis with the stepper-motor-validator firmware: a Teensy 3.5 (identified 2026-10-09) driving one TMC2209 over UART, reading both limit switches and the photo-interrupter. Full pin-by-pin sheet: <code>wiring.html</code> (beside this sheet). The sheet below was drawn for a generic Arduino controller. Where it differs from this build, the blue notes and the <em>Validator build</em> column apply.</p>
+<ul>
+<li><strong>All nine pins are wired.</strong> The firmware reads LS1, LS2 and Vo (Teensy pins 5, 6, 7, internal pull-ups) and uses the switches as an interlock; TEST LIMITS validates them and the photo-interrupter. Centre the axis before each session (50 mm travel, 1 mm lead screw); every MOVE, REVS and TEST REVS is capped at 15 mm.</li>
+<li><strong>Controller pins differ.</strong> The validator uses Teensy pin 2 for STEP, 3 for DIR and 4 for EN, plus TX1 (pin 1) straight to PDN_UART (half-duplex UART; RX1 is not connected). That collides with the D2, D3 and D4 sensor inputs drawn below, so the sensors are on Teensy 5 (LS1), 6 (LS2) and 7 (Vo).</li>
+<li><strong>Pin 1 takes 5 V from the Teensy 3.5's Vin pin</strong>, as this sheet intends. That is safe only because the 3.5's digital pins are 5 V tolerant: on a Teensy 4.x, use 3.3 V. At 5 V the emitter LED runs at about 19 mA through R1 (not the 15 mA quoted); at 3.3 V about 10 mA.</li>
+<li><span class="flag">The sheet contradicts itself on the limit-switch return.</span> The schematic and caption close LS1 and LS2 to <strong>pin 4</strong> (GND), but the pin map says "other contact to pin 5" (Vo). Settle it with a continuity check while pressing each switch: 2 to 4 and 3 to 4, or 2 to 5 and 3 to 5. It matters: with a pin-5 return the firmware sees a switch only while the home slot is clear, because pin 5 is the phototransistor output. The schematic draws both switches open at rest (normally open).</li>
+<li><strong>Two colour schemes.</strong> Motor leads, inside the stage (42BYGH613-01B datasheet): black A, green A−, red B, blue B−. DB9 cable: white A+, grey A−, blue B+, green B−. Blue and green swap roles between the two, so go by DB9 pin number, not colour.</li>
+<li><strong>Coil check at the DB9, motor unpowered:</strong> 6 to 7 and 8 to 9 each read about 1.5 to 2.5 Ω (1.5 Ω coil plus cable and meter leads); 6 or 7 to 8 or 9 reads open; any coil pin to pin 4 or the shell reads open. A closed limit switch reads near 0 Ω, below the coil value. The photo-interrupter LED shows about 1.1 V on diode test, not a resistance.</li>
+<li><strong>Driver settings for this motor</strong> (rated 1.7 A, 1.5 Ω, 3.2 mH): 600 mA rms run (the station value, 35 % of rating), 300 mA hold, CURRENT clamped at 1000 mA, spreadCycle, 115200 baud UART, address 0, R<sub>sense</sub> 0.11 Ω. The TMC2209's EN pin is active LOW, like the A4988 and DRV8825.</li>
+<li><strong>Never plug or unplug the DB9 while VM is powered:</strong> breaking a coil under current can destroy the TMC2209.</li>
+</ul>
+</section>
+
+<figure>
+<svg viewBox="0 0 1160 650" role="img" aria-label="Schematic: an Arduino and stepper driver on the left feed a DB9 connector in the middle; on the right, limit switches 1 and 2 close pins 2 and 3 to the pin 4 ground, a photo-interrupter takes Vcc from pin 1 and ground from pin 4 and returns its output Vo on pin 5, its emitter LED is fed from pin 1 through a 200 ohm resistor, and the stepper coils A and B connect to pins 6 to 9.">
+<defs>
+  <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+</defs>
+<g fill="none" stroke="currentColor" stroke-width="1.4">
+  <!-- controller -->
+  <rect x="30" y="50" width="200" height="330" rx="6" fill="var(--panel)"/>
+  <rect x="30" y="420" width="200" height="170" rx="6" fill="var(--panel)"/>
+  <!-- DB9 -->
+  <path d="M520,60 h110 a8,8 0 0 1 8,8 v500 a8,8 0 0 1 -8,8 h-110 a8,8 0 0 1 -8,-8 v-500 a8,8 0 0 1 8,-8 z" fill="var(--panel)"/>
+  <!-- field devices -->
+  <rect x="840" y="276" width="170" height="104" rx="6" fill="var(--panel)"/>
+  <circle cx="930" cy="520" r="52" fill="var(--panel)"/>
+</g>
+
+<g font-size="13" fill="currentColor">
+  <text x="130" y="76" text-anchor="middle" font-weight="600">Arduino (MCU)</text>
+  <text x="130" y="446" text-anchor="middle" font-weight="600">Stepper driver</text>
+  <text x="130" y="464" text-anchor="middle" font-size="11" fill="var(--muted)">A4988 / DRV8825 / TMC2209</text>
+  <text x="575" y="46" text-anchor="middle" font-weight="600">DB9</text>
+  <text x="925" y="356" text-anchor="middle" font-weight="600">Photo-interrupter</text>
+  <text x="945" y="516" text-anchor="middle" font-weight="600" font-size="20">M</text>
+  <text x="1000" y="528" font-size="12">Bipolar stepper</text>
+</g>
+
+<!-- MCU pin stubs (left side) -->
+<g font-size="12" fill="currentColor" font-family="var(--mono)">
+  <text x="222" y="94" text-anchor="end">5V</text>
+  <text x="222" y="146" text-anchor="end">D2</text>
+  <text x="222" y="198" text-anchor="end">D3</text>
+  <text x="222" y="250" text-anchor="end">GND</text>
+  <text x="222" y="302" text-anchor="end">D4</text>
+  <text x="222" y="340" text-anchor="end">D5 STEP · D6 DIR · D7 EN</text>
+  <text x="222" y="494" text-anchor="end">1B</text>
+  <text x="222" y="528" text-anchor="end">1A</text>
+  <text x="222" y="562" text-anchor="end">2A</text>
+  <text x="222" y="580" text-anchor="end">2B</text>
+</g>
+<!-- STEP/DIR/EN link MCU -> driver -->
+<g stroke="currentColor" stroke-width="1.4" fill="none">
+  <path d="M130,380 v40" marker-end="url(#arr)"/>
+</g>
+<text x="140" y="404" font-size="11" fill="var(--muted)">STEP / DIR / EN</text>
+
+<!-- wires: an edge underlay in theme contrast, then the insulation colour -->
+<g stroke-width="6" stroke="var(--edge)" fill="none" stroke-linecap="round">
+  <path d="M230,90 H512"/><path d="M230,142 H512"/><path d="M230,194 H512"/><path d="M230,246 H512"/><path d="M230,298 H512"/>
+  <path d="M230,490 H440 V350 H512"/><path d="M230,524 H460 V402 H512"/><path d="M230,558 H480 V454 H512"/><path d="M230,576 H500 V506 H512"/>
+  <path d="M638,90 H1050 V330 H1010"/>
+  <path d="M638,142 H740"/><path d="M638,194 H740"/>
+  <path d="M638,246 H1040 V400 H880 V380"/><path d="M800,142 V246"/><path d="M1090,255 V400 H1040"/><path d="M1050,150 H1090 V165"/>
+  <path d="M638,298 H840"/>
+  <path d="M638,350 H760 V500 H882"/><path d="M638,402 H740 V540 H882"/>
+  <path d="M638,454 H700 V600 H910 V568"/><path d="M638,506 H680 V620 H950 V568"/>
+</g>
+<g stroke-width="3" fill="none" stroke-linecap="round">
+  <path d="M230,90 H512" stroke="#E8C100"/>
+  <path d="M230,142 H512" stroke="#E8760C"/>
+  <path d="M230,194 H512" stroke="#D62828"/>
+  <path d="M230,246 H512" stroke="#7B4A12"/>
+  <path d="M230,298 H512" stroke="#111111"/>
+  <path d="M230,490 H440 V350 H512" stroke="#FFFFFF"/>
+  <path d="M230,524 H460 V402 H512" stroke="#8C9196"/>
+  <path d="M230,558 H480 V454 H512" stroke="#1E63D6"/>
+  <path d="M230,576 H500 V506 H512" stroke="#2E9E44"/>
+  <path d="M638,90 H1050 V330 H1010" stroke="#E8C100"/>
+  <path d="M638,298 H840" stroke="#111111"/>
+  <path d="M638,142 H740" stroke="#E8760C"/>
+  <path d="M638,194 H740" stroke="#D62828"/>
+  <path d="M638,246 H1040 V400 H880 V380" stroke="#7B4A12"/><path d="M800,142 V246" stroke="#7B4A12"/><path d="M1090,255 V400 H1040" stroke="#7B4A12"/><path d="M1050,150 H1090 V165" stroke="#E8C100"/>
+  <path d="M638,350 H760 V500 H882" stroke="#FFFFFF"/>
+  <path d="M638,402 H740 V540 H882" stroke="#8C9196"/>
+  <path d="M638,454 H700 V600 H910 V568" stroke="#1E63D6"/>
+  <path d="M638,506 H680 V620 H950 V568" stroke="#2E9E44"/>
+</g>
+<!-- GND junctions -->
+<g fill="currentColor"><circle cx="800" cy="246" r="4"/><circle cx="800" cy="142" r="4"/><circle cx="800" cy="194" r="4"/><circle cx="1050" cy="150" r="4"/><circle cx="1040" cy="400" r="4"/></g>
+
+<!-- DB9 pins -->
+<g font-size="12" font-family="var(--mono)">
+  <g fill="var(--bg)" stroke="currentColor" stroke-width="1.4">
+    <circle cx="575" cy="90" r="11"/><circle cx="575" cy="142" r="11"/><circle cx="575" cy="194" r="11"/><circle cx="575" cy="246" r="11"/><circle cx="575" cy="298" r="11"/>
+    <circle cx="575" cy="350" r="11"/><circle cx="575" cy="402" r="11"/><circle cx="575" cy="454" r="11"/><circle cx="575" cy="506" r="11"/>
+  </g>
+  <g fill="currentColor" text-anchor="middle" font-weight="500">
+    <text x="575" y="94">1</text><text x="575" y="146">2</text><text x="575" y="198">3</text><text x="575" y="250">4</text><text x="575" y="302">5</text>
+    <text x="575" y="354">6</text><text x="575" y="406">7</text><text x="575" y="458">8</text><text x="575" y="510">9</text>
+  </g>
+  <g fill="currentColor" text-anchor="middle" font-size="10">
+    <text x="575" y="118">Vcc</text><text x="575" y="170">LS1</text><text x="575" y="222">LS2</text><text x="575" y="274">GND</text><text x="575" y="326">Vo</text>
+    <text x="575" y="378">A+</text><text x="575" y="430">A−</text><text x="575" y="482">B+</text><text x="575" y="534">B−</text>
+  </g>
+</g>
+
+<!-- limit switches: pin 2 / pin 3 to GND -->
+<g stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round">
+  <path d="M740,142 h14 l26,-14"/><path d="M782,142 h18"/>
+  <path d="M740,194 h14 l26,-14"/><path d="M782,194 h18"/>
+</g>
+<g fill="currentColor"><circle cx="754" cy="142" r="2.5"/><circle cx="782" cy="142" r="2.5"/><circle cx="754" cy="194" r="2.5"/><circle cx="782" cy="194" r="2.5"/></g>
+<g font-size="12" fill="currentColor">
+  <text x="770" y="122" text-anchor="middle">LS1</text><text x="770" y="214" text-anchor="middle">LS2</text>
+  <text x="818" y="160" font-size="11" fill="var(--muted)">closes to pin 4 GND</text>
+</g>
+
+<!-- PE switch pins -->
+<g font-size="11" fill="currentColor" font-family="var(--mono)">
+  <text x="1002" y="334" text-anchor="end">Vcc</text>
+  <text x="890" y="374" font-size="10">GND</text>
+  <text x="848" y="302">Vo</text>
+  <text x="1100" y="190">R1 200 Ω</text>
+  <text x="1100" y="245">LED</text>
+  <text x="1100" y="262" font-size="10" fill="var(--muted)">≈15 mA</text>
+</g>
+<g fill="currentColor"><circle cx="1010" cy="330" r="3"/><circle cx="880" cy="380" r="3"/><circle cx="840" cy="298" r="3"/></g>
+<!-- R1 and emitter LED, stage side -->
+<g stroke="currentColor" stroke-width="1.4" fill="none">
+  <rect x="1083" y="165" width="14" height="40"/>
+  <path d="M1090,205 V220"/>
+  <path d="M1080,220 L1100,220 L1090,248 Z" fill="currentColor"/><path d="M1080,250 H1100"/><path d="M1090,250 V255"/>
+</g>
+
+<!-- stepper coils -->
+<g fill="currentColor"><circle cx="882" cy="500" r="3"/><circle cx="882" cy="540" r="3"/><circle cx="910" cy="568" r="3"/><circle cx="950" cy="568" r="3"/></g>
+<g font-size="11" fill="currentColor" font-family="var(--mono)">
+  <text x="892" y="496">A+</text><text x="892" y="552">A−</text>
+  <text x="900" y="585" text-anchor="end">B+</text><text x="960" y="585">B−</text>
+  <text x="895" y="522" font-size="10" fill="var(--muted)">A</text>
+  <text x="930" y="553" text-anchor="middle" font-size="10" fill="var(--muted)">B</text>
+</g>
+
+<!-- driver outputs -->
+<g font-size="11" fill="var(--muted)">
+  <text x="30" y="636">Driver outputs 1B · 1A · 2A · 2B carry coil A+ · A− · B+ · B− to pins 6 · 7 · 8 · 9</text>
+</g>
+</svg>
+<figcaption>Pin 4 is the common ground on the stage side: both limit switches and the photo-interrupter return to it. Pin 1 supplies 5 V to the phototransistor and, through R1 (200 Ω, on the stage side), to the emitter LED, which is on whenever the stage is powered. The phototransistor output Vo comes back on pin 5.</figcaption>
+</figure>
+
+<h2>Pin map</h2>
+<div class="tbl">
+<table>
+<thead><tr><th>DB9</th><th>Wire</th><th>Function</th><th>Stage side</th><th>Controller side</th><th>Firmware</th><th class="v">Validator build</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><span class="sw" style="background:#E8C100"></span>yellow</td><td>Vcc</td><td>Phototransistor Vcc and, via R1 200 Ω, the emitter LED (≈15 mA)</td><td>MCU 5V</td><td>—</td><td class="v">Teensy <code>Vin</code> (5 V, Teensy 3.5 only; 3.3 V on a 4.x)</td></tr>
+<tr><td>2</td><td><span class="sw" style="background:#E8760C"></span>orange</td><td>LS1</td><td>Limit switch 1, other contact to pin 5 <span class="flag">(schematic says pin 4; check)</span></td><td><code>D2</code></td><td><code>INPUT_PULLUP</code>, interrupt-capable, active LOW</td><td class="v">Teensy <code>5</code>, pull-up (<code>D2</code> is STEP here)</td></tr>
+<tr><td>3</td><td><span class="sw" style="background:#D62828"></span>red</td><td>LS2</td><td>Limit switch 2, other contact to pin 5 <span class="flag">(schematic says pin 4; check)</span></td><td><code>D3</code></td><td><code>INPUT_PULLUP</code>, interrupt-capable, active LOW</td><td class="v">Teensy <code>6</code>, pull-up (<code>D3</code> is DIR here)</td></tr>
+<tr><td>4</td><td><span class="sw" style="background:#7B4A12"></span>brown</td><td>GND</td><td>Common return: LS1, LS2, photo-interrupter GND and LED cathode</td><td>MCU GND</td><td>—</td><td class="v">Teensy <code>GND</code></td></tr>
+<tr><td>5</td><td><span class="sw" style="background:#111"></span>black</td><td>Vo</td><td>Phototransistor output</td><td><code>D4</code></td><td><code>INPUT_PULLUP</code> unless the module has its own pull-up; polarity per the note below</td><td class="v">Teensy <code>7</code>, pull-up (<code>D4</code> is EN here)</td></tr>
+<tr><td>6</td><td><span class="sw" style="background:#fff"></span>white</td><td>A+</td><td>Stepper coil A</td><td>Driver <code>1B</code></td><td rowspan="4"><code>STEP D5</code>, <code>DIR D6</code>, <code>EN D7</code> (EN active LOW on A4988/DRV8825)</td><td class="v" rowspan="2">TMC2209 coil-A pair. 6 to 7 reads about 1.5 to 2.5 Ω. Motor-side leads are black and green. Validator: STEP <code>2</code>, DIR <code>3</code>, EN <code>4</code> (active LOW)</td></tr>
+<tr><td>7</td><td><span class="sw" style="background:#8C9196"></span>grey</td><td>A−</td><td>Stepper coil A</td><td>Driver <code>1A</code></td></tr>
+<tr><td>8</td><td><span class="sw" style="background:#1E63D6"></span>blue</td><td>B+</td><td>Stepper coil B</td><td>Driver <code>2A</code></td><td class="v" rowspan="2">TMC2209 coil-B pair. 8 to 9 reads about 1.5 to 2.5 Ω, and open to 6 or 7. Motor-side leads are red and blue</td></tr>
+<tr><td>9</td><td><span class="sw" style="background:#2E9E44"></span>green</td><td>B−</td><td>Stepper coil B</td><td>Driver <code>2B</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Decisions the firmware depends on</h2>
+<ul>
+<li><strong>Limit switch contact type.</strong> Wire them normally-closed if you can: a broken wire or unplugged DB9 then reads as "at limit" and the motion stops. Firmware reads <code>LOW</code> as safe-to-move and <code>HIGH</code> (contact opened) as triggered. With normally-open contacts the logic flips and a cable fault is invisible.</li>
+<li><strong>Vo polarity.</strong> A bare phototransistor output needs a pull-up (<code>INPUT_PULLUP</code> is enough): beam clear → transistor conducts → <code>LOW</code>; beam blocked → <code>HIGH</code>. Modules with a built-in comparator or Schmitt buffer often invert this, so confirm with a meter on pin 5 while blocking the slot before committing the logic. The symbol beside Vo in the schematic reads as a ground reference, which agrees with a pull-up configuration.</li>
+<li><strong>5 V budget.</strong> Pin 1 carries the LED (≈15 mA through R1) plus the phototransistor supply; well within an Arduino 5 V pin. Nothing above 5 V is on the cable, so Vo can go straight to D4.</li>
+<li><strong>Coil pairing.</strong> Confirm with an ohmmeter that pins 6–7 and 8–9 are the two coils (a few ohms each, open between coils). Swapping one coil's polarity only reverses direction; mixing coils across pairs stalls the motor.</li>
+<li><strong>Debounce.</strong> Mechanical limit switches bounce for 1–10 ms; debounce in firmware (or a 100 nF capacitor across the input) so a single hit doesn't register as several.</li>
+</ul>
+
+</body></html>

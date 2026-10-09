@@ -792,28 +792,32 @@ def test_the_drain_keeps_the_latest_complete_pos_line(probe):
 
 
 @pytest.mark.transport
-def test_malformed_and_non_pos_lines_are_counted_as_dropped(probe):
-    """L3: a line that is not a whole POS line is a dropped packet. The
-    handshake's own `DEV:` answer is not one."""
-    probe.port.lines = ["POS:1,2,3", "junk", "POS:4,5", "POS:bad,,",
+def test_malformed_and_garbled_lines_are_counted_as_dropped(probe):
+    """L3: a malformed POS line or a garbled (non-printable) line is a dropped
+    packet. The handshake's own `DEV:` answer is not one, and neither is
+    printable board text (see test_probe_board_text.py)."""
+    probe.port.lines = ["POS:1,2,3", "ju\x00nk", "POS:4,5", "POS:bad,,",
                         "DEV: s", "POS:7,8,9"]
     assert probe._read_position() == (7, 8, 9)
     assert probe.dropped == 3
+    probe.port.lines = ["printable board text"]
+    probe._read_position()
+    assert probe.dropped == 3   # printable non-POS text is not counted
 
 
 @pytest.mark.transport
 def test_dropped_packets_warn_when_the_count_rises_and_not_more_often(probe):
     with Collected() as seen:
-        probe.port.lines = ["junk"]
+        probe.port.lines = ["ju\x00nk"]
         probe._read_position()
-        probe.port.lines = ["more junk"]
+        probe.port.lines = ["more ju\x00nk"]
         probe._read_position()
     warned = [e for e in seen.of("warning") if e.title == "Packets Dropped"]
     assert len(warned) == 1, [e.text for e in seen.seen]
     assert "Stepper Probe" in warned[0].message
     probe._dropped_warned_at -= probe.DROPPED_WARN_INTERVAL
     with Collected() as seen:
-        probe.port.lines = ["junk again"]
+        probe.port.lines = ["ju\x00nk again"]
         probe._read_position()
     assert [e.title for e in seen.of("warning")] == ["Packets Dropped"]
 
@@ -1204,7 +1208,10 @@ def test_motion_entries_are_gated_while_a_run_is_engaged(probe):
     # so its entry is locked in autonomous only; every other entry keeps both
     # motion modes (tests/test_manual_speed_live.py).
     for element in entries:
-        expected = (["autonomous"] if element["model_attr"] == "man_full_speed_pct"
+        # The Stepper speaks um and um/s (owner 2026-10-09): its Manual Speed
+        # entry is man_full_speed_um_s; the DC and Chuck dial is the percent.
+        expected = (["autonomous"] if element["model_attr"]
+                    in ("man_full_speed_pct", "man_full_speed_um_s")
                     else ["autonomous", "manual"])
         assert element["disabled_when"] == expected
         assert element["writable"] is True
@@ -1212,6 +1219,10 @@ def test_motion_entries_are_gated_while_a_run_is_engaged(probe):
     assert probe.run("_commit", inputs={"x_dist": "9"}).is_refused
     with pytest.raises(Refused):
         probe.x_dist = "9"
+    # The um entry carries the same gate (9 um = 14 whole counts).
+    assert probe.run("_commit", inputs={"x_dist_um": "9"}).is_refused
+    with pytest.raises(Refused):
+        probe.x_dist_um = "9"
 
 
 @pytest.mark.params
@@ -1392,7 +1403,9 @@ def test_step_in_autonomous_mode_with_unchanged_distances_is_not_refused(probe):
     # with the fields showing what the schema declared (nothing was typed).
     probe.set_mode("autonomous")
     probe.port.writes.clear()
-    inputs = {"x_dist": "0", "y_dist": "0", "z_dist": "0", "full_speed": "400"}
+    # The Stepper's Step inputs are um and um/s: 400 counts/s = 250 um/s.
+    inputs = {"x_dist_um": "0", "y_dist_um": "0", "z_dist_um": "0",
+              "full_speed_um_s": "250"}
     result = probe.run("step", inputs=inputs)
     assert result.is_ok, result.reason
     probe._moving_deadline = None            # the move arrived
@@ -1401,17 +1414,18 @@ def test_step_in_autonomous_mode_with_unchanged_distances_is_not_refused(probe):
     assert probe.mode is ProbeMode.AUTO
     assert len(probe.port.writes) == 2
     # A committed field (a desktop view's focus-out) is the same case.
-    assert probe.run("_commit", inputs={"x_step": "1"}).is_ok
+    assert probe.run("_commit", inputs={"x_step_um": "0.625"}).is_ok
 
 
 @pytest.mark.mode
 def test_step_in_autonomous_mode_is_refused_when_a_distance_changed(probe):
-    probe.x_dist = 5
-    assert probe.run("step", inputs={"x_dist": "5"}).is_ok
+    probe.x_dist_um = 5                       # 8 whole counts
+    assert probe.run("step", inputs={"x_dist_um": "5"}).is_ok
     probe._moving_deadline = None
-    result = probe.run("step", inputs={"x_dist": "6"})
+    result = probe.run("step", inputs={"x_dist_um": "6"})   # 10 counts: an edit
     assert result.is_refused
-    assert probe.x_dist == 5
+    assert probe.x_dist_um == 5
+    assert probe.x_dist == 8
 
 
 @pytest.mark.params
@@ -1644,7 +1658,7 @@ def test_a_probe_opens_its_port_at_the_firmwares_500000_baud(cls, monkeypatch):
 CEILINGS = [(StepperProbe, 3200), (DCProbe, 3200), (ChuckPositioner, 600)]
 
 
-@pytest.mark.parametrize("cls,ceiling", CEILINGS)
+@pytest.mark.parametrize("cls,ceiling", [c for c in CEILINGS if c[0] is not StepperProbe])
 @pytest.mark.parametrize("name", ["full_speed", "man_full_speed"])
 def test_every_probe_speed_tops_out_at_its_own_ceiling(cls, ceiling, name):
     """Owner 2026-10-07: the stepper family keeps 3200 steps/s (the DC probe
@@ -1657,6 +1671,24 @@ def test_every_probe_speed_tops_out_at_its_own_ceiling(cls, ceiling, name):
     assert param.parse(ceiling) == (True, ceiling)
     assert param.parse(ceiling + 1)[0] is False
     assert cls.SPEED_SLIDER == (0, 100)
+
+
+@pytest.mark.parametrize("name", ["full_speed_um_s", "man_full_speed_um_s"])
+def test_the_stepper_speed_tops_out_at_2000_um_s_which_is_3200_counts_s(name):
+    """The Stepper's ceiling, in the units the operator types: 2000 um/s is
+    3200 counts/s at 0.625 um/count. The stored counts/s Param keeps 3200."""
+    param = StepperProbe.PARAMS[name]
+    assert StepperProbe.MAX_SPEED == 3200
+    assert StepperProbe.PARAMS[name[:-len("_um_s")]].maximum == 3200
+    assert param.maximum == 2000
+    assert param.parse(2000) == (True, 2000)
+    assert param.parse(2001)[0] is False
+    assert StepperProbe.SPEED_SLIDER == (0.625, 2000)
+    p, _, _ = make_probe(StepperProbe)
+    assert p.run("_commit", inputs={name: "2000"}).is_ok
+    assert getattr(p, name[:-len("_um_s")]) == 3200
+    assert p.run("_commit", inputs={name: "2001"}).is_refused
+    assert getattr(p, name[:-len("_um_s")]) == 3200
 
 
 @pytest.mark.parametrize("cls,ceiling", CEILINGS)
@@ -1699,12 +1731,24 @@ def test_the_two_representations_are_one_value_both_ways():
     assert p.full_speed == 400
 
 
-def test_a_percent_out_of_range_is_refused_by_the_dial():
-    p, _, _ = make_probe(StepperProbe)
+@pytest.mark.parametrize("cls,steps", [(DCProbe, 1280), (ChuckPositioner, 240)])
+def test_a_percent_out_of_range_is_refused_by_the_dial(cls, steps):
+    p, _, _ = make_probe(cls)
     assert p.run("_commit", inputs={"full_speed_pct": "101"}).is_refused
     assert p.run("_commit", inputs={"full_speed_pct": "-1"}).is_refused
     assert p.run("_commit", inputs={"full_speed_pct": "40"}).is_ok
+    assert p.full_speed == steps
+
+
+def test_a_stepper_speed_out_of_range_is_refused_by_the_um_entry():
+    """The Stepper has no dial; its speed entry is bounded 0.625..2000 um/s."""
+    p, _, _ = make_probe(StepperProbe)
+    assert p.run("_commit", inputs={"full_speed_um_s": "2001"}).is_refused
+    assert p.run("_commit", inputs={"full_speed_um_s": "-1"}).is_refused
+    assert p.run("_commit", inputs={"full_speed_um_s": "0"}).is_refused
+    assert p.run("_commit", inputs={"full_speed_um_s": "800"}).is_ok
     assert p.full_speed == 1280
+    assert p.full_speed_um_s == 800
 
 
 def test_steps_per_second_still_apply_by_name_to_the_stored_value():
@@ -1733,7 +1777,7 @@ def test_the_wire_carries_the_steps_per_second_the_dial_set():
 
 
 @pytest.mark.schema
-@pytest.mark.parametrize("cls", [StepperProbe, DCProbe, ChuckPositioner])
+@pytest.mark.parametrize("cls", [DCProbe, ChuckPositioner])
 def test_each_speed_is_a_percent_dial_with_a_steps_readout_in_its_group(cls):
     """The two speeds (2026-10-07): each is a percent dial with its steps/s
     readout under it, now in its own control system's group."""
@@ -1759,7 +1803,65 @@ def test_each_speed_is_a_percent_dial_with_a_steps_readout_in_its_group(cls):
 
 
 @pytest.mark.schema
-@pytest.mark.parametrize("cls", [StepperProbe, DCProbe, ChuckPositioner])
+def test_each_stepper_speed_is_a_um_s_entry_with_a_steps_readout_in_its_group():
+    """Owner 2026-10-09: the Stepper's speeds are um/s entries (no percent
+    dial), each with its steps/s line directly beneath, in its own group."""
+    p, _, _ = make_probe(StepperProbe)
+    groups = {s["title"]: s for s in p.schema["sections"]}
+    for title, attr, label in (("Autonomous", "full_speed", "Autonomous Speed:"),
+                               ("Manual", "man_full_speed", "Manual Speed:")):
+        elements = groups[title]["elements"]
+        kinds = [(e["type"], e.get("model_attr"), e.get("secondary", False))
+                 for e in elements]
+        at = kinds.index(("entry", attr + "_um_s", False))
+        assert kinds[at + 1] == ("readonly", attr, True)
+        entry, readout = elements[at], elements[at + 1]
+        assert entry["text"] == label
+        assert entry["unit"] == "µm/s"
+        assert list(entry["slider"]) == [0.625, 2000]
+        assert readout["unit"] == "steps/s" and readout["text"] == "steps/s"
+        assert not any(e.get("rail") for e in elements)
+        assert not any(e.get("model_attr") == attr + "_pct" for e in elements)
+    state = p.state["values"]
+    assert float(state["full_speed_um_s"]) == p.full_speed_um_s == 250
+    assert state["full_speed"] == str(p.full_speed)
+
+
+@pytest.mark.schema
+def test_the_stepper_summary_divides_autonomous_from_manual_in_um():
+    """The same division as the other probes, through the Stepper's um and
+    um/s entries (owner 2026-10-09); every gate is the one it was."""
+    p, _, _ = make_probe(StepperProbe)
+    tier1 = [s for s in p.schema["sections"] if s.get("tier", 1) == 1
+             and s["title"] != "Safety"]
+    assert [s["title"] for s in tier1] == ["Position", "Autonomous", "Manual"]
+    auto, manual = tier1[1], tier1[2]
+    assert auto["layout"] == manual["layout"] == "group"
+
+    def drawn(section):
+        return [e.get("model_attr") or e.get("command") for e in section["elements"]
+                if e["type"] not in ("internal",) and not e.get("secondary")]
+
+    assert drawn(auto) == ["x_dist_um", "y_dist_um", "z_dist_um",
+                           "full_speed_um_s", "is_auto", "step"]
+    assert drawn(manual) == ["gamepad_name", "man_full_speed_um_s", "is_manual"]
+    gates = {e.get("model_attr") or e.get("command"): tuple(e.get("disabled_when", ()))
+             for s in (auto, manual) for e in s["elements"]}
+    assert gates["x_dist_um"] == gates["full_speed_um_s"] == ("autonomous", "manual")
+    assert gates["man_full_speed_um_s"] == ("autonomous",)
+    assert gates["step"] == ("manual", "latched", "fault")
+    assert gates["is_auto"] == gates["is_manual"] == ("latched", "fault")
+    config = next(s for s in p.schema["sections"] if s["title"] == "Configuration")
+    in_config = [e["model_attr"] for e in config["elements"] if e["type"] == "entry"]
+    assert in_config[:3] == ["x_step_um", "y_step_um", "z_step_um"]
+    assert not {"x_dist_um", "y_dist_um", "z_dist_um"} & set(in_config)
+    entries = [e["model_attr"] for s in p.schema["sections"] for e in s["elements"]
+               if e["type"] == "entry"]
+    assert sorted(entries) == sorted(p.ENTRY_PARAMS)
+
+
+@pytest.mark.schema
+@pytest.mark.parametrize("cls", [DCProbe, ChuckPositioner])
 def test_the_summary_divides_autonomous_from_manual(cls):
     """Owner, 2026-10-07: "a division for autonomous and manual controls".
     Tier 1 is Position, then an Autonomous group (the targets, the
