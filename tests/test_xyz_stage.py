@@ -453,6 +453,51 @@ def test_a_disable_that_does_not_reach_an_axis_faults(make):
     assert stage.mode is StageMode.FAULT and "axis Z" in stage.fault
 
 
+def test_leaving_manual_while_an_axis_hangs_faults_instead_of_reporting_disabled(make):
+    """R-5: Y's loop hangs in MANUAL (no reply, no P line, while its step ISR
+    keeps the jog going) and the operator leaves the mode inside the 1 s
+    silence window, before the watchdog trips. The DISABLE lands in Y's USB
+    buffer and is never read, so nothing confirms Y is off: the stage is in
+    FAULT, never a clean DISABLED, and the operator is told it may still be
+    moving. X and Z are disabled all the same."""
+    pad = FakePad(axis_y=0.5)
+    stage = armed(make(gamepad=pad), "manual")
+    assert wait_for(lambda: received(stage, "Y", "JOGV 0.2500"))
+    sim(stage, "Y").silent = True
+    with Collected() as seen:
+        stage.run("set_mode", None, ("disabled",))
+    assert stage.mode is StageMode.FAULT and stage.is_energized
+    assert "axis Y" in stage.fault and "may still be moving" in stage.fault
+    assert "not answering" in seen.text("error")
+    for axis in ("X", "Z"):
+        assert received(stage, axis, "DISABLE") and not sim(stage, axis).enabled
+    # FAULT refuses every mode until a stop; the stop lands on all three.
+    assert stage.run("set_mode", None, ("autonomous",)).is_refused
+    stage.estop()
+    assert not stage.is_faulted and stage.mode is StageMode.DISABLED
+
+
+def test_leaving_a_mode_with_an_axis_already_silent_faults(make):
+    """R-5: an axis whose P stream has been silent past BOARD_SILENT_AFTER
+    is not answering, whatever it says to the DISABLE. IDLE is not watched
+    by the watchdog, so the mode exit is the check that sees it: FAULT with
+    the not-answering wording, and the DISABLE still goes to all three."""
+    stage = make()
+    stage.BOARD_SILENT_AFTER = 0.3
+    assert stage.enable() == "idle"
+    sim(stage, "Z").stream_hz = 0        # no P line; commands still answered
+    assert wait_for(lambda: stage.board_silent, 2.0)
+    with Collected() as seen:
+        stage.run("set_mode", None, ("disabled",))
+    assert stage.mode is StageMode.FAULT and stage.is_energized
+    assert "axis Z" in stage.fault and "may still be moving" in stage.fault
+    assert "has not reported its position" in stage.fault
+    assert seen.of("error")
+    for axis in AXES:
+        assert received(stage, axis, "DISABLE"), axis
+        assert not sim(stage, axis).enabled
+
+
 def test_a_stop_landing_during_mode_entry_backs_the_entry_out(make):
     stage = make()
     real = stage.axes["Z"].request
@@ -517,6 +562,84 @@ def test_no_jog_reaches_an_axis_after_the_watchdogs_stop(make):
     after = [line for t, line in sim(stage, "X").received
              if t > estop_at and line.startswith("JOGV") and line != "JOGV 0"]
     assert not after and not sim(stage, "X").enabled
+
+
+# -- homing starts only when it may, and is stopped when it may have ----------------
+
+def _home_reply_lost(board):
+    """The board starts homing, but its `OK HOME` never reaches the station
+    in time (a reply later than REPLY_TIMEOUT)."""
+    real = board._cmd_home
+
+    def late(command, args):
+        emit = board._emit
+        board._emit = lambda text: None if text.startswith("OK HOME") else emit(text)
+        try:
+            real(command, args)
+        finally:
+            del board._emit
+
+    board._cmd_home = late
+
+
+def test_a_home_refused_for_a_late_reply_stops_the_axes(make):
+    """R-7: HOME answered later than REPLY_TIMEOUT. The operator is told it
+    would not start, but the board may home for minutes: the station sends
+    STOP after the HOME, before it refuses."""
+    stage = make()
+    board = sim(stage, "X")
+    board.home_seek_mm_s = 0.5
+    board.home_edge_mm = -5.0            # a long seek: ~10 s at 0.5 mm/s
+    stage.axes["X"].REPLY_TIMEOUT = 0.1
+    _home_reply_lost(board)
+    result = stage.run("home_axis", None, ("X",))
+    assert result.is_refused and "no reply" in result.reason
+    home_at = received_at(stage, "X", "HOME")[0]
+    assert [t for t in received_at(stage, "X", "STOP") if t > home_at]
+    assert wait_for(lambda: not board.moving, 1.0)
+    assert "stopped" in result.reason
+
+
+def test_home_all_never_writes_home_after_the_mode_changed(make):
+    """R-8: the operator leaves autonomous between Home all's abort check and
+    its HOME write. The write's own in-lock check must see it, or Z homes in
+    IDLE, where the watchdog is off."""
+    stage = make()
+    link = stage.axes["Z"]
+    real = link.write
+
+    def write(payload, *, priority=False, abort_if=None):
+        if payload == b"HOME\n":
+            stage.set_mode("idle")       # lands inside the window
+        return real(payload, priority=priority, abort_if=abort_if)
+
+    link.write = write
+    assert stage.run("home_all").is_ok
+    assert wait_for(lambda: not stage._home_all_active, 2.0)
+    assert stage.mode is StageMode.IDLE
+    assert received(stage, "Z", "HOME") == []
+    assert not any(received(stage, axis, "HOME") for axis in AXES)
+    assert not sim(stage, "Z").moving
+
+
+def test_home_one_axis_never_writes_home_after_the_mode_changed(make):
+    """R-8, the single-axis twin: Home X's HOME is gated on AUTO inside the
+    write lock as well, not on the latch alone."""
+    stage = make()
+    link = stage.axes["X"]
+    real = link.write
+
+    def write(payload, *, priority=False, abort_if=None):
+        if payload == b"HOME\n":
+            stage.set_mode("idle")
+        return real(payload, priority=priority, abort_if=abort_if)
+
+    link.write = write
+    result = stage.run("home_axis", None, ("X",))
+    assert result.is_refused
+    assert stage.mode is StageMode.IDLE
+    assert received(stage, "X", "HOME") == []
+    assert not sim(stage, "X").moving
 
 
 # == FEATURES ======================================================================
