@@ -157,7 +157,7 @@ The Temperature Controller module provides a dedicated interface for *PID* therm
 
 The XYZ Stage drives the 50 mm three-axis stage. It uses one Teensy board and one TMC2209 driver per axis.
 
-- **One board per axis.** Each board stores the axis it drives. Set it once per board over any serial monitor: send `AXIS X`, `AXIS Y` or `AXIS Z`. The board must be disabled.
+- **One board per axis.** The station flashes the axis boards as Teensy 3.5, the stage's hardware. The firmware also builds for a 4.1, but a 4.1 axis board must be flashed by hand. Each board stores the axis it drives. Set it once per board over any serial monitor: send `AXIS X`, `AXIS Y` or `AXIS Z`. The board must be disabled.
 - **Setup.** Setup finds the three boards by their axis, not by port order. The row launches only when all three answer, one per axis. A missing, repeated or untagged board shows as a fault on the row ("fault: Z missing"). Flashing follows the same rule: all three boards or none.
 - **Controls.** The controls match the Stepper Probe:
   - Disabled, Autonomous and Manual modes.

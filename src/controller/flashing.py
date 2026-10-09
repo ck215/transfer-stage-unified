@@ -68,6 +68,9 @@ BOARDS = {
     # `DEV: x <axis>` (its EEPROM tag). All three are flashed, each on its own
     # port, or none (owner ruling 2026-10-09). Its libraries are MEGA_LIBS'
     # (TMCStepper, AccelStepper): arduino-cli libraries serve every core.
+    # The axis boards are Teensy 3.5, like the heater: every Teensy here is
+    # built for TEENSY_FQBN and loaded with --mcu=TEENSY_MCU. The sketch also
+    # builds for a 4.1, but a 4.1 axis board is flashed by hand.
     "XYZ Stage": {"dir": "xyz_stage_axis", "board": "teensy", "tags": ["X", "Y", "Z"]},
 }
 

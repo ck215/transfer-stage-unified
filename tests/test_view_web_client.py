@@ -1731,3 +1731,9 @@ def test_sp3_the_placement_rule_is_read_from_the_schema_and_applied_on_attach_an
     assert "hosted ? entry.hostedTier : entry.ownTier" in place
     # Only a tier with a disclosure drawn is a target.
     assert "this.disclose2" in place and "this.disclose3" in place
+
+
+def test_the_page_names_its_icon_so_no_favicon_request_404s():
+    """Every load asked for /favicon.ico and logged a 404 in the console
+    (2026-10-09). An empty data icon asks nothing and names no colour."""
+    assert '<link rel="icon" href="data:,">' in INDEX
