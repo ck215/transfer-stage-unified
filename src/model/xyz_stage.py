@@ -30,8 +30,9 @@ structure here:
   each axis and keeps every board inside the window with `HB`, so a station
   that stops talking stops the stage.
 
-Units are physical: positions in micrometres (5 um per full step, 0.625 um
-per microstep at 8 microsteps), each with a secondary microstep line; speeds
+Units are physical: positions, target distances and step sizes in
+micrometres (5 um per full step, 0.625 um per microstep at 8 microsteps),
+each with a secondary microstep line at its axis board's resolution; speeds
 in um/s with a secondary microsteps/s line. The wire is in mm and mm/s.
 """
 import enum
@@ -1376,13 +1377,20 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                                  disabled_when=("manual", "latched", "fault"))
                       for axis in AXES]
         configure = f"Configure {self.NAME}"
+
+        def physical(name):
+            """An entry in um with its microstep line directly beneath it
+            (the owner's step language in a smaller font, for diagnostics)."""
+            return [sch.entry(P[name].label + ":", name, P[name],
+                              disabled_when=_MOTION_GATE),
+                    sch.readonly("µsteps", f"{name}_usteps", secondary=True,
+                                 unit="µsteps")]
+
         return sch.schema(
             sch.section("Position", *position),
             sch.section(
                 "Autonomous",
-                *[sch.entry(P[name].label + ":", name, P[name],
-                            disabled_when=_MOTION_GATE)
-                  for name in self.TARGET_PARAMS],
+                *[e for name in self.TARGET_PARAMS for e in physical(name)],
                 sch.entry(P["full_speed"].label + ":", "full_speed", P["full_speed"],
                           disabled_when=_MOTION_GATE, slider=self.SPEED_SLIDER),
                 sch.readonly("µsteps/s", "full_speed_usteps", secondary=True,
@@ -1424,9 +1432,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             ),
             sch.section(
                 "Configuration",
-                *[sch.entry(P[name].label + ":", name, P[name],
-                            disabled_when=_MOTION_GATE)
-                  for name in self.STEP_PARAMS],
+                *[e for name in self.STEP_PARAMS for e in physical(name)],
                 tier=2, disclosure=configure,
             ),
             sch.section(
@@ -1486,9 +1492,18 @@ def _usteps_readout(axis):
     return property(getter)
 
 
+def _param_usteps_readout(name, axis):
+    """A distance or step-size Param in microsteps at `axis`'s board resolution."""
+    def getter(self):
+        return self._usteps(self._number(name), axis)
+    return property(getter)
+
+
 for _name in XyzStage.PARAMS:
     setattr(XyzStage, _name, XyzStage._gated_param(_name))
 for _axis in AXES:
     setattr(XyzStage, f"position_{_axis.lower()}", _position_readout(_axis))
     setattr(XyzStage, f"position_{_axis.lower()}_usteps", _usteps_readout(_axis))
+    for _name in (f"{_axis.lower()}_dist", f"{_axis.lower()}_step"):
+        setattr(XyzStage, f"{_name}_usteps", _param_usteps_readout(_name, _axis))
 del _name, _axis

@@ -883,6 +883,29 @@ def test_positions_read_in_micrometres_with_a_microstep_line_beneath(make):
         assert nxt["model_attr"] == f"position_{axis}_usteps" and nxt.get("secondary")
 
 
+def test_distances_and_step_sizes_have_a_microstep_line_beneath_at_the_boards_resolution(make):
+    """The owner's "translation into step language in a smaller font nearby":
+    each Target dist and Step Size entry has its µsteps line directly beneath
+    it, as the positions and speeds do, at that axis board's own resolution
+    (um x microsteps / 5). Y runs at 16 microsteps here, X and Z at 8."""
+    stage = make(opened=False)
+    sim(stage, "Y").microsteps = 16
+    stage.open()
+    assert wait_for(lambda: all(stage.axes[a].last_reply("INFO") is not None for a in AXES))
+    assert stage.run("_commit", {"x_dist": 125, "y_dist": -40, "z_dist": 5,
+                                 "x_step": 5, "y_step": 10, "z_step": 1000}).is_ok
+    elements = [e for s in stage.schema["sections"] for e in s["elements"]]
+    index = {e.get("model_attr"): i for i, e in enumerate(elements)}
+    expected = {"x_dist": 200, "y_dist": -128, "z_dist": 8,
+                "x_step": 8, "y_step": 32, "z_step": 1600}
+    for name, usteps in expected.items():
+        assert elements[index[name]]["type"] == "entry", name
+        line = elements[index[name] + 1]
+        assert line["type"] == "readonly" and line.get("secondary"), (name, line)
+        assert line["model_attr"] == f"{name}_usteps" and line["unit"] == "µsteps", line
+        assert getattr(stage, line["model_attr"]) == usteps, name
+
+
 def test_speeds_are_micrometres_per_second_with_a_steps_line(make):
     stage = make()
     stage.run("_commit", {"full_speed": 1000, "man_full_speed": 250})
