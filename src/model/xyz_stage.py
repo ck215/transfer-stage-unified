@@ -1011,17 +1011,28 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         self._touch_activity()
         return "started"
 
-    def _start_home(self, axis):
+    def _start_home(self, axis, abort_if=None):
         """HOME on one axis. -> the Reply. Marked as ours before it is sent,
-        so its HOMED cannot arrive before anyone is listening."""
+        so its HOMED cannot arrive before anyone is listening.
+
+        R-8: `abort_if` is checked inside the write lock, at the last moment
+        before the bytes go out, so a mode change between a caller's own
+        check and the write cannot start homing outside AUTO (where the
+        watchdog is off). By default: latched, or not in AUTO."""
+        if abort_if is None:
+            abort_if = self._home_not_allowed
         self._homing[axis] = "starting"
         self._home_failed[axis] = None
         self._home_phase[axis] = "starting"
-        reply = self._request(self.axes[axis], "HOME", abort_if=self._estop.is_set)
+        reply = self._request(self.axes[axis], "HOME", abort_if=abort_if)
         if not reply.ok:
             self._homing[axis] = None
             self._home_phase[axis] = f"not started ({reply.why})"
             if reply.aborted:            # never written: nothing to stop
+                if not self._estop.is_set():
+                    self._home_phase[axis] = "not started (left autonomous)"
+                    self._refuse(f"Axis {axis} did not start homing: the {self.NAME} "
+                                 "left autonomous mode first.")
                 self._refuse(f"Axis {axis} would not start homing ({reply.why}).")
             # R-7: the HOME was written, and a reply that came late (or not at
             # all) is no proof the board is not homing: a late OK HOME means
@@ -1033,6 +1044,9 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             self._refuse(f"Axis {axis} would not start homing ({reply.why}), "
                          f"{outcome}.")
         return reply
+
+    def _home_not_allowed(self):
+        return self._estop.is_set() or self._mode is not StageMode.AUTO
 
     def home_all(self):
         """Home all (provisional): Z first, then X and Y together, on a
@@ -1067,7 +1081,9 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                     return
                 for axis in group:
                     try:
-                        self._start_home(axis)
+                        # R-8: the run's own abort test, inside the write lock.
+                        self._start_home(axis, abort_if=lambda: self._home_all_aborted(
+                            generation, stop))
                     except Refused as refusal:
                         return self._end_home_all(generation, stop, refusal.reason)
                 failure = self._wait_homed(group, generation, stop)

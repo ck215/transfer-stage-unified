@@ -600,6 +600,48 @@ def test_a_home_refused_for_a_late_reply_stops_the_axes(make):
     assert "stopped" in result.reason
 
 
+def test_home_all_never_writes_home_after_the_mode_changed(make):
+    """R-8: the operator leaves autonomous between Home all's abort check and
+    its HOME write. The write's own in-lock check must see it, or Z homes in
+    IDLE, where the watchdog is off."""
+    stage = make()
+    link = stage.axes["Z"]
+    real = link.write
+
+    def write(payload, *, priority=False, abort_if=None):
+        if payload == b"HOME\n":
+            stage.set_mode("idle")       # lands inside the window
+        return real(payload, priority=priority, abort_if=abort_if)
+
+    link.write = write
+    assert stage.run("home_all").is_ok
+    assert wait_for(lambda: not stage._home_all_active, 2.0)
+    assert stage.mode is StageMode.IDLE
+    assert received(stage, "Z", "HOME") == []
+    assert not any(received(stage, axis, "HOME") for axis in AXES)
+    assert not sim(stage, "Z").moving
+
+
+def test_home_one_axis_never_writes_home_after_the_mode_changed(make):
+    """R-8, the single-axis twin: Home X's HOME is gated on AUTO inside the
+    write lock as well, not on the latch alone."""
+    stage = make()
+    link = stage.axes["X"]
+    real = link.write
+
+    def write(payload, *, priority=False, abort_if=None):
+        if payload == b"HOME\n":
+            stage.set_mode("idle")
+        return real(payload, priority=priority, abort_if=abort_if)
+
+    link.write = write
+    result = stage.run("home_axis", None, ("X",))
+    assert result.is_refused
+    assert stage.mode is StageMode.IDLE
+    assert received(stage, "X", "HOME") == []
+    assert not sim(stage, "X").moving
+
+
 # == FEATURES ======================================================================
 
 # -- modes, parity with the Stepper Probe ------------------------------------------
