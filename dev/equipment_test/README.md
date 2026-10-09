@@ -15,6 +15,7 @@ flashed by Setup and never shipped in a release.
 | `stepper_validator/stepper_validator.html` | The GUI. Open it in Chrome or Edge (Web Serial); it needs no server. |
 | `stepper_validator/wiring.html` | Wiring: every Teensy pin by position, the BIGTREETECH TMC2209 V1.2 by J1/J2 pin, the motor supply and C1, the common ground, the DB9. |
 | `stepper_validator/stage_db9_wiring.html` | The stage's own DB9 pinout sheet, with our annotations. Its pin 4 vs pin 5 contradiction for the limit-switch return is called out; settle it with the meter check in `wiring.html`. |
+| `xyz_mega/` | The XYZ stage on one Arduino Mega 2560 with three TMC2209 drivers: `wiring.html` is the pin-by-pin sheet (every Mega pin, each driver's J1/J2 and address strap, the shared PDN_UART junction, supply and capacitors, common ground, each axis's DB9, the pre-power checklist), per `docs/rebuild/MEGA_STANDARD.md` section 5. |
 | `diagnostics/uart_diag/` | Tries the driver UART both ways (single-wire half-duplex, then TX/RX) at addresses 0-3 and prints the raw bytes. Driver held off. |
 | `diagnostics/limits_diag/` | Prints the raw level of Teensy pins 5-9 every 100 ms with no pull, pull-up and pull-down, so a switch press or a blocked slot shows as a state change. Driver held off. |
 | `reference/42BYGH613-01B_motor_datasheet.jpg` | The axis motor's datasheet (the seller's listing image): 1.8 deg, 1.7 A, 1.5 ohm, 3.2 mH, 0.4 N.m; leads black/green = A, red/blue = B. The source of the driver current limits. |
