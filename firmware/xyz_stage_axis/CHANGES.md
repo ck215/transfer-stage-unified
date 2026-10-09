@@ -3,9 +3,10 @@
 Base: the bench validator, which now lives at
 `dev/equipment_test/stepper_validator/stepper_validator/stepper_validator.ino`. It was copied from the pre-repo
 bench copy (sha1 a0d42374, 939 lines; the repo copy differs from it only in one comment)
-unedited, then changed as below. The motion core is untouched: the 25 us step ISR, the limit interlock with learned
-ends, the TMC2209 configuration and driver-reset re-configure, the R-1..R-8 fixes, the `extern "C" _write` fix and
-`DRIVER_HALF_DUPLEX = true`. No validator command, reply key or line format was removed or renamed.
+unedited, then changed as below. The motion core is shared with the validator: the 25 us step ISR, the limit interlock
+with learned ends (changed in both sketches alike on 2026-10-09, last section), the TMC2209 configuration and
+driver-reset re-configure, the R-1..R-8 fixes, the `extern "C" _write` fix and `DRIVER_HALF_DUPLEX = true`. No
+validator command, reply key or line format was removed or renamed.
 
 ## Constants
 
@@ -43,7 +44,7 @@ ends, the TMC2209 configuration and driver-reset re-configure, the R-1..R-8 fixe
 
 | Where | Change | Why |
 | --- | --- | --- |
-| `stepIsr` | home-edge branch also checks the HOME trap (one-shot; direction from `distanceToGo()`) | Zero taken on the edge itself, independent of `loop()` latency and UART reads. The limit logic is unchanged. |
+| `stepIsr` | home-edge branch also checks the HOME trap (one-shot; direction from `distanceToGo()`) | Zero taken on the edge itself, independent of `loop()` latency and UART reads. The limit logic is the validator's (2026-10-09 below). |
 | `isBusy()` | also true while a HOME sequence runs | Between HOME legs the motor is briefly at rest; nothing else may start then, and the host-timeout and DTR guards must stay armed. |
 | `hardHalt`/`softStop`/`serviceSensors` | `g_jog = false` -> `jogEnd()` (also ends JOGV) | Every stop path ends a velocity jog too. |
 | `estop()`, DISABLE | clear `homed` if the motor was turning | See PROTOCOL.md "homed". |
@@ -72,3 +73,29 @@ ends, the TMC2209 configuration and driver-reset re-configure, the R-1..R-8 fixe
   the dead-man; JOGV 0 during a MOVE; 50 mm moves into both switches; homed rules; driver reset; the validator TESTs
   (UART, COILS, REVS, LIMITS), JOG, REVS and deferred SPEED; edge-report cap under chatter. No scenario ever drove past a
   hard stop. The simulation does not model ISR preemption inside `loop()`, lost steps, or real sensor and switch noise.
+
+## 2026-10-09: limit-end learning (review R-4), parked switches, host-timeout disable
+
+Same change in `stepper_validator.ino` wherever the logic is shared (the interlock, JOG, MOVE/REVS/TEST refusals, the
+host timeout); the validator has no JOGV, MOVETO or HOME. PROTOCOL.md "Safety behaviour" states the rules.
+
+| Where | Change | Why |
+| --- | --- | --- |
+| `stepIsr` | An unknown end is learned from the first filtered change while moving `d`: a **release** teaches `-d`; a **trip** teaches `d` only if the switch has not read pressed with its end unconfirmed (`s_lsSeen`); otherwise the trip halts and teaches nothing. Was: any first trip while moving taught `d`. | R-4 [S2]: parked on LS1 at power-up, a jog off it re-read the switch pressed in its release chatter (>= 200 us), taught LS1 = the + end and halted; LS1 then no longer stopped motion toward -, and the axis drove into the - hard stop (SGTHRS 0: no stall stop). The release is the first change a switch being left can make, and it is unambiguous. |
+| `stepIsr`, `limitBlock`, JOG/JOGV | Parked switch (tripped, end not confirmed): the ISR bounds travel to `PARKED_TRAVEL_MM` (0.5 mm, **provisional**) either way from where it was found pressed; running out still pressed halts and learns that direction as its end (`learned=travel` on the LIMIT line); running out both ways halts and confines (`pressed_both_ways=1`, `limit-lsN-pressed-both-ways:check-switch`). JOG/JOGV capped at `PARKED_JOG_SPEED_MM` (0.1 mm/s) while parked. | Owner ruling: allow jog-off only, slowly; a switch held at power-up and driven further into it used to have no stop but the operator's dead-man. |
+| MOVE/MOVETO/REVS/HOME/TEST, `testStep`, `homeStep` | Refused while a switch is parked (unknown or travel-learned end); a TEST or HOME that finds one parked ends. | Owner ruling. |
+| `guards()` | Still silent `HOST_SILENT_OFF_MS` (10 s) after `EVT FAULT host-timeout`: `estop()`, `EVT FAULT host-timeout-disabled silent_ms=`, ENABLE needed again. | Owner ruling: the axis used to hold energised indefinitely with the port open and the host gone. DTR drop unchanged. |
+| `spSetPos`, MICROSTEPS (`spRescale`), LIMITS, `setup` | The parked travel windows move with ZERO/HOME, rescale with MICROSTEPS, restart at LIMITS NC\|NO (which also forgets how ends were learned) and at boot. | A new origin or step size must not reset the budget. |
+| INFO (station) | `parked_jog_mm_s= parked_travel_mm= host_silent_off_ms=` appended. | Bench check of the flashed values. |
+
+Bench values are unchanged (pins, currents, speeds, the 200 us filter, HOME constants). `PARKED_TRAVEL_MM` is a new,
+provisional value: the owner confirms it against the switch overtravel (PROTOCOL.md, Safety behaviour).
+
+Verification: `arduino-cli compile --warnings all` for `teensy:avr:teensy35` and `teensy:avr:teensy41`, zero warnings
+on both sketches. A new host-side simulation (`scratchpad/xyz/fwlimits/sim/`, not in the repo) builds each whole
+sketch natively against the real AccelStepper source, a fake 25 us clock and a stage model (switches with 50 um
+differential travel and 300 us release chatter, hard stops 0.8 mm past each switch). 14 scenarios per sketch: the R-4
+jog-off then jog/MOVE back; first trips; TEST LIMITS and HOME; both tripped at boot and mid-move; parked and driven
+into (normal, deep in the overtravel, short overtravel, ZERO and MICROSTEPS while parked); host timeout with and
+without the host returning; DTR drop; a release at rest followed by chatter. The pre-fix sketches fail 8 of 14 (into
+the hard stop at 0.5 mm/s in seven); the fixed ones pass 14 of 14. Not run on hardware.
