@@ -792,28 +792,32 @@ def test_the_drain_keeps_the_latest_complete_pos_line(probe):
 
 
 @pytest.mark.transport
-def test_malformed_and_non_pos_lines_are_counted_as_dropped(probe):
-    """L3: a line that is not a whole POS line is a dropped packet. The
-    handshake's own `DEV:` answer is not one."""
-    probe.port.lines = ["POS:1,2,3", "junk", "POS:4,5", "POS:bad,,",
+def test_malformed_and_garbled_lines_are_counted_as_dropped(probe):
+    """L3: a malformed POS line or a garbled (non-printable) line is a dropped
+    packet. The handshake's own `DEV:` answer is not one, and neither is
+    printable board text (see test_probe_board_text.py)."""
+    probe.port.lines = ["POS:1,2,3", "ju\x00nk", "POS:4,5", "POS:bad,,",
                         "DEV: s", "POS:7,8,9"]
     assert probe._read_position() == (7, 8, 9)
     assert probe.dropped == 3
+    probe.port.lines = ["printable board text"]
+    probe._read_position()
+    assert probe.dropped == 3   # printable non-POS text is not counted
 
 
 @pytest.mark.transport
 def test_dropped_packets_warn_when_the_count_rises_and_not_more_often(probe):
     with Collected() as seen:
-        probe.port.lines = ["junk"]
+        probe.port.lines = ["ju\x00nk"]
         probe._read_position()
-        probe.port.lines = ["more junk"]
+        probe.port.lines = ["more ju\x00nk"]
         probe._read_position()
     warned = [e for e in seen.of("warning") if e.title == "Packets Dropped"]
     assert len(warned) == 1, [e.text for e in seen.seen]
     assert "Stepper Probe" in warned[0].message
     probe._dropped_warned_at -= probe.DROPPED_WARN_INTERVAL
     with Collected() as seen:
-        probe.port.lines = ["junk again"]
+        probe.port.lines = ["ju\x00nk again"]
         probe._read_position()
     assert [e.title for e in seen.of("warning")] == ["Packets Dropped"]
 
