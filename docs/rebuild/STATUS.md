@@ -352,6 +352,51 @@ yet bench-validated); the step indicator and launch transition; "Overview"
 renamed "Dashboard" with reorderable tiles; picture previews (100x, then 50x,
 then lower; newest wins) on the Sample DB and the trial setup.
 
+## Round 2026-10-09 (XYZ Stage)
+
+Branch `feat/xyz-stage`, by PR. A new device: the 50 mm XYZ stage, one Teensy 3.5
+and one TMC2209 (single-wire UART) per axis.
+
+What landed:
+- **Firmware.** `firmware/xyz_stage_axis/`, protocol v1 in its `PROTOCOL.md`.
+  It grew from the bench validator (`dev/equipment_test/`):
+  - identity `DEV: x X|Y|Z` from an EEPROM tag (`AXIS X`);
+  - HOME on the photo-interrupter, with the limit switches as interlocks;
+  - the JOGV dead-man, the STREAM of P lines, HOSTTIMEOUT;
+  - `LOG 0|1|2`.
+- **Model.** `model/xyz_stage.py` and `devices/teensy_axis.py`:
+  - Stepper Probe parity: the modes, the vector Step, the gamepad jog;
+  - per-axis Zero here and Home, and Home all (provisional);
+  - readouts in µm and µm/s, with microsteps beneath;
+  - the stop path first: parallel ESTOP, all-or-none enable, and any axis
+    fault or silence latches the stage.
+- **Multi-port models.**
+  - `PORT_TAGS` in Setup. Boards are placed by tag, and the row launches only
+    with all three ("fault: Z missing" otherwise).
+  - Per-axis flashing, all or none, each axis rebooted through its own port.
+  - The Teensy flash no longer uses `teensy_loader_cli -s`, which soft-reboots
+    whichever Teensy it finds.
+  - See MODEL_CONTRACT "One board per axis".
+- **Logging.** Every EVT line an axis sends is in the log file, `EVT DBG`
+  included.
+- **Equipment test kit.** `dev/equipment_test/`: the validator, its GUI and
+  wiring sheets, and the UART and limit diagnostics. Not shipped, never
+  flashed by Setup.
+
+Open, bench-only (owner):
+- Prove each limit switch by a press before TEST LIMITS. Under NO, an open wire
+  reads clear.
+- HOME polarity and direction (`HOME_DIR`, `HOME_FLAG_LEVEL`) and its
+  repeatability (within ±2 microsteps).
+- The axis tag survives an upload and a power cycle.
+- The sign of each stick and trigger per axis.
+
+**Stepper Probe in physical units.** Distances, step sizes and speeds are entered
+in µm and µm/s, over the same stored counts. Each count line sits beneath its
+entry in small type, and the percent dials are gone for the Stepper. The wire
+bytes are unchanged (golden 77). The 0.625 µm/count scale is unverified because
+the lead screw is unmeasured, and the page says so.
+
 ## Open items
 
 ### Classic and the station on the same boards (2026-10-08)

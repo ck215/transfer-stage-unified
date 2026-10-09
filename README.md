@@ -150,6 +150,22 @@ The Temperature Controller module provides a dedicated interface for *PID* therm
 - **Data Display**: The interface continuously reads the *serial connection* data to update the 'Current Temperature' display. It also records a rolling history of the most recent 200 data points for time, temperature, and setpoint.
 - **Closing the Module**: Close the module's tab to safely stop data polling and close the *serial connection*. Reopening it starts the module fresh.
 
+## XYZ Stage
+
+The XYZ Stage drives the 50 mm three-axis stage. It uses one Teensy board and one TMC2209 driver per axis.
+
+- **One board per axis.** Each board stores the axis it drives. Set it once per board over any serial monitor: send `AXIS X`, `AXIS Y` or `AXIS Z`. The board must be disabled.
+- **Setup.** Setup finds the three boards by their axis, not by port order. The row launches only when all three answer, one per axis. A missing, repeated or untagged board shows as a fault on the row ("fault: Z missing"). Flashing follows the same rule: all three boards or none.
+- **Controls.** The controls match the Stepper Probe:
+  - Disabled, Autonomous and Manual modes.
+  - A Step of dx, dy and dz in µm at a speed in µm/s; the axes arrive together.
+  - Gamepad jog: the sticks drive X and Y, and the triggers drive Z.
+  - The D-pad and bumpers step each axis by its step size.
+  - Positions read in µm, with the microstep count in small type beneath.
+- **Zeroing.** **Zero here** sets an axis to 0 where it stands. **Home** finds the axis's optical reference and zeros it there. **Home all** homes Z first, then X and Y together; it is provisional until checked on the bench.
+- **Safety.** A fault on any axis, a lost link, or an axis that stops reporting while driven stops all three axes. Clear the stop before moving again. Each board also stops itself if the station goes quiet.
+- **Bench checks.** Before trusting the limits, prove each limit switch with a press, using `dev/equipment_test/`.
+
 ## Troubleshooting Steps
 
 ### Common Troubleshooting
