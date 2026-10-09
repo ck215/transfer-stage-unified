@@ -374,7 +374,7 @@ class PortProbe:
         self._port_hwids = {name: hwid for name, hwid in entries}
         usable = []
         for name, hwid in entries:
-            if "Bluetooth" in name or "Wireless" in name:
+            if "Bluetooth" in name or "Wireless" in name or "debug-console" in name:
                 continue
             if name.startswith("/dev/ttyS") and (not hwid or hwid == "n/a"):
                 continue

@@ -95,14 +95,15 @@ def test_bounds_are_the_counts_bounds_in_um(stepper):
 def test_position_reads_in_um_with_counts_beneath(stepper):
     stepper._position = (1600, -800, 3)
     values = stepper.state["values"]
-    assert values["position_x_um"] == "1000.000"
-    assert values["position_y_um"] == "-500.000"
-    assert values["position_z_um"] == "1.875"
+    # readouts at 2 places, as the XYZ Stage's (entries keep 3)
+    assert values["position_x_um"] == "1000.00"
+    assert values["position_y_um"] == "-500.00"
+    assert values["position_z_um"] == "1.88"
     assert (values["position_x"], values["position_z"]) == ("1600", "3")
     for axis in AXES:
         main = element(stepper, f"position_{axis}_um")
         small = after(stepper, f"position_{axis}_um")
-        assert main["unit"] == "um" and main.get("rail")
+        assert main["unit"] == "µm" and main.get("rail")
         assert small["model_attr"] == f"position_{axis}"
         assert small["secondary"] and small["unit"] == "steps"
 
@@ -111,13 +112,13 @@ def test_position_reads_in_um_with_counts_beneath(stepper):
 def test_every_physical_entry_has_its_count_line_directly_under_it(stepper):
     pairs = {
         # a target's line is the steps it moves (step size x distance)
-        "x_dist_um": ("x_move_steps", "um", "steps"),
-        "y_dist_um": ("y_move_steps", "um", "steps"),
-        "z_dist_um": ("z_move_steps", "um", "steps"),
-        "x_step_um": ("x_step", "um", "steps"), "y_step_um": ("y_step", "um", "steps"),
-        "z_step_um": ("z_step", "um", "steps"),
-        "full_speed_um_s": ("full_speed", "um/s", "steps/s"),
-        "man_full_speed_um_s": ("man_full_speed", "um/s", "steps/s"),
+        "x_dist_um": ("x_move_steps", "µm", "steps"),
+        "y_dist_um": ("y_move_steps", "µm", "steps"),
+        "z_dist_um": ("z_move_steps", "µm", "steps"),
+        "x_step_um": ("x_step", "µm", "steps"), "y_step_um": ("y_step", "µm", "steps"),
+        "z_step_um": ("z_step", "µm", "steps"),
+        "full_speed_um_s": ("full_speed", "µm/s", "steps/s"),
+        "man_full_speed_um_s": ("man_full_speed", "µm/s", "steps/s"),
     }
     for attr, (counts, unit, small_unit) in pairs.items():
         main, small = element(stepper, attr), after(stepper, attr)

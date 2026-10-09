@@ -1817,7 +1817,7 @@ def test_each_stepper_speed_is_a_um_s_entry_with_a_steps_readout_in_its_group():
         assert kinds[at + 1] == ("readonly", attr, True)
         entry, readout = elements[at], elements[at + 1]
         assert entry["text"] == label
-        assert entry["unit"] == "um/s"
+        assert entry["unit"] == "µm/s"
         assert list(entry["slider"]) == [0.625, 2000]
         assert readout["unit"] == "steps/s" and readout["text"] == "steps/s"
         assert not any(e.get("rail") for e in elements)

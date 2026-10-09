@@ -1597,17 +1597,17 @@ class StepperProbe(Probe):
         Param("z_step", "int", default=1, minimum=1, label="Z Step Size"),
         # The physical views (never seeded or stored; see `_defaults`).
         *[Param(f"{a}_step_um", "float", default=STEPPER_UM_PER_COUNT,
-                minimum=STEPPER_UM_PER_COUNT, unit="um",
+                minimum=STEPPER_UM_PER_COUNT, unit="µm",
                 label=f"{a.upper()} Step Size") for a in "xyz"],
-        *[Param(f"{a}_dist_um", "float", default=0, unit="um",
+        *[Param(f"{a}_dist_um", "float", default=0, unit="µm",
                 label=f"Target {a.upper()} Dist") for a in "xyz"],
         Param("full_speed_um_s", "float", default=400 * STEPPER_UM_PER_COUNT,
-              minimum=STEPPER_UM_PER_COUNT, maximum=_MAX_UM_S, unit="um/s",
+              minimum=STEPPER_UM_PER_COUNT, maximum=_MAX_UM_S, unit="µm/s",
               label="Autonomous Speed"),
         Param("man_full_speed_um_s", "float", default=400 * STEPPER_UM_PER_COUNT,
-              minimum=STEPPER_UM_PER_COUNT, maximum=_MAX_UM_S, unit="um/s",
+              minimum=STEPPER_UM_PER_COUNT, maximum=_MAX_UM_S, unit="µm/s",
               label="Manual Speed"),
-        *[Param(f"position_{a}_um", "float", default=0, unit="um",
+        *[Param(f"position_{a}_um", "float", default=0, decimals=2, unit="µm",
                 label=f"{a.upper()}:") for a in "xyz"],
     )}}
 
@@ -1627,7 +1627,7 @@ class StepperProbe(Probe):
     @property
     def scale_note(self):
         """The one place the unmeasured lead is said."""
-        return f"{STEPPER_UM_PER_COUNT:g} um per count (lead unmeasured)"
+        return f"{STEPPER_UM_PER_COUNT:g} µm per count (lead unmeasured)"
 
     def _defaults(self):
         seeded = super()._defaults()
