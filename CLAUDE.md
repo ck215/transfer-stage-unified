@@ -91,7 +91,9 @@ Agent profiles in `.claude/agents/`: `worktree-fixer` (fixes plan items in a
 worktree), `main-feature-auditor` (read-only, `main` vs the rebuild, one
 subsystem each), `docs-pruner`, `mvc-relayout`, `ui-refiner` (the Web view, Impeccable
 in Operate mode, before/after captures), `ui-auditor` (read-only, one design
-skill per agent, fixed finding format). Fresh context, briefed by
+skill per agent, fixed finding format), `firmware-safety` (firmware that can move
+an axis or energize a coil: host simulation first via `dev/firmware_sim/`, every
+board compiled with zero warnings, never uploads). Fresh context, briefed by
 the lead (a brief may pick the model by task). Design skills in `~/.claude/skills`: `impeccable` (primary),
 `web-design-guidelines` (Web accessibility gate), `ui-ux-pro-max` (guideline
 lookups only; its design-system generator is off-target for this product).
