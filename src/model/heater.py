@@ -71,8 +71,9 @@ class Heater(Model):
         "setpoint": Param("setpoint", "float", default=0, minimum=0,
                           maximum=MAX_SETPOINT, decimals=1, unit="°C",
                           label="Setpoint"),
-        "ramp_rate": Param("ramp_rate", "float", default=10, minimum=0,
-                           maximum=3600, decimals=2, unit="s/°C",
+        # Owner, 2026-10-08: quick-access setting, bound to 1 through 20.
+        "ramp_rate": Param("ramp_rate", "float", default=10, minimum=1,
+                           maximum=20, decimals=2, unit="s/°C",
                            label="Ramp Rate (s/°C)"),
         "p_term": Param("p_term", "float", default=2.0, minimum=0,
                         maximum=1000, decimals=3,
@@ -311,8 +312,9 @@ class Heater(Model):
     def schema(self):
         params = self.PARAMS
         # Tiers (E, 2026-09-25): the temperature and its setpoint are the
-        # session's work; PID, ramp and offset are configuration; the plot and
-        # the connection word are on demand.
+        # session's work, and so is the ramp rate (quick access, owner
+        # 2026-10-08); PID and offset are configuration; the plot and the
+        # connection word are on demand.
         return sch.schema(
             sch.section(
                 "Temperature",
@@ -322,6 +324,8 @@ class Heater(Model):
                 # (quiet) while the heater is off.
                 sch.readonly("Heating to:", "heating_to", role="info"),
                 sch.entry(params["setpoint"].label + ":", "setpoint", params["setpoint"]),
+                # Owner, 2026-10-08: ramp rate is a quick-access (tier 1) setting.
+                sch.entry(params["ramp_rate"].label + ":", "ramp_rate", params["ramp_rate"]),
                 # Every field of the frame travels with the command and is
                 # validated as a set before it runs (D-5). Without this the
                 # model reads whatever it happens to hold, one edit behind
@@ -334,7 +338,8 @@ class Heater(Model):
             sch.section(
                 "Control Parameters",
                 *[sch.entry(params[name].label + ":", name, params[name])
-                  for name in self.FRAME_FIELDS if name != "setpoint"],
+                  for name in self.FRAME_FIELDS
+                  if name not in ("setpoint", "ramp_rate")],
                 sch.plot("Temperature over time", "series",
                          x_label="time (s)", y_label="temperature (°C)",
                          empty="No readings yet. The temperature plots here as it is reported."),

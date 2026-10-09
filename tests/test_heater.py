@@ -213,7 +213,7 @@ def test_a_payload_longer_than_the_firmware_buffer_is_refused(heater, port):
     """`receivedChars[32]` with a clamped index: a payload past 31 characters
     keeps overwriting the last slot, so the tail is silently lost and the
     offset the board parses is not the one that was sent."""
-    heater.setpoint, heater.ramp_rate = 123.456, 123.456
+    heater.setpoint, heater.ramp_rate = 123.456, 12.345   # ramp is bound 1-20 (2026-10-08)
     heater.p_term = heater.i_term = heater.d_term = 123.456
     heater.offset = 98.765
     with pytest.raises(Refused) as refusal:
