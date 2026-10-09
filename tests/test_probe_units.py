@@ -110,8 +110,10 @@ def test_position_reads_in_um_with_counts_beneath(stepper):
 @pytest.mark.schema
 def test_every_physical_entry_has_its_count_line_directly_under_it(stepper):
     pairs = {
-        "x_dist_um": ("x_dist", "um", "steps"), "y_dist_um": ("y_dist", "um", "steps"),
-        "z_dist_um": ("z_dist", "um", "steps"),
+        # a target's line is the steps it moves (step size x distance)
+        "x_dist_um": ("x_move_steps", "um", "steps"),
+        "y_dist_um": ("y_move_steps", "um", "steps"),
+        "z_dist_um": ("z_move_steps", "um", "steps"),
         "x_step_um": ("x_step", "um", "steps"), "y_step_um": ("y_step", "um", "steps"),
         "z_step_um": ("z_step", "um", "steps"),
         "full_speed_um_s": ("full_speed", "um/s", "steps/s"),
@@ -123,7 +125,7 @@ def test_every_physical_entry_has_its_count_line_directly_under_it(stepper):
         assert small["type"] == "readonly" and small["secondary"]
         assert small["model_attr"] == counts and small["unit"] == small_unit
     state = stepper.state["values"]
-    assert state["x_dist_um"] == "0.000" and state["x_dist"] == "0"
+    assert state["x_dist_um"] == "0.000" and state["x_move_steps"] == "0"
     assert state["full_speed_um_s"] == "250.000" and state["full_speed"] == "400"
     # no count entry and no percent dial is drawn any more
     entries = {e["model_attr"] for e in sch.elements(stepper.schema)
@@ -188,12 +190,12 @@ def test_a_physical_input_travels_with_the_step_command(stepper):
 def test_the_move_frame_is_byte_identical_to_the_count_route():
     a, port_a, _ = make_probe(StepperProbe)
     b, port_b, _ = make_probe(StepperProbe)
+    a.x_step_um, a.full_speed_um_s = 10, 500          # 16 counts per unit
     a.x_dist_um, a.y_dist_um, a.z_dist_um = 100, -50, 0.625
-    a.x_step_um, a.full_speed_um_s = 10, 500
-    b.x_dist, b.y_dist, b.z_dist = 160, -80, 1
     b.x_step, b.full_speed = 16, 800
+    b.x_dist, b.y_dist, b.z_dist = 10, -80, 1         # 10 x 16 counts = 100 um
     assert a._frame_bytes(a._frame()) == b._frame_bytes(b._frame())
-    assert a._frame_bytes(a._frame()) == b"16,1,1,0,800.0,0,0,160.0,-80.0,1.0,0,0\n"
+    assert a._frame_bytes(a._frame()) == b"16,1,1,0,800.0,0,0,10.0,-80.0,1.0,0,0\n"
     for p in (a, b):
         p._stop_threads()
 
@@ -221,3 +223,52 @@ def test_stored_params_and_their_names_are_unchanged(stepper):
     assert StepperProbe.PARAMS["full_speed"].unit == "steps/s"
     assert stepper._defaults().get("x_dist") == 0
     assert not {n for n in stepper._defaults() if n.endswith(("_um", "_um_s"))}
+
+
+# -- the board moves step size x distance (stepper_firmware.ino: x_steps =
+# XAXIS_SIZE * XAXIS_DIST). The um target is the distance the probe MOVES. --
+@pytest.mark.params
+@pytest.mark.parametrize("step, um, dist", [
+    (1, 100, 160), (4, 100, 40), (16, 100, 10),
+    (4, 101, 40),           # 40.4 units of 2.5 um: the nearest whole unit
+    (4, 1.25, 1),           # exactly half a unit: away from zero
+    (4, -100, -40),
+])
+def test_the_target_is_the_distance_the_board_moves(stepper, step, um, dist):
+    stepper.x_step = step
+    stepper.x_dist_um = um
+    assert stepper.x_dist == dist
+    moved_counts = stepper.x_step * stepper.x_dist        # what the firmware moves
+    assert stepper.x_dist_um == pytest.approx(moved_counts * UM)
+
+
+@pytest.mark.params
+def test_changing_the_step_size_keeps_the_target_distance(stepper):
+    """A target typed in um stays that distance when the step size changes:
+    the probe never moves 4x farther because a tier-2 setting changed."""
+    stepper.x_dist_um = 100                  # step 1: 160 units of 0.625 um
+    assert (stepper.x_step, stepper.x_dist) == (1, 160)
+    stepper.x_step_um = 2.5                  # step 4
+    assert (stepper.x_step, stepper.x_dist) == (4, 40)
+    assert stepper.x_dist_um == pytest.approx(100)
+    stepper.x_step_um = 0.625                # back to step 1
+    assert (stepper.x_step, stepper.x_dist) == (1, 160)
+
+
+@pytest.mark.schema
+def test_the_steps_line_under_a_target_is_the_steps_it_moves(stepper):
+    stepper.x_step = 4
+    stepper.x_dist_um = 100
+    small = after(stepper, "x_dist_um")
+    assert small["secondary"] and small["unit"] == "steps"
+    assert stepper.state["values"][small["model_attr"]] == "160"
+
+
+@pytest.mark.params
+def test_a_step_with_a_step_size_moves_the_typed_distance(stepper):
+    stepper.x_step = 4
+    result = stepper.run("step", inputs={"x_dist_um": "100", "y_dist_um": "0",
+                                         "z_dist_um": "0", "full_speed_um_s": "500"})
+    assert result.is_ok, result
+    frame = stepper._frame()
+    assert frame["x_step_size"] * frame["x_dist"] * UM == pytest.approx(100)

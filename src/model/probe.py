@@ -1472,11 +1472,11 @@ del _name, _steps, _pct
 STEPPER_UM_PER_COUNT = UM_PER_COUNT["stepper"]
 
 
-def um_to_counts(um):
-    """Whole counts for a length in um: the nearest, exact halves away from
-    zero (0.9375 um is 1.5 counts -> 2; -0.9375 -> -2). The ratio is rounded
-    to 9 places first so float noise never decides a half."""
-    scaled = round(abs(float(um)) / STEPPER_UM_PER_COUNT, 9)
+def um_to_counts(um, um_per_unit=STEPPER_UM_PER_COUNT):
+    """Whole units for a length in um (counts by default): the nearest, exact
+    halves away from zero (0.9375 um is 1.5 counts -> 2; -0.9375 -> -2). The
+    ratio is rounded to 9 places first so float noise never decides a half."""
+    scaled = round(abs(float(um)) / um_per_unit, 9)
     counts = int(math.floor(scaled + 0.5))
     return -counts if float(um) < 0 else counts
 
@@ -1509,6 +1509,65 @@ def _um_property(counts_name, view_name):
         setattr(self, counts_name, counts)
 
     return property(getter, setter)
+
+
+def _stored(self, name):
+    return int(self.PARAMS[name].coerce(self._param_store.get(name)))
+
+
+def _dist_um_property(axis):
+    """The target distance in um: what the probe MOVES. The board moves
+    step size x distance counts (stepper_firmware.ino: x_steps =
+    XAXIS_SIZE * XAXIS_DIST), so the stored distance is in units of the
+    axis's step size, and the view converts through both. Typing um stores
+    the nearest whole number of step-size units through the count's own
+    gated setter; the getter reports the achieved length."""
+    dist, step, view = f"{axis}_dist", f"{axis}_step", f"{axis}_dist_um"
+
+    def getter(self):
+        return counts_to_um(_stored(self, dist) * _stored(self, step))
+
+    def setter(self, value):
+        ok, um = self.PARAMS[view].parse(value)
+        if not ok:
+            self._refuse(um)
+        units = um_to_counts(um, _stored(self, step) * STEPPER_UM_PER_COUNT)
+        if units != _stored(self, dist):
+            setattr(self, dist, units)
+
+    return property(getter, setter)
+
+
+def _step_um_property(axis):
+    """The step size in um (one D-pad press; the Step frame's multiplier).
+    A new step size keeps the um target: the distance is re-expressed in
+    the new units, so a tier-2 change never makes the next Step move
+    farther than the target the operator reads."""
+    dist, step, view = f"{axis}_dist", f"{axis}_step", f"{axis}_step_um"
+
+    def getter(self):
+        return counts_to_um(_stored(self, step))
+
+    def setter(self, value):
+        ok, um = self.PARAMS[view].parse(value)
+        if not ok:
+            self._refuse(um)
+        counts = um_to_counts(um)
+        old = _stored(self, step)
+        if counts == old:
+            return
+        target_um = _stored(self, dist) * old * STEPPER_UM_PER_COUNT
+        setattr(self, step, counts)
+        units = um_to_counts(target_um, counts * STEPPER_UM_PER_COUNT)
+        if units != _stored(self, dist):
+            setattr(self, dist, units)
+
+    return property(getter, setter)
+
+
+def _move_steps_property(axis):
+    """The counts a Step moves this axis: step size x distance."""
+    return property(lambda self: _stored(self, f"{axis}_dist") * _stored(self, f"{axis}_step"))
 
 
 def _position_um_property(index):
@@ -1597,7 +1656,7 @@ class StepperProbe(Probe):
             sch.section(
                 "Autonomous",
                 *[e for a in "xyz" for e in physical(
-                    f"{a}_dist_um", f"{a}_dist", _MOTION_GATE)],
+                    f"{a}_dist_um", f"{a}_move_steps", _MOTION_GATE)],
                 *physical("full_speed_um_s", "full_speed", _MOTION_GATE,
                           "steps/s", "steps/s", slider=self.SPEED_SLIDER),
                 sch.toggle("Autonomous:", "is_auto", "set_mode",
@@ -1649,13 +1708,13 @@ class StepperProbe(Probe):
 
 for _axis, _index in (("x", 0), ("y", 1), ("z", 2)):
     setattr(StepperProbe, f"position_{_axis}_um", _position_um_property(_index))
-    for _kind in ("step", "dist"):
-        setattr(StepperProbe, f"{_axis}_{_kind}_um",
-                _um_property(f"{_axis}_{_kind}", f"{_axis}_{_kind}_um"))
+    setattr(StepperProbe, f"{_axis}_dist_um", _dist_um_property(_axis))
+    setattr(StepperProbe, f"{_axis}_step_um", _step_um_property(_axis))
+    setattr(StepperProbe, f"{_axis}_move_steps", _move_steps_property(_axis))
 for _counts, _view in (("full_speed", "full_speed_um_s"),
                        ("man_full_speed", "man_full_speed_um_s")):
     setattr(StepperProbe, _view, _um_property(_counts, _view))
-del _axis, _index, _kind, _counts, _view
+del _axis, _index, _counts, _view
 
 
 class DCProbe(Probe):
