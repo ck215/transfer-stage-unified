@@ -453,6 +453,51 @@ def test_a_disable_that_does_not_reach_an_axis_faults(make):
     assert stage.mode is StageMode.FAULT and "axis Z" in stage.fault
 
 
+def test_leaving_manual_while_an_axis_hangs_faults_instead_of_reporting_disabled(make):
+    """R-5: Y's loop hangs in MANUAL (no reply, no P line, while its step ISR
+    keeps the jog going) and the operator leaves the mode inside the 1 s
+    silence window, before the watchdog trips. The DISABLE lands in Y's USB
+    buffer and is never read, so nothing confirms Y is off: the stage is in
+    FAULT, never a clean DISABLED, and the operator is told it may still be
+    moving. X and Z are disabled all the same."""
+    pad = FakePad(axis_y=0.5)
+    stage = armed(make(gamepad=pad), "manual")
+    assert wait_for(lambda: received(stage, "Y", "JOGV 0.2500"))
+    sim(stage, "Y").silent = True
+    with Collected() as seen:
+        stage.run("set_mode", None, ("disabled",))
+    assert stage.mode is StageMode.FAULT and stage.is_energized
+    assert "axis Y" in stage.fault and "may still be moving" in stage.fault
+    assert "not answering" in seen.text("error")
+    for axis in ("X", "Z"):
+        assert received(stage, axis, "DISABLE") and not sim(stage, axis).enabled
+    # FAULT refuses every mode until a stop; the stop lands on all three.
+    assert stage.run("set_mode", None, ("autonomous",)).is_refused
+    stage.estop()
+    assert not stage.is_faulted and stage.mode is StageMode.DISABLED
+
+
+def test_leaving_a_mode_with_an_axis_already_silent_faults(make):
+    """R-5: an axis whose P stream has been silent past BOARD_SILENT_AFTER
+    is not answering, whatever it says to the DISABLE. IDLE is not watched
+    by the watchdog, so the mode exit is the check that sees it: FAULT with
+    the not-answering wording, and the DISABLE still goes to all three."""
+    stage = make()
+    stage.BOARD_SILENT_AFTER = 0.3
+    assert stage.enable() == "idle"
+    sim(stage, "Z").stream_hz = 0        # no P line; commands still answered
+    assert wait_for(lambda: stage.board_silent, 2.0)
+    with Collected() as seen:
+        stage.run("set_mode", None, ("disabled",))
+    assert stage.mode is StageMode.FAULT and stage.is_energized
+    assert "axis Z" in stage.fault and "may still be moving" in stage.fault
+    assert "has not reported its position" in stage.fault
+    assert seen.of("error")
+    for axis in AXES:
+        assert received(stage, axis, "DISABLE"), axis
+        assert not sim(stage, axis).enabled
+
+
 def test_a_stop_landing_during_mode_entry_backs_the_entry_out(make):
     stage = make()
     real = stage.axes["Z"].request

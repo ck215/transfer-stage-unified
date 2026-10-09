@@ -428,17 +428,49 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         return True
 
     def _deenergize(self, reason):
-        """DISABLE on all three, each on its own worker. A disable that did
-        not reach an axis leaves the stage in FAULT: its motor may be live."""
+        """DISABLE on all three, each on its own worker, then every axis must
+        confirm it. The stage reads DISABLED only when all three did; else it
+        is in FAULT, since a motor may still be powered, or moving:
+
+        * a disable that did not reach an axis (the write failed);
+        * an axis that was already not answering (no P line for
+          BOARD_SILENT_AFTER), read before the writes as `_halt_hardware`
+          reads it: its stream is what would show the disable took;
+        * an axis that does not confirm within its reply budget, neither
+          `OK DISABLE` nor a P line with `en=0` after the write (R-5: a hung
+          loop leaves the DISABLE unread in its USB buffer, and inside the
+          1 s silence window nothing else would notice)."""
         previous = self._mode
+        silent = self._silent_axes()             # read before the writes
         self._clear_motion_state()
         self._stop_interlock()
+        marks = {axis: self.axes[axis].last_seq for axis in AXES}
         landed = self._broadcast("DISABLE")
         missed = [axis for axis in AXES if not landed[axis]]
+        unconfirmed = self._unconfirmed_disables(
+            marks, [axis for axis in AXES if landed[axis] and axis not in silent])
+        problems = []
         if missed:
-            self._enter_fault(f"The disable did not reach axis {_and(missed)}, so "
-                              "its motor may still be powered. Treat the stage as "
-                              "live and check the connection.")
+            problems.append(f"The disable did not reach axis {_and(missed)}, so its "
+                            "motor may still be powered.")
+        if silent or unconfirmed:
+            quiet = []
+            if silent:
+                quiet.append(f"axis {_and(sorted(silent))} has not reported its "
+                             f"position for {max(silent.values()):.1f} s")
+            if unconfirmed:
+                quiet.append(f"axis {_and(unconfirmed)} did not confirm it")
+            problems.append(
+                f"The disable was sent to the {self.NAME}, but {' and '.join(quiet)}. "
+                "The board is not answering, so nothing confirms the stop and it "
+                "may still be moving. Cut its power or reset the board.")
+        if problems:
+            events.debug("Disable Not Confirmed", f"missed={missed} silent="
+                         f"{sorted(silent)} unconfirmed={unconfirmed} ({reason})",
+                         source=self.NAME)
+            self._enter_fault(" ".join(problems) + " Treat the stage as live and "
+                              "check the connection; a confirmed stop clears the "
+                              "fault.")
             return self._mode.value
         self._mode = StageMode.DISABLED
         self._clear_fault()
@@ -446,6 +478,36 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         events.debug("Mode", f"{previous.value} -> disabled ({reason}) at "
                      f"{self.position}", source=self.NAME)
         return StageMode.DISABLED.value
+
+    def _unconfirmed_disables(self, marks, axes):
+        """Of `axes`, the ones that have not confirmed a DISABLE written after
+        `marks` ({axis: link.last_seq before the write}). Reads the links
+        meanwhile; waits at most each link's reply budget (a healthy board
+        answers in milliseconds, so only a board that is not answering
+        costs the wait)."""
+        pending = list(axes)
+        if not pending:
+            return []
+        deadline = time.monotonic() + max(self.axes[a].REPLY_TIMEOUT for a in pending)
+        while True:
+            for axis in list(pending):
+                link = self.axes[axis]
+                self._poll(link, blocking=False)
+                if self._disable_confirmed(link, marks[axis]):
+                    pending.remove(axis)
+            if not pending or time.monotonic() >= deadline:
+                return pending
+            time.sleep(0.005)
+
+    @staticmethod
+    def _disable_confirmed(link, mark):
+        """The board answered `OK DISABLE`, or reported `en=0`, after `mark`."""
+        reply = link.last_reply("DISABLE")
+        if reply is not None and reply.ok and reply.seq > mark:
+            return True
+        seq = link.p_seq             # the sequence first: `p` is at least as new
+        p = link.p
+        return p is not None and seq > mark and not p.get("en")
 
     def _enter_fault(self, reason):
         previous = self._mode
