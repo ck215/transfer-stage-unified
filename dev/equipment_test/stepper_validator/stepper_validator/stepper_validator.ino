@@ -57,10 +57,19 @@ const float    LIMIT_SEEK_SPEED_MM = 1.0f; // TEST LIMITS search speed
 const float    LIMIT_SEEK_MM    = 30.0f;   // TEST LIMITS first search reaches this far from the start (just past half the 50 mm travel)
 const float    LIMIT_MARGIN_MM  = 5.0f;    // Second search: twice the distance to the first switch plus this, for an off-centre start
 const float    LIMIT_BACKOFF_MM = 1.0f;    // Back-off after each trip; the switch must release within it
+// Parked on a switch (pressed with its end not yet confirmed, e.g. at power-up): only a dead-man JOG may move, at this
+// speed at most, and only within PARKED_TRAVEL_MM of where the switch was found pressed (README, limit switches).
+const float    PARKED_JOG_SPEED_MM = 0.1f; // Jog speed cap while parked, mm/s (the station firmware's HOME slow speed)
+const float    PARKED_TRAVEL_MM = 0.5f;    // PROVISIONAL, owner bench check: travel in one direction with the switch still pressed
+                                           // that means "this way drives into it" (halt, learn that end). Must exceed the switch's
+                                           // release travel from the hard stop (overtravel + differential travel), else a carriage
+                                           // parked against the hard stop learns the wrong end on its way off
 
 // Safety
 const unsigned long JOG_TIMEOUT_MS   = 250;     // JOG dead-man: motion stops if no JOG arrives within this time
 const unsigned long HOST_TIMEOUT_MS  = 2500;    // No line for this long stops motion/tests. Chrome throttles hidden-tab timers to ~1 Hz, so 1000 ms aborted tests on tab switch; a closed page/port still ESTOPs at once via the DTR guard
+const unsigned long HOST_SILENT_OFF_MS = 10000; // After EVT FAULT host-timeout stops the axis, outputs off if the host stays silent
+                                                // this much longer (EVT FAULT host-timeout-disabled; ENABLE needed again)
 const unsigned long TEST_TIME_LIMIT_MS = 120000; // Floor of each TEST's time limit; a test that plans longer gets 1.5 x its planned time + 10 s
 const unsigned long POLL_ACTIVE_MS   = 50;      // Driver status poll period while moving/testing; lower = finer fault catch, more UART jitter
 const unsigned long POLL_IDLE_MS     = 250;     // Driver status poll period while idle
@@ -101,13 +110,28 @@ IntervalTimer stepTimer;
 
 // ---- stage sensors: limit interlock and home edges, sampled in the step ISR -------
 // A tripped limit stops the pulses within one ISR tick, even while loop() is blocked in a UART read. A limit stops
-// motion only toward its own end; the firmware learns which end that is the first time the switch trips while
-// moving, so LS1/LS2 need no fixed assignment. A switch tripped with its end not yet learned (stage parked on it at
-// power-up) does not stop motion: the command layer then allows only a dead-man JOG to move off it.
+// motion only toward its own end, so LS1/LS2 need no fixed assignment; the ISR learns each switch's end from the
+// first filtered change it sees while the axis moves in dir (review R-4: a re-trip in the release chatter of a switch
+// being left must never teach its end):
+//  - it releases: the carriage left it moving dir, so it guards -dir;
+//  - it trips, never having read pressed with its end unconfirmed: the carriage reached it from clear, so it guards dir;
+//  - it trips again after reading pressed with its end unconfirmed (parked on it, or a release at rest): that may be
+//    release chatter, so it halts the pulses and teaches nothing.
+// While a switch is "parked" (pressed, end not confirmed by one of the first two) the command layer allows only a slow
+// dead-man JOG, and the ISR bounds the travel to PARKED_TRAVEL_MM either way from where it was found pressed: running
+// out of that window still pressed means this way drives into it, so the ISR halts and learns that end (provisional
+// until the switch releases); running out of it the other way too halts and confines the axis.
+// Same logic as firmware/xyz_stage_axis (station); keep the two in step.
 static volatile uint8_t s_level[3];             // filtered pin levels: LS1, LS2, HOME
 static uint8_t          s_count[3];             // filter counters (ISR only)
 static volatile bool    s_limitsNc = LIMITS_NC;
 static volatile int8_t  s_lsEnd[2];             // end each limit guards: +1, -1, or 0 = not learned
+static volatile uint8_t s_lsFirm;               // bit i: s_lsEnd[i] came from a release or a trip from clear while moving
+static volatile uint8_t s_lsSeen;               // bit i: switch i has read pressed with its end not firm
+static volatile long    s_lsLo[2], s_lsHi[2];   // switch i parked: the travel window, in steps (moves with the origin)
+static volatile long    s_parkSteps;            // PARKED_TRAVEL_MM in steps at the current resolution
+static volatile uint8_t s_lsTravel;             // bit i: the travel window taught switch i's end; reported with the halt
+static volatile uint8_t s_lsBoth;               // bit i: the window ran out both ways with switch i pressed
 static volatile uint8_t s_lsHit;                // bit i: limit i halted motion; loop() reports and clears it
 static volatile long    s_lsHitPos[2];
 static const uint8_t    HOME_EDGES = 8;         // ring of home edges (position, new level) for loop() to report
@@ -119,33 +143,42 @@ static inline bool trippedLevel(uint8_t level) { return s_limitsNc ? level == HI
 
 static void stepIsr() {
   const uint8_t raw[3] = { (uint8_t)digitalReadFast(LS1_PIN), (uint8_t)digitalReadFast(LS2_PIN), (uint8_t)digitalReadFast(HOME_PIN) };
-  uint8_t newTrip = 0;
+  uint8_t newTrip = 0, newClear = 0;
   for (uint8_t i = 0; i < 3; i++) {
     if (raw[i] == s_level[i]) { s_count[i] = 0; continue; }
     if (++s_count[i] < SENSOR_FILTER_SAMPLES) continue;
     s_count[i] = 0;
     s_level[i] = raw[i];
-    if (i < 2) { if (trippedLevel(raw[i])) newTrip |= 1 << i; }
+    if (i < 2) { if (trippedLevel(raw[i])) newTrip |= 1 << i; else newClear |= 1 << i; }
     else {
       uint8_t next = (s_homeHead + 1) % HOME_EDGES;
       if (next != s_homeTail) { s_homeEdgePos[s_homeHead] = stepper.currentPosition(); s_homeEdgeLvl[s_homeHead] = raw[i]; s_homeHead = next; }
     }
   }
-  long togo = stepper.distanceToGo();
-  if (togo != 0) {
-    int8_t dir = togo > 0 ? 1 : -1;
-    bool t0 = trippedLevel(s_level[0]), t1 = trippedLevel(s_level[1]);
-    bool halt = t0 && t1;                         // both at once: wiring fault or the wrong LIMITS NC|NO
-    for (uint8_t i = 0; i < 2; i++) {
-      if (!(i ? t1 : t0)) continue;
-      if ((newTrip & (1 << i)) && s_lsEnd[i] == 0) s_lsEnd[i] = dir;   // learn this switch's end on its first trip while moving
-      if (s_lsEnd[i] == dir) halt = true;
+  long p = stepper.currentPosition(), togo = stepper.distanceToGo();
+  int8_t dir = togo > 0 ? 1 : togo < 0 ? -1 : 0;    // 0: at rest (nothing to stop, and no direction to learn from)
+  const bool t[2] = { trippedLevel(s_level[0]), trippedLevel(s_level[1]) };
+  bool halt = dir != 0 && t[0] && t[1];           // both at once: wiring fault or the wrong LIMITS NC|NO
+  for (uint8_t i = 0; i < 2; i++) {
+    const uint8_t b = 1 << i;
+    if (!(s_lsFirm & b)) {
+      if (dir != 0 && (newClear & b)) { s_lsEnd[i] = -dir; s_lsFirm |= b; }   // left it: guards -dir
+      else if (dir != 0 && (newTrip & b) && !(s_lsSeen & b) && s_lsEnd[i] == 0) { s_lsEnd[i] = dir; s_lsFirm |= b; }
+      else if (newTrip & b) {                     // pressed again, end not firm (maybe chatter): stop, learn nothing,
+        s_lsLo[i] = p - s_parkSteps; s_lsHi[i] = p + s_parkSteps;   // and count the parked travel from here
+        if (dir != 0) halt = true;
+      } else if (t[i] && dir != 0 && (dir > 0 ? p >= s_lsHi[i] : p <= s_lsLo[i])) {   // parked travel spent, still pressed
+        halt = true;
+        if (s_lsEnd[i] == 0) { s_lsEnd[i] = dir; s_lsTravel |= b; }   // this way drives into it
+        else if (s_lsEnd[i] != dir) s_lsBoth |= b;                    // and the other way did too
+      }
+      if (t[i] && !(s_lsFirm & b)) s_lsSeen |= b;
     }
-    if (halt) {
-      long p = stepper.currentPosition();
-      stepper.setCurrentPosition(p);              // zero speed, target here
-      for (uint8_t i = 0; i < 2; i++) if (i ? t1 : t0) { s_lsHit |= 1 << i; s_lsHitPos[i] = p; }
-    }
+    if (t[i] && dir != 0 && s_lsEnd[i] == dir) halt = true;
+  }
+  if (halt) {
+    stepper.setCurrentPosition(p);                // zero speed, target here
+    for (uint8_t i = 0; i < 2; i++) if (t[i]) { s_lsHit |= 1 << i; s_lsHitPos[i] = p; }
   }
   stepper.run();
 }
@@ -160,7 +193,22 @@ static void spMove(long d)              { IrqGuard g; stepper.move(d); }
 static void spStop()                    { IrqGuard g; stepper.stop(); }
 static void spSetMaxSpeed(float v)      { IrqGuard g; stepper.setMaxSpeed(v); }
 static void spSetAccel(float a)         { IrqGuard g; stepper.setAcceleration(a); }
-static void spSetPos(long p)            { IrqGuard g; stepper.setCurrentPosition(p); }
+static void spSetPos(long p) {          // a new origin (ZERO): the parked travel windows keep their carriage positions
+  IrqGuard g;
+  long d = p - stepper.currentPosition();
+  stepper.setCurrentPosition(p);
+  for (uint8_t i = 0; i < 2; i++) { s_lsLo[i] += d; s_lsHi[i] += d; }
+}
+static long rescaled(long x, uint16_t n, uint16_t d) {   // x * n / d rounded half away from zero, as lround() would
+  long long v = (long long)x * n;
+  return (long)((v >= 0 ? v + d / 2 : v - d / 2) / d);
+}
+static void spRescale(uint16_t newMs, uint16_t oldMs, long parkSteps) {   // MICROSTEPS: the same carriage positions in new steps
+  IrqGuard g;
+  stepper.setCurrentPosition(rescaled(stepper.currentPosition(), newMs, oldMs));
+  for (uint8_t i = 0; i < 2; i++) { s_lsLo[i] = rescaled(s_lsLo[i], newMs, oldMs); s_lsHi[i] = rescaled(s_lsHi[i], newMs, oldMs); }
+  s_parkSteps = parkSteps;
+}
 static void spHalt()                    { IrqGuard g; stepper.setCurrentPosition(stepper.currentPosition()); }
 static long spPos()                     { IrqGuard g; return stepper.currentPosition(); }
 static long spTarget()                  { IrqGuard g; return stepper.targetPosition(); }
@@ -184,6 +232,7 @@ static uint32_t g_lastRxMs = 0;
 static uint8_t  g_bootVersion = 0;
 static bool     g_wasConnected = false;
 static bool     g_hostTimedOut = false;
+static uint32_t g_hostTimedOutMs = 0;           // when EVT FAULT host-timeout stopped the axis
 static uint32_t g_lastPollMs = 0;
 static uint8_t  g_zeroDrvCount = 0;
 static bool     g_applyPending = false;         // speed/accel changed while moving; applied once stopped (lowering
@@ -221,16 +270,28 @@ static void     setDriverMicrosteps(uint16_t ms) { driver.microsteps(ms == 1 ? 0
 static uint16_t readDriverMicrosteps()           { uint16_t ms = driver.microsteps(); return ms == 0 ? 1 : ms; }
 
 static bool lsTripped(uint8_t i) { return trippedLevel(s_level[i]); }
-// Why a move toward dir (+1/-1) is refused, or nullptr. Only a JOG may leave a switch whose end is not learned.
+// Parked: pressed, with its end not confirmed by a release or a trip from clear (see the stage-sensor comment).
+static bool lsParked(uint8_t i) { return lsTripped(i) && !(s_lsFirm & (1 << i)); }
+static bool anyParked()         { return lsParked(0) || lsParked(1); }
+// Why a move toward dir (+1/-1) is refused, or nullptr. Only a JOG may move while a switch is parked.
 static const char *limitBlock(int dir, bool jog) {
   bool t0 = lsTripped(0), t1 = lsTripped(1);
   if (t0 && t1) return "limits-both-tripped:check-wiring-or-LIMITS-NC|NO";
   for (uint8_t i = 0; i < 2; i++) {
     if (!(i ? t1 : t0)) continue;
     if (s_lsEnd[i] == dir) return i ? "limit-ls2" : "limit-ls1";
-    if (s_lsEnd[i] == 0 && !jog) return i ? "limit-ls2-end-unknown:jog-off-it" : "limit-ls1-end-unknown:jog-off-it";
+    if (!lsParked(i)) continue;
+    if (!jog) return i ? "limit-ls2-end-unknown:jog-off-it" : "limit-ls1-end-unknown:jog-off-it";
+    long p = spPos();
+    if (dir > 0 ? p >= s_lsHi[i] : p <= s_lsLo[i])   // the parked travel is spent this way too
+      return i ? "limit-ls2-pressed-both-ways:check-switch" : "limit-ls1-pressed-both-ways:check-switch";
   }
   return nullptr;
+}
+static float jogCapMm(float mm) {               // a jog's speed (mm/s, positive), capped while a switch is parked
+  if (!anyParked()) return mm;
+  float cap = PARKED_JOG_SPEED_MM < maxSpeedMm() ? PARKED_JOG_SPEED_MM : maxSpeedMm();
+  return mm < cap ? mm : cap;
 }
 
 static void reply(const char *cmd, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -364,10 +425,16 @@ static void guards() {
   }
   // heartbeat: any received line counts
   if (!g_hostTimedOut && (isBusy() || g_test != T_NONE) && (now - g_lastRxMs) > HOST_TIMEOUT_MS) {
-    g_hostTimedOut = true;
+    g_hostTimedOut = true; g_hostTimedOutMs = now;
     softStop();
     evt("FAULT host-timeout");
     testAbort("host-timeout");
+  }
+  // still silent HOST_SILENT_OFF_MS after that stop (any line clears g_hostTimedOut): outputs off, ENABLE needed again
+  if (g_hostTimedOut && g_enabled && (now - g_hostTimedOutMs) >= HOST_SILENT_OFF_MS) {
+    estop();
+    testAbort("host-timeout");
+    evt("FAULT host-timeout-disabled silent_ms=%lu", (unsigned long)(now - g_lastRxMs));
   }
   // jog dead-man
   if (g_jog && (now - g_lastJogMs) > JOG_TIMEOUT_MS) softStop();
@@ -468,14 +535,21 @@ static void testBegin(uint8_t id) {
 
 // Report limit hits and home edges captured by the ISR. A hit ends any test except TEST LIMITS, which consumes it.
 static void serviceSensors() {
-  uint8_t hits; long hp[2];
-  { IrqGuard g; hits = s_lsHit; s_lsHit = 0; hp[0] = s_lsHitPos[0]; hp[1] = s_lsHitPos[1]; }
+  uint8_t hits, trav, both; long hp[2];
+  {
+    IrqGuard g;
+    hits = s_lsHit; trav = s_lsTravel; both = s_lsBoth; s_lsHit = s_lsTravel = s_lsBoth = 0;
+    hp[0] = s_lsHitPos[0]; hp[1] = s_lsHitPos[1];
+  }
   if (hits) {
     g_jog = false;
     for (uint8_t i = 0; i < 2; i++) {
       if (!(hits & (1 << i))) continue;
       t_hitPos[i] = hp[i];
-      evt("LIMIT ls%u tripped pos_mm=%.4f end=%+d", i + 1, (double)toMm(hp[i]), s_lsEnd[i]);
+      char why[48] = "";                        // how this halt came about, when it was not a plain trip
+      if (trav & (1 << i)) snprintf(why, sizeof why, " learned=travel travel_mm=%.3f", (double)PARKED_TRAVEL_MM);
+      else if (both & (1 << i)) snprintf(why, sizeof why, " pressed_both_ways=1 travel_mm=%.3f", (double)PARKED_TRAVEL_MM);
+      evt("LIMIT ls%u tripped pos_mm=%.4f end=%+d%s", i + 1, (double)toMm(hp[i]), s_lsEnd[i], why);
     }
     if (g_test == T_LIMITS) t_lsHits |= hits;
     else if (g_test != T_NONE) testAbort("limit");
@@ -497,6 +571,7 @@ static void testStep() {
   uint32_t now = millis();
   if (now - t_start > t_limitMs) { testAbort("time-limit"); return; }
   if (s_lsHit) return;                  // a limit just halted the motor: serviceSensors() hands it over first, next pass
+  if (g_test != T_UART && anyParked()) { testAbort("limit-end-unknown"); return; }   // only a slow jog may move now
   bool fresh = g_newSample;
   g_newSample = false;
 
@@ -771,11 +846,11 @@ static void handleLine(char *line) {
     if (driver.version() != EXPECTED_VERSION) { err("MICROSTEPS", "driver-uart-not-ok"); return; }   // the read-back below needs it
     // The rotor does not move when the resolution changes (the driver keeps its microstep counter), so rescale the
     // step count to keep pos_mm true; a coarser setting rounds it to the nearest new step.
-    long oldPos = spPos(); uint16_t oldMs = g_microsteps;
+    uint16_t oldMs = g_microsteps;
     setDriverMicrosteps((uint16_t)iv);
     if (readDriverMicrosteps() != iv) { setDriverMicrosteps(oldMs); err("MICROSTEPS", "driver-readback-mismatch"); return; }
     g_microsteps = (uint16_t)iv;
-    spSetPos(lround((double)oldPos * g_microsteps / oldMs));
+    spRescale(g_microsteps, oldMs, toSteps(PARKED_TRAVEL_MM));   // position and parked travel windows
     bool slowed = g_speedMm > maxSpeedMm();               // only the step-rate ceiling can bind, at fine resolutions
     if (slowed) g_speedMm = maxSpeedMm();
     applyMotion();
@@ -835,7 +910,12 @@ static void handleLine(char *line) {
     const char *why = limitBlock((int)iv, true);
     if (why) { softStop(); err("JOG", why); return; }
     bool fresh = !g_jog || !spRunning();                  // the host repeats JOG every 100 ms: only a new jog sets the ramp
-    if (fresh) { if (spRunning()) { err("JOG", "busy"); return; } applyMotion(); spMove(iv > 0 ? JOG_SPAN : -JOG_SPAN); }
+    if (fresh) {
+      if (spRunning()) { err("JOG", "busy"); return; }
+      applyMotion();
+      if (anyParked()) spSetMaxSpeed(jogCapMm(g_speedMm) * stepsPerMm());   // parked: slow for this whole jog
+      spMove(iv > 0 ? JOG_SPAN : -JOG_SPAN);
+    }
     else if ((spTarget() - spPos() > 0) != (iv > 0)) { softStop(); err("JOG", "reverse:release-first"); return; }
     g_jog = true; g_lastJogMs = millis();
     reply("JOG", "dir=%ld", iv);
@@ -884,7 +964,12 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "LIMITS")) {
     if (!a1 || (strcmp(a1, "NC") && strcmp(a1, "NO"))) { err("LIMITS", "bad-arg-NC|NO"); return; }
     if (isBusy() || g_test != T_NONE) { err("LIMITS", "busy"); return; }
-    { IrqGuard g; s_limitsNc = !strcmp(a1, "NC"); s_lsEnd[0] = s_lsEnd[1] = 0; }   // new meaning: forget the learned ends
+    {                                                     // new meaning: forget the learned ends; a switch pressed now is parked
+      IrqGuard g;
+      s_limitsNc = !strcmp(a1, "NC"); s_lsEnd[0] = s_lsEnd[1] = 0; s_lsFirm = s_lsSeen = 0;
+      long p = stepper.currentPosition();
+      for (uint8_t i = 0; i < 2; i++) { s_lsLo[i] = p - s_parkSteps; s_lsHi[i] = p + s_parkSteps; }
+    }
     reply("LIMITS", "limits=%s ls1=%d ls2=%d ends=forgotten", s_limitsNc ? "NC" : "NO", lsTripped(0), lsTripped(1));
   }
   else { err(cmd, "unknown-command"); }
@@ -910,6 +995,8 @@ void setup() {
   stepper.setMaxSpeed(g_speedMm * stepsPerMm());         // stepTimer is not running yet, so no guard needed
   stepper.setAcceleration(g_accelMm * stepsPerMm());
   stepper.setCurrentPosition(0);
+  s_parkSteps = toSteps(PARKED_TRAVEL_MM);               // a switch pressed at power-up is parked: its travel counts from here
+  for (uint8_t i = 0; i < 2; i++) { s_lsLo[i] = -s_parkSteps; s_lsHi[i] = s_parkSteps; }
   g_lastRxMs = millis();
   stepTimer.begin(stepIsr, 25);                          // start stepping last, after the stepper is configured
 }
