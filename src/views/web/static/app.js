@@ -5220,7 +5220,17 @@ class Dashboard {
       let pin = false;
       if (card.isOpened() && card.head && !card.hostName && !this.guestsOf(card.name).length) {
         const head = card.head.offsetHeight;
-        const tall = head + card.body.offsetHeight;
+        // Tier 1 as it would be unpinned: the pinned body adds vertical
+        // padding and a bottom border (CSS) that the unpinned one lacks, so
+        // a pinned card is measured less them. The decision then never
+        // depends on its own result (it flickered at the limit).
+        let bodyHeight = card.body.offsetHeight;
+        if (card.node.classList.contains('is-pinned')) {
+          const cs = getComputedStyle(card.body);
+          bodyHeight -= (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)
+            + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+        }
+        const tall = head + bodyHeight;
         pin = tall > 0 && tall <= room * 0.6;
         if (pin) {
           // The body's own negative margin takes the row gap back (CSS), so
