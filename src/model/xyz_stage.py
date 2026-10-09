@@ -949,10 +949,18 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             if distance:
                 share = max(abs(distance) / length * speed, self.AXIS_SPEED_FLOOR_UM_S)
                 lines[axis] = f"MOVE {distance / 1000:.4f} {share / 1000:.4f}"
-        replies = self._send_together(lines)
+        # R-8's class: each MOVE is gated inside its write lock, so a mode
+        # change or a stop between the checks above and the write cannot
+        # start an axis outside AUTO (where the watchdog is off).
+        replies = self._send_together(lines, abort_if=self._auto_motion_not_allowed)
         refused = [(axis, reply) for axis, reply in replies.items() if not reply.ok]
         if refused:
             self._broadcast("STOP")
+            aborted = [axis for axis, reply in refused if reply.aborted]
+            if aborted and not self._estop.is_set():
+                self._refuse(f"The Step was not sent to axis {_and(aborted)}: the "
+                             f"{self.NAME} left autonomous mode first, so all three "
+                             "axes were stopped.")
             axis, reply = refused[0]
             self._refuse(f"Axis {axis} refused the move ({reply.why}), so all three "
                          "axes were stopped.")
@@ -961,15 +969,21 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         events.debug("Step", f"{lines} at {speed} um/s", source=self.NAME)
         return list(self.position)
 
-    def _send_together(self, lines):
+    def _send_together(self, lines, *, abort_if):
         """{axis: line} written back to back, then every reply collected, so
-        the axes start within a write of each other. -> {axis: Reply}."""
+        the axes start within a write of each other. -> {axis: Reply}.
+        `abort_if` is checked inside each write lock; once it stops one
+        write, no later line is written (a Step is all three axes or none)."""
         waiting = {}
         for axis, line in lines.items():
             link = self.axes[axis]
+            if any(isinstance(found, axis_device.Reply) and found.aborted
+                   for found in waiting.values()):
+                waiting[axis] = axis_device.Reply(line.split()[0], False, aborted=True)
+                continue
             waiter = link.expect(line)
             try:
-                sent = link.send(line, abort_if=self._estop.is_set)
+                sent = link.send(line, abort_if=abort_if)
             except TransportError as exc:
                 link.cancel(waiter)
                 waiting[axis] = axis_device.Reply(waiter.command, False,
@@ -992,8 +1006,15 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         return name
 
     def _axis_busy(self, axis):
-        p = self.axes[axis].p
-        return bool(self._homing[axis] or self._jogging[axis] or (p and p.get("mv")))
+        """Homing, jogging, a Step's MOVE taken with no P line since, or the
+        P stream says it moves. Cheap and lock-free: it also runs inside a
+        write lock (`zero_axis`)."""
+        link = self.axes[axis]
+        p = link.p
+        seq = self._step_seq.get(axis)
+        in_flight = seq is not None and link.p_seq <= seq
+        return bool(self._homing[axis] or self._jogging[axis] or in_flight
+                    or (p and p.get("mv")))
 
     def zero_axis(self, axis, confirmed=False):
         """Zero here (ZERO): this axis reads 0 where it stands. A homed axis
@@ -1006,8 +1027,14 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             raise NeedsConfirm(f"Zero axis {axis} here?\n\nAxis {axis} is homed; "
                                "zeroing here replaces its home reference with this "
                                "position.", "zero_axis", args=(axis,))
-        reply = self._request(self.axes[axis], "ZERO", abort_if=self._estop.is_set)
+        # R-8's class: checked again inside the write lock, so a stop or a
+        # move that starts after the checks above never meets a ZERO.
+        reply = self._request(self.axes[axis], "ZERO", abort_if=lambda: (
+            self._estop.is_set() or self._axis_busy(axis)))
         if not reply.ok:
+            if reply.aborted and not self._estop.is_set():
+                self._refuse(f"Axis {axis} is moving. Wait for it to stop, then "
+                             "zero it.")
             self._refuse(f"Axis {axis} did not zero ({reply.why}).")
         events.info("Axis Zeroed", f"Axis {axis} of the {self.NAME} reads 0 here now.",
                     source=self.NAME)
@@ -1035,7 +1062,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         check and the write cannot start homing outside AUTO (where the
         watchdog is off). By default: latched, or not in AUTO."""
         if abort_if is None:
-            abort_if = self._home_not_allowed
+            abort_if = self._auto_motion_not_allowed
         self._homing[axis] = "starting"
         self._home_failed[axis] = None
         self._home_phase[axis] = "starting"
@@ -1060,7 +1087,9 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                          f"{outcome}.")
         return reply
 
-    def _home_not_allowed(self):
+    def _auto_motion_not_allowed(self):
+        """The in-lock gate of motion the host starts in AUTO (a HOME, a
+        Step's MOVEs): latched, or no longer in AUTO."""
         return self._estop.is_set() or self._mode is not StageMode.AUTO
 
     def home_all(self):

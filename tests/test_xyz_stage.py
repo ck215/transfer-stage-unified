@@ -658,6 +658,88 @@ def test_home_one_axis_never_writes_home_after_the_mode_changed(make):
     assert not sim(stage, "X").moving
 
 
+# -- a Step and a ZERO are gated inside the write lock too (R-8's class) -------------
+
+def _on_write(stage, axis, starts, action):
+    """Run `action` on `axis`'s link just before a payload starting with
+    `starts` takes the write lock: inside the window between the caller's
+    own check and the bytes going out."""
+    link = stage.axes[axis]
+    real = link.write
+
+    def write(payload, *, priority=False, abort_if=None):
+        if payload.startswith(starts):
+            action()
+        return real(payload, priority=priority, abort_if=abort_if)
+
+    link.write = write
+
+
+_LEAVE = {"idle": lambda stage: stage.set_mode("idle"),
+          "disabled": lambda stage: stage.set_mode("disabled"),
+          "latched": lambda stage: stage.estop()}
+
+
+@pytest.mark.parametrize("how", sorted(_LEAVE))
+def test_a_step_never_writes_move_once_the_stage_left_autonomous(make, how):
+    """Item 2: the stage leaves autonomous (or latches) between the Step's
+    own checks and its first MOVE write. The write's in-lock check must see
+    it: no axis gets a MOVE, nothing moves outside AUTO (where the watchdog
+    is off), and the Step is refused."""
+    stage = make()
+    _on_write(stage, "X", b"MOVE", lambda: _LEAVE[how](stage))
+    result = stage.run("step", {"x_dist": 300, "y_dist": 400, "z_dist": 100,
+                                "full_speed": 500})
+    assert result.is_refused, result
+    assert stage.mode is not StageMode.AUTO
+    for axis in AXES:
+        assert received(stage, axis, "MOVE") == [], axis
+        assert not sim(stage, axis).moving, axis
+    if how != "latched":
+        assert "left autonomous" in result.reason, result.reason
+
+
+def test_a_step_left_mid_write_sends_no_further_move_and_stops_what_started(make):
+    """Item 2: X's MOVE went out in AUTO; the operator leaves autonomous
+    before Y's. Y and Z never get theirs, and X is stopped: a Step is all
+    three axes or none."""
+    stage = make()
+    _on_write(stage, "Y", b"MOVE", lambda: stage.set_mode("idle"))
+    result = stage.run("step", {"x_dist": 2000, "y_dist": 2000, "z_dist": 2000,
+                                "full_speed": 500})
+    assert result.is_refused and "left autonomous" in result.reason, result
+    assert stage.mode is StageMode.IDLE
+    assert received(stage, "X", "MOVE")
+    assert received(stage, "Y", "MOVE") == [] and received(stage, "Z", "MOVE") == []
+    move_at = [t for t, line in sim(stage, "X").received if line.startswith("MOVE")][0]
+    assert [t for t in received_at(stage, "X", "STOP") if t > move_at]
+    assert wait_for(lambda: not sim(stage, "X").moving, 1.0)
+
+
+def test_zero_never_writes_zero_once_its_axis_started_moving(make):
+    """Item 2: a Step lands on X between zero_axis's own busy check and its
+    ZERO write. The write's in-lock check must see X's move in flight (its
+    MOVE taken, no P line since): no ZERO reaches a moving axis."""
+    stage = make()
+    assert stage.run("_commit", {"x_dist": 1000, "full_speed": 500}).is_ok
+    armed(stage)
+    _on_write(stage, "X", b"ZERO", stage.step)
+    result = stage.run("zero_axis", None, ("X",))
+    assert result.is_refused and "moving" in result.reason, result
+    assert received(stage, "X", "MOVE")
+    assert received(stage, "X", "ZERO") == []
+
+
+def test_zero_never_writes_zero_once_latched(make):
+    """Item 2, the latch half: a stop lands between the check and the ZERO
+    write; the ZERO is never written."""
+    stage = armed(make())
+    _on_write(stage, "Y", b"ZERO", stage.estop)
+    result = stage.run("zero_axis", None, ("Y",))
+    assert result.is_refused
+    assert received(stage, "Y", "ZERO") == []
+
+
 # == FEATURES ======================================================================
 
 # -- modes, parity with the Stepper Probe ------------------------------------------
