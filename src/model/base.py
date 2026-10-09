@@ -418,10 +418,10 @@ class Model(Panel):
             # when it has no loop to be stale about (an idle recorder).
             "age": (round(time.monotonic() - self._updated_at, 2)
                     if self._expects_heartbeat() else None),
-            "devices": {type(d).__name__: d.status for d in self.devices},
+            "devices": {self._device_key(d): d.status for d in self.devices},
             # MOD-5 / CON-6: which of those are real hardware links, as the
             # device declares it, so no view matches a class name.
-            "hardware_devices": [type(d).__name__ for d in self.devices
+            "hardware_devices": [self._device_key(d) for d in self.devices
                                  if getattr(d, "is_hardware", False)],
         })
         root = getattr(self, "output_root", None)
@@ -432,17 +432,33 @@ class Model(Panel):
             snapshot["link"] = link
         return snapshot
 
+    @staticmethod
+    def _device_key(device):
+        """The device's name in `state["devices"]`: its class name, unless it
+        declares a `state_key` (a model that owns several devices of one
+        class, such as one serial link per axis, names each)."""
+        return getattr(device, "state_key", None) or type(device).__name__
+
+    #: How bad each link status is, for a model with several ports: the
+    #: published status is the worst of them (one lost axis is a lost link).
+    _LINK_SEVERITY = {"verified": 0, "simulated": 0, "unverified": 1,
+                      "connecting": 2, "reconnecting": 3, "closed": 4, "lost": 5}
+
     def _link_state(self):
         """L3: `state["link"]` for a model that owns a SerialPort, else None.
         EXACTLY these keys (the views are coded against them): status,
-        losses, reconnects, dropped, stalls, stalled, last_loss."""
+        losses, reconnects, dropped, stalls, stalled, last_loss. With several
+        ports: the worst status, summed counts, the latest loss."""
         ports = self._link_ports()
         if not ports:
             return None
-        port = ports[0]
-        link = {"status": port.status, "losses": int(port.losses),
-                "reconnects": int(port.reconnects), "dropped": 0,
-                "stalls": 0, "stalled": False, "last_loss": port.last_loss}
+        worst = max(ports, key=lambda p: self._LINK_SEVERITY.get(p.status, 5))
+        losses = [p.last_loss for p in ports if p.last_loss]
+        link = {"status": worst.status,
+                "losses": sum(int(p.losses) for p in ports),
+                "reconnects": sum(int(p.reconnects) for p in ports),
+                "dropped": 0, "stalls": 0, "stalled": False,
+                "last_loss": max(losses) if losses else None}
         link.update(self._link_stream_state())
         return link
 

@@ -10,7 +10,7 @@ import time
 import pytest
 
 import schema as sch                                    # noqa: E402
-from controller.setup import MODEL_TYPES                # noqa: E402
+from controller.setup import MODEL_TYPES, resources_of  # noqa: E402
 from model.base import Model                            # noqa: E402
 from param import Param                                 # noqa: E402
 from result import NeedsConfirm, Result                 # noqa: E402
@@ -112,8 +112,12 @@ def model(request):
     if cls in (MinimalModel, PhasedModel):
         built = cls()
     else:
-        # Setup's exact call (setup.py:1024): the contract's constructor.
-        built = cls(port="SIM", gamepad=None, sim=True)
+        # Setup's call (model_from_config): sim=True and only the resources
+        # the class declares, every port* "SIM" and every gamepad* None, so a
+        # model with one port per axis is built the way Setup builds it.
+        resources = {name: ("SIM" if name.startswith("port") else None)
+                     for name in resources_of(cls)}
+        built = cls(sim=True, **resources)
     built.open()
     try:
         yield built
