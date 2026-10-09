@@ -1059,6 +1059,19 @@ function renderEntry(panel, element) {
   }
   if (element.min !== undefined && element.min !== null) input.min = String(element.min);
   if (element.max !== undefined && element.max !== null) input.max = String(element.max);
+  // The box is as wide as the widest value its Param allows: sign, the
+  // integer digits of the larger bound, and the decimals. No bounds, no
+  // claim: the stylesheet's width stands.
+  if (numeric) {
+    const bounds = [element.min, element.max].filter((b) => typeof b === 'number' && isFinite(b));
+    if (bounds.length) {
+      const digits = String(Math.floor(Math.max(...bounds.map(Math.abs)))).length;
+      const places = isInt ? 0 : (element.decimals === undefined ? 3 : element.decimals);
+      const signed = typeof element.min !== 'number' || element.min < 0;
+      const chars = (signed ? 1 : 0) + digits + (places ? places + 1 : 0);
+      input.style.setProperty('--entry-chars', String(chars));
+    }
+  }
   // `slider: [low, high]` (E, 2026-09-25): a range BESIDE the entry, never
   // instead of it. The range writes the entry and the entry writes the
   // range; a command still reads the ENTRY (gatherInputsFor), so what travels
@@ -2585,7 +2598,7 @@ class PanelCard {
     this.hostName = host.name;
     this.node.classList.add('is-hosted');
     for (const other of ['is-wide', 'is-pinned']) this.node.classList.remove(other);
-    this.node.style.removeProperty('--tile-rows');
+    for (const own of ['--tile-rows', '--tile-col', '--tile-at']) this.node.style.removeProperty(own);
     if (this.titleNode) this.titleNode.setAttribute('aria-level', '3');
     host.node.insertBefore(this.node, host.disclose2 || host.firstGuestTiers() || null);
     this.placeSections(true);
@@ -5137,6 +5150,44 @@ class Dashboard {
         + (parseFloat(own.borderBottomWidth) || 0);
       const rows = String(Math.max(1, Math.ceil((needed + gap - 0.5) / (row + gap))));
       if (node.style.getPropertyValue('--tile-rows') !== rows) node.style.setProperty('--tile-rows', rows);
+    }
+    this.packTiles(sheet);
+  }
+
+  /** Place the tiles in rail order with no holes: each takes the first free
+   *  spot, the highest row and then the leftmost column, that holds its
+   *  columns and rows. Plain grid auto-placement keeps one cursor, so a tall
+   *  tile in column one left a free slot that a tile placed after it never
+   *  came back to. The grid's own rows stay the unit. */
+  packTiles(sheet) {
+    const style = getComputedStyle(sheet);
+    const cols = Math.max(1, style.gridTemplateColumns.split(' ').length);
+    const wideSpan = Math.min(cols, parseInt(style.getPropertyValue('--tile-wide'), 10) || 2);
+    const used = [];   // used[row][col]: this cell of the grid is taken
+    const free = (row, col, span, rows) => {
+      for (let r = row; r < row + rows; r++) {
+        for (let c = col; c < col + span; c++) if (used[r] && used[r][c]) return false;
+      }
+      return true;
+    };
+    for (const node of sheet.children) {
+      if (!node.classList.contains('card') || node.classList.contains('is-hosted')
+          || !node.getClientRects().length) continue;
+      const rows = parseInt(node.style.getPropertyValue('--tile-rows'), 10) || 1;
+      const span = node.classList.contains('is-wide') ? wideSpan : 1;
+      let row = 0;
+      let col = 0;
+      search: for (;; row++) {
+        for (col = 0; col + span <= cols; col++) if (free(row, col, span, rows)) break search;
+      }
+      for (let r = row; r < row + rows; r++) {
+        used[r] = used[r] || [];
+        for (let c = col; c < col + span; c++) used[r][c] = true;
+      }
+      const at = String(row + 1);
+      const start = String(col + 1);
+      if (node.style.getPropertyValue('--tile-col') !== start) node.style.setProperty('--tile-col', start);
+      if (node.style.getPropertyValue('--tile-at') !== at) node.style.setProperty('--tile-at', at);
     }
   }
 
