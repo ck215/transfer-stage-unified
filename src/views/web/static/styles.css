@@ -815,6 +815,20 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .nav-dot.is-on { background: var(--trace); }
 
+/* The legend under the page list: the three marks with their words, in
+   the caption size, quiet (the dots carry the colour). */
+.nav-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0 var(--space-4);
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+.nav-legend[hidden] { display: none; }
+.nav-legend-item { display: inline-flex; align-items: center; gap: var(--space-2); }
+
 /* An error is a diamond, not a dot (UX audit 2026-10-07 #5): the three
    fills are all dark (grey/blue 1.13:1, grey/red 1.20:1 between them), so
    colour alone did not tell them apart. Each fill clears 3:1 on the rail
@@ -832,10 +846,18 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .rail-foot {
   margin-top: auto;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  justify-content: start;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-2) var(--space-3);
 }
+
+/* Tutorials and Setup side by side, Quit under them (it wrapped raggedly at
+   248 px, and at 200 px). */
+.rail-foot .text-key { grid-column: 1 / -1; justify-self: start; }
+
+.rail .nav-toggle { display: none; }
 
 /* -- the key family (Signature rule 2) ------------------------------------ */
 /* Every raised part is one family: a CAP face, a 1.5 px KEY_RIM outline
@@ -1003,6 +1025,11 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 .card > .disclosure[data-tier="2"] + .tier-well { margin-top: calc(var(--space-2) - var(--space-4)); }
 
 .card.is-opened { grid-column: 1 / -1; }
+
+/* A device page keeps a measure of about 75rem: its controls sat in the left
+   half of a 1600 px entry with empty sheet beyond (UX audit 2026-10-07 #13).
+   The Dashboard's tiles are not affected. */
+.sheet.is-device > .card.is-opened { max-width: 75rem; }
 
 /* -- the Dashboard's tiles (owner 2026-10-08) --------------------------- */
 /* Standard sizes, replacing K4's rows of three: a tile is one column of the
@@ -2678,6 +2705,30 @@ label.row-title[for] { cursor: pointer; }
   column-gap: var(--space-3);
 }
 
+/* A row with further ports (the XYZ Stage: Port, Port Y, Port Z) keeps one
+   Port column: the ports stack in it, each with its caption shown, since a
+   stack of three unlabelled dropdowns says nothing about which axis is
+   which. */
+.drawer .section-row:not(.section-span):not(.table-head) > .cell.has-extra-ports {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.drawer .section-row > .cell.has-extra-ports > .cell { display: contents; }
+.drawer .section-row:not(.section-span):not(.table-head) > .cell.has-extra-ports > .label {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+}
+.drawer .section-row > .cell.has-extra-ports > .label,
+.drawer .section-row > .cell.has-extra-ports > .cell > .label {
+  font-size: var(--t-cap);
+  color: var(--muted);
+}
+
 /* UX audit 2026-10-07: the name and status tracks never shrink under their
    longest word (at minmax(0, ...) a narrow window cut "Temperature
    Controller" to "Tempera" under the Port dropdown); a long name or status
@@ -3241,6 +3292,23 @@ label.row-title[for] { cursor: pointer; }
   }
 }
 
+/* Short screens (1366x768 is the daily bench monitor): with a stop line, a
+   lost device and the energized caution, the rail's foot fell below the fold
+   and the rail scrolled. The narrow stop and a tighter plate and gaps keep
+   Tutorials, Setup and Quit in view (UX audit 2026-10-07 #12). */
+@media (max-height: 50rem) and (min-width: 40.0625rem) {
+  :root {
+    --stop-d: var(--stop-diameter-narrow);
+    --stop-c: var(--stop-collar-narrow);
+    --stop-k: var(--stop-key-narrow);
+  }
+  .mushroom, .mushroom.is-latched { font-size: var(--t-stop-narrow); }
+  .rail { gap: var(--space-3); padding: var(--space-4) var(--space-5) var(--space-4); }
+  .plate { gap: var(--space-2); padding: var(--space-3) var(--space-4); }
+  .rail-control { min-height: var(--hit-panel); }
+  .rail-foot .rail-control { min-height: var(--hit); }
+}
+
 /* Under 760 px the entries stack in one column. */
 @media (max-width: 47.5rem) {
   .sheet.is-overview > .card { padding-right: var(--space-5); padding-left: var(--space-5); }
@@ -3274,8 +3342,37 @@ label.row-title[for] { cursor: pointer; }
   .stop-hint[hidden] { display: none; }
   .mushroom, .mushroom.is-latched { font-size: var(--t-sm); }
   .mushroom-glyph { width: var(--glyph); height: var(--glyph); }
-  .rail-foot { order: 3; margin-top: 0; flex: 1 0 100%; justify-content: flex-end; }
-  .model-nav { order: 4; flex: 1 0 100%; flex-direction: row; flex-wrap: wrap; }
+  .rail-foot { order: 3; margin-top: 0; flex: 1 0 100%; grid-template-columns: repeat(3, max-content); justify-content: end; }
+  .rail-foot .text-key { grid-column: auto; }
+  /* The page list folds behind one key that names the page shown; a fault
+     is marked on the key. Open, the list is as before. */
+  .rail .nav-toggle { display: inline-flex; order: 4; flex: 1 0 100%; justify-content: flex-start; }
+  .rail .nav-toggle[hidden] { display: none; }
+  .nav-toggle::after {
+    content: "";
+    margin-left: auto;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+  }
+  .rail.is-nav-open .nav-toggle::after { transform: translateY(2px) rotate(225deg); }
+  .nav-toggle.has-error .nav-toggle-words::before {
+    content: "";
+    display: inline-block;
+    width: 0.5625rem;
+    height: 0.5625rem;
+    margin-right: var(--space-3);
+    border-radius: 1px;
+    transform: rotate(45deg);
+    background: var(--signal);
+  }
+  .model-nav, .nav-legend { display: none; }
+  .rail.has-marks .nav-toggle { display: none; }
+  .rail.has-marks .model-nav, .rail.is-nav-open .model-nav { display: flex; order: 5; flex: 1 0 100%; flex-direction: row; flex-wrap: wrap; }
+  .rail.has-marks .nav-legend:not([hidden]), .rail.is-nav-open .nav-legend:not([hidden]) { display: flex; order: 6; flex: 1 0 100%; }
+  .rail-alert { max-height: 7rem; overflow-y: auto; }
   .model-link { width: auto; white-space: nowrap; }
   .rail-alert, .rail-latched, .idle-lines, .rail-energized { flex: 1 0 100%; }
   .page { margin-left: 0; }
@@ -3407,8 +3504,6 @@ label.row-title[for] { cursor: pointer; }
    tray, never over the stop; tokens only. */
 .tutorial-panel[hidden], .tutorial-card[hidden], .tutorial-ring[hidden],
 .tutorial-hint[hidden], .tutorial-note[hidden] { display: none; }
-
-.rail-foot { flex-wrap: wrap; }
 
 .tutorial-panel {
   position: fixed;

@@ -696,12 +696,28 @@ function isCommandRow(section) {
     && !elements.some((e) => e.type === 'dropdown');
 }
 
+/** A row's further ports (the XYZ Stage's Port Y and Port Z): a dropdown
+ *  after the row's own Port. They are not columns of the table - every other
+ *  row has one port - so they sit under Port in the same cell (a six-column
+ *  row broke the five-track Setup grid: the Port Y and Port Z captions
+ *  headed Gamepad and Status, and the rows wrapped). */
+function isExtraPort(element) {
+  return Boolean(element && element.type === 'dropdown'
+    && /_port_[a-z0-9]+$/.test(element.model_attr || ''));
+}
+
+/** The elements of a data row that are columns: not internal, not a
+ *  further port. */
+function columnElements(section) {
+  return (section.elements || []).filter((e) => e.type !== 'internal' && !isExtraPort(e));
+}
+
 /** How many element columns the widest data row needs. */
 function rowColumnCount(sections) {
   let widest = 0;
   for (const section of (sections || [])) {
     if (!isRowSection(section) || isCommandRow(section)) continue;
-    const drawn = (section.elements || []).filter((e) => e.type !== 'internal');
+    const drawn = columnElements(section);
     if (drawn.length > widest) widest = drawn.length;
   }
   return widest;
@@ -994,6 +1010,10 @@ function renderReadonly(panel, element) {
       // the incoming commits, the address - is shown as the model gives it
       // (W2: "d66c462" had read "D66c462").
       if (isStatusLine) shown = sentence(shown);
+      // An environment variable's name is for the one who set it, not the
+      // operator reading Setup's Update row (UX audit 2026-10-08 #14); the
+      // sentence keeps its meaning without it.
+      if (panel.name === SETUP_NAME) shown = shown.replace(/\s*\(STATION_[A-Z0-9_]+\)/g, '');
       // Status by exception, tier 1 only: tiers 2 and 3 are where a normal
       // state is still read on purpose. A model's key reading (`rail: true`)
       // is never hidden: unknown is information, drawn "--" muted at the
@@ -2010,7 +2030,7 @@ function tableHead(sections, columns) {
   let widest = null;
   for (const section of (sections || [])) {
     if (!isRowSection(section) || isCommandRow(section)) continue;
-    const drawn = (section.elements || []).filter((e) => e.type !== 'internal');
+    const drawn = columnElements(section);
     if (drawn.length === columns) { widest = drawn; break; }
   }
   if (!widest) return null;
@@ -2445,6 +2465,19 @@ class PanelCard {
         for (const node of axes) cells.splice(cells.indexOf(node), 1);
         cells.splice(at, 0, group);
         block.classList.add('has-axes');
+      }
+      // A row's further ports go under its Port, in the same cell.
+      const extras = mine.filter((w) => isExtraPort(w.element) && w.node);
+      if (isRow && !spans && extras.length) {
+        const first = cells.find((c) => c.classList && c.classList.contains('cell')
+          && !extras.some((w) => w.node === c));
+        if (first) {
+          first.classList.add('has-extra-ports');
+          for (const w of extras) {
+            cells.splice(cells.indexOf(w.node), 1);
+            first.appendChild(w.node);
+          }
+        }
       }
       // A row with fewer controls than the widest one is padded just before
       // its last cell, so the status column stays the status column. A row
@@ -3649,6 +3682,8 @@ class Dashboard {
       headlineText: document.querySelector('#sheet-headline .headline'),
       headlineNote: document.querySelector('#sheet-headline .headline-note'),
       nav: document.getElementById('model-nav'),
+      navLegend: document.getElementById('nav-legend'),
+      navToggle: document.getElementById('nav-toggle'),
       simLine: document.getElementById('sim-line'),
       cards: document.getElementById('cards'),
       log: document.getElementById('event-log'),
@@ -3735,6 +3770,12 @@ class Dashboard {
     this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true));
     this.dom.quitLink.addEventListener('click', () => this.quitStation());
     this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
+    if (this.dom.navToggle) {
+      this.dom.navToggle.addEventListener('click', () => this.setNavOpen(!this.isNavOpen));
+      this.dom.nav.addEventListener('click', (event) => {
+        if (event.target.closest('.model-link')) this.setNavOpen(false);
+      });
+    }
     this.dom.scrim.addEventListener('click', () => {
       this.setDrawerOpen(false);
       this.setAccountOpen(false);
@@ -5245,6 +5286,40 @@ class Dashboard {
     }
   }
 
+  /** A phone's page list folds behind one key (CSS shows the key only at
+   *  that width); open, it is the list as ever. */
+  setNavOpen(open) {
+    this.isNavOpen = Boolean(open);
+    const rail = document.querySelector('.rail');
+    if (rail) rail.classList.toggle('is-nav-open', this.isNavOpen);
+    if (this.dom.navToggle) this.dom.navToggle.setAttribute('aria-expanded', String(this.isNavOpen));
+  }
+
+  /** The key's words: the page shown, and a mark when any page's dot is an
+   *  error, so a fault is not folded away with the list. */
+  setNavToggleWords() {
+    const key = this.dom.navToggle;
+    if (!key) return;
+    const shown = this.opened ? sentence(this.opened) : DASHBOARD_WORD;
+    const words = key.querySelector('.nav-toggle-words');
+    putText(words, 'Pages: ' + shown);
+    const faulted = Boolean(this.dom.nav.querySelector('.nav-dot.is-error'));
+    key.classList.toggle('has-error', faulted);
+    putAttr(key, 'aria-label', 'Pages, ' + shown + (faulted ? ', a device has an error' : ''));
+    const hasPages = this.dom.nav.children.length > 0;
+    if (key.hidden === hasPages) key.hidden = !hasPages;
+    // A stop mark (stopped, did not confirm, faulted, link lost) is never
+    // folded away: while any page carries one, the list stays open (O16).
+    const marked = Boolean(this.dom.nav.querySelector('.nav-mark:not([hidden])'));
+    const rail = document.querySelector('.rail');
+    if (rail) rail.classList.toggle('has-marks', marked);
+    // The legend explains the dots; after a shutdown there is nothing live
+    // to explain and no red is left on the page.
+    const legend = this.dom.navLegend;
+    const showLegend = hasPages && !this.isShutDown;
+    if (legend && legend.hidden === showLegend) legend.hidden = !showLegend;
+  }
+
   /** The rail's page list: "Dashboard" (K4's Overview, renamed by the
    *  owner 2026-10-08) first, then the models by name only
    *  (no value is said twice); the shown page is the current one. Rebuilt
@@ -5294,6 +5369,7 @@ class Dashboard {
       this.setEnergized(this.energized);
       this.setDots();
     }
+    this.setNavToggleWords();
     for (const link of this.dom.nav.querySelectorAll('.model-link')) {
       const current = link.dataset.page === 'overview' ? !this.opened
         : link.dataset.model === this.opened;
@@ -5412,6 +5488,7 @@ class Dashboard {
       putAttr(mark, 'title', title);
       if (mark.hidden !== !words) mark.hidden = !words;
     }
+    this.setNavToggleWords();
   }
 
   /** Owner 2026-10-07: each rail entry's status dot. Red (the signal) for
@@ -5448,6 +5525,7 @@ class Dashboard {
       putAttr(dot, 'aria-label', words);
       putAttr(dot, 'title', words);
     }
+    this.setNavToggleWords();
   }
 
   /** O6: the ring before each energized model's name in the rail. */
@@ -5605,6 +5683,21 @@ class Dashboard {
         (w) => w.element && w.element.model_attr === row.key + '_port');
       const block = choice && choice.node && choice.node.closest('.section-row');
       if (block) block.classList.toggle('portless-row', row.needs_port === false);
+      // A guest cannot use the Transfer Map or the Sample DB: the row says
+      // "Sign in to use", so its On/SIM key is not offered beside it (it
+      // read "On" next to "Sign in to use", UX audit 2026-10-08 #19).
+      const pick = choice && choice.node && choice.node.querySelector('select');
+      if (pick) {
+        const locked = /^sign in to use$/i.test(String(row.status || '').trim());
+        if (locked) {
+          pick.disabled = true;
+          pick.dataset.signInLock = '1';
+          pick.title = 'Sign in to use ' + row.name;
+        } else if (pick.dataset.signInLock) {
+          delete pick.dataset.signInLock;
+          pick.disabled = false;
+        }
+      }
       const widget = byCommand('hard_reset_' + row.key);
       const button = widget && widget.node && widget.node.querySelector('button');
       if (!button) continue;
