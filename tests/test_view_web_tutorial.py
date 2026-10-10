@@ -600,7 +600,6 @@ def test_the_first_trial_tutorial_waits_are_the_phases_a_sim_station_walks(sim_s
     assert reached == ["region", "live", "marked", "finish", "setup"]
 
 
-@pytest.mark.xfail(reason="needs puppeteer; JSON re-anchored 2026-10-10", strict=False)
 @needs_browser
 def test_your_first_trial_walks_a_sim_transfer_map_to_the_end(sim_station, tmp_path):
     """Real SIM models, a real server, headless Chrome and a synthetic
