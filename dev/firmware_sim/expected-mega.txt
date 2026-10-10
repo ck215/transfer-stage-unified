@@ -20,4 +20,5 @@ SCENARIO tmc-bus-faults                       PASS  (14 checks, 0 failed)
 SCENARIO tmc-late-readback                    PASS  (4 checks, 0 failed)
 SCENARIO watchdog-deadman                     PASS  (5 checks, 0 failed)
 SCENARIO watchdog-step-timer                  PASS  (1 checks, 0 failed)
+SCENARIO frame-dpad-past-int16                PASS  (4 checks, 0 failed)
 failed scenarios: 0

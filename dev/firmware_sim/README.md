@@ -38,7 +38,7 @@ programs, `loop()` every 100 us.
 
 ```
 dev/firmware_sim/build.sh firmware/xyz_stage_mega/xyz_stage_mega.ino /tmp/sim-mega mega
-dev/firmware_sim/run.sh /tmp/sim-mega /tmp/sim-logs-mega      # 22 scenarios; "failed scenarios: 0"
+dev/firmware_sim/run.sh /tmp/sim-mega /tmp/sim-logs-mega      # 23 scenarios; "failed scenarios: 0"
 dev/firmware_sim/run.sh /tmp/sim-mega-stepref /tmp/sim-logs-base   # the same scenarios on stepper_firmware
 ```
 
@@ -53,6 +53,20 @@ deliberate defect, to show a scenario red. `expected-mega.txt` is the
 passing run. `seen-once-reboot` and `axiscfg-persists-reboot` reboot by
 re-executing the binary with the EEPROM image kept (a state file beside the
 binary).
+
+The reference builds (`-stepref`, and `stepref` for any sketch) spell the
+sketch's `int` and `unsigned int` as `int16_t`/`uint16_t`: avr-gcc makes them
+16 bits on the ATmega2560, clang 32, and an overflow the board has must show
+on the host too (2026-10-10, X-19). `frame-dpad-past-int16` sends a frame of
+16 x 2100 = 33600 counts per axis and a D-pad step of size 40000: red on
+`stepper_firmware` and `chuck_firmware` before the fix (the move wrapped to
+-31936 and ran into the - hard stop; the D-pad's 40000 became -25536), green
+after; the xyz Mega always held both in 32 bits. The chuck is its own build:
+
+```
+dev/firmware_sim/build.sh firmware/chuck_firmware/chuck_firmware.ino /tmp/sim-chuck stepref
+/tmp/sim-chuck frame-dpad-past-int16                                  # PASS; its other scenarios are the base (red)
+```
 
 `avr/isr_cycles.py` and `avr/stack_depth.py` read `avr-objdump -d` of the
 compiled ELF: the step ISR's best and worst cycle counts (longest path

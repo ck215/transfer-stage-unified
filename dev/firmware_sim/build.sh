@@ -20,6 +20,12 @@ build_avr() {   # <ino> <out> <sim defines> <warning flags> [prototypes]
   local CXXA="clang++ -std=gnu++17 -O1 -g -I$A/include -I$ACCEL -DARDUINO=10819"
   if [ -n "$MUTATE" ]; then sed -e "$MUTATE" "$sk" > "$src"; cmp -s "$sk" "$src" && { echo "build.sh: MUTATE changed nothing"; exit 1; }
   else cp "$sk" "$src"; fi
+  if [ "$5" = prototypes ]; then
+    # The frame-protocol sketches (stepper_firmware, chuck_firmware) say `int` and `unsigned int`, which avr-gcc makes
+    # 16 bits on the ATmega2560 and clang 32 bits here: spell them int16_t/uint16_t in the copy, so an overflow the
+    # board has (a move past 32767 counts, review R-2) is one the host sees too. Comments are rewritten with them.
+    perl -pi -e 's/\bunsigned int\b/uint16_t/g; s/\bint\b/int16_t/g' "$src"
+  fi
   # stepper_firmware calls functions above their definitions and relies on the Arduino IDE's generated prototypes:
   # declare every top-level function of the copy after its last #include, as the IDE does.
   if [ "$5" = prototypes ]; then

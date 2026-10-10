@@ -1158,6 +1158,36 @@ static void s_watchdog_timer() {
          s_wdtResets ? fmt("+%.1f ms", (s_wdtResetUs - (double)t0) / 1000) : "no reset");
 }
 
+// 16. Review R-2 on the board (X-19): a frame whose step size x distance passes 32767 counts, and a D-pad step size
+// past 32767 (the jog packet admits 1..100000). stepper_firmware and chuck_firmware held both in an `int`, 16 bits on
+// the ATmega2560 (build.sh compiles their copies with int16_t): the frame's move wrapped to -31936 and ran the other
+// way, into the - hard stop; the D-pad's 40000 became -25536. Every axis must travel the whole distance, forward.
+// The three axes move alike, so the chuck's own pin order (its X on 42-44) does not matter. The xyz Mega held both in
+// 32 bits from the start: it passes as it is.
+static void s_past_int16() {
+  boot(2, 2, 2);
+  enable();
+  long n0[3] = { st[0].net, st[1].net, st[2].net };
+  sendLine(frame(16, 16, 16, 3200.0, -2100, 2100, -2100));   // X and Z negated on the wire: +33600 counts on every axis
+  runMs(500);
+  std::string early;
+  bool forward = true;
+  for (int a = 0; a < 3; a++) { long d = st[a].net - n0[a]; early += std::string(early.empty() ? "" : ", ") + std::to_string(d); if (d <= 0) forward = false; }
+  expect(forward, "frame 16 x 2100 = 33600 counts: every axis starts forward", early);
+  waitIdle(40000);
+  long d[3] = { st[0].net - n0[0], st[1].net - n0[1], st[2].net - n0[2] };
+  expect(d[0] == 33600 && d[1] == 33600 && d[2] == 33600, "the frame moves every axis +33600 counts (21 mm), not the wrapped -31936",
+         triple(d));
+  long n1[3] = { st[0].net, st[1].net, st[2].net };
+  Pkt p; p.speed = 3200; p.xs = p.ys = p.zs = 40000; p.lr = p.ud = p.bump = 1;
+  jogFor(p, 20, 30000);                                     // the press, then neutral packets (the dead-man) while it steps
+  host.stream = false;
+  long e[3] = { st[0].net - n1[0], st[1].net - n1[1], st[2].net - n1[2] };
+  expect(e[0] == 40000 && e[1] == 40000 && e[2] == 40000, "a D-pad step of size 40000 moves every axis +40000 counts, not -25536",
+         triple(e));
+  expect(noCrash(), "no hard-stop contact", crashAll());
+}
+
 struct Scenario { const char *name; void (*fn)(); };
 static void s_ht0() { s_host_timeout(0); }
 static void s_ht1() { s_host_timeout(1); }
@@ -1185,6 +1215,7 @@ static const Scenario SCENARIOS[] = {
   { "tmc-late-readback", s_tmc_late },
   { "watchdog-deadman", s_watchdog_deadman },
   { "watchdog-step-timer", s_watchdog_timer },
+  { "frame-dpad-past-int16", s_past_int16 },
 };
 
 int main(int argc, char **argv) {
