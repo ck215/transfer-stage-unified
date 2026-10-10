@@ -1057,9 +1057,8 @@ rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`
    handshake, `SMC100.READ_TIMEOUT_SEC` now bounds a whole line.
 2. **Scan time**: two junk macOS ports get the full handshake (~18 s). A
    name filter is one line in `Setup.scan_ports` if the station PC is slow.
-3. **Second test wave**: `tests/TEST_PORTING.md` lists 135 old test
-   files (PORT 22 / PORT-ADAPTED 103 / VOID 10) and 26 safety tests that must
-   have ported equivalents before `legacy/` was deleted (history: tag pre-root-cleanup-2026-10-07).
+3. **Second test wave**: CLOSED 2026-10-10 (see History): all 26 safety tests have
+   an equivalent in `tests/`; `tests/TEST_PORTING.md` is deleted (history: `git show 60b5a8a:tests/TEST_PORTING.md`).
 4. **Cutover** — partly done. Done 2026-09-23: the move (`station/` → `src/`,
    old `src/` and `tests/` → `legacy/`, `tests/station/` → `tests/`) and the
    docs prune (stale pages to `docs/archive/`). Done 2026-10-07: `legacy/` deleted (history: tag pre-root-cleanup-2026-10-07).
@@ -1071,6 +1070,19 @@ rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`
 
 ## History
 
+- 2026-10-10: `tests/TEST_PORTING.md` closed and deleted. Its 26 "must have a ported
+  equivalent" safety tests each map to a test in `tests/` (grep by name and
+  assertion): transport truth -> `test_serial_port::test_a_failed_write_marks_the_link_lost_and_raises`,
+  `test_core_model` guard/latch tests; probe mode (I-3.1..4) -> `test_probe` (`test_a_failed_enable_does_not_reach_an_armed_mode`,
+  `test_manual_is_refused_without_a_gamepad`, `test_the_interlock_fires_on_real_inactivity_in_every_energized_mode`,
+  `test_mode_flags_and_readouts_cannot_be_assigned`); teardown/exit/stop-all-first/hide -> `test_core_model::test_close_runs_stop_halt_disable_in_that_order`,
+  `test_core_controller` (`test_close_stops_every_model_before_it_closes_any`, `test_remove_stops_the_model_before_it_closes_it`,
+  `test_the_sigterm_handler_stops_and_closes_then_re_raises`, `test_estop_all_*`), `test_heater_off_confirm`;
+  rotator tubing, home commit, sampler, stop write -> `test_rotator`, `test_smc100`; serial ordering, drain, connect ->
+  `test_serial_port`, `test_serial_port_handshake`; Tk/Qt/Red Percent view gates -> `test_view_tk`,
+  `test_view_qt_widgets`, `test_core_views_base`, and the Web's `test_view_web_client` / `test_view_web_server`.
+  The five VOID families it recorded (scripts/G-code, hide/show, per-model client liveness, the web session
+  token, per-view setup wizards) were removed by owner rulings of 2026-09-21; do not port them.
 - 2026-10-07 (later): the proposal round, the lab's stage merge, the root cleanup and the
   move to `~/GitHub` ("Round 2026-10-07 (proposal)").
 - 2026-10-07: the round above: Web the only frontend (Tk and Qt frozen at
