@@ -1583,12 +1583,12 @@ function dropdownNamed(schema, attr) {
 }
 
 /** The choices a `file_open` prompt carries beside its path (its declared
- *  `inputs`, CHECKPOINT item 4): one box per dropdown it names, filled from
+ *  `choices`, CHECKPOINT item 4): one box per dropdown it names, filled from
  *  that dropdown's options and the model's held value. -> `{nodes, values}`;
  *  `values()` is the args after the path, in the declared order, '' for none. */
 function fileOpenChoices(panel, element) {
   const boxes = [];
-  for (const attr of element.inputs || []) {
+  for (const attr of element.choices || []) {
     const source = dropdownNamed(panel.schema, attr);
     if (!source) continue;
     const wrap = make('label', 'file-open-choice');

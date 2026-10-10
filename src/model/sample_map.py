@@ -142,7 +142,7 @@ class _BackedStore(ss.SampleStore):
 
 #: What the photo dialog (`file_open`) carries beside the path, in the order
 #: its command takes them after the path.
-PHOTO_INPUTS = ("image_instrument", "image_magnification")
+PHOTO_CHOICES = ("image_instrument", "image_magnification")
 
 #: "100x", "_50X", "chip 20x" in a file name: a magnification the store
 #: knows, not part of a longer number ("1000x") or word ("10xyz").
@@ -1700,7 +1700,7 @@ class SampleMap(store_choice.StorePrompt, Model):
 
     def _take_photo_choices(self, instrument, magnification):
         """The photo dialog's own instrument and magnification (`file_open`
-        `inputs`, in that order): checked together, then set, so a bad one
+        `choices`, in that order): checked together, then set, so a bad one
         changes nothing. Blank keeps the page's pick."""
         instrument, magnification = str(instrument or ""), str(magnification or "")
         if instrument and instrument not in ss.IMAGE_INSTRUMENTS:
@@ -2319,7 +2319,7 @@ class SampleMap(store_choice.StorePrompt, Model):
                                  "image_magnification_options"),
                     sch.file_open("Add photo\u2026", "stage_photo",
                                   extensions=self.IMAGE_EXTENSIONS,
-                                  inputs=PHOTO_INPUTS,
+                                  choices=PHOTO_CHOICES,
                                   placeholder="Path to a saved microscope image "
                                               f"(photo {need})"),
                     sch.readonly("Photos", "staged_text"),
@@ -2362,7 +2362,7 @@ class SampleMap(store_choice.StorePrompt, Model):
                 sch.entry("Image note", "image_note", P["image_note"]),
                 sch.file_open("Add photo\u2026", "add_image",
                               extensions=self.IMAGE_EXTENSIONS, role="go",
-                              inputs=PHOTO_INPUTS,
+                              choices=PHOTO_CHOICES,
                               placeholder="Path to a saved microscope image"),
                 sch.readonly("Pictures", "image_text"),
                 sch.log_stream("Image log", "image_log"),

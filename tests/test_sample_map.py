@@ -1539,13 +1539,13 @@ def _photo_rows(model):
     return rows
 
 
-def test_every_photo_row_declares_the_instrument_and_magnification_as_inputs(unpicked):
+def test_every_photo_row_declares_the_instrument_and_magnification_as_choices(unpicked):
     for row in _photo_rows(unpicked):
-        assert row["inputs"] == ["image_instrument", "image_magnification"], row
+        assert row["choices"] == ["image_instrument", "image_magnification"], row
 
 
-def test_file_open_without_inputs_declares_none():
-    assert sch.file_open("Load", "load_run")["inputs"] == []
+def test_file_open_without_choices_declares_none():
+    assert sch.file_open("Load", "load_run")["choices"] == []
 
 
 def test_add_image_takes_the_instrument_and_magnification_from_the_dialog(unpicked, tmp_path):
