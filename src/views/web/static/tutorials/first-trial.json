@@ -11,8 +11,20 @@
     },
     {
       "page": "Transfer Map",
+      "anchor": {"text": "New tip…"},
+      "say": "Pick the tip you are cutting with in the Tip list, or press New tip to add one (its ID and model). Every trial is traced to its tip. Press Next when a tip is chosen.",
+      "wait": null
+    },
+    {
+      "page": "Transfer Map",
+      "anchor": {"text": "Sample"},
+      "say": "Pick the Sample, then the Chip, then the Flake you are cutting. Register them on the Sample DB first (see Register a sample): Arm refuses without a flake. Press Next when all three are chosen.",
+      "wait": null
+    },
+    {
+      "page": "Transfer Map",
       "anchor": {"text": "Arm trial"},
-      "say": "Enter the tip ID, then press Arm trial. The station takes a picture of the stage.",
+      "say": "Press Arm trial and confirm the prompt (sample vacuum on, stage framed). The station takes a picture of the stage.",
       "wait": {"state": {"name": "Transfer Map", "key": "phase", "equals": "region"}}
     },
     {
