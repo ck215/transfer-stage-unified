@@ -141,10 +141,15 @@ fixture (host simulation, a wall at 30 mm: HOME's search and a jog hit it at 1 a
 | Events | `SOFTLIMIT` lines are kept at LOG 0 (essential), and are never `LIMIT` lines. | The station tells them apart. |
 
 The wire is otherwise unchanged: INFO, STATUS, P, BOOT and every existing reply keep their keys (MOVE's `clamped=` now
-also means the soft limit shortened it). The validator shares the motion core but not this feature (follow-up).
+also means the soft limit shortened it). The bench validator (`dev/equipment_test/stepper_validator`) has the same
+feature, the same EEPROM block and the same events (its JOG, MOVE and REVS; it has no HOME), so a limit set under
+either sketch holds under the other.
 
 Verification: `arduino-cli compile --warnings all`, zero warnings: Teensy 3.5 94340 bytes flash, 5908 bytes RAM;
 Teensy 4.1 code 82164, data 14280, RAM1 variables 16448, RAM2 variables 12416. `dev/firmware_sim` scenarios
 `soft-limit-move`, `-jog`, `-backstop`, `-lost`, `-ls1-plus-end`, `-eeprom`, `-eeprom-damaged` (a wall 2 mm past a 28 mm
-limit): red on the sketch before this change (7 of 7), green after; the other 15 scenarios, and the validator's 14,
-unchanged. Not run on hardware.
+limit): red on the sketch before this change (7 of 7), green after; the other 15 scenarios unchanged. The validator
+runs the same seven (red 7 of 7 before its port, green after; its other 14 unchanged). Step ISR (`stepIsr`, Teensy
+3.5 ELF): 379 -> 453 instructions of code; per 25 us tick the added path is 3 instructions with no limit set and
+about 25 (a call to AccelStepper::speed(), a float and a long compare; ~0.3 us at 120 MHz) with one in force. Not run
+on hardware.

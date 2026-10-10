@@ -20,12 +20,14 @@ driving into the hard stop. The station sketch has a fifteenth scenario,
 `move-accel-coarrival` (2026-10-09: MOVE/MOVETO's optional per-move
 acceleration, and how close a vector Step's axes arrive with it); the
 validator, which has no per-move speed or acceleration, does not list it.
-Seven more are the station sketch's soft travel limit (2026-10-10, X-14:
-`soft-limit-*`, SOFTLIMIT): the stage model gains an obstruction short of a
-switch (`wall`, `wallLo`: a step past it is lost, as at a hard stop), LS1 wired
-at the + end (`ls1Plus`) and the EEPROM image (`sim_eeprom()`). Red on the
-sketch before SOFTLIMIT (7 of 7; it ran a jog and HOME's search into the wall),
-green after: 22 of 22. The validator does not have the feature. Set `ACCELSTEPPER_SRC` if AccelStepper is not in
+Seven more are the soft travel limit (2026-10-10, X-14: `soft-limit-*`,
+SOFTLIMIT), run on both sketches: the stage model gains an obstruction short of
+a switch (`wall`, `wallLo`: a step past it is lost, as at a hard stop), LS1
+wired at the + end (`ls1Plus`) and the EEPROM image (`sim_eeprom()`). The limit
+is 28 mm on the station sketch and 12 mm on the validator (its MOVE stops at
+15 mm), with the wall 2 mm beyond. Red on each sketch before SOFTLIMIT (7 of 7
+on both; a jog ran into the wall at 2.5 mm/s, HOME's search and TEST LIMITS at
+1 mm/s), green after: station 22 of 22, validator 21 of 21. Set `ACCELSTEPPER_SRC` if AccelStepper is not in
 `~/Documents/Arduino/libraries`. Build output goes beside the binary you name
 and in `obj/` here (ignored). Run it after any change to a sketch's interlock,
 HOME or host-timeout code. It is a host model: bench checks stay the owner's.
