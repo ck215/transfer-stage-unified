@@ -32,6 +32,23 @@ on both; a jog ran into the wall at 2.5 mm/s, HOME's search and TEST LIMITS at
 and in `obj/` here (ignored). Run it after any change to a sketch's interlock,
 HOME or host-timeout code. It is a host model: bench checks stay the owner's.
 
+## The bench diagnostic limit_seek (`seek_sim.cpp`, 2026-10-10)
+
+`dev/equipment_test/diagnostics/limit_seek` sweeps one axis slowly until a switch changes state, classifying each
+input with a pull-up and a pull-down. Kind `seek` builds it on the same stubs, which now model a pin as OPEN / GND /
+HIGH read through whichever pull the sketch selects (`g_simPinDrive`; the other sketches still set `g_simPinIn`,
+and their results are unchanged), take the sketch's own timer period, and print with `Serial.printf`.
+
+```
+dev/firmware_sim/build.sh dev/equipment_test/diagnostics/limit_seek/limit_seek.ino /tmp/sim-seek seek
+dev/firmware_sim/run.sh /tmp/sim-seek /tmp/sim-logs-seek        # 4 scenarios; "failed scenarios: 0"
+```
+
+`expected-seek.txt` is the passing run (X-14): no SEEK before `MAXTRAVEL`, none longer than it; with the soft limit
+stored, a sweep onto LS1 references it, a sweep past it is shortened onto it short of a wall 2 mm beyond, the
+reference is lost with OFF while moving, and a damaged block refuses every SEEK. All four are red on the sketch before
+(it swept 10 mm with no MAXTRAVEL and ran into the wall: 32000 steps lost).
+
 ## The XYZ Mega (`avr/`, 2026-10-09)
 
 `firmware/xyz_stage_mega` runs on an ATmega2560, so it builds against a

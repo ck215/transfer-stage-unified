@@ -7,15 +7,31 @@
 // TMC2209 on Serial1 single-wire half-duplex (TX1 to PDN_UART), 600 mA, 8 microsteps, spreadCycle.
 //
 // Commands (USB serial, one per line):
-//   SEEK +|- <mm> <mm_s>   move at most <mm> (<= 50) at <mm_s> (<= 1.0); stops when LS1 or LS2 changes from its state
-//                          at the start (a switch pressed or released), at the travel bound, on STOP, or when the host is
-//                          silent for 1 s. The driver holds position after a stop.
+//   MAXTRAVEL <mm>         the most any SEEK may move this session (0 < mm <= 50). Unset at power-up, and no SEEK runs
+//                          until it is set: nothing sweeps far by default (2026-10-10). MAXTRAVEL alone reports it.
+//   SEEK +|- <mm> <mm_s>   move at most <mm> (<= MAXTRAVEL) at <mm_s> (<= 1.0); stops when LS1 or LS2 changes from its
+//                          state at the start (a switch pressed or released), at the travel bound, on STOP, or when the
+//                          host is silent for 1 s. The driver holds position after a stop.
+//   SOFTLIMIT [mm]         the soft travel limit (X-14), the same EEPROM block as xyz_stage_axis and stepper_validator
+//                          (a limit set under any of the three holds here): query, or set 0..100 (0 = none) while still.
 //   STOP                   stop now (holding)      OFF   driver outputs off      STATE   print the inputs
-// Lines out: BOOT, STATE, P (5 Hz while moving), HIT, HOME (home-sensor edges), END, STOP, ERR.
+// Lines out: BOOT, STATE, P (5 Hz while moving), HIT, HOME (home-sensor edges), END, STOP, ERR, OK, and
+// EVT SOFTLIMIT referenced|clamped|reached|stopped|lost (as the other two sketches print them).
 // Input states: OPEN (nothing drives it: switch open, or wire open), GND (closed to ground), HIGH (driven to +5 V).
+//
+// Soft travel limit (2026-10-10, X-14): for an axis whose carriage cannot reach a switch (the bench probe on axis 1
+// meets its fixture before LS2), the most it may travel from LS1. The reference: a SEEK that ends on LS1 CLOSING (OPEN to
+// GND or HIGH: normally-open contacts, this stage's) while moving d; LS1 then guards d and the limit lies <mm> the other
+// way. Referenced, a SEEK past the limit is shortened onto it (EVT SOFTLIMIT clamped, then reached) and at the limit one
+// further out is refused (soft-limit); the step ISR stops anything that would pass it (stopped). Not referenced with a
+// limit set: once LS1's end is known a SEEK away from it is refused (soft-limit-unreferenced:touch-ls1); before that a
+// SEEK runs either way, as a jog does, bounded by MAXTRAVEL, so aim it at LS1. The reference is lost when the outputs go
+// off while the motor turns (OFF, host gone, host silent). A damaged EEPROM block refuses every SEEK until SOFTLIMIT
+// writes it again.
 
 #include <Arduino.h>
 #include <TMCStepper.h>
+#include <EEPROM.h>
 
 extern "C" int _write(int file, char *ptr, int len) {   // Teensy 3.5 newlib needs this when printf-family code links
   if (file >= 0 && file <= 2) file = (int)&Serial;
@@ -32,6 +48,9 @@ const float    STEPS_PER_MM = 200.0f * MICROSTEPS / 1.0f;  // 200 full steps per
 const float    MAX_SEEK_MM = 50.0f;                       // the stage's full travel
 const float    MAX_SPEED_MM = 1.0f;
 const uint32_t HOST_SILENT_MS = 1000;                     // dead-man while moving
+const int      SOFT_EEPROM_ADDR = 4;                       // X-14: magic, travel um (4 bytes LE), complement; as the others
+const uint8_t  SOFT_MAGIC = 0x5C;
+const float    SOFT_MAX_MM = 100.0f;
 
 TMC2209Stepper driver(&Serial1, R_SENSE, DRIVER_ADDRESS);
 IntervalTimer stepTimer;
@@ -39,6 +58,16 @@ IntervalTimer stepTimer;
 static volatile long    s_left = 0;     // steps still to go
 static volatile long    s_pos = 0;      // steps from boot, + toward DIR high
 static volatile int8_t  s_dir = 1;
+static volatile int8_t  s_softDir = 0;  // X-14: the way the soft limit lies; 0 = not in force (none, or not referenced)
+static volatile long    s_softLim = 0;  // the limit, steps
+static volatile bool    s_softHit = false;   // the ISR stopped a sweep on it
+static uint32_t g_softUm = 0;           // SOFTLIMIT, um; 0 = none
+static bool     g_softBad = false;      // a damaged EEPROM block: no SEEK until SOFTLIMIT rewrites it
+static bool     g_softRef = false;      // LS1 has given the reference
+static long     g_softRefPos = 0;       // where LS1 closed, steps
+static int8_t   g_ls1End = 0;           // the way LS1 lies, once a SEEK has closed it; 0 = unknown
+static bool     g_toLimit = false;      // this sweep was shortened onto the limit
+static float    g_maxTravelMm = 0;      // MAXTRAVEL: 0 = unset, and no SEEK runs
 static bool     g_enabled = false, g_moving = false, g_wasConnected = false;
 static uint8_t  g_version = 0;
 static uint32_t g_lastRx = 0, g_lastP = 0;
@@ -51,6 +80,9 @@ static const char *const NAME[] = {"OPEN", "GND", "HIGH", "ODD"};
 
 static void stepIsr() {
   if (s_left <= 0) return;
+  if (s_dir == s_softDir && (s_dir > 0 ? s_pos >= s_softLim : s_pos <= s_softLim)) {   // X-14: never past the limit
+    s_left = 0; s_softHit = true; return;
+  }
   digitalWriteFast(STEP_PIN, HIGH);
   delayMicroseconds(2);
   digitalWriteFast(STEP_PIN, LOW);
@@ -83,6 +115,32 @@ static void stopMotion(const char *why) {
   }
 }
 
+// ---- soft travel limit (X-14), the EEPROM block of xyz_stage_axis and stepper_validator ----
+static void softLoad() {               // erased (all 0xFF) = none; wrong magic, complement or range = damaged
+  uint8_t raw[9]; bool erased = true;
+  for (uint8_t i = 0; i < 9; i++) { raw[i] = EEPROM.read(SOFT_EEPROM_ADDR + i); if (raw[i] != 0xFF) erased = false; }
+  uint32_t v = 0, c = 0;
+  for (uint8_t i = 0; i < 4; i++) { v |= (uint32_t)raw[1 + i] << (8 * i); c |= (uint32_t)raw[5 + i] << (8 * i); }
+  bool good = raw[0] == SOFT_MAGIC && c == ~v && v <= (uint32_t)(SOFT_MAX_MM * 1000.0f);
+  g_softUm = good ? v : 0;
+  g_softBad = !good && !erased;
+}
+static void softArm() {                // the ISR's limit from the reference and the travel
+  long lim = g_softRefPos - (long)g_ls1End * lroundf(g_softUm / 1000.0f * STEPS_PER_MM);
+  noInterrupts(); s_softLim = lim; s_softDir = (g_softRef && g_softUm) ? -g_ls1End : 0; interrupts();
+}
+static void softLost(const char *why) {
+  if (g_softRef && g_softUm) Serial.printf("EVT SOFTLIMIT lost reason=%s\n", why);
+  g_softRef = false; softArm();
+}
+static void softReply(bool stored) {
+  Serial.printf("OK SOFTLIMIT mm=%.3f ref=%d", g_softUm / 1000.0f, g_softRef);
+  if (g_softRef) Serial.printf(" ls1_mm=%.5f", g_softRefPos / STEPS_PER_MM);
+  if (g_softRef && g_softUm) Serial.printf(" limit_mm=%.5f", s_softLim / STEPS_PER_MM);
+  if (g_softBad) Serial.printf(" damaged=1");
+  Serial.printf("%s\n", stored ? " stored=1" : "");
+}
+
 static void printState() {
   Serial.printf("STATE pos_mm=%.4f ls1=%s ls2=%s home=%s enabled=%d uart=%s version=0x%02X\n", posMm(),
                 NAME[classify(LS1_PIN)], NAME[classify(LS2_PIN)], NAME[classify(HOME_PIN)], g_enabled,
@@ -96,13 +154,28 @@ static void startSeek(int8_t dir, float mm, float mmS) {
   if (!(mm > 0 && mm <= MAX_SEEK_MM) || !(mmS > 0 && mmS <= MAX_SPEED_MM)) {
     Serial.printf("ERR SEEK bad-arg mm<=%.0f mm_s<=%.1f\n", MAX_SEEK_MM, MAX_SPEED_MM); return;
   }
+  if (g_maxTravelMm <= 0) { Serial.println("ERR SEEK no-max-travel:send-MAXTRAVEL"); return; }
+  if (mm > g_maxTravelMm) { Serial.printf("ERR SEEK over-max-travel max_mm=%.3f\n", g_maxTravelMm); return; }
+  if (g_softBad) { Serial.println("ERR SEEK soft-limit-eeprom-damaged:set-SOFTLIMIT"); return; }
+  long steps = (long)(mm * STEPS_PER_MM + 0.5f);
+  g_toLimit = false;
+  if (g_softUm && !g_softRef && g_ls1End && dir == -g_ls1End) { Serial.println("ERR SEEK soft-limit-unreferenced:touch-ls1"); return; }
+  if (g_softUm && g_softRef && dir == -g_ls1End) {         // X-14: no farther than the soft limit
+    noInterrupts(); long room = (s_softLim - s_pos) * dir; long from = s_pos; interrupts();
+    if (room <= 0) { Serial.println("ERR SEEK soft-limit"); return; }
+    if (steps > room) {
+      Serial.printf("EVT SOFTLIMIT clamped cmd=SEEK target_mm=%.5f limit_mm=%.5f\n", (from + dir * steps) / STEPS_PER_MM,
+                    s_softLim / STEPS_PER_MM);
+      steps = room; mm = room / STEPS_PER_MM; g_toLimit = true;
+    }
+  }
   g_base[0] = classify(LS1_PIN); g_base[1] = classify(LS2_PIN);
   g_pending[0] = g_pending[1] = 0;
   g_last[2] = classify(HOME_PIN);
   if (!g_enabled) { enableDriver(true); delay(30); }
   digitalWriteFast(DIR_PIN, dir > 0 ? HIGH : LOW);
   delayMicroseconds(50);
-  noInterrupts(); s_dir = dir; s_left = (long)(mm * STEPS_PER_MM + 0.5f); interrupts();
+  noInterrupts(); s_dir = dir; s_left = steps; s_softHit = false; interrupts();
   g_moving = true;
   g_lastRx = g_lastP = millis();
   Serial.printf("SEEK dir=%+d max_mm=%.3f speed_mm_s=%.3f from_mm=%.4f ls1=%s ls2=%s home=%s\n", dir, mm, mmS, posMm(),
@@ -118,8 +191,38 @@ static void command(char *line) {
       Serial.println("ERR SEEK usage: SEEK +|- <mm> <mm_s>"); return;
     }
     startSeek(sign == '+' ? 1 : -1, mm, mmS);
+  } else if (!strncmp(line, "MAXTRAVEL", 9)) {
+    float mm = 0;
+    int n = sscanf(line + 9, " %f", &mm);
+    if (n == 1) {
+      if (!(mm > 0 && mm <= MAX_SEEK_MM)) { Serial.printf("ERR MAXTRAVEL bad-arg 0<mm<=%.0f\n", MAX_SEEK_MM); return; }
+      if (g_moving) { Serial.println("ERR MAXTRAVEL busy"); return; }
+      g_maxTravelMm = mm;
+    } else if (line[9]) { Serial.println("ERR MAXTRAVEL bad-arg"); return; }
+    Serial.printf("OK MAXTRAVEL mm=%.3f\n", g_maxTravelMm);
+  } else if (!strncmp(line, "SOFTLIMIT", 9)) {
+    float mm = 0;
+    int n = sscanf(line + 9, " %f", &mm);
+    if (n == 1) {
+      if (!(mm >= 0 && mm <= SOFT_MAX_MM)) { Serial.println("ERR SOFTLIMIT bad-arg"); return; }
+      if (g_moving) { Serial.println("ERR SOFTLIMIT busy"); return; }
+      uint32_t v = (uint32_t)lroundf(mm * 1000.0f);
+      for (uint8_t i = 0; i < 4; i++) {
+        EEPROM.update(SOFT_EEPROM_ADDR + 1 + i, (uint8_t)(v >> (8 * i)));
+        EEPROM.update(SOFT_EEPROM_ADDR + 5 + i, (uint8_t)(~v >> (8 * i)));
+      }
+      EEPROM.update(SOFT_EEPROM_ADDR, SOFT_MAGIC);
+      softLoad(); softArm();                                 // read back, never assume
+      if (g_softBad || g_softUm != v) { Serial.println("ERR SOFTLIMIT eeprom-verify-failed"); return; }
+    } else if (line[9]) { Serial.println("ERR SOFTLIMIT bad-arg"); return; }
+    softReply(n == 1);
   } else if (!strcmp(line, "STOP")) { stopMotion("host"); Serial.println("OK STOP"); }
-  else if (!strcmp(line, "OFF")) { stopMotion("off"); enableDriver(false); Serial.println("OK OFF"); }
+  else if (!strcmp(line, "OFF")) {
+    bool turning = g_moving;
+    stopMotion("off"); enableDriver(false);
+    if (turning) softLost("off");                          // the rotor coasts unpowered: the count no longer holds
+    Serial.println("OK OFF");
+  }
   else if (!strcmp(line, "STATE")) printState();
   else if (line[0]) Serial.printf("ERR unknown %s\n", line);
 }
@@ -141,6 +244,7 @@ void setup() {
   driver.en_spreadCycle(true);
   driver.GSTAT(0b111);
   g_version = driver.version();
+  softLoad();                                              // the soft travel limit (X-14); not referenced until LS1 closes
 }
 
 void loop() {
@@ -149,7 +253,11 @@ void loop() {
     Serial.printf("BOOT limit_seek uart=%s version=0x%02X\n", g_version == 0x21 ? "OK" : "FAIL", g_version);
     printState();
   }
-  if (!connected && g_wasConnected) { stopMotion("host-gone"); enableDriver(false); }
+  if (!connected && g_wasConnected) {
+    bool turning = g_moving;
+    stopMotion("host-gone"); enableDriver(false);
+    if (turning) softLost("host-gone");
+  }
   g_wasConnected = connected;
 
   while (Serial.available()) {
@@ -161,7 +269,7 @@ void loop() {
 
   if (!g_moving) return;
   uint32_t now = millis();
-  if (now - g_lastRx > HOST_SILENT_MS) { stopMotion("host-silent"); enableDriver(false); return; }
+  if (now - g_lastRx > HOST_SILENT_MS) { stopMotion("host-silent"); enableDriver(false); softLost("host-silent"); return; }
 
   // A limit switch that differs from its state at the start on two samples in a row ends the seek.
   for (uint8_t i = 0; i < 2; i++) {
@@ -172,6 +280,12 @@ void loop() {
       noInterrupts(); s_left = 0; interrupts();
       g_moving = false;
       Serial.printf("HIT ls%u %s->%s pos_mm=%.4f\n", i + 1, NAME[g_base[i]], NAME[st], posMm());
+      if (i == 0 && g_base[0] == OPEN && (st == GND || st == HIGH_)) {   // X-14: LS1 closed while moving s_dir
+        noInterrupts(); g_softRefPos = s_pos; g_ls1End = s_dir; interrupts();
+        g_softRef = true; softArm();
+        if (g_softUm) Serial.printf("EVT SOFTLIMIT referenced ls1_mm=%.5f limit_mm=%.5f travel_mm=%.3f\n",
+                                    g_softRefPos / STEPS_PER_MM, s_softLim / STEPS_PER_MM, g_softUm / 1000.0f);
+      }
       printState();
       return;
     }
@@ -183,6 +297,8 @@ void loop() {
   if (left <= 0) {
     stepTimer.end();
     g_moving = false;
+    if (s_softHit) Serial.printf("EVT SOFTLIMIT stopped pos_mm=%.5f limit_mm=%.5f\n", posMm(), s_softLim / STEPS_PER_MM);
+    else if (g_toLimit) Serial.printf("EVT SOFTLIMIT reached limit_mm=%.5f\n", s_softLim / STEPS_PER_MM);
     Serial.printf("END travel pos_mm=%.4f (no limit switch changed)\n", posMm());
     printState();
     return;

@@ -1,7 +1,8 @@
 #!/bin/bash
-# build.sh <sketch.ino> <out-binary> station|validator|mega|stepref
+# build.sh <sketch.ino> <out-binary> station|validator|seek|mega|stepref
 # station, validator: a Teensy sketch, copied with two host-only edits (the Teensy-3.5 _write shim is dropped and
 #   IrqGuard's `mrs primask` becomes m = 0), compiled with the real AccelStepper source and the stubs in include/.
+# seek: the bench diagnostic limit_seek, the same way, with seek_sim.cpp (no step ISR at 25 us: its own timer period).
 # mega: a Mega 2560 sketch (firmware/xyz_stage_mega) against the stub AVR core in avr/, plus <out-binary>-stepref,
 #   firmware/stepper_firmware built the same way: the frame-protocol reference its parity scenario runs, and the base
 #   its other scenarios are red on. stepref: that reference alone, from the sketch given.
@@ -52,6 +53,16 @@ if [ "$kind" = mega ]; then
   exit 0
 fi
 if [ "$kind" = stepref ]; then build_avr "$ino" "$out" "-DSIM_STEPREF" "-w" prototypes; exit 0; fi
+if [ "$kind" = seek ]; then
+  src="$D/obj/$(basename "$out").sketch.cpp"
+  sed -e '/^extern "C" int _write/,/^}/d' "$ino" > "$src"
+  CXX="clang++ -std=gnu++17 -O1 -g -I$D/include"
+  $CXX -Wall -include Arduino.h -c "$src" -o "$D/obj/$(basename "$out").sketch.o"
+  $CXX -Wall -c "$D/stubs.cpp" -o "$D/obj/stubs.seek.o"
+  $CXX -Wall -c "$D/seek_sim.cpp" -o "$D/obj/$(basename "$out").sim.o"
+  $CXX "$D/obj/$(basename "$out").sketch.o" "$D/obj/stubs.seek.o" "$D/obj/$(basename "$out").sim.o" -o "$out"
+  echo "built $out"; exit 0
+fi
 
 src="$D/obj/$(basename "$out").sketch.cpp"
 sed -e '/^extern "C" int _write/,/^}/d' -e 's/__asm__ volatile("mrs %0, primask" : "=r"(m));/m = 0;/' "$ino" > "$src"
