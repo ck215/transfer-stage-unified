@@ -126,12 +126,17 @@ def test_caps_are_read_from_the_identity_and_absent_caps_are_none(identity, expe
 @pytest.mark.parametrize("scenario", PROBE_SCENARIOS, ids=_ids(PROBE_SCENARIOS))
 def test_a_board_that_answers_dev_s_gets_todays_golden_bytes(scenario):
     """The golden scenarios, replayed with the identity a real capless board
-    gives (`DEV: s` -> "s"): byte for byte the captured frames."""
+    gives (`DEV: s` -> "s"): byte for byte the captured frames. The probe's
+    loops are stopped after the assertion: an armed probe left open keeps its
+    interlock thread for 300 s (CI run 38006660927)."""
     port = RecordingPort(identity=LETTERS[scenario["device"]])
     probe, module = _build_probe(scenario["device"], port)
-    assert probe.caps == frozenset()
-    _drive_probe(scenario, probe, module, port)
-    assert port.writes == _expected(scenario)
+    try:
+        assert probe.caps == frozenset()
+        _drive_probe(scenario, probe, module, port)
+        assert port.writes == _expected(scenario)
+    finally:
+        probe._stop_threads()
 
 
 def _a_full_session(model, board):

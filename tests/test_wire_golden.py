@@ -184,6 +184,26 @@ def _build_probe(device_name, port):
     return probe, module
 
 
+@pytest.fixture
+def built_probe():
+    """`_build_probe`, with every probe built through it stopped at teardown
+    (as `test_probe.py`'s `probe` fixture does). Arming starts the idle
+    interlock's thread, which an unclosed probe keeps until INTERLOCK_TIMEOUT
+    (300 s): 51 of them outlived this file's scenarios, and a later test
+    counting threads by name saw them (CI run 38006660927). `_stop_threads`
+    writes no byte, and runs after the scenario's bytes are asserted."""
+    built = []
+
+    def _build(device_name, port):
+        probe, module = _build_probe(device_name, port)
+        built.append(probe)
+        return probe, module
+
+    yield _build
+    for probe in built:
+        probe._stop_threads()
+
+
 class _BoundGamepad:
     """Minimum Gamepad surface a probe needs to enter MANUAL."""
 
@@ -355,9 +375,9 @@ def _apply(model, inputs):
 
 @pytest.mark.transport
 @pytest.mark.parametrize("scenario", PROBE_SCENARIOS, ids=_ids(PROBE_SCENARIOS))
-def test_new_probe_is_byte_identical(scenario):
+def test_new_probe_is_byte_identical(scenario, built_probe):
     port = RecordingPort()
-    probe, module = _build_probe(scenario["device"], port)
+    probe, module = built_probe(scenario["device"], port)
     _drive_probe(scenario, probe, module, port)
     assert _payloads(port) == _expected(scenario), (
         f"{scenario['id']}: the new {scenario['device']} did not send the "
@@ -463,7 +483,7 @@ def test_new_smc100_is_byte_identical(scenario):
 
 
 @pytest.mark.transport
-def test_full_stop_uses_the_priority_lane():
+def test_full_stop_uses_the_priority_lane(built_probe):
     """The stop bytes are not enough on their own.
 
     `_halt_hardware` must reach the wire on the priority lane, or a poll
@@ -471,7 +491,7 @@ def test_full_stop_uses_the_priority_lane():
     would pass with `priority=False`, so the lane is asserted separately.
     """
     port = RecordingPort()
-    probe, module = _build_probe("StepperProbe", port)
+    probe, module = built_probe("StepperProbe", port)
     probe.set_mode(module.ProbeMode.IDLE)
     port.writes.clear()
     port.priorities.clear()
@@ -481,7 +501,7 @@ def test_full_stop_uses_the_priority_lane():
 
 
 @pytest.mark.transport
-def test_motion_writes_pass_the_estop_as_abort_if():
+def test_motion_writes_pass_the_estop_as_abort_if(built_probe):
     """A latched FULL STOP must abort a motion write *inside the lock*.
 
     Checking the latch before calling `write` is a check-then-act: the write
@@ -492,7 +512,7 @@ def test_motion_writes_pass_the_estop_as_abort_if():
     its bytes are right.
     """
     port = RecordingPort()
-    probe, module = _build_probe("StepperProbe", port)
+    probe, module = built_probe("StepperProbe", port)
     probe.set_mode(module.ProbeMode.IDLE)
     _apply(probe, golden_capture.STEP_INPUTS)
     probe.set_mode(module.ProbeMode.AUTO)
