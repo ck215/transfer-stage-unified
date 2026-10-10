@@ -28,7 +28,7 @@ most you may add):
 - (`docs/architecture/audit/` was removed (history: tag pre-root-cleanup-2026-10-07))
 - `docs/architecture/root-causes.md` and `safety-pattern.md` — the
   invariants the ported safety tests must still prove.
-- `tests/TEST_PORTING.md` — the second-wave work list (not under
+- STATUS.md History, the second-wave closure of 2026-10-10 (TEST_PORTING.md is deleted; not under
   `docs/`, but do not touch it).
 - (the machine-read design data `design.json`, `design.rules`, `narrative.json` was removed (history: tag pre-root-cleanup-2026-10-07))
 
