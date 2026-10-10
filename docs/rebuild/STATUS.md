@@ -476,6 +476,13 @@ Gate: macOS, 5011 passed (2 known macOS serial-lock failures and 1 load flake th
 
 ## Open items
 
+### Landed 2026-10-10 (lead sprint), with their tails
+- **Finalize Data on the Transfer Map page** (Web finalizer, `src/model/finalizer.py`): stills, outcome figure and save through the map's finalize_save. TAIL (ENG): no in-page video playback; the page shows the video's place and frame count. Needs a Range route in `src/views/web/server.py`.
+- **Setup**: `file_open` carries instrument and magnification (schema key `choices`); the version sentence no longer names an env var. TAIL (ENG): a locked row's `needs_port`/`enabled` wording (setup.py ~3563/3595), the UX agent's second core request.
+- **Soft travel limit** on every XYZ board, the validator and `limit_seek` (MAXTRAVEL per boot); `long` step counts on the Stepper and Chuck Megas. OWNER: flash all four sketches; confirm the two defaults (jog-only until LS1 is referenced; a damaged EEPROM block means jog-only, unlike AXISCFG).
+- **PR #2 red test**: unclosed probes in other tests, not a station leak; every armed probe stops its threads at teardown. Gate green on a949051.
+- **Tk layout tests** (`tests/test_view_tk.py`, 10 of them, sizes 1056/1400x900 and 28 pt): fail on this Mac when undocked and on the base a5bc7a7 alike; display-dependent, skipped on the Ubuntu gate. Not a regression; decide whether to pin them to a virtual display size or mark them bench-only.
+
 ### Open since the 2026-10-10 audit (re-homed; evidence is a commit, a line or a doc)
 
 Statuses: **OWNER/BENCH** (only the owner can judge or do it), **ENG** (an agent can
