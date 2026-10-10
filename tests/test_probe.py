@@ -403,8 +403,18 @@ def test_a_hundred_mode_round_trips_leak_nothing(probe):
     times with a bound pad and the loops running. The last mode wins, the
     wire ends at rest (the zero frame of the final entry, then at most the
     pump's one neutral packet for leaving manual, I-4.2), and exactly one
-    interlock and one pump thread are alive."""
+    interlock and one pump thread are alive.
+
+    Counted among the threads this test starts, never the whole process by
+    name: an armed probe that another test built and never closed keeps its
+    `interlock-Stepper Probe` thread until INTERLOCK_TIMEOUT, by design (it
+    is the thread that powers an energized board down). CI run 38006660927
+    counted 17 such threads, left by `test_mega_standard.py`'s golden replay,
+    as this probe's (18 == 1). The bystander is that situation, on purpose."""
     import struct
+    bystander, _port, _pad = make_probe()
+    bystander.set_mode("autonomous")    # armed: its interlock is running
+    before = set(threading.enumerate())
     probe._start_threads()
     try:
         for _ in range(100):
@@ -417,12 +427,14 @@ def test_a_hundred_mode_round_trips_leak_nothing(probe):
             v == 0 for v in struct.unpack("<ffffffffff", p[2:])[:3]))
         assert tail[-1] == ZERO or (neutral(tail[-1]) and tail[-2] == ZERO), tail
         alive = [t.name for t in threading.enumerate()
-                 if t.name.endswith(f"-{probe.NAME}") and t.is_alive()]
+                 if t not in before and t.name.endswith(f"-{probe.NAME}")
+                 and t.is_alive()]
         assert alive.count(f"interlock-{probe.NAME}") == 1, alive
         assert alive.count(f"gamepad-{probe.NAME}") == 1, alive
         assert alive.count(f"sample-{probe.NAME}") == 1, alive
     finally:
         probe._stop_threads()
+        bystander.close()
 
 
 @pytest.mark.mode
