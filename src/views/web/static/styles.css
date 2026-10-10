@@ -2678,6 +2678,30 @@ label.row-title[for] { cursor: pointer; }
   column-gap: var(--space-3);
 }
 
+/* A row with further ports (the XYZ Stage: Port, Port Y, Port Z) keeps one
+   Port column: the ports stack in it, each with its caption shown, since a
+   stack of three unlabelled dropdowns says nothing about which axis is
+   which. */
+.drawer .section-row:not(.section-span):not(.table-head) > .cell.has-extra-ports {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.drawer .section-row > .cell.has-extra-ports > .cell { display: contents; }
+.drawer .section-row:not(.section-span):not(.table-head) > .cell.has-extra-ports > .label {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip-path: none;
+}
+.drawer .section-row > .cell.has-extra-ports > .label,
+.drawer .section-row > .cell.has-extra-ports > .cell > .label {
+  font-size: var(--t-cap);
+  color: var(--muted);
+}
+
 /* UX audit 2026-10-07: the name and status tracks never shrink under their
    longest word (at minmax(0, ...) a narrow window cut "Temperature
    Controller" to "Tempera" under the Port dropdown); a long name or status

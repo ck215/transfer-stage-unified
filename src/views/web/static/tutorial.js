@@ -228,8 +228,13 @@
     const a = run.anchor;
     if (!a || !isVisible(a)) {
       ui.ring.hidden = true;
+      // A step with nothing to point at sits at the top right, which on a
+      // device page is where the entry head says its state ("Connection
+      // lost"): under the head, never over it (UX audit 2026-10-07 #14).
+      const head = document.querySelector('.sheet .card.is-opened > .card-head');
+      const under = head && isVisible(head) ? head.getBoundingClientRect().bottom + EDGE : 0;
       card.style.left = clampX(b.right - cw - EDGE * 2) + 'px';
-      card.style.top = clampY(b.top + EDGE * 2) + 'px';
+      card.style.top = clampY(Math.max(b.top + EDGE * 2, under)) + 'px';
       return;
     }
     const r = a.getBoundingClientRect();

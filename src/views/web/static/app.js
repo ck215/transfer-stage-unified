@@ -696,12 +696,28 @@ function isCommandRow(section) {
     && !elements.some((e) => e.type === 'dropdown');
 }
 
+/** A row's further ports (the XYZ Stage's Port Y and Port Z): a dropdown
+ *  after the row's own Port. They are not columns of the table - every other
+ *  row has one port - so they sit under Port in the same cell (a six-column
+ *  row broke the five-track Setup grid: the Port Y and Port Z captions
+ *  headed Gamepad and Status, and the rows wrapped). */
+function isExtraPort(element) {
+  return Boolean(element && element.type === 'dropdown'
+    && /_port_[a-z0-9]+$/.test(element.model_attr || ''));
+}
+
+/** The elements of a data row that are columns: not internal, not a
+ *  further port. */
+function columnElements(section) {
+  return (section.elements || []).filter((e) => e.type !== 'internal' && !isExtraPort(e));
+}
+
 /** How many element columns the widest data row needs. */
 function rowColumnCount(sections) {
   let widest = 0;
   for (const section of (sections || [])) {
     if (!isRowSection(section) || isCommandRow(section)) continue;
-    const drawn = (section.elements || []).filter((e) => e.type !== 'internal');
+    const drawn = columnElements(section);
     if (drawn.length > widest) widest = drawn.length;
   }
   return widest;
@@ -2010,7 +2026,7 @@ function tableHead(sections, columns) {
   let widest = null;
   for (const section of (sections || [])) {
     if (!isRowSection(section) || isCommandRow(section)) continue;
-    const drawn = (section.elements || []).filter((e) => e.type !== 'internal');
+    const drawn = columnElements(section);
     if (drawn.length === columns) { widest = drawn; break; }
   }
   if (!widest) return null;
@@ -2445,6 +2461,19 @@ class PanelCard {
         for (const node of axes) cells.splice(cells.indexOf(node), 1);
         cells.splice(at, 0, group);
         block.classList.add('has-axes');
+      }
+      // A row's further ports go under its Port, in the same cell.
+      const extras = mine.filter((w) => isExtraPort(w.element) && w.node);
+      if (isRow && !spans && extras.length) {
+        const first = cells.find((c) => c.classList && c.classList.contains('cell')
+          && !extras.some((w) => w.node === c));
+        if (first) {
+          first.classList.add('has-extra-ports');
+          for (const w of extras) {
+            cells.splice(cells.indexOf(w.node), 1);
+            first.appendChild(w.node);
+          }
+        }
       }
       // A row with fewer controls than the widest one is padded just before
       // its last cell, so the status column stays the status column. A row
