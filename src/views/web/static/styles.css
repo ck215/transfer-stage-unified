@@ -1026,6 +1026,11 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .card.is-opened { grid-column: 1 / -1; }
 
+/* A device page keeps a measure of about 75rem: its controls sat in the left
+   half of a 1600 px entry with empty sheet beyond (UX audit 2026-10-07 #13).
+   The Dashboard's tiles are not affected. */
+.sheet.is-device > .card.is-opened { max-width: 75rem; }
+
 /* -- the Dashboard's tiles (owner 2026-10-08) --------------------------- */
 /* Standard sizes, replacing K4's rows of three: a tile is one column of the
    Dashboard's grid (three across; two under 1000 px; one under 760, where

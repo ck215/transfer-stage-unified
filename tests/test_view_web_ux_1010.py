@@ -307,3 +307,18 @@ def test_the_page_list_toggle_is_not_drawn_on_a_desktop(xyz_station, tmp_path):
       return await page.evaluate(%s);
     """ % _RAIL, tmp_path)
     assert not out["toggle"] and out["nav"], out
+
+
+@needs_browser
+def test_a_device_page_keeps_a_measure_of_75rem_on_a_wide_screen(xyz_station, tmp_path):
+    out = _browse(xyz_station, _READY + r"""
+      await page.setViewport({ width: 1920, height: 1080 });
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(600);
+      return await page.evaluate(() => {
+        const c = document.querySelector('.sheet.is-device > .card.is-opened');
+        return { w: c.getBoundingClientRect().width, rem: parseFloat(getComputedStyle(document.documentElement).fontSize) };
+      });
+    """, tmp_path)
+    assert out["w"] <= 75 * out["rem"] + 1, out
+    assert out["w"] >= 60 * out["rem"], out
