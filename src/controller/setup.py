@@ -57,6 +57,7 @@ from model import user_store as user_store_module
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
+from model.finalizer import Finalizer
 from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
@@ -274,7 +275,7 @@ PROFILES_ENABLED = os.environ.get("STATION_PROFILES") != "0"
 # 2026-10-04) follows the Transfer Map: its own page, no port.
 # The XYZ Stage (Mega) follows the Teensy XYZ Stage (MEGA_STANDARD, 2026-10-09).
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  XyzStage, XyzStageMega, RgbAnalysis, TransferMap,
+                  XyzStage, XyzStageMega, RgbAnalysis, Finalizer, TransferMap,
                   *((SampleMap,) if SAMPLE_MAP_ENABLED else ())):
     register(_built_in)
 del _built_in
@@ -2334,8 +2335,8 @@ class Setup(PortProbe, Panel):
         "no_release": "No release has been published yet.",
     }
     CHECKING = "Checking for updates…"
-    CHECK_OFF = ("The update check is off for this run "
-                 "(STATION_NO_UPDATE_CHECK). Press Check again to check now.")
+    CHECK_OFF = ("The update check is off for this run. "
+                 "Press Check again to check now.")
 
     def _init_updates(self, updater):
         """The Update row's state, then - unless `STATION_NO_UPDATE_CHECK` is
@@ -2351,13 +2352,18 @@ class Setup(PortProbe, Panel):
         self._warned_updates = set()
         #: What is RUNNING: read once, so a landed update does not claim to be
         #: running before the restart.
-        self.station_version = "unknown"
+        self.station_version = "reading..."
+        self._version_thread = None
         self.has_update = False
         self.update_log = ""
         if os.environ.get("STATION_NO_UPDATE_CHECK", "") not in ("", "0"):
             self.update_status = self.CHECK_OFF
             events.debug("Update Check", "off: STATION_NO_UPDATE_CHECK is set",
                          source=self.NAME)
+            # The check is off; what is running is still worth saying.
+            self._version_thread = threading.Thread(
+                target=self._read_version, daemon=True, name="setup-version")
+            self._version_thread.start()
             return
         self.update_status = self.CHECKING
         self._start_update_thread()
@@ -2454,6 +2460,17 @@ class Setup(PortProbe, Panel):
         self._update_thread = threading.Thread(
             target=self._check_worker, daemon=True, name="setup-update-check")
         self._update_thread.start()
+
+    def _read_version(self):
+        """The running version, once (the check-off path's own thread)."""
+        try:
+            if not self._version_read:
+                self.station_version = self._updater.version()
+                self._version_read = True
+        except Exception as exc:
+            self.station_version = "unknown"
+            events.debug("Version Unread", repr(exc), source=self.NAME,
+                         exception=exc)
 
     def _check_worker(self):
         try:

@@ -1789,7 +1789,7 @@ def sim_station():
     signed = setup.run("sign_in", {"account_email": "sim@uci.edu",
                                    "account_password": "correct-horse-4821"})
     assert signed.is_ok, signed.reason
-    assert len(setup.launch()) == 10  # the devices (XYZ Stage and XYZ Stage (Mega), 2026-10-09), the Transfer Map (Tier S), the Sample DB
+    assert len(setup.launch()) == 11  # the devices (XYZ Stage and XYZ Stage (Mega), 2026-10-09), the Transfer Map (Tier S) with its RGB analysis and Finalize Data, the Sample DB
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open(), "the server did not bind an ephemeral port"
     try:

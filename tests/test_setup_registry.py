@@ -20,6 +20,7 @@ from events import events
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
+from model.finalizer import Finalizer
 from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
@@ -101,19 +102,21 @@ BUILT_INS = ["Stepper Probe", "DC Probe", "Chuck Positioner",
              "XYZ Stage",      # 2026-10-09: three axis boards, one row
              "XYZ Stage (Mega)",   # 2026-10-09: one standard Mega, MEGA_STANDARD
              "RGB Analysis",
+             "Finalize Data",  # the Web finalizer, hosted on the Transfer Map's page
              "Transfer Map",   # Tier S (2026-09-27)
              *(["Sample DB"] if station_setup.SAMPLE_MAP_ENABLED else [])]   # the flag: setup.py
-#: The built-in Setup rows: RGB Analysis is registered but has no row of its
+#: The built-in Setup rows: RGB Analysis and Finalize Data are registered but has no row of its
 #: own, being drawn on the Transfer Map's page and launched by its row
 #: (Model.HOST, owner ruling 2026-09-28).
-BUILT_IN_ROWS = [name for name in BUILT_INS if name != "RGB Analysis"]
+BUILT_IN_ROWS = [name for name in BUILT_INS
+                 if name not in ("RGB Analysis", "Finalize Data")]
 
 
 def test_the_six_built_ins_are_registered_in_todays_display_order():
     assert list(station_setup.MODEL_TYPES) == BUILT_INS
     assert list(station_setup.MODEL_TYPES.values()) == [
         StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator, XyzStage,
-        XyzStageMega, RgbAnalysis, TransferMap, *([SampleMap] if station_setup.SAMPLE_MAP_ENABLED else [])]
+        XyzStageMega, RgbAnalysis, Finalizer, TransferMap, *([SampleMap] if station_setup.SAMPLE_MAP_ENABLED else [])]
 
 
 def test_register_is_reachable_as_setup_register():

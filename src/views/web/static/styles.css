@@ -2528,6 +2528,11 @@ span.lamp { background: none; }
 
 .file-picker { display: none; }
 
+/* The choices a file prompt carries beside the path (the photo's
+   instrument and magnification): a small caption over its select. */
+.file-open-choice { display: inline-flex; flex-direction: column; gap: 0.15rem; }
+.file-open-choice-text { font-size: var(--t-sm); }
+
 /* -- a refusal: a sentence under the control that caused it -------------- */
 /* Never a popup. Ink on the panel tone beside a hollow ink square, spans
    its row, scrolls into view clear of the rail and the tray, and shakes

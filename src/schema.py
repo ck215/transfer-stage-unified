@@ -299,13 +299,22 @@ def file_save(text, command, *, extensions=("csv",), role="neutral"):
 
 
 def file_open(text, command, *, extensions=("csv",), role="neutral",
-              placeholder=None):
+              placeholder=None, choices=()):
     """Choose an existing file; its path is passed to `command`.
     `placeholder` is the path box's hint ("Path to a saved microscope
-    image"); a view without it says its own default."""
+    image"); a view without it says its own default.
+
+    `choices` names dropdown `model_attr`s of the same model that the file
+    prompt carries beside the path (the Sample DB's instrument and
+    magnification, CHECKPOINT item 4). A view draws a choice for each and
+    sends them, in this order, as the args after the path; a blank choice
+    means "keep what the page holds". The command takes them as optional
+    trailing arguments. (Not `inputs`: those are the writable entries a
+    command validates as a set, and a dropdown is not one.)"""
     element = {
         "type": "file_open", "text": text, "command": command,
         "extensions": list(extensions), "writable": False, "role": role,
+        "choices": list(choices),
     }
     if placeholder:
         element["placeholder"] = str(placeholder)
