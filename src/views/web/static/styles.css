@@ -3369,8 +3369,9 @@ label.row-title[for] { cursor: pointer; }
     background: var(--signal);
   }
   .model-nav, .nav-legend { display: none; }
-  .rail.is-nav-open .model-nav { display: flex; order: 5; flex: 1 0 100%; flex-direction: row; flex-wrap: wrap; }
-  .rail.is-nav-open .nav-legend:not([hidden]) { display: flex; order: 6; flex: 1 0 100%; }
+  .rail.has-marks .nav-toggle { display: none; }
+  .rail.has-marks .model-nav, .rail.is-nav-open .model-nav { display: flex; order: 5; flex: 1 0 100%; flex-direction: row; flex-wrap: wrap; }
+  .rail.has-marks .nav-legend:not([hidden]), .rail.is-nav-open .nav-legend:not([hidden]) { display: flex; order: 6; flex: 1 0 100%; }
   .rail-alert { max-height: 7rem; overflow-y: auto; }
   .model-link { width: auto; white-space: nowrap; }
   .rail-alert, .rail-latched, .idle-lines, .rail-energized { flex: 1 0 100%; }

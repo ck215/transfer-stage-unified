@@ -5308,6 +5308,16 @@ class Dashboard {
     putAttr(key, 'aria-label', 'Pages, ' + shown + (faulted ? ', a device has an error' : ''));
     const hasPages = this.dom.nav.children.length > 0;
     if (key.hidden === hasPages) key.hidden = !hasPages;
+    // A stop mark (stopped, did not confirm, faulted, link lost) is never
+    // folded away: while any page carries one, the list stays open (O16).
+    const marked = Boolean(this.dom.nav.querySelector('.nav-mark:not([hidden])'));
+    const rail = document.querySelector('.rail');
+    if (rail) rail.classList.toggle('has-marks', marked);
+    // The legend explains the dots; after a shutdown there is nothing live
+    // to explain and no red is left on the page.
+    const legend = this.dom.navLegend;
+    const showLegend = hasPages && !this.isShutDown;
+    if (legend && legend.hidden === showLegend) legend.hidden = !showLegend;
   }
 
   /** The rail's page list: "Dashboard" (K4's Overview, renamed by the
@@ -5360,8 +5370,6 @@ class Dashboard {
       this.setDots();
     }
     this.setNavToggleWords();
-    const showLegend = names.length > 0;
-    if (this.dom.navLegend && this.dom.navLegend.hidden === showLegend) this.dom.navLegend.hidden = !showLegend;
     for (const link of this.dom.nav.querySelectorAll('.model-link')) {
       const current = link.dataset.page === 'overview' ? !this.opened
         : link.dataset.model === this.opened;
@@ -5480,6 +5488,7 @@ class Dashboard {
       putAttr(mark, 'title', title);
       if (mark.hidden !== !words) mark.hidden = !words;
     }
+    this.setNavToggleWords();
   }
 
   /** Owner 2026-10-07: each rail entry's status dot. Red (the signal) for
