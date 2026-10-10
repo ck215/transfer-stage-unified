@@ -2791,3 +2791,61 @@ def test_answering_the_sign_in_screen_rescans_when_the_station_has_scanned(
     panel.open_as_guest()
     assert scans == [1]
 
+
+
+class _ClaimsAScanOnAcquire:
+    """A `_reset_lock` stand-in: the instant a reset takes it, a scan has
+    already been claimed (the race between Hard reset's first scan check and
+    its lock)."""
+    def __init__(self, panel, real):
+        self.panel, self.real = panel, real
+
+    def acquire(self, blocking=True):
+        got = self.real.acquire(blocking)
+
+        class Alive:
+            def is_alive(self):
+                return True
+        self.panel._scan_thread = Alive()
+        return got
+
+    def release(self):
+        self.real.release()
+
+    def locked(self):
+        return self.real.locked()
+
+
+def test_a_scan_that_starts_while_a_hard_reset_runs_is_refused(panel, fake_types,
+                                                              monkeypatch):
+    """Arch audit #13, Hard reset half: Refresh inside the reset window must
+    not probe the port being reopened. The scan is refused under Setup's
+    lock while the reset holds `_reset_lock`."""
+    _launch_alpha_on(panel)
+    seen = []
+    original = fake_types["Alpha"].open
+
+    def open_(self):
+        try:
+            panel.scan()
+            seen.append("started")
+        except Refused as refusal:
+            seen.append(refusal.reason)
+        return original(self)
+    monkeypatch.setattr(fake_types["Alpha"], "open", open_)
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert len(seen) == 1 and "reset" in seen[0].lower(), seen
+    assert not panel.is_scanning
+    panel.scan()                       # the lock is released: a scan works again
+    panel.cancel_scan()
+
+
+def test_hard_reset_rechecks_for_a_scan_inside_its_lock(panel):
+    """A scan claimed between the first check and the reset's lock is still
+    caught: nothing is stopped or closed."""
+    old = _launch_alpha_on(panel)
+    panel._reset_lock = _ClaimsAScanOnAcquire(panel, panel._reset_lock)
+    with pytest.raises(Refused, match="scan"):
+        panel.hard_reset_alpha(True)
+    assert panel.controller._model("Alpha") is old and old.closed == 0
+    panel._scan_thread = None

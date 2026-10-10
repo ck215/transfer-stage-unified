@@ -1128,6 +1128,12 @@ class Setup(PortProbe, Panel):
                 # The flash tool probes and uploads over these same ports.
                 self._refuse("The firmware is being flashed. Refresh when "
                              "the Flashing cell is empty.")
+            if self._reset_lock.locked():
+                # A Hard reset (or Start) is closing and reopening a port
+                # (arch audit #13): a probe now could open the port being
+                # reopened. Refused under the same lock that claims a scan.
+                self._refuse("A hard reset or start is running. Refresh when "
+                             "it has finished.")
             self._abort.clear()
             self._warned_ports.clear()
             self._busy_ports.clear()
@@ -1410,6 +1416,15 @@ class Setup(PortProbe, Panel):
             self._refuse("A hard reset is already running; wait for it to "
                          "finish, then press Hard reset again if needed.")
         try:
+            # The scan check above ran before the question and outside this
+            # lock: a scan claimed since is caught here, under Setup's lock
+            # (the one `scan` claims under), before anything is stopped.
+            with self._lock:
+                scan_claimed = self.is_scanning or self._scan_thread is not None \
+                    and self._scan_thread.ident is None
+            if scan_claimed:
+                self._refuse("A scan is running. Wait for it, or press Cancel "
+                             "scan, then Hard reset.")
             return self._hard_reset_now(key, name, model, wanted, where,
                                         target if wanted is not None else None)
         finally:
