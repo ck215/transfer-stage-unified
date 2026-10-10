@@ -1528,3 +1528,52 @@ def test_the_prompts_offer_the_magnification_beside_the_photo(unpicked):
         if section["title"].startswith(("New sample", "New chip", "New flake")):
             attrs = [e.get("model_attr") for e in section["elements"]]
             assert "image_magnification" in attrs, section["title"]
+
+
+# -- the photo dialog carries the instrument and magnification (CHECKPOINT item 4) ------
+
+def _photo_rows(model):
+    rows = [e for e in sch.elements(model.schema) if e["type"] == "file_open"
+            and e["command"] in ("stage_photo", "add_image")]
+    assert rows
+    return rows
+
+
+def test_every_photo_row_declares_the_instrument_and_magnification_as_inputs(unpicked):
+    for row in _photo_rows(unpicked):
+        assert row["inputs"] == ["image_instrument", "image_magnification"], row
+
+
+def test_file_open_without_inputs_declares_none():
+    assert sch.file_open("Load", "load_run")["inputs"] == []
+
+
+def test_add_image_takes_the_instrument_and_magnification_from_the_dialog(unpicked, tmp_path):
+    plain = str(_shot(tmp_path, "plain.png"))
+    result = unpicked.run("add_image", None, (plain, "transfer_stage", "50x"))
+    assert result.is_ok, result
+    [row] = unpicked._store.images("S1")
+    assert (row["instrument"], row["magnification"]) == ("transfer_stage", 50)
+    assert unpicked.image_instrument == "transfer_stage" and unpicked.image_magnification == "50x"
+
+
+def test_a_blank_dialog_value_keeps_the_page_pick(unpicked, tmp_path):
+    unpicked.run("set_image_magnification", None, ("20x",))
+    assert unpicked.run("add_image", None, (str(_shot(tmp_path, "b.png")), "", "")).is_ok
+    [row] = unpicked._store.images("S1")
+    assert (row["instrument"], row["magnification"]) == ("microscope", 20)
+
+
+def test_a_bad_dialog_value_refuses_and_changes_nothing(unpicked, tmp_path):
+    before = (unpicked.image_instrument, unpicked.image_magnification)
+    refused = unpicked.run("add_image", None, (str(_shot(tmp_path, "c.png")), "transfer_stage", "40x"))
+    assert refused.is_refused and "40x" in refused.reason
+    assert (unpicked.image_instrument, unpicked.image_magnification) == before
+    assert unpicked._store.images("S1") == []
+
+
+def test_a_staged_photo_takes_the_dialog_values_too(unpicked, tmp_path):
+    unpicked.run("begin_new_chip")
+    assert unpicked.run("stage_photo", None,
+                        (str(_shot(tmp_path, "s.png", PNG + b"s")), "microscope", "100x")).is_ok
+    assert unpicked.staged_text == "1 photo: s.png (100x)"

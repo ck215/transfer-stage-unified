@@ -1569,8 +1569,50 @@ function renderFileSave(panel, element) {
  *  it: type the path, or choose a file here, which is uploaded into the
  *  model's own output folder (/api/upload) and loaded from there. Either
  *  way the command gets the path it declares (F13, WDG-5). */
+/** The dropdown element of `panel`'s schema whose attr is `attr`, or null. */
+function dropdownNamed(schema, attr) {
+  let found = null;
+  const walk = (node) => {
+    if (found || !node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (node.type === 'dropdown' && node.model_attr === attr) { found = node; return; }
+    Object.keys(node).forEach((k) => walk(node[k]));
+  };
+  walk(schema);
+  return found;
+}
+
+/** The choices a `file_open` prompt carries beside its path (its declared
+ *  `inputs`, CHECKPOINT item 4): one box per dropdown it names, filled from
+ *  that dropdown's options and the model's held value. -> `{nodes, values}`;
+ *  `values()` is the args after the path, in the declared order, '' for none. */
+function fileOpenChoices(panel, element) {
+  const boxes = [];
+  for (const attr of element.inputs || []) {
+    const source = dropdownNamed(panel.schema, attr);
+    if (!source) continue;
+    const wrap = make('label', 'file-open-choice');
+    wrap.appendChild(make('span', 'file-open-choice-text', sentenceCase(source.text || attr)));
+    const select = make('select', 'select');
+    select.name = attr;
+    select.setAttribute('aria-label', nameFor(sentenceCase(source.text || attr)
+      + ' of this photo', ownerOf(panel)));
+    wrap.appendChild(select);
+    const fill = () => panel.loadOptions(source, select);
+    select.addEventListener('focus', fill);
+    fill();
+    boxes.push({ attr, select, wrap });
+  }
+  return {
+    nodes: boxes.map((b) => b.wrap),
+    values: () => boxes.map((b) => b.select.value || ''),
+    attrs: () => boxes.map((b) => b.attr),
+  };
+}
+
 function renderFileOpen(panel, element) {
   const node = make('div', 'row file-open');
+  const choices = fileOpenChoices(panel, element);
   const label = sentenceCase(element.text || 'Open');
   const path = make('input', 'input path-input');
   path.type = 'text';
@@ -1599,7 +1641,7 @@ function renderFileOpen(panel, element) {
     if (saved) {
       path.value = saved;
       path.title = saved;
-      await panel.run(element, [saved]);
+      await panel.run(element, [saved, ...choices.values()]);
     }
   });
   // `file-open-key`: the key a prompt's Return presses from the path box.
@@ -1613,11 +1655,12 @@ function renderFileOpen(panel, element) {
       path.focus();
       return;
     }
-    panel.run(element, [typed]);
+    panel.run(element, [typed, ...choices.values()]);
   };
   button.addEventListener('click', load);
   path.addEventListener('keydown', (event) => { if (event.key === 'Enter') load(); });
   node.appendChild(path);
+  choices.nodes.forEach((n) => node.appendChild(n));
   node.appendChild(choose);
   node.appendChild(button);
   node.appendChild(picker);

@@ -1555,7 +1555,13 @@ def test_no_test_ever_fetches_the_startup_check_is_off(fake_types):
     assert panel._update_thread is None
     assert updater.checks == 0
     assert panel.has_update is False
-    assert panel.state["values"]["station_version"] == "unknown"
+    # The check is off, the version is not: the Station row says what is
+    # running, never "unknown" (UX audit 10-08 #14 core change), and the
+    # Updates sentence does not name an environment variable.
+    panel._version_thread.join(5.0)
+    assert panel.state["values"]["station_version"] == "abc1234, 2026-09-28"
+    assert "STATION_" not in panel.state["values"]["update_status"]
+    assert panel.state["values"]["update_status"] == Setup.CHECK_OFF
 
 
 def test_the_startup_check_runs_on_a_thread_and_publishes(fake_types, checking):
