@@ -1767,25 +1767,31 @@ def test_steps_per_second_still_apply_by_name_to_the_stored_value():
     """Profiles and older callers write steps/s; it applies, is bounded by the
     class ceiling, and the dial follows."""
     chuck, _, _ = make_probe(ChuckPositioner)
-    assert chuck.apply_defaults({"full_speed": 300, "man_full_speed": 150}) == {}
-    assert (chuck.full_speed, chuck.man_full_speed) == (300, 150)
-    assert (chuck.full_speed_pct, chuck.man_full_speed_pct) == (50, 25)
-    refused = chuck.apply_defaults({"full_speed": 3200})
-    assert "full_speed" in refused and chuck.full_speed == 300
-    assert chuck.run("_commit", inputs={"full_speed": "450"}).is_ok
-    assert chuck.full_speed_pct == 75
-    chuck.set_mode("autonomous")
-    assert chuck.run("_commit", inputs={"full_speed": "100"}).is_refused
-    assert chuck.run("_commit", inputs={"full_speed_pct": "10"}).is_refused
+    try:
+        assert chuck.apply_defaults({"full_speed": 300, "man_full_speed": 150}) == {}
+        assert (chuck.full_speed, chuck.man_full_speed) == (300, 150)
+        assert (chuck.full_speed_pct, chuck.man_full_speed_pct) == (50, 25)
+        refused = chuck.apply_defaults({"full_speed": 3200})
+        assert "full_speed" in refused and chuck.full_speed == 300
+        assert chuck.run("_commit", inputs={"full_speed": "450"}).is_ok
+        assert chuck.full_speed_pct == 75
+        chuck.set_mode("autonomous")
+        assert chuck.run("_commit", inputs={"full_speed": "100"}).is_refused
+        assert chuck.run("_commit", inputs={"full_speed_pct": "10"}).is_refused
+    finally:
+        chuck._stop_threads()       # the armed interlock, as the fixture does
 
 
 def test_the_wire_carries_the_steps_per_second_the_dial_set():
     p, port, _ = make_probe(StepperProbe)
-    p.full_speed_pct = 50
-    p.x_dist = 3
-    p.step()
-    sent = [w.payload for w in port.calls if b"1600.0" in w.payload]
-    assert sent, [w.payload for w in port.calls]
+    try:
+        p.full_speed_pct = 50
+        p.x_dist = 3
+        p.step()
+        sent = [w.payload for w in port.calls if b"1600.0" in w.payload]
+        assert sent, [w.payload for w in port.calls]
+    finally:
+        p._stop_threads()           # step() armed it; stop its interlock
 
 
 @pytest.mark.schema
