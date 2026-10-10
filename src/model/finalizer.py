@@ -59,6 +59,8 @@ class Finalizer(Model):
     NEEDS_PORT = False
     NEEDS_GAMEPAD = False
     STORE = "Transfer Map"
+    #: The one disclosure the whole form sits behind on the map's page.
+    DISCLOSURE = "Finalize data"
 
     PARAMS = {p.name: p for p in (
         *(Param(attr, "text", default="", label=label)
@@ -381,9 +383,10 @@ class Finalizer(Model):
                 sch.button("Next", "next"),
                 sch.button("Next sample", "next_sample"),
                 sch.readonly("Status", "status_text"),
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
-                "Identity", *entries,
+                "Identity", *entries, tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "AFM and optical estimates", *grid,
@@ -391,6 +394,7 @@ class Finalizer(Model):
                              "f_method_options"),
                 sch.button("Save", "save", inputs=form, role="go"),
                 sch.button("Save and next", "save_and_next", inputs=form),
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Pictures",
@@ -398,6 +402,7 @@ class Finalizer(Model):
                             empty="No picture was taken.")
                   for name, label in STILLS),
                 sch.readonly("Video", "video_text"),
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
                 "Outcome so far",
@@ -405,5 +410,6 @@ class Finalizer(Model):
                              "figure_type_options"),
                 sch.image("Outcome", "outcome_figure", model_attr="outcome_key",
                           empty="Nothing to plot yet."),
+                tier=2, disclosure=self.DISCLOSURE,
             ),
             self._safety_section())
