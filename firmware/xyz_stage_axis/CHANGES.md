@@ -121,3 +121,35 @@ pass, and the validator's 14): the same Step finishes 41 ms apart and 8 um off t
 was 128 ms and 10 um). What is left is AccelStepper's ramp start (PROTOCOL.md, "Per-move acceleration"). After a
 per-move-acceleration move, by arrival or by STOP, a two-argument MOVE takes exactly as long as before one; INFO's
 `accel_mm_s2` is unchanged; out-of-range values are clamped and bad ones refused. Not run on hardware.
+
+## 2026-10-10: the soft travel limit, SOFTLIMIT (X-14)
+
+The bench probe on axis 1 carries an extension that meets its fixture before the carriage reaches LS2, so only LS1
+protects that axis, and nothing stopped a MOVE, a jog, a HOME search or TEST LIMITS from driving the probe into the
+fixture (host simulation, a wall at 30 mm: HOME's search and a jog hit it at 1 and 2.5 mm/s).
+
+| Where | Change | Why |
+| --- | --- | --- |
+| Constants | `SOFT_EEPROM_ADDR` 4 (9 bytes: magic `0x5C`, the travel in um little-endian, its complement), `SOFT_MAX_MM` 100. No bench value: the travel is the owner's, set over SOFTLIMIT. | One place for the layout. |
+| `SOFTLIMIT [mm]` | New command. No argument: query. `0..100` (0 = no limit): stored in EEPROM and read back; `busy` while enabled, moving, homing or testing (AXIS's rule); `bad-arg`; `eeprom-verify-failed`. | Persisted per board, like the axis tag. |
+| `stepIsr` | LS1 tripping while the axis moves toward the end it guards (its end known) is the reference, taken at the exact step. The limit lies the travel from it, away from that end. A motion about to step past the limit halts there, as at a switch; the direction is AccelStepper's speed, which keeps the motion's sign while it overshoots a target. | The backstop for everything that does not plan for it: HOME's search, the TESTs, an overshoot. |
+| MOVE, MOVETO, REVS | A target past the limit is shortened onto it: `clamped=1`, then `EVT SOFTLIMIT clamped cmd= target_mm= limit_mm=`. At the limit, a move further out is `ERR <cmd> soft-limit`. | "Stops a MOVE/Step before the limit": AccelStepper decelerates onto it. |
+| JOG, JOGV | A jog heading out takes the limit as its far target (not +-1e9 steps), so it decelerates onto it; `EVT SOFTLIMIT reached limit_mm=` when it stops there; further out is `ERR JOG\|JOGV soft-limit`. | The same stop, for the stick. |
+| `limitBlock`, HOME, TEST | Set and not referenced (since boot, LIMITS or a position loss): only a jog moves the axis, or a move toward LS1 once its end is known (`soft-limit-unreferenced:touch-ls1`); HOME and the motion TESTs need the reference to start. A search or test that meets the limit ends there (HOME takes it as an end; `RESULT ... ABORTED reason=soft-limit`). | Before LS1 has been seen this session the firmware does not know where the limit is. |
+| Losing the reference | `positionLost()`: homed's rule (ESTOP or DISABLE while turning, driver reset, UART lost, overtemperature, short), not ZERO or HOME (the reference moves with the origin, and with MICROSTEPS); LIMITS forgets it with the ends. `EVT SOFTLIMIT lost reason=`. | The step count may no longer match the carriage. |
+| A damaged EEPROM block | Not "no limit": `damaged=1` in SOFTLIMIT's reply, and only jogs move (`soft-limit-eeprom-damaged:set-SOFTLIMIT`) until SOFTLIMIT rewrites it. An erased block (never written) is no limit. | Fail safe: the owner's limit is unknown, not absent. |
+| Events | `SOFTLIMIT` lines are kept at LOG 0 (essential), and are never `LIMIT` lines. | The station tells them apart. |
+
+The wire is otherwise unchanged: INFO, STATUS, P, BOOT and every existing reply keep their keys (MOVE's `clamped=` now
+also means the soft limit shortened it). The bench validator (`dev/equipment_test/stepper_validator`) has the same
+feature, the same EEPROM block and the same events (its JOG, MOVE and REVS; it has no HOME), so a limit set under
+either sketch holds under the other.
+
+Verification: `arduino-cli compile --warnings all`, zero warnings: Teensy 3.5 94340 bytes flash, 5908 bytes RAM;
+Teensy 4.1 code 82164, data 14280, RAM1 variables 16448, RAM2 variables 12416. `dev/firmware_sim` scenarios
+`soft-limit-move`, `-jog`, `-backstop`, `-lost`, `-ls1-plus-end`, `-eeprom`, `-eeprom-damaged` (a wall 2 mm past a 28 mm
+limit): red on the sketch before this change (7 of 7), green after; the other 15 scenarios unchanged. The validator
+runs the same seven (red 7 of 7 before its port, green after; its other 14 unchanged). Step ISR (`stepIsr`, Teensy
+3.5 ELF): 379 -> 453 instructions of code; per 25 us tick the added path is 3 instructions with no limit set and
+about 25 (a call to AccelStepper::speed(), a float and a long compare; ~0.3 us at 120 MHz) with one in force. Not run
+on hardware.

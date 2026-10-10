@@ -132,6 +132,7 @@ struct Axis {
   bool wired[2] = { true, true };
   bool homeWired = true;
   double homeLo = 10.0, homeHi = 12.0;
+  double wall = 1e9, wallLo = -1e9;     // obstructions short of a switch (X-14: a probe that meets its fixture first)
   bool pressed[2] = { false, false };
   bool snapped[2] = { false, false }, snapRelease[2] = { false, false };
   uint64_t snapUs[2] = { 0, 0 };
@@ -184,7 +185,7 @@ static void onStep(int a, int dir) {
   if (outputsOn(a)) {
     double nx = s.x + dir / spm(a);
     double v = (s.lastStepUs && dir == s.lastDir && now > s.lastStepUs) ? (1.0 / spm(a)) / ((now - s.lastStepUs) * 1e-6) : 0.0;
-    if (nx < s.op1 - s.ovt - 1e-9 || nx > s.op2 + s.ovt + 1e-9) {
+    if (nx < s.op1 - s.ovt - 1e-9 || nx > s.op2 + s.ovt + 1e-9 || nx > s.wall + 1e-9 || nx < s.wallLo - 1e-9) {
       s.lost++;
       if (!s.crashUs) s.crashUs = now;
       if (v > s.crashV) s.crashV = v;
@@ -555,12 +556,12 @@ static void s_parity() {
   bool sawRefDev = false, sawMyDev = false, posOk = true, noHash = true;
   for (const std::string &l : refLines) { if (l == "DEV: s") sawRefDev = true; }
   for (const Line &l : g_out) {
-    if (l.s == "DEV: m caps=ext1,log,hostto,home,limits,tmc") sawMyDev = true;
+    if (l.s == "DEV: m caps=ext1,log,hostto,home,limits,tmc,soft") sawMyDev = true;
     if (!l.s.empty() && l.s[0] == '#') noHash = false;
     long x, y, z; char tail;
     if (l.s.rfind("POS:", 0) == 0 && sscanf(l.s.c_str(), "POS:%ld,%ld,%ld%c", &x, &y, &z, &tail) != 3) posOk = false;
   }
-  expect(sawRefDev && sawMyDev, "identity: stepper_firmware 'DEV: s', the Mega 'DEV: m caps=ext1,log,hostto,home,limits,tmc'");
+  expect(sawRefDev && sawMyDev, "identity: stepper_firmware 'DEV: s', the Mega 'DEV: m caps=ext1,log,hostto,home,limits,tmc,soft'");
   expect(noHash, "no '#' line from the Mega in the whole run (nothing was asked)");
   expect(posOk, "every POS line is POS:<x>,<y>,<z>");
   long lastPos[3] = { 0, 0, 0 };
@@ -623,7 +624,7 @@ static void s_identity() {
   boot();
   size_t m0 = g_out.size();
   sendRaw("s"); runMs(5);
-  expect(lineAt(findLine("DEV:", m0)) == "DEV: m caps=ext1,log,hostto,home,limits,tmc", "'s' -> DEV: m caps=...", lineAt(findLine("DEV:", m0)));
+  expect(lineAt(findLine("DEV:", m0)) == "DEV: m caps=ext1,log,hostto,home,limits,tmc,soft", "'s' -> DEV: m caps=...", lineAt(findLine("DEV:", m0)));
   runMs(1000);
   expect(findLine("#") == (size_t)-1, "no '#' line before the host sends one (tmc-missing Z is held)");
   size_t m1 = g_out.size();
@@ -631,14 +632,14 @@ static void s_identity() {
   expect(findLine("#", m1) == (size_t)-1, "an unknown '#' line before ext1 gets no reply (an old host's desynced packet)");
   size_t m2 = g_out.size();
   std::string r = ext("#INFO");
-  expect(r.rfind("#OK INFO fw=xyz_stage_mega proto=1 caps=ext1,log,hostto,home,limits,tmc axes=XYZ ", 0) == 0, "#INFO header", r);
+  expect(r.rfind("#OK INFO fw=xyz_stage_mega proto=1 caps=ext1,log,hostto,home,limits,tmc,soft axes=XYZ ", 0) == 0, "#INFO header", r);
   size_t ki = findLine("#OK INFO", m2), kf = findLine("#EVT FAULT tmc-missing Z", m2);
   expect(kf != (size_t)-1 && kf > ki, "the held boot event follows the first reply: #EVT FAULT tmc-missing Z", lineAt(kf));
   expect(countLines("tmc-missing") == 1, "and only once");
   expect(ext("#NOPE") == "#ERR NOPE unknown-command", "once ext1 is open, an unknown command is answered");
   size_t m3 = g_out.size();
   sendRaw("s"); runMs(5);
-  expect(lineAt(findLine("DEV:", m3)) == "DEV: m caps=ext1,log,hostto,home,limits,tmc", "identity unchanged after ext1");
+  expect(lineAt(findLine("DEV:", m3)) == "DEV: m caps=ext1,log,hostto,home,limits,tmc,soft", "identity unchanged after ext1");
 }
 
 // 3. Every '#' command and its errors; exactly one reply each (MEGA_STANDARD §3).
@@ -1158,6 +1159,212 @@ static void s_watchdog_timer() {
          s_wdtResets ? fmt("+%.1f ms", (s_wdtResetUs - (double)t0) / 1000) : "no reset");
 }
 
+// 16. Review R-2 on the board (X-19): a frame whose step size x distance passes 32767 counts, and a D-pad step size
+// past 32767 (the jog packet admits 1..100000). stepper_firmware and chuck_firmware held both in an `int`, 16 bits on
+// the ATmega2560 (build.sh compiles their copies with int16_t): the frame's move wrapped to -31936 and ran the other
+// way, into the - hard stop; the D-pad's 40000 became -25536. Every axis must travel the whole distance, forward.
+// The three axes move alike, so the chuck's own pin order (its X on 42-44) does not matter. The xyz Mega held both in
+// 32 bits from the start: it passes as it is.
+static void s_past_int16() {
+  boot(2, 2, 2);
+  enable();
+  long n0[3] = { st[0].net, st[1].net, st[2].net };
+  sendLine(frame(16, 16, 16, 3200.0, -2100, 2100, -2100));   // X and Z negated on the wire: +33600 counts on every axis
+  runMs(500);
+  std::string early;
+  bool forward = true;
+  for (int a = 0; a < 3; a++) { long d = st[a].net - n0[a]; early += std::string(early.empty() ? "" : ", ") + std::to_string(d); if (d <= 0) forward = false; }
+  expect(forward, "frame 16 x 2100 = 33600 counts: every axis starts forward", early);
+  waitIdle(40000);
+  long d[3] = { st[0].net - n0[0], st[1].net - n0[1], st[2].net - n0[2] };
+  expect(d[0] == 33600 && d[1] == 33600 && d[2] == 33600, "the frame moves every axis +33600 counts (21 mm), not the wrapped -31936",
+         triple(d));
+  long n1[3] = { st[0].net, st[1].net, st[2].net };
+  Pkt p; p.speed = 3200; p.xs = p.ys = p.zs = 40000; p.lr = p.ud = p.bump = 1;
+  jogFor(p, 20, 30000);                                     // the press, then neutral packets (the dead-man) while it steps
+  host.stream = false;
+  long e[3] = { st[0].net - n1[0], st[1].net - n1[1], st[2].net - n1[2] };
+  expect(e[0] == 40000 && e[1] == 40000 && e[2] == 40000, "a D-pad step of size 40000 moves every axis +40000 counts, not -25536",
+         triple(e));
+  expect(noCrash(), "no hard-stop contact", crashAll());
+}
+
+// ------------------------------------------------------------------ X-14: the soft travel limit (cap `soft`)
+// #SOFTLIMIT <A> <counts>: the most an axis may travel from LS1, measured from where LS1 last tripped while the axis
+// moved toward the end it guards. X's probe meets a wall at 30 mm here (LS2 at 50 is never reached); 44800 counts is
+// 28 mm. The block (station_std.h STD_SOFT_ADDR 23): magic 0x5D, a 4-byte count per axis, their complements.
+static const size_t NONE = (size_t)-1;
+static void presetSoft(int32_t x, int32_t y, int32_t z, int damagedAxis = -1) {
+  uint8_t *e = sim_eeprom();
+  const int32_t v[3] = { x, y, z };
+  e[23] = 0x5D;
+  for (int a = 0; a < 3; a++)
+    for (int i = 0; i < 4; i++) { e[24 + 4 * a + i] = (uint8_t)((uint32_t)v[a] >> (8 * i)); e[36 + 4 * a + i] = (uint8_t)(~(uint32_t)v[a] >> (8 * i)); }
+  if (damagedAxis >= 0) e[36 + 4 * damagedAxis] ^= 1;
+}
+static long kvl(const std::string &line, const std::string &key) { std::string v = kv(line, key); return v == "?" ? -999999999L : atol(v.c_str()); }
+static const double COUNT_MM = 1.0 / 1600;
+// X from mid-travel onto LS1 by the stick at full speed: the trip from clear teaches LS1's end and is the reference.
+// -> the #EVT SOFTLIMIT X referenced line.
+static std::string touchLs1X() {
+  size_t m = g_out.size();
+  jogAxis(0, -1, 3200, 13000);
+  return lineAt(findLine("#EVT SOFTLIMIT X referenced", m));
+}
+
+// 17. Frames, jogs and D-pad steps against X's soft limit; Y and Z have none and move as before.
+static void s_soft_frames() {
+  presetCfg(CFG_L, CFG_L, CFG_L);
+  st[0].wall = 30.0;
+  boot();
+  openExt();
+  expect(ext("#SOFTLIMIT X") == "#OK SOFTLIMIT axis=X counts=0 ref=0", "blank EEPROM: no soft limit (the default)", ext("#SOFTLIMIT X"));
+  for (const char *bad : { "#SOFTLIMIT", "#SOFTLIMIT Q 1", "#SOFTLIMIT X -1", "#SOFTLIMIT X 160001", "#SOFTLIMIT X 1.5", "#SOFTLIMIT X 1 2" })
+    expect(ext(bad) == "#ERR SOFTLIMIT bad-arg", std::string(bad) + " -> bad-arg", ext(bad));
+  expect(ext("#SOFTLIMIT X 44800") == "#OK SOFTLIMIT axis=X counts=44800 ref=0 stored=1", "#SOFTLIMIT X 44800 (28 mm)");
+  std::string inf = ext("#INFO");
+  expect(kv(inf, "x_soft") == "44800" && kv(inf, "x_soft_ref") == "0" && kv(inf, "y_soft") == "0" && kv(inf, "x_soft_lim") == "?",
+         "#INFO x_soft=44800 x_soft_ref=0, y_soft=0", inf);
+  enable();
+  expect(ext("#SOFTLIMIT X 1600") == "#ERR SOFTLIMIT busy", "#SOFTLIMIT refused while enabled");
+  size_t m = g_out.size(); long n0 = st[0].net;
+  moveAxis(0, 1600, 1600); runMs(50);
+  moveAxis(0, -1600, 1600); runMs(50);
+  expect(countLines("#EVT REFUSED X reason=soft-limit-unreferenced:touch-ls1", m) == 2 && st[0].net == n0,
+         "X: frames either way refused before LS1 is touched (its end unknown)", lineAt(findLine("#EVT REFUSED", m)));
+  long ny = st[1].net;
+  moveAxis(1, 1600, 1600); waitIdle(3000);
+  expect(st[1].net == ny + 1600, "Y (no soft limit) moves as before");
+  std::string ref = touchLs1X();
+  long ls1 = kvl(ref, "ls1"), lim = kvl(ref, "lim");
+  expect(st[0].x <= 0.0 && st[0].x > -0.002 && lim - ls1 == 44800, "X jogged onto LS1: #EVT SOFTLIMIT X referenced ls1=.. lim=ls1+44800", ref);
+  const double limX = st[0].x + (lim - st[0].net) * COUNT_MM;   // the limit on the stage
+  m = g_out.size();
+  moveAxis(0, 64000, 3200); waitIdle(30000);
+  size_t k = findLine("#EVT SOFTLIMIT X stopped", m);
+  expect(k != NONE && kvl(lineAt(k), "pos") == lim, "a 40 mm frame stops on the limit: #EVT SOFTLIMIT X stopped pos=lim", lineAt(k));
+  expect(fabs(st[0].x - limX) < COUNT_MM / 2 && st[0].net == lim && findLine("#EVT LIMIT", m) == NONE,
+         "X sits on the limit, 28 mm from LS1; no switch event", xs(0));
+  expect(noCrash(), "never reaches the wall at 30 mm", crashAll());
+  m = g_out.size();
+  moveAxis(0, 1600, 1600); runMs(50);
+  expect(lineAt(findLine("#EVT REFUSED X", m)) == "#EVT REFUSED X reason=soft-limit" && st[0].net == lim, "a frame further out is refused");
+  m = g_out.size();
+  jogAxis(0, +1, 3200, 300);
+  expect(lineAt(findLine("#EVT REFUSED X", m)) == "#EVT REFUSED X reason=soft-limit" && st[0].net == lim, "so is the stick");
+  Pkt p; p.speed = 3200; p.xs = 160; p.lr = 1;
+  m = g_out.size();
+  jogFor(p, 20, 300); host.stream = false;
+  expect(lineAt(findLine("#EVT REFUSED X", m)) == "#EVT REFUSED X reason=soft-limit" && st[0].net == lim, "and the D-pad");
+  moveAxis(0, -16000, 3200); waitIdle(10000);
+  expect(st[0].net == lim - 16000, "toward LS1 it moves");
+  m = g_out.size();
+  jogAxis(0, +1, 3200, 6000);                                 // the stick out to it at full speed
+  expect(st[0].net == lim && findLine("#EVT SOFTLIMIT X stopped", m) != NONE && noCrash(), "a jog stops on the limit too", xs(0));
+  moveAxis(0, -8000, 3200); waitIdle(10000);
+  expect(ext("#ZERO X") == "#OK ZERO axis=X", "#ZERO X");
+  std::string q = ext("#SOFTLIMIT X");
+  expect(kvl(q, "lim") == 8000 && kvl(q, "ref") == 1, "after ZERO the limit is 8000 counts ahead (the same carriage position)", q);
+  moveAxis(0, 64000, 3200); waitIdle(30000);
+  expect(fabs(st[0].x - limX) < COUNT_MM / 2 && noCrash(), "and a frame still stops there", xs(0));
+  inf = ext("#INFO");
+  expect(kv(inf, "x_soft_ref") == "1" && kv(inf, "x_soft_lim") == "8000", "#INFO x_soft_ref=1 x_soft_lim=8000", inf);
+}
+
+// 18. #SOFTLIMIT persists across a reboot; the reference does not. A driver reset loses it; frames toward LS1 still go.
+static void s_soft_persist() {
+  if (g_phase == 2) {
+    presetCfg(CFG_L, CFG_L, CFG_L);
+    st[0].wall = 30.0;
+    boot();
+    openExt();
+    std::string inf = ext("#INFO");
+    expect(kv(inf, "x_soft") == "44800" && kv(inf, "z_soft") == "16000" && kv(inf, "y_soft") == "0" && kv(inf, "x_soft_ref") == "0",
+           "after a reboot: x_soft=44800 z_soft=16000, not referenced", inf);
+    enable();
+    size_t m = g_out.size();
+    moveAxis(0, 1600, 1600); runMs(50);
+    expect(lineAt(findLine("#EVT REFUSED X", m)) == "#EVT REFUSED X reason=soft-limit-unreferenced:touch-ls1", "frames on X refused again");
+    touchLs1X();
+    moveAxis(0, 8000, 3200); runMs(1000);
+    m = g_out.size();
+    drvPowerUp(drv[0]);                                       // X loses VM and comes back on its defaults
+    runMs(400);
+    expect(lineAt(findLine("#EVT SOFTLIMIT X lost", m)).find("reason=driver-reset") != std::string::npos,
+           "a driver reset loses the reference: #EVT SOFTLIMIT X lost reason=driver-reset", lineAt(findLine("#EVT SOFTLIMIT", m)));
+    enable();
+    m = g_out.size(); long n0 = st[0].net;
+    moveAxis(0, 1600, 1600); runMs(50);
+    expect(lineAt(findLine("#EVT REFUSED X", m)) == "#EVT REFUSED X reason=soft-limit-unreferenced:touch-ls1" && st[0].net == n0,
+           "a frame away from LS1 is refused");
+    moveAxis(0, -1600, 1600); waitIdle(3000);
+    expect(st[0].net == n0 - 1600, "toward LS1 (its end known) it moves");
+    m = g_out.size();
+    moveAxis(0, -48000, 3200); waitIdle(30000);
+    expect(findLine("#EVT SOFTLIMIT X referenced", m) != NONE && st[0].x <= 0.0 && st[0].x > -0.002, "LS1 trips: referenced again", xs(0));
+    sendRaw("d"); runMs(20);
+    m = g_out.size();
+    expect(ext("#AXISCFG X limits=1") == "#OK AXISCFG axis=X limits=1 home=0 stored=1", "#AXISCFG X");
+    expect(findLine("#EVT SOFTLIMIT X lost reason=axiscfg", m) != NONE && kv(ext("#INFO"), "x_soft_ref") == "0",
+           "AXISCFG forgets the ends and the reference");
+    expect(noCrash(), "no wall, no hard stop", crashAll());
+    return;
+  }
+  boot();
+  openExt();
+  expect(ext("#SOFTLIMIT X 44800") == "#OK SOFTLIMIT axis=X counts=44800 ref=0 stored=1", "#SOFTLIMIT X 44800");
+  expect(ext("#SOFTLIMIT Z 16000") == "#OK SOFTLIMIT axis=Z counts=16000 ref=0 stored=1", "#SOFTLIMIT Z 16000");
+  const uint8_t *e = sim_eeprom();
+  uint32_t vx = e[24] | (e[25] << 8) | (e[26] << 16) | ((uint32_t)e[27] << 24), cx = e[36] | (e[37] << 8) | (e[38] << 16) | ((uint32_t)e[39] << 24);
+  uint32_t vy = e[28] | (e[29] << 8) | (e[30] << 16) | ((uint32_t)e[31] << 24), cy = e[40] | (e[41] << 8) | (e[42] << 16) | ((uint32_t)e[43] << 24);
+  expect(e[23] == 0x5D && vx == 44800 && cx == ~vx && vy == 0 && cy == ~vy, "EEPROM 23: magic, X's 44800 and complement, Y none");
+  expect(e[16] == 0xFF, "the AXISCFG block is untouched");
+  rebootInto(2);
+}
+
+// 19. HOME meets the soft limit as an end; before the reference it does not start.
+static void s_soft_home() {
+  presetCfg(CFG_L | CFG_H, 0, 0);
+  presetSoft(44800, 0, 0);
+  st[0].wall = 30.0;
+  st[0].homeLo = 100; st[0].homeHi = -100;                  // no flag: the search goes to both ends
+  boot();
+  openExt(); enable();
+  expect(ext("#HOME X") == "#ERR HOME soft-limit-unreferenced:touch-ls1", "#HOME X refused before LS1 is touched");
+  double limX = 0;
+  { std::string ref = touchLs1X(); limX = st[0].x + (kvl(ref, "lim") - st[0].net) * COUNT_MM; }
+  size_t m0 = g_out.size();
+  expect(ext("#HOME X") == "#OK HOME started", "#HOME X starts on LS1 (its end known)");
+  for (int k = 0; k < 400 && findLine("#EVT HOME FAIL X", m0) == NONE && findLine("#EVT HOMED X", m0) == NONE; k++) runMs(500);
+  size_t f = findLine("#EVT HOME FAIL X", m0), sx = findLine("#EVT SOFTLIMIT X stopped", m0);
+  expect(has(lineAt(f), "reason=no-edge-between-limits") && sx != NONE && sx < f, "the search stops on the soft limit, its second end", lineAt(f));
+  expect(fabs(st[0].x - limX) < COUNT_MM / 2 && noCrash(), "on the limit, short of the wall", xs(0) + "; " + crashAll());
+}
+
+// 20. A damaged entry is not "no limit": jogs only, until #SOFTLIMIT writes it again.
+static void s_soft_damaged() {
+  presetCfg(CFG_L, CFG_L, CFG_L);
+  presetSoft(44800, 0, 0, 0);
+  boot();
+  openExt();
+  std::string inf = ext("#INFO");
+  expect(kv(inf, "x_soft_damaged") == "1" && kv(inf, "x_soft") == "0" && kv(inf, "y_soft_damaged") == "?", "#INFO x_soft_damaged=1 (Y fine)", inf);
+  enable();
+  size_t m = g_out.size(); long n0 = st[0].net;
+  moveAxis(0, -1600, 1600); runMs(50);
+  expect(lineAt(findLine("#EVT REFUSED X", m)) == "#EVT REFUSED X reason=soft-limit-eeprom-damaged:set-SOFTLIMIT" && st[0].net == n0,
+         "X: frames refused", lineAt(findLine("#EVT REFUSED", m)));
+  expect(ext("#HOME X") == "#ERR HOME no-home-sensor", "(HOME has its own refusal first)");
+  jogAxis(0, +1, 1600, 500);
+  expect(st[0].net > n0, "a jog still moves X");
+  sendRaw("d"); runMs(20);
+  expect(ext("#SOFTLIMIT X 0") == "#OK SOFTLIMIT axis=X counts=0 ref=0 stored=1", "#SOFTLIMIT X 0 rewrites it: no limit");
+  enable();
+  n0 = st[0].net;
+  moveAxis(0, 1600, 1600); waitIdle(3000);
+  expect(st[0].net == n0 + 1600, "frames move X again");
+}
+
 struct Scenario { const char *name; void (*fn)(); };
 static void s_ht0() { s_host_timeout(0); }
 static void s_ht1() { s_host_timeout(1); }
@@ -1185,6 +1392,11 @@ static const Scenario SCENARIOS[] = {
   { "tmc-late-readback", s_tmc_late },
   { "watchdog-deadman", s_watchdog_deadman },
   { "watchdog-step-timer", s_watchdog_timer },
+  { "frame-dpad-past-int16", s_past_int16 },
+  { "soft-limit-frames-jog-dpad", s_soft_frames },
+  { "soft-limit-persists-reboot-lost", s_soft_persist },
+  { "soft-limit-home", s_soft_home },
+  { "soft-limit-eeprom-damaged", s_soft_damaged },
 };
 
 int main(int argc, char **argv) {

@@ -3,16 +3,19 @@
 // in phase 2 (MEGA_STANDARD §6, "Retrofit"); a copy is never edited on its own.
 //
 // What it owns: the identity reply with caps=, the '#' command set INFO, LOG, HOSTTIMEOUT, HB, AXISCFG, STOP (and
-// HOME and ZERO when the sketch has the home feature), #OK/#ERR/#EVT output with the LOG levels, the host timeout and
-// its 10 s disable, and the AXISCFG block in EEPROM. What it does not own: motion, the frame protocol, interlocks and
-// drivers. It reaches those through the sk*() hooks the sketch defines (declared below).
+// HOME and ZERO when the sketch has the home feature, SOFTLIMIT when it has the soft travel limit), #OK/#ERR/#EVT output
+// with the LOG levels, the host timeout and its 10 s disable, and the AXISCFG and SOFTLIMIT blocks in EEPROM. What it
+// does not own: motion, the frame protocol, interlocks and drivers. It reaches those through the sk*() hooks the sketch
+// defines (declared below).
 //
 // Before including it the sketch defines:
 //   STD_IDENTITY     identity letter, e.g. 'm'             STD_FW          sketch name, e.g. "xyz_stage_mega"
 //   STD_NAXES        number of axes, 1..3                  STD_AXES        their letters, e.g. "XYZ"
 //   STD_CAP_HOME     1: firmware has HOME and ZERO         STD_CAP_LIMITS  1: firmware has the limit interlock
 //   STD_CAP_TMC      1: firmware reads its drivers over UART
-//   STD_EEPROM_ADDR  first byte of the AXISCFG block (1 + 2 x STD_NAXES bytes)
+//   STD_CAP_SOFT     1: firmware has the soft travel limit (#SOFTLIMIT; MEGA_STANDARD §4, 2026-10-10)
+//   STD_EEPROM_ADDR  first byte of the AXISCFG block (1 + 2 x STD_NAXES bytes); with STD_CAP_SOFT the SOFTLIMIT block
+//                    follows it (1 + 8 x STD_NAXES bytes)
 //
 // Rules this layer keeps (MEGA_STANDARD §3): nothing starting with '#' goes out until the host has sent a '#' command
 // this firmware knows (std_ext), so a host speaking only the frame protocol sees exactly the old bytes; every '#'
@@ -28,7 +31,8 @@
 #include <stdlib.h>
 
 #if !defined(STD_IDENTITY) || !defined(STD_FW) || !defined(STD_NAXES) || !defined(STD_AXES) || \
-    !defined(STD_CAP_HOME) || !defined(STD_CAP_LIMITS) || !defined(STD_CAP_TMC) || !defined(STD_EEPROM_ADDR)
+    !defined(STD_CAP_HOME) || !defined(STD_CAP_LIMITS) || !defined(STD_CAP_TMC) || !defined(STD_CAP_SOFT) || \
+    !defined(STD_EEPROM_ADDR)
 #error "station_std.h: define STD_IDENTITY, STD_FW, STD_NAXES, STD_AXES, STD_CAP_* and STD_EEPROM_ADDR first"
 #endif
 
@@ -49,6 +53,9 @@
 #define STD_CFG_MAGIC 0x5A                    // AXISCFG block: magic, one byte per axis, then each byte's complement
 #define STD_CFG_LIMITS 0x01
 #define STD_CFG_HOME 0x02
+#define STD_SOFT_ADDR (STD_EEPROM_ADDR + 1 + 2 * STD_NAXES)   // SOFTLIMIT block: magic, counts per axis (4 bytes, LE),
+#define STD_SOFT_MAGIC 0x5D                                    // then each value's complement
+#define STD_SOFT_MAX 160000L                  // #SOFTLIMIT's ceiling, counts (100 mm: twice the stage's travel)
 
 #if STD_CAP_HOME
 #define STD_CAPS_HOME_ ",home"
@@ -65,8 +72,13 @@
 #else
 #define STD_CAPS_TMC_ ""
 #endif
+#if STD_CAP_SOFT
+#define STD_CAPS_SOFT_ ",soft"
+#else
+#define STD_CAPS_SOFT_ ""
+#endif
 // A token is listed only when the firmware has the feature (MEGA_STANDARD §2); hardware presence is #INFO's.
-#define STD_CAPS "ext1,log,hostto" STD_CAPS_HOME_ STD_CAPS_LIMITS_ STD_CAPS_TMC_
+#define STD_CAPS "ext1,log,hostto" STD_CAPS_HOME_ STD_CAPS_LIMITS_ STD_CAPS_TMC_ STD_CAPS_SOFT_
 
 // ---------------------------------------------------------------- hooks the sketch defines
 bool skBusy();                         // anything moving, homing or stepping (arms the host timeout)
@@ -85,6 +97,10 @@ void skHomeStart(uint8_t axis);        // called right after "#OK HOME started"
 PGM_P skZero(uint8_t axis);            // #ZERO: nullptr when done, else why it was refused
 void skExtOpened();                    // the host has just spoken ext1: flush events held back until now
 void skInfoExtra(char *buf, size_t n); // sketch-specific INFO keys, appended last (" k=v ...")
+#if STD_CAP_SOFT
+void skSoftApply(uint8_t axis);        // the axis's SOFTLIMIT changed (std_soft, std_softBad): re-arm its limit
+uint8_t skSoftRef(uint8_t axis, int32_t &ls1, int32_t &lim);   // 1: LS1 has given the reference (ls1, lim filled)
+#endif
 
 // ---------------------------------------------------------------- state
 static bool     std_ext = false;            // the host has sent a '#' command this firmware knows
@@ -94,6 +110,10 @@ static uint32_t std_lastRxMs = 0;           // last byte from the host, any byte
 static bool     std_hostTimedOut = false;   // #EVT FAULT host-timeout stopped motion; any byte clears it
 static uint32_t std_hostTimedOutMs = 0;
 static uint8_t  std_cfg[STD_NAXES];         // AXISCFG from EEPROM: STD_CFG_LIMITS | STD_CFG_HOME per axis
+#if STD_CAP_SOFT
+static int32_t  std_soft[STD_NAXES];        // SOFTLIMIT from EEPROM, counts from LS1; 0 = no limit
+static uint8_t  std_softBad = 0;            // bit a: axis a's SOFTLIMIT entry is damaged (jogs only until rewritten)
+#endif
 
 struct StdLine { char buf[STD_LINE_MAX]; uint8_t len; bool overflow; };
 static StdLine  std_line;                   // the one input line being read (a frame or a '#' command)
@@ -200,6 +220,48 @@ static bool stdCfgStore(uint8_t a, uint8_t v) {
 static inline bool stdCfgLimits(uint8_t a) { return std_cfg[a] & STD_CFG_LIMITS; }
 static inline bool stdCfgHome(uint8_t a) { return std_cfg[a] & STD_CFG_HOME; }
 
+#if STD_CAP_SOFT
+// ---------------------------------------------------------------- SOFTLIMIT in EEPROM (MEGA_STANDARD §4)
+// Layout at STD_SOFT_ADDR: STD_SOFT_MAGIC, counts[0..n-1] (4 bytes each, little-endian), ~counts[0..n-1]. An erased
+// block (every byte 0xFF: never written) is no limit on any axis. Otherwise an entry whose complement disagrees, or out
+// of range, or a block without the magic, is DAMAGED, not "no limit": the owner's limit is unknown, so that axis moves
+// only by jog until #SOFTLIMIT writes it again (the opposite of AXISCFG's absent-is-inert, on purpose: fail safe).
+static uint32_t stdSoftWord(uint16_t at) {
+  uint32_t v = 0;
+  for (uint8_t i = 0; i < 4; i++) v |= (uint32_t)EEPROM.read(at + i) << (8 * i);
+  return v;
+}
+static void stdSoftLoad() {
+  bool erased = true;
+  for (uint16_t i = 0; i < 1 + 8 * STD_NAXES; i++) if (EEPROM.read(STD_SOFT_ADDR + i) != 0xFF) { erased = false; break; }
+  bool magic = EEPROM.read(STD_SOFT_ADDR) == STD_SOFT_MAGIC;
+  std_softBad = 0;
+  for (uint8_t a = 0; a < STD_NAXES; a++) {
+    uint32_t v = stdSoftWord(STD_SOFT_ADDR + 1 + 4 * a), c = stdSoftWord(STD_SOFT_ADDR + 1 + 4 * (STD_NAXES + a));
+    bool good = magic && c == ~v && v <= (uint32_t)STD_SOFT_MAX;
+    std_soft[a] = good ? (int32_t)v : 0;
+    if (!good && !erased) std_softBad |= (uint8_t)(1u << a);
+  }
+}
+static bool stdSoftStore(uint8_t a, int32_t v) {
+  for (uint8_t i = 0; i < 4; i++) {
+    EEPROM.update(STD_SOFT_ADDR + 1 + 4 * a + i, (uint8_t)((uint32_t)v >> (8 * i)));
+    EEPROM.update(STD_SOFT_ADDR + 1 + 4 * (STD_NAXES + a) + i, (uint8_t)(~(uint32_t)v >> (8 * i)));
+  }
+  bool fresh = EEPROM.read(STD_SOFT_ADDR) != STD_SOFT_MAGIC;
+  EEPROM.update(STD_SOFT_ADDR, STD_SOFT_MAGIC);
+  if (fresh)                                               // the first write: the other axes' entries become "none"
+    for (uint8_t b = 0; b < STD_NAXES; b++)
+      if (b != a && stdSoftWord(STD_SOFT_ADDR + 1 + 4 * (STD_NAXES + b)) != ~stdSoftWord(STD_SOFT_ADDR + 1 + 4 * b))
+        for (uint8_t i = 0; i < 4; i++) {
+          EEPROM.update(STD_SOFT_ADDR + 1 + 4 * b + i, 0);
+          EEPROM.update(STD_SOFT_ADDR + 1 + 4 * (STD_NAXES + b) + i, 0xFF);
+        }
+  stdSoftLoad();                                           // read back, never assume
+  return !(std_softBad & (1u << a)) && std_soft[a] == v;
+}
+#endif
+
 // ---------------------------------------------------------------- host timeout (MEGA_STANDARD §4)
 // Armed by #HOSTTIMEOUT only. No byte for that window while busy: stop every axis, #EVT FAULT host-timeout. Still
 // silent STD_HOST_SILENT_OFF_MS after that: outputs off, #EVT FAULT host-timeout-disabled; 'e' is needed again.
@@ -225,6 +287,14 @@ static void stdInfo() {
                l, skTmc(a), l, skLimitsOn(a), l, stdCfgHome(a) ? 1u : 0u, l, stdEnd(skLsEnd(a, 0)), l,
                stdEnd(skLsEnd(a, 1)), l, skHomed(a));
     Serial.print(std_out);
+#if STD_CAP_SOFT
+    int32_t ls1, lim;
+    uint8_t ref = skSoftRef(a, ls1, lim);
+    snprintf_P(std_out, sizeof std_out, PSTR(" %c_soft=%ld %c_soft_ref=%u"), l, (long)std_soft[a], l, ref);
+    Serial.print(std_out);
+    if (ref && std_soft[a]) { snprintf_P(std_out, sizeof std_out, PSTR(" %c_soft_lim=%ld"), l, (long)lim); Serial.print(std_out); }
+    if (std_softBad & (1u << a)) { snprintf_P(std_out, sizeof std_out, PSTR(" %c_soft_damaged=1"), l); Serial.print(std_out); }
+#endif
   }
   snprintf_P(std_out, sizeof std_out, PSTR(" log=%u hostto_ms=%u"), std_logLevel, std_hostToMs);
   Serial.print(std_out);
@@ -253,6 +323,31 @@ static void stdAxisCfg(const char *cmd, char *args[], uint8_t n) {
   stdOk(cmd, PSTR("axis=%c limits=%u home=%u stored=1"), stdAxisLetter((uint8_t)a), (v & STD_CFG_LIMITS) ? 1u : 0u,
         (v & STD_CFG_HOME) ? 1u : 0u);
 }
+
+#if STD_CAP_SOFT
+// #SOFTLIMIT <A> [counts]: query, or set the soft travel limit (counts from LS1's reference, 0 = none; MEGA_STANDARD
+// §3-§4). Writes EEPROM; refused while enabled or moving, as AXISCFG is.
+static void stdSoftLimit(const char *cmd, char *args[], uint8_t n) {
+  int8_t a = n ? stdAxisIndex(args[0]) : -1;
+  long v = 0;
+  if (a < 0 || n > 2 || (n == 2 && (!stdParseLong(args[1], v) || v < 0 || v > STD_SOFT_MAX))) { stdErr(cmd, PSTR("bad-arg")); return; }
+  if (n == 2) {
+    if (skAxisCfgBusy()) { stdErr(cmd, PSTR("busy")); return; }
+    bool ok = stdSoftStore((uint8_t)a, (int32_t)v);
+    skSoftApply((uint8_t)a);
+    if (!ok) { stdErr(cmd, PSTR("eeprom-verify-failed")); return; }
+  }
+  int32_t ls1, lim;
+  uint8_t ref = skSoftRef((uint8_t)a, ls1, lim);
+  char b[96];
+  int k = snprintf_P(b, sizeof b, PSTR("axis=%c counts=%ld ref=%u"), stdAxisLetter((uint8_t)a), (long)std_soft[a], ref);
+  if (ref) k += snprintf_P(b + k, sizeof b - k, PSTR(" ls1=%ld"), (long)ls1);
+  if (ref && std_soft[a]) k += snprintf_P(b + k, sizeof b - k, PSTR(" lim=%ld"), (long)lim);
+  if (std_softBad & (1u << a)) k += snprintf_P(b + k, sizeof b - k, PSTR(" damaged=1"));
+  if (n == 2) snprintf_P(b + k, sizeof b - k, PSTR(" stored=1"));
+  stdOk(cmd, PSTR("%s"), b);
+}
+#endif
 
 // One complete '#' line (the leading '#' included). Called by the sketch's byte dispatcher.
 static void stdExtLine(char *line, bool overflow) {
@@ -289,6 +384,9 @@ static void stdExtLine(char *line, bool overflow) {
   }
   else if (!strcmp_P(cmd, PSTR("AXISCFG"))) { std_ext = true; stdAxisCfg(cmd, args, n); }
   else if (!strcmp_P(cmd, PSTR("STOP"))) { std_ext = true; skStop(); stdOkBare(cmd); }
+#if STD_CAP_SOFT
+  else if (!strcmp_P(cmd, PSTR("SOFTLIMIT"))) { std_ext = true; stdSoftLimit(cmd, args, n); }
+#endif
 #if STD_CAP_HOME
   else if (!strcmp_P(cmd, PSTR("HOME")) || !strcmp_P(cmd, PSTR("ZERO"))) {
     std_ext = true;
@@ -318,6 +416,9 @@ static void stdExtLine(char *line, bool overflow) {
 
 static void stdBegin(uint32_t now) {
   stdCfgLoad();
+#if STD_CAP_SOFT
+  stdSoftLoad();
+#endif
   stdLineReset();
   std_lastRxMs = now;
 }

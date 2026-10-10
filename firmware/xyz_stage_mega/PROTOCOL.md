@@ -20,7 +20,7 @@ Byte for byte `stepper_firmware`'s, with its field meanings and signs:
 
 | Bytes | Effect |
 |---|---|
-| `s` | `DEV: m caps=ext1,log,hostto,home,limits,tmc` (§2 below) |
+| `s` | `DEV: m caps=ext1,log,hostto,home,limits,tmc,soft` (§2 below) |
 | `e` | Enable: TOFF 4 on each driver present, EN low on its axis, motion held 30 ms and until each driver's CHOPCONF reads back TOFF 4 and 8 microsteps. Idempotent. |
 | `d` | Disable: halt, EN high on all three, TOFF 0 on each driver present. Idempotent. |
 | `0xAA` + 41 bytes | Jog packet `<BBffffffffff`: start marker, mode, stick X/Y/Z, step size X/Y/Z, D-pad left-right, up-down, bumpers, jog speed. Mode 1 jogs, mode 0 stops. A mode-1 packet with an implausible field (NaN, out of range, a D-pad value not -1/0/1, a speed above 6400) is ignored and does not feed the dead-man. |
@@ -47,7 +47,7 @@ Field meanings, kept from `stepper_firmware`:
 
 ## 2. Identity and caps (MEGA_STANDARD §2)
 
-`s` answers `DEV: m caps=ext1,log,hostto,home,limits,tmc`. Which hardware is present is per axis, in `#INFO`.
+`s` answers `DEV: m caps=ext1,log,hostto,home,limits,tmc,soft`. Which hardware is present is per axis, in `#INFO`.
 
 ## 3. The `#` channel (MEGA_STANDARD §3)
 
@@ -68,7 +68,13 @@ Commands and replies are the contract's. On this board:
   EEPROM 16..22: `0x5A`, one byte per axis (bit 0 limits, bit 1 home), then each byte's complement. A blank or
   corrupt block reads as limits=0 home=0. The value is read back before `stored=1`. A new value forgets that axis's
   learned ends; a switch pressed at that moment is parked.
-- `#LOG`: level 0 sends only LIMIT, REFUSED, FAULT, HOMED and HOME FAIL; level 1 every `#EVT` (the default); level 2
+- `#SOFTLIMIT <A> [counts]` (cap `soft`; §4 below): no count, a query; `0..160000` sets the soft travel limit, 0 =
+  none. Refused (`busy`) while enabled, moving or homing; `bad-arg` otherwise. Stored at EEPROM 23..47: `0x5D`, a
+  4-byte little-endian count per axis, then each count's complement; read back before `stored=1`. Reply:
+  `#OK SOFTLIMIT axis=A counts=<n> ref=<0|1>[ ls1=<counts>][ lim=<counts>][ damaged=1][ stored=1]`. `#INFO` adds per
+  axis `x_soft=<counts> x_soft_ref=<0|1>`, then `x_soft_lim=<counts>` when referenced with a limit set and
+  `x_soft_damaged=1` when that entry is damaged.
+- `#LOG`: level 0 sends only LIMIT, SOFTLIMIT, REFUSED, FAULT, HOMED and HOME FAIL; level 1 every `#EVT` (the default); level 2
   adds `#EVT DBG`: commands received (not `#HB`), frames, manual engaged, driver on/off/configured, and where each
   axis stopped.
 
@@ -78,6 +84,9 @@ Commands and replies are the contract's. On this board:
 |---|---|
 | `LIMIT A lsN pos=<counts> end=<+1\|-1\|0>[ learned=travel travel=800\| pressed_both_ways=1 travel=800][ seen=1]` | the interlock halted axis A at switch N |
 | `LIMIT A lsN seen=1` | a switch with limits=0 tripped while moving and armed the interlock, without a halt |
+| `SOFTLIMIT A referenced ls1=<counts> lim=<counts>` | LS1 tripped toward its end on an axis with a soft limit: its reference (§4) |
+| `SOFTLIMIT A stopped pos=<counts> lim=<counts>` | a frame, jog, D-pad step or HOME search was stopped on A's soft limit |
+| `SOFTLIMIT A lost reason=<why>` | A's reference was lost (a disable while it turned, a driver fault on A, `#AXISCFG A`): touch LS1 again |
 | `REFUSED A reason=<why>` | a frame or jog the frame protocol cannot answer. Frames are refused whole: one line for each axis they would have moved. A jog is refused once, until that input returns to neutral. |
 | `FAULT tmc-missing A` | no TMC2209 answered at A's address at boot: that axis is never enabled |
 | `FAULT driver-reset A reconfigured` / `FAULT overtemp A ot= otpw=` / `FAULT short A s2g= s2vs=` / `FAULT uart-lost A` | a driver fault (§4 below), sent once while it persists |
@@ -109,6 +118,24 @@ Commands and replies are the contract's. On this board:
   (`... seen=1`; `#INFO` `limits=1`). It then applies the rules above, including the R-4 rule, so a chatter re-trip
   after a release teaches nothing. Never written to EEPROM.
 - **home=0:** `#HOME` refused `no-home-sensor`.
+- **Soft travel limit** (2026-10-10, X-14; `#SOFTLIMIT`, cap `soft`), for an axis whose carriage cannot reach one of
+  its switches (a probe that meets its fixture first). The limit is `counts` from LS1's reference, away from the end
+  LS1 guards. The reference is the count at which LS1 tripped while the axis moved toward that end, with the end known
+  and the interlock armed, taken in the step ISR (`#EVT SOFTLIMIT A referenced`); every such trip refreshes it.
+  - **In force once referenced.** The step ISR makes no step past the limit: a frame, jog, D-pad step or HOME search
+    stops on it (`#EVT SOFTLIMIT A stopped`), exactly, since nothing here ramps. At the limit, motion further out is
+    refused `soft-limit` (`#EVT REFUSED`); toward LS1 nothing changes.
+  - **Before the reference** (since boot, `#AXISCFG A`, or a loss below), with a limit set: only the stick moves that
+    axis, or a frame or D-pad step toward LS1 once its end is known (that is how the reference is taken). Frames and
+    D-pad steps otherwise, and `#HOME`: `soft-limit-unreferenced:touch-ls1`. With limits=0 the reference never comes,
+    so that axis moves by stick only: a soft limit needs LS1.
+  - **Lost** by homed's rule for the step count (a disable while that axis turned, a driver fault on it) and with the
+    ends on `#AXISCFG`: `#EVT SOFTLIMIT A lost reason=`. `#ZERO` and HOME move it with the origin; stops keep it.
+  - **A damaged EEPROM entry** (complement, range or magic wrong; an erased block is "none") is not "none": `#INFO
+    x_soft_damaged=1`, and that axis moves by stick only (`soft-limit-eeprom-damaged:set-SOFTLIMIT`) until
+    `#SOFTLIMIT` writes it again. The opposite of AXISCFG's absent-is-inert, on purpose: the owner's limit is unknown.
+  - HOME takes the soft limit as an end: a search reverses there once, and a second end fails
+    `no-edge-between-limits`; in backoff or approach it fails `soft-limit-during-backoff|approach`.
 - **tmc=0:** that axis's EN stays high; `e` skips it. No diagnostics are read for it; it is probed again every 1 s.
 - **Driver faults**, read over Serial2 (GSTAT and DRV_STATUS of each driver, every 50 ms enabled or busy, every
   250 ms otherwise): a reset (VM lost and back), over-temperature or its pre-warning, a short to ground or supply,
@@ -138,7 +165,8 @@ The Teensy axis firmware's sequence (`firmware/xyz_stage_axis/PROTOCOL.md`, "HOM
   - `not-enabled`;
   - `busy` (anything moving, a D-pad step, the `e` settle, another HOME);
   - `limits-both-tripped:check-wiring`;
-  - `limit-lsN-end-unknown:jog-off-it`.
+  - `limit-lsN-end-unknown:jog-off-it`;
+  - with a soft limit, `soft-limit-unreferenced:touch-ls1` or `soft-limit-eeprom-damaged:set-SOFTLIMIT`.
 - **Reference edge R:** the filtered home level changing to `HOME_FLAG_LEVEL` while moving `HOME_DIR`. Moving the
   other way, R is where the level leaves it.
 - **Sequence:**
@@ -169,10 +197,10 @@ pulses last from the axis's step to the end of the ISR (at least ~2 us, on Z; th
 the others, so the 500000-baud host UART (40 us of slack) is never held off by a long tick. A tick that overruns
 makes the next one late; nothing is lost but time.
 
-CHANGES.md gives the cycle budget measured on the compiled code:
+CHANGES.md gives the cycle budget measured on the compiled code (2026-10-10, with the soft limit):
 - 12.5 us for a tick with nothing to do;
-- at most 31.5 us for a tick in which all three axes step and stop with no sensor activity;
-- 6.6-29.3 us for each axis whose sensor changed or whose switch is pressed while it moves.
+- at most 35.4 us for a tick in which all three axes step and stop with no sensor activity;
+- 7.2-34.9 us for each axis whose sensor changed or whose switch is pressed while it moves.
 
 ## 7. Bench checks (owner)
 
@@ -183,6 +211,10 @@ MEGA_STANDARD §7, plus:
 - `#INFO free_ram=` with all three drivers configured (expected ~6100 bytes).
 - `HOME_DIR` and `HOME_FLAG_LEVEL` against each axis's flag (the `xyz_stage_axis` procedure).
 - `PARKED_TRAVEL` (800 counts) against each switch's overtravel.
+- The soft limit, on an axis that needs one: with none set, jog from LS1 toward the obstruction and read the travel
+  (`#SOFTLIMIT A` after the trip gives `ls1=`; POS minus it is the travel); set it with a margin; check a frame, the
+  stick and a D-pad step each stop on it, that it survives a power cycle (`#INFO x_soft=`) and needs LS1 again after
+  one.
 - Pull VM while enabled: `#EVT FAULT uart-lost A`. Restore VM: `#EVT FAULT driver-reset A reconfigured`, then the
   axis stays off until `d`, `e`.
 - The watchdog's UART and tick checks cannot be provoked from outside (unplugging USB does not turn the UART off);

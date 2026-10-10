@@ -29,6 +29,13 @@ structure here:
 * On every link-up the station sets `HOSTTIMEOUT 1000` and `STREAM 20` on
   each axis and keeps every board inside the window with `HB`, so a station
   that stops talking stops the stage.
+* A soft travel limit per axis (X-14, `SOFTLIMIT`, kept in the board's
+  EEPROM) holds an axis that cannot reach one of its switches (the bench
+  probe on axis 1) short of its obstruction: the board stops every motion on
+  it, measured from where LS1 last tripped. The station reads it at link-up,
+  sets it while the stage is disabled, refuses a Step that would cross it
+  before sending anything, and treats the board's `EVT SOFTLIMIT` stop as a
+  LIMIT (a Step in flight ends on every axis).
 
 Units are physical: positions, target distances and step sizes in
 micrometres (5 um per full step, 0.625 um per microstep at 8 microsteps),
@@ -60,6 +67,23 @@ UM_PER_FULL_STEP = 5.0
 MAX_SPEED_UM_S = 2500
 #: One MOVE at most (the SPEC's MAX_MOVE_MM, the full travel).
 MAX_MOVE_UM = 50000
+#: X-14: SOFTLIMIT's ceiling on the board (SOFT_MAX_MM, 100 mm), um.
+MAX_SOFT_UM = 100000
+#: The board's soft-limit refusals, in an operator's words (a Step's or a
+#: HOME's refusal sentence carries them).
+_SOFT_REASONS = {
+    "soft-limit": "it is at its soft limit",
+    "soft-limit-unreferenced:touch-ls1": (
+        "it has a soft limit and has not touched LS1 since it was powered or "
+        "lost its count: jog it onto LS1 (or Step toward LS1) first"),
+    "soft-limit-eeprom-damaged:set-SOFTLIMIT": (
+        "its stored soft limit is damaged: set it again under Configuration"),
+}
+
+
+def _why(reply):
+    """A refusal's reason for an operator sentence."""
+    return _SOFT_REASONS.get(getattr(reply, "reason", ""), reply.why)
 
 
 class StageMode(enum.Enum):
@@ -82,6 +106,9 @@ _DRIVEN = frozenset({StageMode.AUTO, StageMode.MANUAL})
 #: Speed stays live in manual (owner ruling 2026-09-26).
 _MOTION_GATE = ("autonomous", "manual")
 _MANUAL_SPEED_GATE = ("autonomous",)
+#: A soft limit is set only while the stage is disabled (the boards refuse it
+#: while their drivers are on).
+_SOFT_GATE = ("idle", "autonomous", "manual", "latched", "fault")
 
 
 def _and(names):
@@ -160,9 +187,14 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
               unit="µm/s", label="Autonomous Speed"),
         Param("man_full_speed", "int", default=500, minimum=1,
               maximum=MAX_SPEED_UM_S, unit="µm/s", label="Manual Speed"),
+        # X-14: what "Set soft limits" stores on each board; seeded from what
+        # the board reports, so the entry shows the board's value until edited.
+        *[Param(f"{a}_soft", "int", default=0, minimum=0, maximum=MAX_SOFT_UM,
+                unit="µm", label=f"{a.upper()} Soft Limit") for a in "xyz"],
     )}
     TARGET_PARAMS = ("x_dist", "y_dist", "z_dist")
     STEP_PARAMS = ("x_step", "y_step", "z_step")
+    SOFT_PARAMS = ("x_soft", "y_soft", "z_soft")
     SPEED_SLIDER = (1, MAX_SPEED_UM_S)
 
     def __init__(self, sim=False, port_x=None, port_y=None, port_z=None,
@@ -201,6 +233,9 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         self._jogging = {axis: False for axis in AXES}
         #: axis -> (P sequence, position) last seen, for the idle clock.
         self._seen_p = {axis: (0, None) for axis in AXES}
+        #: X-14: axis -> (link epoch, reply seq, what its last SOFTLIMIT reply said).
+        self._soft_state = {axis: None for axis in AXES}
+        self._soft_seeded = {}       # axis -> the um last seeded into its Soft Limit entry
         self._stalls = 0
         self._stalled = False
 
@@ -672,7 +707,8 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             return
         self._configured[axis] = link.epoch
         for line in ("AXIS", f"HOSTTIMEOUT {self.HOST_TIMEOUT_MS}",
-                     f"STREAM {self.STREAM_HZ}", f"LOG {self.FIRMWARE_LOG_LEVEL}", "INFO"):
+                     f"STREAM {self.STREAM_HZ}", f"LOG {self.FIRMWARE_LOG_LEVEL}", "INFO",
+                     "SOFTLIMIT"):
             try:
                 link.send(line)
             except TransportError as exc:
@@ -775,6 +811,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         if self._checked.get(axis) != link.epoch and link.tag is not None:
             self._checked[axis] = link.epoch
             self._check_board(axis, link, ask=False)
+        self._soft_take(axis, link.last_reply("SOFTLIMIT"))
         seq, position = self._seen_p[axis]
         if link.p is not None and link.p_seq != seq:
             now_at = link.p["pos"]
@@ -807,10 +844,13 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         elif kind == "LIMIT":
             self._axis_limit(axis, words[1] if len(words) > 1 else "a switch",
                              found.get("pos_mm", "?"))
+        elif kind == "SOFTLIMIT":
+            self._axis_soft_event(axis, words[1].lower() if len(words) > 1 else "", found)
         elif kind == "HOMED":
             self._homing[axis] = None
             self._home_failed[axis] = None
             self._home_phase[axis] = "homed"
+            self._soft_query(axis)               # the origin moved, and the limit's figures with it
             events.info("Axis Homed", f"Axis {axis} of the {self.NAME} is homed "
                         f"(its reference edge was at {found.get('edge_mm', '?')} "
                         "mm).", source=self.NAME)
@@ -862,6 +902,172 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         events.warn("Limit Reached", f"Axis {axis} of the {self.NAME} reached its "
                     f"limit switch {switch.upper()} at {position} mm and stopped."
                     f"{stopped_others}", source=self.NAME)
+
+    # -- the soft travel limit (X-14) ----------------------------------------------------
+    def _soft_take(self, axis, reply):
+        """Keep what a SOFTLIMIT reply says, once (a newer reply than the
+        last kept, this link). An OK also seeds the axis's Soft Limit entry
+        with the board's value; ERR unknown-command is firmware without it."""
+        if reply is None:
+            return
+        link = self.axes[axis]
+        kept = self._soft_state[axis]
+        if kept is not None and kept[0] == link.epoch and kept[1] >= reply.seq:
+            return
+        if reply.ok:
+            found = reply.fields
+            try:
+                said = {"supported": True,
+                        "um": int(round(float(found["mm"]) * 1000)),
+                        "ref": found.get("ref") == "1",
+                        "ls1_mm": float(found["ls1_mm"]) if "ls1_mm" in found else None,
+                        "limit_mm": float(found["limit_mm"]) if "limit_mm" in found else None,
+                        "damaged": found.get("damaged") == "1"}
+            except (KeyError, ValueError):
+                return
+            if self._soft_seeded.get(axis) != said["um"]:   # the board's value changed: show it
+                self._soft_seeded[axis] = said["um"]
+                self._param_store[f"{axis.lower()}_soft"] = said["um"]
+        elif reply.reason.startswith("unknown-command"):
+            said = {"supported": False}
+        else:
+            return                               # a refused set says nothing new; a query follows it
+        self._soft_state[axis] = (link.epoch, reply.seq, said)
+
+    def _soft(self, axis):
+        """What the board on `axis` said about its soft limit this link: None
+        before it answered; {"supported": False} when its firmware has none;
+        else {"supported", "um", "ref", "ls1_mm", "limit_mm", "damaged"}
+        (positions in the board's mm)."""
+        kept = self._soft_state[axis]
+        if kept is None or kept[0] != self.axes[axis].epoch:
+            return None
+        return kept[2]
+
+    def _soft_query(self, axis):
+        """Ask the board again (its reference or origin changed); the reply
+        lands through the reader."""
+        link = self.axes[axis]
+        if not link.is_usable:
+            return
+        try:
+            link.send("SOFTLIMIT")
+        except TransportError as exc:
+            events.debug("Soft Limit Query Failed", f"axis {axis}: {exc}",
+                         source=self.NAME, every=5.0)
+
+    def _axis_soft_event(self, axis, what, found):
+        """An `EVT SOFTLIMIT` line. A stop on the limit is a LIMIT to the
+        Step: the other axes are stopped too, so a Step never goes on along
+        the others (the board already stopped this one, short of the limit)."""
+        self._soft_query(axis)
+        limit = found.get("limit_mm", "?")
+        if what in ("stopped", "clamped"):
+            if self._homing[axis] is not None:
+                events.debug("Soft Limit", f"axis {axis} {what} at {limit} mm while "
+                             "homing", source=self.NAME)
+                return
+            stopped_others = ""
+            if self._mode is StageMode.AUTO and self._step_seq and self.is_moving:
+                self._step_seq = {}
+                self._broadcast("STOP")
+                stopped_others = " The other axes were stopped so the Step ends here."
+            events.warn("Soft Limit Reached", f"Axis {axis} of the {self.NAME} stopped "
+                        f"at its soft limit ({limit} mm).{stopped_others}",
+                        source=self.NAME)
+        elif what == "reached":
+            events.info("Soft Limit Reached", f"Axis {axis} of the {self.NAME} reached "
+                        f"its soft limit ({limit} mm) and stopped there.",
+                        source=self.NAME)
+        elif what == "referenced":
+            events.info("Soft Limit Referenced", f"Axis {axis} of the {self.NAME} "
+                        f"touched LS1 at {found.get('ls1_mm', '?')} mm: its soft limit "
+                        f"is at {limit} mm.", source=self.NAME)
+        elif what == "lost":
+            events.warn("Soft Limit Reference Lost", f"Axis {axis} of the {self.NAME} "
+                        f"lost its LS1 reference ({found.get('reason', 'no reason given')}). "
+                        "Until it touches LS1 again it moves only by jog, or toward LS1.",
+                        source=self.NAME)
+
+    def _check_soft_limits(self, moves):
+        """Refuse a Step that would carry an axis past its referenced soft
+        limit, before anything is sent: the board would shorten that axis's
+        MOVE onto the limit and the Step would leave its line. The board stays
+        the guard (a stale position, an unreferenced axis); this says so first."""
+        for axis, um in moves.items():
+            soft, p = self._soft(axis), self.axes[axis].p
+            if (not um or not soft or not soft.get("supported") or not soft["um"]
+                    or not soft["ref"] or soft["limit_mm"] is None
+                    or soft["ls1_mm"] is None or p is None):
+                continue
+            out = 1.0 if soft["limit_mm"] > soft["ls1_mm"] else -1.0
+            half_step = UM_PER_FULL_STEP / self._microsteps(axis) / 2000.0
+            if (p["pos"] + um / 1000.0 - soft["limit_mm"]) * out > half_step:
+                room = max(0.0, (soft["limit_mm"] - p["pos"]) * out * 1000.0)
+                self._refuse(f"Axis {axis} would pass its soft limit: it can move at "
+                             f"most {room:.0f} µm further that way ({soft['um']} µm from "
+                             "LS1). Shorten the Step; nothing was sent.")
+
+    def set_soft_limits(self):
+        """Store each axis's Soft Limit entry on its board (`SOFTLIMIT`, kept
+        in the board's EEPROM; 0 = none), only while the stage is disabled:
+        the boards refuse it while their drivers are on. An axis whose entry
+        already matches its board is left alone."""
+        self._guard("Set soft limits")
+        if self._mode is not StageMode.DISABLED:
+            self._refuse(f"Disable the {self.NAME} first: a board takes a soft limit "
+                         "only while its drivers are off.")
+        changes = {}
+        for axis in AXES:
+            wanted = int(self._number(f"{axis.lower()}_soft"))
+            if self._soft(axis) is None and self.axes[axis].is_usable:
+                self._soft_take(axis, self._request(self.axes[axis], "SOFTLIMIT"))
+            soft = self._soft(axis)
+            if soft is None:
+                self._refuse(f"Axis {axis} has not reported its soft limit. Check that "
+                             "it is connected, then try again.")
+            if not soft.get("supported"):
+                if wanted:
+                    self._refuse(f"Axis {axis}'s firmware has no soft limit. Flash the "
+                                 "XYZ Stage firmware from Settings, then try again.")
+                continue
+            if wanted != soft["um"] or soft["damaged"]:
+                changes[axis] = wanted
+        done = []
+        for axis, um in changes.items():
+            reply = self._request(self.axes[axis], f"SOFTLIMIT {um / 1000:.3f}")
+            self._soft_take(axis, reply)
+            if not reply.ok:
+                self._soft_query(axis)
+                set_already = f" Axis {_and(done)} was set." if done else ""
+                self._refuse(f"Axis {axis} did not store its soft limit ({reply.why})."
+                             f"{set_already}")
+            done.append(axis)
+            events.info("Soft Limit Set", f"Axis {axis} of the {self.NAME}: "
+                        + (f"soft limit {um} µm from LS1. It holds once the axis has "
+                           "touched LS1." if um else "no soft limit."), source=self.NAME)
+        return "set " + ", ".join(done) if done else "unchanged"
+
+    @property
+    def soft_text(self):
+        """Each axis's soft limit as its board reports it (X-14)."""
+        parts = []
+        for axis in AXES:
+            soft = self._soft(axis)
+            if soft is None:
+                text = "?"
+            elif not soft.get("supported"):
+                text = "not in its firmware"
+            elif soft["damaged"]:
+                text = "stored value damaged: set it again"
+            elif not soft["um"]:
+                text = "none"
+            elif soft["ref"] and soft["limit_mm"] is not None:
+                text = f"{soft['um']} µm from LS1, at {soft['limit_mm'] * 1000:.2f} µm"
+            else:
+                text = f"{soft['um']} µm from LS1, not referenced (touch LS1)"
+            parts.append(f"{axis} {text}")
+        return "; ".join(parts)
 
     # -- silence -----------------------------------------------------------------------------
     def _silent_for(self, link):
@@ -949,6 +1155,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
         if not length:
             self._refuse("Every target distance is 0. Set a distance, then step.")
         speed = self._number("full_speed")
+        self._check_soft_limits(moves)
         self._set_mode(StageMode.AUTO, "step", quiesce=False)
         accel = self._step_accel([axis for axis, distance in moves.items() if distance])
         lines = {}
@@ -972,7 +1179,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                              f"{self.NAME} left autonomous mode first, so all three "
                              "axes were stopped.")
             axis, reply = refused[0]
-            self._refuse(f"Axis {axis} refused the move ({reply.why}), so all three "
+            self._refuse(f"Axis {axis} refused the move ({_why(reply)}), so all three "
                          "axes were stopped.")
         self._step_seq = {axis: reply.seq for axis, reply in replies.items()}
         self._touch_activity()
@@ -1084,6 +1291,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             self._refuse(f"Axis {axis} did not zero ({reply.why}).")
         events.info("Axis Zeroed", f"Axis {axis} of the {self.NAME} reads 0 here now.",
                     source=self.NAME)
+        self._soft_query(axis)                   # the limit's figures moved with the origin
         return 0
 
     def home_axis(self, axis):
@@ -1121,7 +1329,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                     self._home_phase[axis] = "not started (left autonomous)"
                     self._refuse(f"Axis {axis} did not start homing: the {self.NAME} "
                                  "left autonomous mode first.")
-                self._refuse(f"Axis {axis} would not start homing ({reply.why}).")
+                self._refuse(f"Axis {axis} would not start homing ({_why(reply)}).")
             # R-7: the HOME was written, and a reply that came late (or not at
             # all) is no proof the board is not homing: a late OK HOME means
             # it is, for up to the firmware's own limit. Stop before refusing.
@@ -1129,7 +1337,7 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             missed = [a for a in AXES if not landed[a]]
             outcome = (f"the stop did not reach axis {_and(missed)}, so treat the "
                        "stage as live" if missed else "so all three axes were stopped")
-            self._refuse(f"Axis {axis} would not start homing ({reply.why}), "
+            self._refuse(f"Axis {axis} would not start homing ({_why(reply)}), "
                          f"{outcome}.")
         return reply
 
@@ -1282,8 +1490,17 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                 parts.append(f"{axis} ?")
                 continue
             tripped = [name.upper() for name in ("ls1", "ls2") if p.get(name)]
+            soft = self._soft(axis) or {}
+            if soft.get("damaged"):
+                limit = ", soft limit damaged"
+            elif soft.get("um") and soft.get("ref") and soft.get("limit_mm") is not None:
+                limit = f", soft limit at {soft['limit_mm'] * 1000:.2f} µm"
+            elif soft.get("um"):
+                limit = ", soft limit not referenced"
+            else:
+                limit = ""
             parts.append(f"{axis} {'+'.join(tripped) or 'clear'}"
-                         f"{', in beam' if p.get('home') else ''}")
+                         f"{', in beam' if p.get('home') else ''}{limit}")
         return "; ".join(parts)
 
     @property
@@ -1519,6 +1736,15 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
             sch.section(
                 "Configuration",
                 *[e for name in self.STEP_PARAMS for e in physical(name)],
+                # X-14: each axis's soft travel limit, um from LS1 (0 = none),
+                # stored on its board while the stage is disabled.
+                *[e for name in self.SOFT_PARAMS for e in (
+                    sch.entry(P[name].label + ":", name, P[name], disabled_when=_SOFT_GATE),
+                    sch.readonly("µsteps", f"{name}_usteps", secondary=True,
+                                 unit="µsteps"))],
+                sch.button("Set soft limits", "set_soft_limits",
+                           inputs=self.SOFT_PARAMS, disabled_when=_SOFT_GATE),
+                sch.readonly("Soft limits:", "soft_text"),
                 tier=2, disclosure=configure,
             ),
             sch.section(
@@ -1554,7 +1780,8 @@ class XyzStage(GamepadInput, IdleInterlock, Model):
                             "tag": self.axes[axis].tag,
                             "microsteps": self._microsteps(axis),
                             "p_age": self._p_age(self.axes[axis]),
-                            "homing": self._homing[axis]}
+                            "homing": self._homing[axis],
+                            "soft": self._soft(axis)}
                      for axis in AXES},
         })
         return snapshot
@@ -1590,6 +1817,6 @@ for _name in XyzStage.PARAMS:
 for _axis in AXES:
     setattr(XyzStage, f"position_{_axis.lower()}", _position_readout(_axis))
     setattr(XyzStage, f"position_{_axis.lower()}_usteps", _usteps_readout(_axis))
-    for _name in (f"{_axis.lower()}_dist", f"{_axis.lower()}_step"):
+    for _name in (f"{_axis.lower()}_dist", f"{_axis.lower()}_step", f"{_axis.lower()}_soft"):
         setattr(XyzStage, f"{_name}_usteps", _param_usteps_readout(_name, _axis))
 del _name, _axis

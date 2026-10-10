@@ -99,3 +99,30 @@ next one late.
   `jog-recheck-every-loop` mutant restores the defect and is red.
 - **Not modelled:** ISR preemption inside `loop()` (the cycle budget above stands in for it), lost steps, real
   switch and sensor noise, UART timing (bytes arrive at once), DTR auto-reset.
+
+## 2026-10-10: the soft travel limit, `#SOFTLIMIT` and cap `soft` (X-14)
+
+For an axis whose carriage cannot reach one of its switches (the bench probe on axis 1 meets its fixture before
+LS2), nothing stopped a frame, the stick, a D-pad step or a HOME search short of the obstruction (host simulation, a
+wall at 30 mm: X ran into it at 1 mm/s). MEGA_STANDARD §2-§4 gain the cap `soft` and its rules; PROTOCOL.md §3-§5
+has them for this board.
+
+| Where | Change | Why |
+|---|---|---|
+| `station_std.h` | `STD_CAP_SOFT` (required, like the other caps; 1 here), the `soft` token, `#SOFTLIMIT <A> [counts]`, `#INFO` `x_soft= x_soft_ref=` (`x_soft_lim=`, `x_soft_damaged=1`), the SOFTLIMIT block after AXISCFG's (EEPROM 23..47), hooks `skSoftApply` and `skSoftRef`. A damaged entry is jogs-only, not "none". | Persisted and set over the `#` channel like AXISCFG; one layer for the phase-2 retrofit (with `STD_CAP_SOFT 0` it compiles out). |
+| `AxisIsr`, `axisSlow` | `softTravel/softDir/softRef/softLim` per axis. LS1 tripping toward the end it guards (end known, interlock armed) is the reference, at the exact count. | The limit is a carriage position; LS1 is the only fixed point such an axis has. |
+| `axisTick` | On a step: `dir == softDir` and at or past `softLim` -> `axisSoftStop` (out of line) instead of the pulse. | No step past the limit, whatever started the motion. Nothing ramps here, so stopping on it is the planned stop. |
+| `limitBlock` | Soft clauses after the switch ones, also with limits=0: before the reference, stick only (or toward LS1 once its end is known); at the limit, `soft-limit`. | The frame protocol has no reply: refusals are `#EVT REFUSED` as before. |
+| `skHomeCheck`, `homeSeek`, `homeStep` | HOME needs the reference; the soft limit is an end to the search (a pointer-compared `SOFT_LIMIT_WHY`, a bit-2 hit). | As the Teensy firmware. |
+| `outputsOff`, `driverFault`, `skAxisCfgApply` | `softRefLost()` beside `homedLost()`; `axSetPos` moves the reference with the origin. | homed's rule for the step count. |
+
+Cycle budget (`isr_cycles.py`, as above): nothing to do 200 cycles (12.5 us, unchanged); worst with no sensor
+activity 566 (35.4 us, was 504: the limit compare on each step); the slow path 115-559 per axis (7.2-34.9 us, was
+106-468: the reference); theoretical worst 2245 (140 us, was 1890). `axisSoftStop` 51 cycles. Stack: 648 bytes worst
+from `main` (was 466; `#SOFTLIMIT`'s reply buffer), 32 for the step ISR (was 30).
+
+Verification: `arduino-cli compile --warnings all`, 0 warnings from the sketch and its header (the core's `new.cpp`
+4, as before): 37656 bytes flash (14 %), 1580 bytes static RAM. `dev/firmware_sim` kind `mega`: 27 scenarios, all
+passing (`expected-mega.txt`). The four new ones, `soft-limit-frames-jog-dpad`, `-persists-reboot-lost`, `-home`
+and `-eeprom-damaged`, are red on the sketch before this change (40 of 48 checks); `identity-caps` and
+`parity-frame-protocol` changed only for the `soft` token. Not run on hardware.

@@ -65,8 +65,9 @@ homing), `MODE STEALTH|SPREAD`, `LIMITS NC|NO` (`limits= ls1= ls2= ends=forgotte
 | `TEST UART\|COILS\|REVS [n]\|SWEEP\|LIMITS` | validator replies | Unchanged. |
 
 Motion errors: `not-enabled`, `test-running`, `busy` (a move, jog, HOME or deceleration in progress; one move at a
-time), `bad-arg`, `bad-speed`, `bad-accel` (MOVE/MOVETO's third argument is not a number above 0; nothing moves), and
-the limit reasons: `limit-ls1`/`limit-ls2` (that switch is tripped and guards the
+time), `bad-arg`, `bad-speed`, `bad-accel` (MOVE/MOVETO's third argument is not a number above 0; nothing moves), the
+soft-limit reasons (`soft-limit`, `soft-limit-unreferenced:touch-ls1`, `soft-limit-eeprom-damaged:set-SOFTLIMIT`; see
+"Soft travel limit" below), and the limit reasons: `limit-ls1`/`limit-ls2` (that switch is tripped and guards the
 end the move heads for), `limit-lsN-end-unknown:jog-off-it` (the switch is parked: tripped with its end not confirmed,
 see Safety behaviour; only a slow JOG/JOGV may move), `limit-lsN-pressed-both-ways:check-switch` (a jog while parked:
 the parked travel is spent in this direction too), `limits-both-tripped:check-wiring-or-LIMITS-NC|NO`.
@@ -96,6 +97,40 @@ while jogging also decelerates the jog). While a switch is parked, `|v|` is capp
 the reply says `clamped=1`); once the switch releases, the next JOGV is not capped. A JOG started while parked keeps
 that cap until it ends.
 
+### Soft travel limit (2026-10-10, X-14)
+
+For an axis whose carriage cannot reach one of its switches (the bench probe on axis 1 meets its fixture before LS2):
+the most it may travel from LS1, kept in EEPROM. Default: none (an erased EEPROM block).
+
+| Command | Reply | Notes |
+| --- | --- | --- |
+| `SOFTLIMIT` | `OK SOFTLIMIT mm=<travel> ref=<0\|1>[ ls1_mm=<reference>][ limit_mm=<limit>][ damaged=1]` | Query. `ls1_mm` when referenced; `limit_mm` when referenced and a travel is set; `damaged=1` when the EEPROM block is damaged. |
+| `SOFTLIMIT <mm>` | the same, then ` stored=1` | `0..100` mm, 0 = no limit. Written to EEPROM (address 4: `0x5C`, um as 4 bytes little-endian, their complement) and read back. `ERR SOFTLIMIT bad-arg` (not a number, negative, over 100), `busy` (enabled, moving, homing or testing), `eeprom-verify-failed`. |
+
+- **The reference** is where LS1 last tripped while the axis moved toward the end it guards, with that end known (the
+  first trip from clear teaches it): the exact step, taken in the step ISR. The limit lies `mm` from it, away from
+  LS1's end. Positions in `ls1_mm`/`limit_mm` are the current counter's; ZERO, HOME and MICROSTEPS keep the limit on
+  the same carriage position. Every such trip refreshes the reference (`EVT SOFTLIMIT referenced`).
+- **Not referenced** (since boot, `LIMITS`, or a position loss below), with a travel set: only JOG/JOGV move the axis,
+  or a MOVE/MOVETO/REVS toward LS1 once its end is known (that is how the reference is taken). Everything else, HOME
+  and the motion TESTs included: `soft-limit-unreferenced:touch-ls1`.
+- **Referenced**: a MOVE/MOVETO/REVS whose target lies past the limit is shortened onto it (`clamped=1`, then `EVT
+  SOFTLIMIT clamped`); a jog heading out takes the limit as its far target and decelerates onto it (`EVT SOFTLIMIT
+  reached`). At the limit, anything further out is refused `soft-limit`. Toward LS1 nothing changes.
+- **The step ISR** halts any motion about to step past the limit (HOME's search, a TEST, an AccelStepper overshoot),
+  as at a switch: `EVT SOFTLIMIT stopped`. HOME takes the limit as an end (a search reverses there once; a second end
+  is `HOME FAIL reason=no-edge-between-limits`; in backoff or approach `soft-limit-during-backoff|approach`); a TEST
+  ends `ABORTED reason=soft-limit`.
+- **Lost** (`EVT SOFTLIMIT lost reason=<r>`): by homed's rule for the step count (ESTOP or DISABLE while turning, a
+  driver reset, `uart-lost`, overtemperature, a short), and with the ends on `LIMITS`. A stationary DISABLE or ESTOP,
+  ZERO, HOME and MICROSTEPS keep it.
+- **A damaged EEPROM block** (wrong magic, complement or range) is not "no limit": `damaged=1`, and only jogs move the
+  axis (`soft-limit-eeprom-damaged:set-SOFTLIMIT`) until `SOFTLIMIT <mm>` writes it again.
+- **Owner bench check, the travel:** with no limit set, jog from LS1 toward the obstruction and read how far the
+  carriage can go (`SOFTLIMIT` after the trip gives `ls1_mm`; STATUS `pos_mm` minus it is the travel), then set the
+  limit with a margin. The reference is LS1's operating point when approached at speed; its filter (200 us) adds at
+  most 0.5 um at 2.5 mm/s.
+
 ### Unsolicited lines
 
 | Line | When |
@@ -106,6 +141,11 @@ that cap until it ends.
 | `EVT FAULT driver-reset reconfigured version=.. microsteps=..` | the driver lost VM; halted, outputs off, configuration rewritten |
 | `EVT FAULT uart-lost` / `EVT FAULT overtemp ...` / `EVT FAULT short ...` | driver faults; halted, outputs off |
 | `EVT LIMIT lsN tripped pos_mm=<mm> end=<+1\|-1\|+0> [learned=travel travel_mm=<mm>] [pressed_both_ways=1 travel_mm=<mm>]` | the ISR interlock halted motion at a switch. `end=+0`: its end is not known (both switches tripped, or a trip that teaches nothing). `learned=travel`: the parked travel ran out with the switch still pressed, so that direction is its end (provisional until it releases). `pressed_both_ways=1`: the parked travel ran out the other way too (Safety behaviour). |
+| `EVT SOFTLIMIT referenced ls1_mm=<mm> limit_mm=<mm> travel_mm=<mm>` | LS1 tripped toward its end with a soft limit set: the reference (above) |
+| `EVT SOFTLIMIT clamped cmd=<MOVE\|MOVETO\|REVS> target_mm=<asked> limit_mm=<mm>` | after that command's `OK`: its target was shortened onto the soft limit |
+| `EVT SOFTLIMIT reached limit_mm=<mm>` | a jog decelerated onto the soft limit and stopped there |
+| `EVT SOFTLIMIT stopped pos_mm=<mm> limit_mm=<mm>` | the step ISR halted a motion on the soft limit (a HOME search, a TEST, an overshoot) |
+| `EVT SOFTLIMIT lost reason=<r>` | the reference was lost (a soft limit is set): touch LS1 again |
 | `EVT HOME edge level=<0\|1> pos_mm=<mm> [suppressed=<n>]` | every filtered home-sensor edge, any time (validator line). At most 20 lines/s; the next line after a cap says how many were not printed. Not part of the HOME sequence. |
 | `EVT HOME phase=seek\|backoff\|approach\|edge ...` | HOME progress (below) |
 | `EVT HOME FAIL reason=<r> phase=<p> pos_mm= legs= ends= edges= elapsed_ms=` | HOME ended without a zero |
@@ -122,8 +162,8 @@ P-line fields: `tgt` is the motion target; during a jog it is the far jog target
 The station forwards every firmware line into its own event log, so the
 firmware logs generously. `LOG <0|1|2>` -> `OK LOG level=N` (default 1):
 
-- `0`: only `EVT BOOT`, `EVT FAULT`, `EVT RESULT`, `EVT HOMED`, `EVT HOME FAIL`
-  and `EVT LIMIT` lines.
+- `0`: only `EVT BOOT`, `EVT FAULT`, `EVT RESULT`, `EVT HOMED`, `EVT HOME FAIL`,
+  `EVT LIMIT` and `EVT SOFTLIMIT` lines.
 - `1`: every `EVT` line (the validator's set).
 - `2`: also `EVT DBG <what> ...`: each command received (not the high-rate
   `JOG`, `JOGV`, `HB`, `STATUS` or the scan's `S`), `driver on`/`driver off`,
@@ -169,6 +209,8 @@ firmware logs generously. `LOG <0|1|2>` -> `OK LOG level=N` (default 1):
   `EVT FAULT host-timeout-disabled`, and `ENABLE` is needed again (`homed` is kept if the axis had stopped, as for a
   stationary DISABLE). Any line in those 10 s cancels it (the axis keeps holding). The DTR-drop path is unchanged.
 - **Jog dead-man:** 250 ms for JOG and JOGV.
+- **Soft travel limit** (when set): see "Soft travel limit" above. It is a carriage position measured from LS1, so it
+  holds only once LS1 has been touched this session; the step ISR stops anything about to pass it.
 - **Driver reset / faults:** halt, outputs off, `EVT FAULT ...`, TEST/HOME ended; a reset driver is reconfigured and
   stays disabled until ENABLE.
 - **Speed changes** never lower AccelStepper's max speed below the current speed (review R-6): SPEED/ACCEL during
@@ -197,7 +239,9 @@ taken moving `HOME_DIR`, from rest, at the slow speed, after at least `HOME_BACK
 lead-screw backlash and keeps the sensor's direction-dependent hysteresis out of the zero).
 
 **Preconditions:** enabled and idle (`ERR HOME not-enabled|test-running|busy`); no switch parked (tripped with its end
-not confirmed: `ERR HOME limit-lsN-end-unknown:jog-off-it`) and not both tripped (`ERR HOME limits-both-tripped:...`).
+not confirmed: `ERR HOME limit-lsN-end-unknown:jog-off-it`) and not both tripped (`ERR HOME limits-both-tripped:...`);
+with a soft travel limit set, referenced (`ERR HOME soft-limit-unreferenced:touch-ls1`). The soft limit is an end to
+the search, as a switch is.
 
 **Sequence** (d = HOME_DIR):
 1. `OK HOME started`; `homed` becomes 0.
