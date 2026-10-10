@@ -3683,6 +3683,7 @@ class Dashboard {
       headlineNote: document.querySelector('#sheet-headline .headline-note'),
       nav: document.getElementById('model-nav'),
       navLegend: document.getElementById('nav-legend'),
+      navToggle: document.getElementById('nav-toggle'),
       simLine: document.getElementById('sim-line'),
       cards: document.getElementById('cards'),
       log: document.getElementById('event-log'),
@@ -3769,6 +3770,12 @@ class Dashboard {
     this.dom.setupLink.addEventListener('click', () => this.setDrawerOpen(true));
     this.dom.quitLink.addEventListener('click', () => this.quitStation());
     this.dom.drawerClose.addEventListener('click', () => this.setDrawerOpen(false));
+    if (this.dom.navToggle) {
+      this.dom.navToggle.addEventListener('click', () => this.setNavOpen(!this.isNavOpen));
+      this.dom.nav.addEventListener('click', (event) => {
+        if (event.target.closest('.model-link')) this.setNavOpen(false);
+      });
+    }
     this.dom.scrim.addEventListener('click', () => {
       this.setDrawerOpen(false);
       this.setAccountOpen(false);
@@ -5279,6 +5286,30 @@ class Dashboard {
     }
   }
 
+  /** A phone's page list folds behind one key (CSS shows the key only at
+   *  that width); open, it is the list as ever. */
+  setNavOpen(open) {
+    this.isNavOpen = Boolean(open);
+    const rail = document.querySelector('.rail');
+    if (rail) rail.classList.toggle('is-nav-open', this.isNavOpen);
+    if (this.dom.navToggle) this.dom.navToggle.setAttribute('aria-expanded', String(this.isNavOpen));
+  }
+
+  /** The key's words: the page shown, and a mark when any page's dot is an
+   *  error, so a fault is not folded away with the list. */
+  setNavToggleWords() {
+    const key = this.dom.navToggle;
+    if (!key) return;
+    const shown = this.opened ? sentence(this.opened) : DASHBOARD_WORD;
+    const words = key.querySelector('.nav-toggle-words');
+    putText(words, 'Pages: ' + shown);
+    const faulted = Boolean(this.dom.nav.querySelector('.nav-dot.is-error'));
+    key.classList.toggle('has-error', faulted);
+    putAttr(key, 'aria-label', 'Pages, ' + shown + (faulted ? ', a device has an error' : ''));
+    const hasPages = this.dom.nav.children.length > 0;
+    if (key.hidden === hasPages) key.hidden = !hasPages;
+  }
+
   /** The rail's page list: "Dashboard" (K4's Overview, renamed by the
    *  owner 2026-10-08) first, then the models by name only
    *  (no value is said twice); the shown page is the current one. Rebuilt
@@ -5328,6 +5359,7 @@ class Dashboard {
       this.setEnergized(this.energized);
       this.setDots();
     }
+    this.setNavToggleWords();
     const showLegend = names.length > 0;
     if (this.dom.navLegend && this.dom.navLegend.hidden === showLegend) this.dom.navLegend.hidden = !showLegend;
     for (const link of this.dom.nav.querySelectorAll('.model-link')) {
@@ -5484,6 +5516,7 @@ class Dashboard {
       putAttr(dot, 'aria-label', words);
       putAttr(dot, 'title', words);
     }
+    this.setNavToggleWords();
   }
 
   /** O6: the ring before each energized model's name in the rail. */

@@ -226,3 +226,84 @@ def test_the_rail_says_what_its_dots_mean(xyz_station, tmp_path):
     assert out["marks"] == ["is-on", "", "is-error"], out
     assert out["top"] >= out["navBottom"] - 1, out
     assert out["dots"] and out["dots"][0] in ("Enabled", "Disabled") or out["dots"][0].startswith("Error"), out
+
+
+# ----------------------------------------------- the rail on short and phone screens
+_RAIL = r"""() => {
+  const box = (n) => { const b = n.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, h: b.height, w: b.width }; };
+  const rail = document.querySelector('.rail');
+  const visible = (n) => n.getClientRects().length > 0;
+  const foot = Array.from(document.querySelectorAll('.rail-foot .rail-control')).map((n) => [n.id, box(n)]);
+  return { vh: window.innerHeight, rail: box(rail), scrolls: rail.scrollHeight > rail.clientHeight + 1,
+           foot, stop: box(document.getElementById('full-stop')),
+           toggle: visible(document.getElementById('nav-toggle')),
+           nav: visible(document.getElementById('model-nav')),
+           toggleWords: document.getElementById('nav-toggle').textContent.trim(),
+           expanded: document.getElementById('nav-toggle').getAttribute('aria-expanded') };
+}"""
+
+
+@needs_browser
+def test_the_rail_keeps_its_foot_in_view_on_a_1366_by_768_screen(xyz_station, tmp_path):
+    """Stop line, a lost device and the caution on the rail pushed Tutorials,
+    Setup and Quit below the fold; the rail scrolled. Tutorials and Setup now
+    share a line with Quit under them, on a tighter plate."""
+    out = _browse(xyz_station, _READY + r"""
+      await page.setViewport({ width: 1366, height: 768 });
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(500);
+      await page.evaluate(() => {
+        for (const id of ['rail-latched', 'energized-line']) {
+          const n = document.getElementById(id);
+          n.textContent = 'Stepper Probe, DC Probe and Chuck Positioner did not confirm the stop.';
+          n.hidden = false;
+        }
+        const a = document.getElementById('rail-alert');
+        const line = document.createElement('div'); line.className = 'rail-alert-line';
+        line.textContent = 'The Rotator did not answer. Check the cable.';
+        a.appendChild(line); a.hidden = false;
+      });
+      await sleep(500);
+      return { short: await page.evaluate(%s),
+               ids: await page.evaluate(() => Array.from(document.querySelectorAll('.rail-foot .rail-control')).map((n) => n.getBoundingClientRect().left)) };
+    """ % _RAIL, tmp_path)["short"]
+    foot = dict(out["foot"])
+    assert foot["tutorials-link"]["top"] == foot["setup-link"]["top"], out        # one line
+    assert foot["quit-link"]["top"] > foot["setup-link"]["bottom"] - 1, out        # Quit under
+    assert max(f[1]["bottom"] for f in out["foot"]) <= out["vh"], out
+    assert not out["scrolls"], out
+    assert out["stop"]["bottom"] <= out["vh"], out
+
+
+@needs_browser
+def test_a_phones_page_list_folds_behind_one_key_and_the_bar_stays_short(xyz_station, tmp_path):
+    out = _browse(xyz_station, _READY + r"""
+      await page.setViewport({ width: 390, height: 844 });
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(600);
+      const closed = await page.evaluate(%s);
+      await page.click('#nav-toggle');
+      await sleep(300);
+      const open = await page.evaluate(%s);
+      await page.evaluate(() => document.querySelector('#model-nav .overview-link').click());
+      await sleep(500);
+      const after = await page.evaluate(%s);
+      return { closed, open, after };
+    """ % (_RAIL, _RAIL, _RAIL), tmp_path)
+    closed, opened, after = out["closed"], out["open"], out["after"]
+    assert closed["toggle"] and not closed["nav"], out
+    assert closed["toggleWords"] == "Pages: Fake Proc", out
+    assert closed["rail"]["h"] <= closed["vh"] / 3 + 4, out                        # about a third
+    assert closed["expanded"] == "false" and opened["expanded"] == "true", out
+    assert opened["nav"] and opened["rail"]["h"] > closed["rail"]["h"], out
+    assert not after["nav"] and after["toggleWords"] == "Pages: Dashboard", out    # choosing closes it
+
+
+@needs_browser
+def test_the_page_list_toggle_is_not_drawn_on_a_desktop(xyz_station, tmp_path):
+    out = _browse(xyz_station, _READY + r"""
+      await page.setViewport({ width: 1400, height: 900 });
+      await sleep(400);
+      return await page.evaluate(%s);
+    """ % _RAIL, tmp_path)
+    assert not out["toggle"] and out["nav"], out

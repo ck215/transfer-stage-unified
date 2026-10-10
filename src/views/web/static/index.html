@@ -81,6 +81,13 @@
       <span class="account-glyph" aria-hidden="true"></span>
       <span class="account-name" translate="no"></span>
     </button>
+    <!-- A phone's rail is a bar: the page list folds behind this one key,
+         which says the page shown (UX audit 2026-10-07 #12). Not drawn at
+         any other width. -->
+    <button id="nav-toggle" type="button" class="ghost rail-control nav-toggle"
+            aria-controls="model-nav" aria-expanded="false" hidden>
+      <span class="nav-toggle-words">Pages</span>
+    </button>
     <nav id="model-nav" class="model-nav" aria-label="Pages"></nav>
     <!-- What the dots before the names mean (UX audit 2026-10-07 #5): the
          same marks as the dots, with their words. Drawn once there are
