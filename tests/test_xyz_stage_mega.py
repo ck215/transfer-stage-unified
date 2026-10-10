@@ -69,7 +69,8 @@ def test_the_class_is_a_probe_named_xyz_stage_mega_answering_m():
     assert issubclass(XyzStageMega, StepperProbe)
     assert XyzStageMega.NEEDS_PORT is True and XyzStageMega.NEEDS_GAMEPAD is True
     assert station_setup.resources_of(XyzStageMega) == ("port", "gamepad")
-    assert XyzStageMega.ASSUMED_CAPS == frozenset(CAPS)
+    # The simulator's caps plus the soft travel limit the sketch has (X-14).
+    assert XyzStageMega.ASSUMED_CAPS == frozenset(CAPS) | {"soft"}
 
 
 def test_it_is_registered_right_after_the_teensy_xyz_stage():

@@ -39,6 +39,7 @@ SimUsbSerial::operator bool() const { return g_simDtr; }
 bool IntervalTimer::begin(void (*f)(), unsigned us) { g_simIsr = f; g_simIsrPeriodUs = us; return true; }
 uint8_t SimEEPROM::read(int a) { if (!s_eepromInit) { memset(s_eeprom, 0xFF, sizeof s_eeprom); s_eepromInit = true; } return s_eeprom[a]; }
 void SimEEPROM::update(int a, uint8_t v) { read(a); s_eeprom[a] = v; }
+uint8_t *sim_eeprom() { EEPROM.read(0); return s_eeprom; }
 void sim_serial_input(const char *s) {
   if (s_head == s_tail) s_head = s_tail = 0;
   size_t n = strlen(s);

@@ -50,7 +50,8 @@ DEV: <letter> caps=<token>[,<token>...]
   - `hostto`: HOSTTIMEOUT and HB;
   - `home`: HOME and ZERO per axis;
   - `limits`: limit interlock and events;
-  - `tmc`: driver UART status.
+  - `tmc`: driver UART status;
+  - `soft`: the soft travel limit, `#SOFTLIMIT` (added 2026-10-10, X-14; §4).
 - **What may be listed:** a token is listed only when the firmware has the
   feature. Whether the hardware for it is present is reported per axis by
   `#INFO`, not here.
@@ -84,10 +85,12 @@ Only for a board whose caps include `ext1`.
 | `#HOME <A>` | Needs the drives enabled, autonomous idle and `<A>_home=1`. Replies `#OK HOME started` at once. Sequence as the Teensy axis firmware (PROTOCOL.md "HOME"): `#EVT HOME A phase=...`, then `#EVT HOMED A edge=<counts> pos=0` or `#EVT HOME FAIL A reason=...` |
 | `#ZERO <A>` | Sets that axis's position to 0. Refused while it moves. `#OK ZERO axis=A`. Clears `homed` |
 | `#STOP` | Same effect as the stop jog packet (mode 0). `#OK STOP` |
+| `#SOFTLIMIT <A> [counts]` | Cap `soft` only. No count: a query. `0..160000` (100 mm): writes EEPROM, 0 = no limit. Refused while enabled or moving (`#ERR SOFTLIMIT busy`), as AXISCFG is. Replies `#OK SOFTLIMIT axis=A counts=N ref=0/1`, then ` ls1=<counts>` when referenced, ` lim=<counts>` when referenced with a limit set, ` damaged=1`, and ` stored=1` after a write. `#INFO` adds per axis `x_soft=N x_soft_ref=0/1`, and `x_soft_lim=`, `x_soft_damaged=1` as the reply does |
 
 **Errors** use the Teensy firmware's reason words where the meaning is the
 same: `busy`, `bad-arg`, `not-enabled`, `no-home-sensor`,
-`limit-lsN-end-unknown:jog-off-it`, `limit-lsN-pressed-both-ways:check-switch`.
+`limit-lsN-end-unknown:jog-off-it`, `limit-lsN-pressed-both-ways:check-switch`,
+`soft-limit`, `soft-limit-unreferenced:touch-ls1`, `soft-limit-eeprom-damaged:set-SOFTLIMIT`.
 
 ## 4. Safety: the XYZ features, per axis, when present
 
@@ -125,6 +128,32 @@ in counts:
 - **Seen-once:** a switch with `limits=0` that trips while moving marks its
   axis's limits present for the session and emits
   `#EVT LIMIT A lsN seen=1`. It is never written to EEPROM.
+- **Soft travel limit** (cap `soft`, 2026-10-10, X-14), for an axis whose
+  carriage cannot reach one of its switches (a probe that meets its fixture
+  first). `#SOFTLIMIT A <counts>` is the most it may travel from LS1. It is
+  stored in EEPROM, and is none by default.
+  - **Reference:** the count at which LS1 tripped while the axis moved toward
+    the end it guards (that end known, the interlock armed), taken in the step
+    ISR: `#EVT SOFTLIMIT A referenced ls1=<counts> lim=<counts>`. The limit
+    lies `counts` from it, away from that end. Each such trip refreshes it.
+    `#ZERO` and HOME move it with the origin.
+  - **Referenced:** no step past the limit, whatever started the motion (frame,
+    jog, D-pad step, HOME search): it stops on it,
+    `#EVT SOFTLIMIT A stopped pos=<counts> lim=<counts>`. A start further out
+    from the limit is refused `soft-limit`. HOME takes it as an end.
+  - **Not referenced** (since boot, `#AXISCFG A`, or a loss), with a limit set:
+    only a jog moves that axis, or a frame or D-pad step toward LS1 once its end
+    is known. Everything else is `soft-limit-unreferenced:touch-ls1`, `#HOME`
+    included. A soft limit needs LS1: with `limits=0` the reference never comes.
+  - **Lost** by homed's rule for the step count (a disable while the axis
+    turned, a driver fault on it) and on `#AXISCFG A`:
+    `#EVT SOFTLIMIT A lost reason=<why>`.
+  - **A damaged EEPROM entry is not "none"** (an erased block is):
+    `x_soft_damaged=1`, jogs only (`soft-limit-eeprom-damaged:set-SOFTLIMIT`)
+    until `#SOFTLIMIT` writes it again. This is the opposite of AXISCFG's
+    absent-is-inert, on purpose: the owner's limit is unknown, not absent.
+  - **EEPROM:** the block follows AXISCFG's, `1 + 8 x axes` bytes: `0x5D`, a
+    4-byte little-endian count per axis, then each count's complement.
 
 ## 5. The XYZ Mega's hardware map
 
@@ -153,6 +182,11 @@ from one constants block.
 - **Feature visibility:** each feature is shown only when caps list it, and
   it is disabled with a reason when `#INFO` says that axis's hardware is
   absent ("no home sensor on Y").
+- **Soft limit (cap `soft`):** the page shows each axis's soft limit (from
+  `#INFO`) and sets it with `#SOFTLIMIT` while the stage is disabled. It acts
+  on `#EVT SOFTLIMIT ... stopped` as on a LIMIT (a Step in flight is stopped on
+  every axis), and refuses a Step that would cross a referenced limit before
+  sending it.
 - **Old boards:** no caps means the station is exactly today's: same wire,
   same schema.
 - **`XyzStageMega`:** a Probe-family model, `NAME = "XYZ Stage (Mega)"`,
@@ -175,3 +209,7 @@ from one constants block.
 - The 10 s host-silent disable.
 - With no `#` command sent, frames, jog packets, `e`/`d` and the POS stream
   behave exactly as on the Stepper Probe.
+- Soft limit, on an axis that needs one: measure the travel from LS1 to the
+  obstruction with none set, set it with a margin; a frame, the stick and a
+  D-pad step each stop on it; it survives a power cycle and needs LS1 again
+  after one.

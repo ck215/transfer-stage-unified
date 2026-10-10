@@ -21,4 +21,8 @@ SCENARIO tmc-late-readback                    PASS  (4 checks, 0 failed)
 SCENARIO watchdog-deadman                     PASS  (5 checks, 0 failed)
 SCENARIO watchdog-step-timer                  PASS  (1 checks, 0 failed)
 SCENARIO frame-dpad-past-int16                PASS  (4 checks, 0 failed)
+SCENARIO soft-limit-frames-jog-dpad           PASS  (25 checks, 0 failed)
+SCENARIO soft-limit-persists-reboot-lost      PASS  (13 checks, 0 failed)
+SCENARIO soft-limit-home                      PASS  (4 checks, 0 failed)
+SCENARIO soft-limit-eeprom-damaged            PASS  (6 checks, 0 failed)
 failed scenarios: 0

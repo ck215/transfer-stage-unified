@@ -19,7 +19,13 @@ the fix (14 of 14 each). Before the fix both sketches failed 8 of 14, seven by
 driving into the hard stop. The station sketch has a fifteenth scenario,
 `move-accel-coarrival` (2026-10-09: MOVE/MOVETO's optional per-move
 acceleration, and how close a vector Step's axes arrive with it); the
-validator, which has no per-move speed or acceleration, does not list it. Set `ACCELSTEPPER_SRC` if AccelStepper is not in
+validator, which has no per-move speed or acceleration, does not list it.
+Seven more are the station sketch's soft travel limit (2026-10-10, X-14:
+`soft-limit-*`, SOFTLIMIT): the stage model gains an obstruction short of a
+switch (`wall`, `wallLo`: a step past it is lost, as at a hard stop), LS1 wired
+at the + end (`ls1Plus`) and the EEPROM image (`sim_eeprom()`). Red on the
+sketch before SOFTLIMIT (7 of 7; it ran a jog and HOME's search into the wall),
+green after: 22 of 22. The validator does not have the feature. Set `ACCELSTEPPER_SRC` if AccelStepper is not in
 `~/Documents/Arduino/libraries`. Build output goes beside the binary you name
 and in `obj/` here (ignored). Run it after any change to a sketch's interlock,
 HOME or host-timeout code. It is a host model: bench checks stay the owner's.
@@ -38,7 +44,7 @@ programs, `loop()` every 100 us.
 
 ```
 dev/firmware_sim/build.sh firmware/xyz_stage_mega/xyz_stage_mega.ino /tmp/sim-mega mega
-dev/firmware_sim/run.sh /tmp/sim-mega /tmp/sim-logs-mega      # 23 scenarios; "failed scenarios: 0"
+dev/firmware_sim/run.sh /tmp/sim-mega /tmp/sim-logs-mega      # 27 scenarios; "failed scenarios: 0"
 dev/firmware_sim/run.sh /tmp/sim-mega-stepref /tmp/sim-logs-base   # the same scenarios on stepper_firmware
 ```
 
@@ -53,6 +59,10 @@ deliberate defect, to show a scenario red. `expected-mega.txt` is the
 passing run. `seen-once-reboot` and `axiscfg-persists-reboot` reboot by
 re-executing the binary with the EEPROM image kept (a state file beside the
 binary).
+
+The four `soft-limit-*` scenarios (2026-10-10, X-14) drive `#SOFTLIMIT` and
+the cap `soft` against a wall short of LS2 (`Axis::wall`, `wallLo`): red on the
+sketch before it (X ran into the wall at 1 mm/s), green after.
 
 The reference builds (`-stepref`, and `stepref` for any sketch) spell the
 sketch's `int` and `unsigned int` as `int16_t`/`uint16_t`: avr-gcc makes them

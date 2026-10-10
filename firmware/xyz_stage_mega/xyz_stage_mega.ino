@@ -78,6 +78,7 @@ const unsigned long TMC_REPLY_MS     = 5;   // a driver read with no reply by th
 #define STD_CAP_HOME 1
 #define STD_CAP_LIMITS 1
 #define STD_CAP_TMC 1
+#define STD_CAP_SOFT 1
 #define STD_EEPROM_ADDR 16
 #include "station_std.h"
 
@@ -135,6 +136,14 @@ struct AxisIsr {
   int8_t   trapDir;      // 0 = disarmed
   uint8_t  trapLevel, trapHalt, trapHit;
   int32_t  trapPos;
+  // Soft travel limit (X-14, #SOFTLIMIT): LS1 tripping while the axis moves toward the end it guards is the reference;
+  // the limit lies softTravel from it, away from that end. A step that would leave the limit behind is not made.
+  int32_t  softTravel;   // counts; 0 = no limit (std_soft[], applied by skSoftApply)
+  int8_t   softDir;      // the direction the limit lies in; 0 = no limit in force (none set, or not referenced)
+  uint8_t  softRefOk;    // LS1 has given the reference since boot, AXISCFG or the last position loss
+  uint8_t  softRefNew;   // a new reference; loop() reports it
+  uint8_t  softHit;      // the ISR stopped a motion on the limit; loop() reports it
+  int32_t  softRef, softLim, softHitPos;
 };
 
 // The Stepper firmware's jog packet: 0xAA, a mode byte, ten floats (station: struct '<BBffffffffff').
@@ -305,12 +314,24 @@ static void __attribute__((noinline)) axisSlow(AxisIsr &a, uint8_t raw) {
   bool halt = dir && t == 3;                        // both at once: a wiring fault or the wrong contact type
   lsTick(a, 0, dir, t, newTrip, newClear, p, halt);
   lsTick(a, 1, dir, t, newTrip, newClear, p, halt);
+  // X-14: LS1 trips while the axis moves toward the end it guards (that end known, the interlock armed): the soft
+  // travel limit's reference, at this exact count.
+  if ((newTrip & 1) && dir && a.lsEnd[0] == dir && (a.lsFirm & 1) && a.limitsOn) {
+    a.softRef = p; a.softRefOk = 1; a.softRefNew = 1;
+    if (a.softTravel) { a.softDir = (int8_t)-dir; a.softLim = dir > 0 ? p - a.softTravel : p + a.softTravel; }
+  }
   if (halt && a.limitsOn) {
     axisStopIsr(a);
     a.lsHit |= t;
     if (t & 1) a.lsHitPos[0] = p;
     if (t & 2) a.lsHitPos[1] = p;
   }
+}
+
+// The soft travel limit (X-14) stopped a motion: no step past it. Out of line, like axisSlow: it is rare.
+static void __attribute__((noinline)) axisSoftStop(AxisIsr &a) {
+  a.softHit = 1; a.softHitPos = a.pos;
+  axisStopIsr(a);
 }
 
 // One axis, one tick. Most ticks only test three bytes and, when the axis runs, add to its phase.
@@ -320,9 +341,12 @@ static inline __attribute__((always_inline)) void axisTick(AxisIsr &a, uint8_t r
     a.acc += a.inc;
     if (a.acc & 0x80000000UL) {
       a.acc &= 0x7FFFFFFFUL;
-      if (A == 0) X_STEP_HI(); else if (A == 1) Y_STEP_HI(); else Z_STEP_HI();
-      if (a.dir > 0) a.pos++; else a.pos--;
-      if (a.bounded && a.pos == a.target) axisStopIsr(a);
+      if (a.dir == a.softDir && (a.dir > 0 ? a.pos >= a.softLim : a.pos <= a.softLim)) axisSoftStop(a);   // X-14
+      else {
+        if (A == 0) X_STEP_HI(); else if (A == 1) Y_STEP_HI(); else Z_STEP_HI();
+        if (a.dir > 0) a.pos++; else a.pos--;
+        if (a.bounded && a.pos == a.target) axisStopIsr(a);
+      }
     }
   }
 }
@@ -379,6 +403,7 @@ static void axSetPos(uint8_t a, int32_t p) {     // a new origin (ZERO, HOME): t
   int32_t d = p - x.pos;
   x.pos = p; x.target += d;
   for (uint8_t i = 0; i < 2; i++) { x.lsLo[i] += d; x.lsHi[i] += d; }
+  x.softRef += d; x.softLim += d;                // the soft limit stays on its carriage position (X-14)
 }
 static uint8_t trippedBits(uint8_t lvl) { return LIMITS_NC ? (uint8_t)(lvl & 3) : (uint8_t)(~lvl & 3); }
 static bool limitsOn(uint8_t a) { IrqGuard g; return g_ax[a].limitsOn; }
@@ -390,33 +415,57 @@ static uint8_t parkedBits(uint8_t a) {
 }
 static uint8_t homeLevel(uint8_t a) { IrqGuard g; return (g_ax[a].lvl >> 2) & 1; }
 
+// "soft-limit": one copy, so homeSeek can tell it from a switch by its address.
+static const char SOFT_LIMIT_WHY[] PROGMEM = "soft-limit";
+
 // Why motion of axis a toward dir is refused, or nullptr (xyz_stage_axis's limitBlock). Only a jog may move while a
-// switch is parked. With the interlock disarmed (limits=0) nothing is refused: the old behaviour.
+// switch is parked. With the interlock disarmed (limits=0) no switch refuses anything: the old behaviour.
 static PGM_P limitBlock(uint8_t a, int8_t dir, bool jog) {
-  uint8_t on, lvl, firm; int8_t end[2]; int32_t p, lo[2], hi[2];
+  uint8_t on, lvl, firm, refOk; int8_t end[2]; int32_t p, lo[2], hi[2], lim;
   {
     IrqGuard g;
     const AxisIsr &x = g_ax[a];
-    on = x.limitsOn; lvl = x.lvl; firm = x.lsFirm; p = x.pos;
+    on = x.limitsOn; lvl = x.lvl; firm = x.lsFirm; p = x.pos; refOk = x.softRefOk; lim = x.softLim;
     for (uint8_t i = 0; i < 2; i++) { end[i] = x.lsEnd[i]; lo[i] = x.lsLo[i]; hi[i] = x.lsHi[i]; }
   }
-  if (!on) return nullptr;
-  uint8_t t = trippedBits(lvl);
-  if (t == 3) return PSTR("limits-both-tripped:check-wiring");
-  for (uint8_t i = 0; i < 2; i++) {
-    if (!(t & (1u << i))) continue;
-    if (end[i] == dir) return i ? PSTR("limit-ls2") : PSTR("limit-ls1");
-    if (firm & (1u << i)) continue;
-    if (!jog) return i ? PSTR("limit-ls2-end-unknown:jog-off-it") : PSTR("limit-ls1-end-unknown:jog-off-it");
-    if (dir > 0 ? p >= hi[i] : p <= lo[i])
-      return i ? PSTR("limit-ls2-pressed-both-ways:check-switch") : PSTR("limit-ls1-pressed-both-ways:check-switch");
+  if (on) {
+    uint8_t t = trippedBits(lvl);
+    if (t == 3) return PSTR("limits-both-tripped:check-wiring");
+    for (uint8_t i = 0; i < 2; i++) {
+      if (!(t & (1u << i))) continue;
+      if (end[i] == dir) return i ? PSTR("limit-ls2") : PSTR("limit-ls1");
+      if (firm & (1u << i)) continue;
+      if (!jog) return i ? PSTR("limit-ls2-end-unknown:jog-off-it") : PSTR("limit-ls1-end-unknown:jog-off-it");
+      if (dir > 0 ? p >= hi[i] : p <= lo[i])
+        return i ? PSTR("limit-ls2-pressed-both-ways:check-switch") : PSTR("limit-ls1-pressed-both-ways:check-switch");
+    }
+  }
+  // X-14: the soft travel limit. #SOFTLIMIT set it, so it holds whatever AXISCFG says; it needs LS1's reference, so
+  // before that only a jog moves the axis, or a move toward LS1 once its end is known. A damaged EEPROM entry: jogs only.
+  if (std_softBad & (1u << a)) return jog ? nullptr : PSTR("soft-limit-eeprom-damaged:set-SOFTLIMIT");
+  if (std_soft[a]) {
+    if (!refOk) { if (!jog && !(end[0] && dir == end[0])) return PSTR("soft-limit-unreferenced:touch-ls1"); }
+    else if (dir == -end[0] && (dir > 0 ? p >= lim : p <= lim)) return SOFT_LIMIT_WHY;
   }
   return nullptr;
+}
+// HOME may search either way: with a soft limit it needs the reference before it starts (X-14).
+static PGM_P softStartBlock(uint8_t a) {
+  if (std_softBad & (1u << a)) return PSTR("soft-limit-eeprom-damaged:set-SOFTLIMIT");
+  uint8_t refOk; { IrqGuard g; refOk = g_ax[a].softRefOk; }
+  return (std_soft[a] && !refOk) ? PSTR("soft-limit-unreferenced:touch-ls1") : nullptr;
 }
 
 // ================================================================ events and stops
 static void homeFail(PGM_P reason);
 static void homedLost(uint8_t a) { g_homed[a] = false; }
+// The soft limit's reference goes with the step count, by homed's rule less ZERO and HOME, which move it with the
+// origin (X-14): LS1 must trip again.
+static void softRefLost(uint8_t a, PGM_P why) {
+  uint8_t was;
+  { IrqGuard g; AxisIsr &x = g_ax[a]; was = x.softRefOk; x.softRefOk = 0; x.softDir = 0; }
+  if (was && std_soft[a]) stdEvt(0, PSTR("SOFTLIMIT %c lost reason=%s"), stdAxisLetter(a), stdP(why));
+}
 
 // #EVT REFUSED for a frame or jog the frame protocol cannot answer. Jog packets repeat 50 times a second, so a jog's
 // refusal goes out once (latch) until that input returns to neutral; a frame's goes out every time.
@@ -439,7 +488,10 @@ static void outputsOff(PGM_P why) {
   bool moving[3];
   { IrqGuard g; for (uint8_t a = 0; a < 3; a++) moving[a] = g_ax[a].run && !g_hold; }
   haltMotion(why);
-  for (uint8_t a = 0; a < 3; a++) { digitalWrite(EN_PIN[a], HIGH); g_axEn[a] = 0; if (moving[a]) homedLost(a); }
+  for (uint8_t a = 0; a < 3; a++) {
+    digitalWrite(EN_PIN[a], HIGH); g_axEn[a] = 0;
+    if (moving[a]) { homedLost(a); softRefLost(a, why); }
+  }
   for (uint8_t a = 0; a < 3; a++) if (g_tmc[a]) g_drv[a].toff(0);
   if (g_sysEnabled) stdDbg(PSTR("driver off reason=%s"), stdP(why));
   g_sysEnabled = false;
@@ -453,6 +505,7 @@ static void driverFault(uint8_t a, PGM_P what, const char *extra) {
   stdEvt(0, PSTR("FAULT %s %c%s"), stdP(what), stdAxisLetter(a), extra);
   outputsOff(what);
   homedLost(a);
+  softRefLost(a, what);                         // its microstep counter restarted, or may have (X-14)
 }
 
 // ================================================================ TMC bus (Serial2)
@@ -645,7 +698,7 @@ static bool endGuarded(uint8_t a, int8_t dir) {
 static void homeSeek(int8_t s, PGM_P after) {
   uint8_t a = h_axis;
   PGM_P blk = limitBlock(a, s, false);
-  if (blk && endGuarded(a, s)) {               // starting against the switch at that end counts as reaching it
+  if (blk && (endGuarded(a, s) || blk == SOFT_LIMIT_WHY)) {   // against the switch (or soft limit) at that end: reached
     if (++h_ends >= 2) { homeFail(PSTR("no-edge-between-limits")); return; }
     s = (int8_t)-s; after = PSTR("at-limit");
     blk = limitBlock(a, s, false);
@@ -689,7 +742,7 @@ static void homeStep(uint32_t now) {
   uint8_t a = h_axis;
   if (now - h_start > h_limitMs) { homeFail(PSTR("time-limit")); return; }
   bool hit, run, lsPending; int32_t tp;
-  { IrqGuard g; hit = g_ax[a].trapHit; tp = g_ax[a].trapPos; run = g_ax[a].run; lsPending = g_ax[a].lsHit != 0; }
+  { IrqGuard g; hit = g_ax[a].trapHit; tp = g_ax[a].trapPos; run = g_ax[a].run; lsPending = g_ax[a].lsHit || g_ax[a].softHit; }
   if (lsPending) return;                       // a limit just halted it: serviceSensors() hands it over first
   uint8_t pk = parkedBits(a);
   if (pk) { homeFail(pk & 1 ? PSTR("limit-ls1-end-unknown:jog-off-it") : PSTR("limit-ls2-end-unknown:jog-off-it")); return; }
@@ -708,13 +761,13 @@ static void homeStep(uint32_t now) {
         }
         g_home = H_BACKOFF;
         stdEvt(1, PSTR("HOME %c phase=backoff edge=%ld to=%ld"), stdAxisLetter(a), (long)h_coarse, (long)h_backoffPos);
-      } else if (ls) {
+      } else if (ls) {                         // a switch, or the soft limit (bit 2), is an end
         if (++h_ends >= 2) { homeFail(PSTR("no-edge-between-limits")); return; }
-        homeSeek((int8_t)-h_dir, PSTR("limit"));
+        homeSeek((int8_t)-h_dir, (ls & 4) ? PSTR("soft-limit") : PSTR("limit"));
       } else if (!run) homeFail(PSTR("no-edge-within-search"));   // a whole leg without an edge or a switch
       break;
     case H_BACKOFF:
-      if (ls) { homeFail(PSTR("limit-during-backoff")); return; }
+      if (ls) { homeFail((ls & 4) ? PSTR("soft-limit-during-backoff") : PSTR("limit-during-backoff")); return; }
       if (run) break;
       if (homeLevel(a) == HOME_FLAG_LEVEL) { homeFail(PSTR("flag-at-backoff")); return; }
       if (limitBlock(a, HOME_DIR, false)) { homeFail(PSTR("limit-before-approach")); return; }
@@ -727,7 +780,7 @@ static void homeStep(uint32_t now) {
     case H_APPROACH:
       if (hit && !run) { homeDone(tp); return; }
       if (hit) break;
-      if (ls) { homeFail(PSTR("limit-during-approach")); return; }
+      if (ls) { homeFail((ls & 4) ? PSTR("soft-limit-during-approach") : PSTR("limit-during-approach")); return; }
       if (!run) homeFail(PSTR("edge-lost"));   // the whole approach without the edge
       break;
     default: break;
@@ -917,15 +970,25 @@ static void jogDeadman(uint32_t now) {
 // ================================================================ ISR events -> lines, HOME
 static void serviceSensors() {
   for (uint8_t a = 0; a < 3; a++) {
-    uint8_t hits, trav, both, rel, seen; int32_t hp[2]; int8_t end[2];
+    uint8_t hits, trav, both, rel, seen, softNew, softHit; int32_t hp[2], softRef, softLim, softAt; int8_t end[2];
     {
       IrqGuard g;
       AxisIsr &x = g_ax[a];
       hits = x.lsHit; trav = x.lsTravel; both = x.lsBoth; rel = x.lsReleased; seen = x.seenNow;
       x.lsHit = x.lsTravel = x.lsBoth = x.lsReleased = x.seenNow = 0;
       hp[0] = x.lsHitPos[0]; hp[1] = x.lsHitPos[1]; end[0] = x.lsEnd[0]; end[1] = x.lsEnd[1];
+      softNew = x.softRefNew; softHit = x.softHit; x.softRefNew = x.softHit = 0;
+      softRef = x.softRef; softLim = x.softLim; softAt = x.softHitPos;
     }
     const char L = stdAxisLetter(a);
+    if (softNew) {                              // X-14: LS1 gave the soft limit its reference
+      if (std_soft[a]) stdEvt(0, PSTR("SOFTLIMIT %c referenced ls1=%ld lim=%ld"), L, (long)softRef, (long)softLim);
+      else stdDbg(PSTR("soft reference %c ls1=%ld (no limit set)"), L, (long)softRef);
+    }
+    if (softHit) {                              // X-14: the ISR stopped a motion on the soft limit
+      stdEvt(0, PSTR("SOFTLIMIT %c stopped pos=%ld lim=%ld"), L, (long)softAt, (long)softLim);
+      if (g_home != H_IDLE && h_axis == a) h_lsHits |= 4;   // HOME takes it as an end (bit 2: not a switch)
+    }
     for (uint8_t i = 0; i < 2; i++) {
       const uint8_t b = (uint8_t)(1u << i);
       if (rel & b) stdDbg(PSTR("limit %c ls%u end=%s learned=release"), L, i + 1, stdEnd(end[i]));
@@ -947,6 +1010,7 @@ void skHostTimeoutDisable() { outputsOff(PSTR("host-timeout")); }
 void skStop() { haltMotion(PSTR("stop")); }
 bool skAxisCfgBusy() { return g_sysEnabled || anyMoving() || g_home != H_IDLE; }
 void skAxisCfgApply(uint8_t a) {               // new meaning: forget the learned ends; a switch pressed now is parked
+  softRefLost(a, PSTR("axiscfg"));             // and LS1's soft-limit reference with them (X-14)
   IrqGuard g;
   AxisIsr &x = g_ax[a];
   x.limitsOn = stdCfgLimits(a);
@@ -954,6 +1018,20 @@ void skAxisCfgApply(uint8_t a) {               // new meaning: forget the learne
   for (uint8_t i = 0; i < 2; i++) { x.lsLo[i] = x.pos - PARKED_TRAVEL; x.lsHi[i] = x.pos + PARKED_TRAVEL; }
 }
 uint8_t skTmc(uint8_t a) { return g_tmc[a]; }
+void skSoftApply(uint8_t a) {                  // X-14: std_soft[a] changed; the limit is in force once referenced
+  IrqGuard g;
+  AxisIsr &x = g_ax[a];
+  x.softTravel = std_soft[a];
+  if (x.softRefOk && x.softTravel) {
+    const int8_t e = x.lsEnd[0];
+    x.softDir = (int8_t)-e; x.softLim = e > 0 ? x.softRef - x.softTravel : x.softRef + x.softTravel;
+  } else x.softDir = 0;
+}
+uint8_t skSoftRef(uint8_t a, int32_t &ls1, int32_t &lim) {
+  IrqGuard g;
+  ls1 = g_ax[a].softRef; lim = g_ax[a].softLim;
+  return g_ax[a].softRefOk;
+}
 uint8_t skLimitsOn(uint8_t a) { return limitsOn(a); }
 int8_t skLsEnd(uint8_t a, uint8_t i) { IrqGuard g; return g_ax[a].lsEnd[i]; }
 uint8_t skHomed(uint8_t a) { return g_homed[a]; }
@@ -966,7 +1044,7 @@ PGM_P skHomeCheck(uint8_t a) {
   if (t == 3) return PSTR("limits-both-tripped:check-wiring");
   uint8_t pk = parkedBits(a);
   if (pk) return pk & 1 ? PSTR("limit-ls1-end-unknown:jog-off-it") : PSTR("limit-ls2-end-unknown:jog-off-it");
-  return nullptr;
+  return softStartBlock(a);                    // X-14
 }
 void skHomeStart(uint8_t a) { homeStart(a); }
 PGM_P skZero(uint8_t a) {
@@ -1085,6 +1163,7 @@ void setup() {
   for (uint8_t a = 0; a < 3; a++) {            // a switch pressed at power-up is parked: its travel counts from here
     g_ax[a].limitsOn = stdCfgLimits(a);
     for (uint8_t i = 0; i < 2; i++) { g_ax[a].lsLo[i] = -PARKED_TRAVEL; g_ax[a].lsHi[i] = PARKED_TRAVEL; }
+    skSoftApply(a);                            // the soft travel limit: in force once LS1 trips (X-14)
   }
   g_hold = 0;
 

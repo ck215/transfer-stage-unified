@@ -39,6 +39,9 @@ struct Stage {
   int forced[2] = {-1, -1};              // forced pressed state in [forcedFrom, forcedUntil)
   uint64_t forcedFrom[2] = {0, 0}, forcedUntil[2] = {0, 0};
   double homeLo = 10.0, homeHi = 12.0;
+  double wall = 1e9, wallLo = -1e9;      // obstructions short of a switch (X-14: the bench probe on axis 1 hits before
+                                         // its carriage reaches LS2): a step past one is lost, as against a hard stop
+  bool ls1Plus = false;                  // LS1 wired at the + end (50 mm) and LS2 at the - end (0 mm)
   long lostSteps = 0; double crashVmax = 0; uint64_t crashFirstUs = 0;
   uint64_t lastStepUs = 0; int lastDir = 0;
   std::vector<StepRec> log;
@@ -61,13 +64,16 @@ struct Stage {
     }
     return p;
   }
-  uint8_t level(int i, uint64_t now) const { bool p = contactPressed(i, now); return nc ? (p ? 1 : 0) : (p ? 0 : 1); }
+  uint8_t level(int i, uint64_t now) const {
+    bool p = contactPressed(ls1Plus ? 1 - i : i, now);
+    return nc ? (p ? 1 : 0) : (p ? 0 : 1);
+  }
   uint8_t homeLevel() const { return (x >= homeLo && x <= homeHi) ? 1 : 0; }
   void onStep(int dir, uint64_t now) {
     if (g_simPinOut[P_EN] != 0) return;                       // outputs off: no torque, the carriage does not move
     double nx = x + dir / spm();
     double v = (lastStepUs && dir == lastDir && now > lastStepUs) ? (1.0 / spm()) / ((now - lastStepUs) * 1e-6) : 0.0;
-    if (nx < op1 - ovt - 1e-9 || nx > op2 + ovt + 1e-9) {     // against a hard stop: the step is lost
+    if (nx < op1 - ovt - 1e-9 || nx > op2 + ovt + 1e-9 || nx > wall + 1e-9 || nx < wallLo - 1e-9) {   // a stop or a wall
       lostSteps++;
       if (!crashFirstUs) crashFirstUs = now;
       if (v > crashVmax) crashVmax = v;
@@ -599,6 +605,231 @@ static void s_move_accel_coarrival() {
   expect(st.lostSteps == 0, "no hard-stop contact", crashTxt());
 }
 
+// ------------------------------------------------------------------ X-14: the soft travel limit (station sketch)
+// An axis whose carriage cannot reach LS2 (the bench probe on axis 1: its extension hits first) gets SOFTLIMIT <mm>:
+// the most it may travel from LS1, measured from where LS1 last tripped while the axis moved toward the end it guards.
+// The wall here is at 30 mm (LS2 at 50 is never reached); SOFTLIMIT 28 leaves 2 mm.
+static const size_t NONE = (size_t)-1;
+// SOFTLIMIT's EEPROM block (SOFT_EEPROM_ADDR 4): magic 0x5C, the travel in um (4 bytes, little-endian), its complement.
+static void presetSoft(uint32_t um, bool damaged = false) {
+  uint8_t *e = sim_eeprom();
+  e[4] = 0x5C;
+  for (int i = 0; i < 4; i++) { e[5 + i] = (uint8_t)(um >> (8 * i)); e[9 + i] = (uint8_t)~(um >> (8 * i)); }
+  if (damaged) e[9] ^= 1;
+}
+static double kvd(const std::string &line, const std::string &key) {   // a k=v number, NAN when absent
+  size_t p = line.find(" " + key + "=");
+  return p == std::string::npos ? NAN : atof(line.c_str() + p + key.size() + 2);
+}
+static double halfStep() { return 0.5 / st.spm(); }
+// From mid-travel onto LS1 (the - end) at full speed: the trip from clear teaches LS1's end and is the reference.
+// -> the EVT SOFTLIMIT referenced line ("" when none came).
+static std::string touchLs1() {
+  size_t m = g_out.size();
+  jog(-1, 2.5, 13000);
+  size_t k = findLine("EVT SOFTLIMIT referenced", m);
+  return k == NONE ? "" : g_out[k].s;
+}
+
+// 8. MOVE/MOVETO/REVS: refused until LS1 has been touched, then shortened to the limit; nothing passes it.
+static void s_soft_move() {
+  st.wall = 30.0;
+  boot(25.0);
+  expect(cmd("SOFTLIMIT") == "OK SOFTLIMIT mm=0.000 ref=0", "blank EEPROM: no soft limit (the default)", cmd("SOFTLIMIT"));
+  for (const char *bad : {"SOFTLIMIT -1", "SOFTLIMIT 100.5", "SOFTLIMIT x", "SOFTLIMIT nan"})
+    expect(cmd(bad) == "ERR SOFTLIMIT bad-arg", std::string(bad) + ": bad-arg");
+  std::string r = cmd("SOFTLIMIT 28");
+  expect(r == "OK SOFTLIMIT mm=28.000 ref=0 stored=1", "SOFTLIMIT 28 stored", r);
+  cmd("ENABLE"); cmd("SPEED 2.5");
+  expect(cmd("SOFTLIMIT 20") == "ERR SOFTLIMIT busy", "SOFTLIMIT refused while enabled");
+  expect(cmd("MOVE 2") == "ERR MOVE soft-limit-unreferenced:touch-ls1", "MOVE + refused before LS1 is touched", cmd("MOVE 2"));
+  expect(cmd("MOVE -2") == "ERR MOVE soft-limit-unreferenced:touch-ls1", "MOVE - too, while LS1's end is unknown");
+  expect(cmd("HOME") == "ERR HOME soft-limit-unreferenced:touch-ls1", "HOME refused");
+  expect(cmd("TEST REVS 1") == "ERR TEST soft-limit-unreferenced:touch-ls1", "a motion TEST refused");
+  expect(st.log.empty(), "nothing moved");
+  std::string ref = touchLs1();
+  double ls1 = kvd(ref, "ls1_mm"), lim = kvd(ref, "limit_mm");
+  expect(st.x <= 0.0 && st.x > -0.01, "the jog stops on LS1", "x=" + fmt("%.4f", st.x));
+  expect(fabs(ls1 + 25.0) < 0.01 && fabs(lim - ls1 - 28.0) < 1e-4, "EVT SOFTLIMIT referenced ls1_mm=-25 limit_mm=+3 (28 mm from LS1)", ref);
+  r = cmd("SOFTLIMIT");
+  expect(fabs(kvd(r, "limit_mm") - lim) < 1e-5 && kvd(r, "ref") == 1, "SOFTLIMIT says ref=1 and the limit", r);
+  const double limX = 25.0 + lim;                         // the limit on the stage
+  size_t m1 = g_out.size();
+  r = cmd("MOVE 40");
+  expect(has(r, "OK MOVE") && has(r, " clamped=1") && fabs(kvd(r, "target_mm") - lim) < 1e-4, "MOVE 40: shortened to the limit", r);
+  waitIdle(30000);
+  size_t k = findLine("EVT SOFTLIMIT clamped", m1);
+  expect(k != NONE && fabs(kvd(g_out[k].s, "limit_mm") - lim) < 1e-5, "EVT SOFTLIMIT clamped, not a LIMIT", k == NONE ? "none" : g_out[k].s);
+  expect(findLine("EVT LIMIT", m1) == NONE && findLine("SOFTLIMIT stopped", m1) == NONE, "no switch, no ISR halt: it decelerated onto it");
+  expect(fabs(st.x - limX) <= halfStep(), "stopped on the limit, 28 mm from LS1", "x=" + fmt("%.5f", st.x));
+  expect(st.lostSteps == 0, "never reaches the wall at 30 mm", crashTxt());
+  expect(cmd("MOVE 1") == "ERR MOVE soft-limit", "at the limit, MOVE + is refused", cmd("MOVE 1"));
+  expect(cmd("REVS 1") == "ERR REVS soft-limit", "and REVS");
+  std::string j = cmd("JOGV 0.5"); cmd("JOGV 0");
+  expect(j == "ERR JOGV soft-limit", "and a jog", j);
+  expect(has(cmd("MOVE -5"), "OK MOVE"), "back toward LS1 is fine"); waitIdle(10000);
+  r = cmd("MOVETO 20");
+  expect(has(r, "OK MOVETO") && has(r, " clamped=1"), "MOVETO past it is shortened too", r); waitIdle(10000);
+  expect(fabs(st.x - limX) <= halfStep(), "MOVETO stops on the limit", "x=" + fmt("%.5f", st.x));
+  cmd("MOVE -3"); waitIdle(10000);
+  r = cmd("REVS 5");
+  expect(has(r, "OK REVS") && has(r, " clamped=1"), "REVS 5 is shortened to 3 mm", r); waitIdle(10000);
+  expect(fabs(st.x - limX) <= halfStep(), "REVS stops on the limit", "x=" + fmt("%.5f", st.x));
+  // The limit is a carriage position: ZERO, a stationary DISABLE and MICROSTEPS 16 keep it there.
+  cmd("MOVE -10"); waitIdle(10000);
+  expect(has(cmd("ZERO"), "OK ZERO"), "ZERO");
+  cmd("DISABLE"); cmd("ENABLE");
+  expect(has(cmd("MICROSTEPS 16"), "OK MICROSTEPS microsteps=16"), "MICROSTEPS 16");
+  cmd("SPEED 1.25");
+  r = cmd("MOVE 40"); waitIdle(40000);
+  expect(fabs(st.x - limX) <= 0.5 / 1600 + 1e-9, "after ZERO, DISABLE and MICROSTEPS 16: still on the same carriage position",
+         "x=" + fmt("%.5f", st.x) + " " + r);
+  expect(st.lostSteps == 0, "no wall, no hard stop", crashTxt());
+  cmd("DISABLE");
+  std::string ls1Now = fmt("%.5f", kvd(cmd("SOFTLIMIT"), "ls1_mm"));
+  r = cmd("SOFTLIMIT 0");
+  expect(r == "OK SOFTLIMIT mm=0.000 ref=1 ls1_mm=" + ls1Now + " stored=1", "SOFTLIMIT 0 turns it off (the reference stays)", r);
+  cmd("ENABLE");
+  expect(has(cmd("MOVE 1"), "OK MOVE"), "off: MOVE + accepted past the old limit"); waitIdle(5000);
+  expect(st.x > limX + 0.9, "and it moves", "x=" + fmt("%.5f", st.x));
+}
+
+// 9. A jog heads for the limit: its far target is the limit, so AccelStepper decelerates onto it (ACCEL 0.25 mm/s^2:
+// 12.5 mm to stop from 2.5 mm/s).
+static void s_soft_jog() {
+  st.wall = 30.0;
+  presetSoft(28000);
+  boot(25.0);
+  expect(cmd("SOFTLIMIT") == "OK SOFTLIMIT mm=28.000 ref=0", "SOFTLIMIT read from EEPROM at boot", cmd("SOFTLIMIT"));
+  cmd("ENABLE");
+  std::string ref = touchLs1();
+  double lim = kvd(ref, "limit_mm"), limX = 25.0 + lim;
+  expect(!ref.empty(), "referenced on LS1", ref);
+  cmd("ACCEL 0.25");
+  size_t m = g_out.size();
+  jog(+1, 2.5, 30000);
+  expect(st.lostSteps == 0, "the jog never reaches the wall", crashTxt());
+  expect(fabs(st.x - limX) <= halfStep(), "it decelerates onto the limit and stops there", "x=" + fmt("%.5f", st.x));
+  expect(findLine("EVT SOFTLIMIT reached", m) != NONE && findLine("SOFTLIMIT stopped", m) == NONE,
+         "EVT SOFTLIMIT reached (no ISR halt needed)", m < g_out.size() ? g_out.back().s : "");
+  std::string a = probeJog(1);
+  expect(a == "ERR JOGV soft-limit", "a jog further out is refused", a);
+  a = cmd("JOG 1"); cmd("JOG 0");
+  expect(a == "ERR JOG soft-limit", "a validator JOG too", a);
+  std::string b = probeJog(-1);
+  expect(has(b, "OK JOGV"), "the way back is free", b);
+  cmd("ACCEL 2.5");
+  cmd("MOVE -1"); waitIdle(5000);
+  m = g_out.size();
+  cmd("SPEED 2.5"); cmd("JOG 1"); for (int i = 0; i < 40; i++) { runMs(100); cmd("JOG 1"); } cmd("JOG 0"); waitIdle(3000);
+  expect(fabs(st.x - limX) <= halfStep() && st.lostSteps == 0, "a validator JOG decelerates onto it too", "x=" + fmt("%.5f", st.x));
+}
+
+// 10. What does not plan for the limit is stopped on it by the step ISR: HOME's search, TEST LIMITS.
+static void s_soft_backstop() {
+  st.wall = 30.0;
+  st.homeLo = 100; st.homeHi = -100;                      // no flag: HOME searches to both ends
+  presetSoft(28000);
+  boot(25.0);
+  cmd("ENABLE");
+  double lim = kvd(touchLs1(), "limit_mm"), limX = 25.0 + lim;
+  size_t m0 = g_out.size();
+  expect(cmd("HOME") == "OK HOME started", "HOME starts on LS1 (its end known)");
+  for (int k = 0; k < 400 && findLine("HOME FAIL", m0) == NONE && findLine("HOMED", m0) == NONE; k++) runMs(500);
+  size_t f = findLine("HOME FAIL", m0), s = findLine("EVT SOFTLIMIT stopped", m0);
+  expect(f != NONE && has(g_out[f].s, "reason=no-edge-between-limits"), "the search meets the soft limit as its second end",
+         f == NONE ? "none" : g_out[f].s);
+  expect(s != NONE && s < f, "EVT SOFTLIMIT stopped (the ISR halted the search there)", s == NONE ? "none" : g_out[s].s);
+  expect(fabs(st.x - limX) <= halfStep() && st.lostSteps == 0, "stopped on the limit, short of the wall",
+         "x=" + fmt("%.5f", st.x) + "; " + crashTxt());
+  size_t m1 = g_out.size();
+  expect(has(cmd("TEST LIMITS"), "OK TEST LIMITS started"), "TEST LIMITS starts");
+  for (int k = 0; k < 400 && findLine("RESULT LIMITS", m1) == NONE; k++) runMs(500);
+  size_t r = findLine("RESULT LIMITS", m1);
+  expect(r != NONE && has(g_out[r].s, "ABORTED reason=soft-limit"), "TEST LIMITS ends at the soft limit: ABORTED reason=soft-limit",
+         r == NONE ? "none" : g_out[r].s);
+  expect(fabs(st.x - limX) <= halfStep() && st.lostSteps == 0, "stopped on it, short of the wall", "x=" + fmt("%.5f", st.x));
+}
+
+// 11. The reference is lost with the step count (ESTOP while moving), never with a stationary stop; moves toward LS1
+// stay allowed, and the next trip on LS1 references it again.
+static void s_soft_lost() {
+  st.wall = 30.0;
+  presetSoft(28000);
+  boot(25.0);
+  cmd("ENABLE");
+  touchLs1();
+  cmd("SPEED 2.5");
+  cmd("MOVE 10"); runMs(1500);
+  size_t m0 = g_out.size();
+  cmd("ESTOP");
+  size_t k = findLine("EVT SOFTLIMIT lost", m0);
+  expect(k != NONE && has(g_out[k].s, "reason=estop"), "ESTOP while moving: EVT SOFTLIMIT lost reason=estop", k == NONE ? "none" : g_out[k].s);
+  expect(has(cmd("SOFTLIMIT"), " ref=0"), "SOFTLIMIT ref=0");
+  cmd("ENABLE");
+  expect(cmd("MOVE 1") == "ERR MOVE soft-limit-unreferenced:touch-ls1", "a MOVE away from LS1 is refused again");
+  expect(has(cmd("MOVE -1"), "OK MOVE"), "toward LS1 (its end is known) is allowed"); waitIdle(5000);
+  size_t m1 = g_out.size();
+  cmd("MOVE -40"); waitIdle(30000);
+  expect(st.x <= 0.0 && st.x > -0.01 && findLine("EVT SOFTLIMIT referenced", m1) != NONE, "LS1 trips: referenced again");
+  cmd("MOVE 5"); waitIdle(5000);
+  cmd("DISABLE"); cmd("ENABLE");
+  expect(has(cmd("SOFTLIMIT"), " ref=1"), "a stationary DISABLE keeps it");
+  expect(has(cmd("MOVE 1"), "OK MOVE"), "and MOVE + is accepted"); waitIdle(5000);
+  m1 = g_out.size();
+  cmd("DISABLE");
+  expect(has(cmd("LIMITS NO"), "ends=forgotten"), "LIMITS forgets the ends");
+  expect(has(cmd("SOFTLIMIT"), " ref=0") && findLine("EVT SOFTLIMIT lost", m1) != NONE, "and the reference with them");
+  expect(st.lostSteps == 0, "no wall, no hard stop", crashTxt());
+}
+
+// 11b. LS1 at the + end: the limit lies the travel below it (the arithmetic both ways round).
+static void s_soft_ls1_plus() {
+  st.ls1Plus = true; st.wallLo = 20.0;
+  presetSoft(28000);
+  boot(25.0);
+  cmd("ENABLE");
+  size_t m = g_out.size();
+  jog(+1, 2.5, 13000);                                    // onto LS1, now at the + end
+  size_t k = findLine("EVT SOFTLIMIT referenced", m);
+  double ls1 = k == NONE ? NAN : kvd(g_out[k].s, "ls1_mm"), lim = k == NONE ? NAN : kvd(g_out[k].s, "limit_mm");
+  expect(st.x >= 50.0 && st.x < 50.01 && fabs(ls1 - 25.0) < 0.01 && fabs(ls1 - lim - 28.0) < 1e-4,
+         "referenced on LS1 at the + end; the limit is 28 mm below it", k == NONE ? "none" : g_out[k].s);
+  cmd("SPEED 2.5");
+  std::string r = cmd("MOVE -40");
+  expect(has(r, " clamped=1"), "MOVE -40 is shortened", r); waitIdle(30000);
+  expect(fabs(st.x - (25.0 + lim)) <= halfStep() && st.lostSteps == 0, "it stops on the limit at 22 mm, short of the wall at 20",
+         "x=" + fmt("%.5f", st.x) + "; " + crashTxt());
+  expect(cmd("MOVE -1") == "ERR MOVE soft-limit", "MOVE - refused there");
+  expect(has(cmd("MOVE 1"), "OK MOVE"), "MOVE + (toward LS1) accepted");
+}
+
+// 12. The EEPROM block: SOFTLIMIT writes it and reads it back; a damaged one reads as off.
+static void s_soft_eeprom() {
+  boot(25.0);
+  expect(cmd("SOFTLIMIT 12.5") == "OK SOFTLIMIT mm=12.500 ref=0 stored=1", "SOFTLIMIT 12.5");
+  const uint8_t *e = sim_eeprom();
+  uint32_t um = e[5] | (e[6] << 8) | (e[7] << 16) | ((uint32_t)e[8] << 24);
+  uint32_t nu = e[9] | (e[10] << 8) | (e[11] << 16) | ((uint32_t)e[12] << 24);
+  expect(e[4] == 0x5C && um == 12500 && nu == ~um, "EEPROM 4: magic 0x5C, 12500 um, its complement");
+  expect(e[0] == 0xFF, "the axis tag bytes are untouched");
+}
+static void s_soft_eeprom_damaged() {
+  presetSoft(28000, true);
+  boot(25.0);
+  std::string r = cmd("SOFTLIMIT");
+  expect(r == "OK SOFTLIMIT mm=0.000 ref=0 damaged=1", "a damaged block: no travel known, damaged=1", r);
+  cmd("ENABLE");
+  expect(cmd("MOVE 1") == "ERR MOVE soft-limit-eeprom-damaged:set-SOFTLIMIT", "fail safe: MOVE refused", cmd("MOVE 1"));
+  expect(cmd("HOME") == "ERR HOME soft-limit-eeprom-damaged:set-SOFTLIMIT", "and HOME");
+  std::string j = probeJog(1);
+  expect(has(j, "OK JOGV"), "a jog still moves it", j);
+  cmd("DISABLE");
+  expect(cmd("SOFTLIMIT 28") == "OK SOFTLIMIT mm=28.000 ref=0 stored=1", "SOFTLIMIT rewrites the block");
+  cmd("ENABLE");
+  expect(cmd("MOVE 1") == "ERR MOVE soft-limit-unreferenced:touch-ls1", "now an ordinary unreferenced limit");
+}
+
 struct Scenario { const char *name; void (*fn)(); bool stationOnly; };
 static void s1() { s_r4_jogoff_chatter(false); }
 static void s1b() { s_r4_jogoff_chatter(true); }
@@ -620,6 +851,13 @@ static const Scenario SCENARIOS[] = {
   {"dtr-drop-unchanged", s_dtr_drop, false},
   {"release-at-rest-then-chatter", s_release_at_rest, false},
   {"move-accel-coarrival", s_move_accel_coarrival, true},
+  {"soft-limit-move", s_soft_move, true},
+  {"soft-limit-jog", s_soft_jog, true},
+  {"soft-limit-backstop", s_soft_backstop, true},
+  {"soft-limit-lost", s_soft_lost, true},
+  {"soft-limit-ls1-plus-end", s_soft_ls1_plus, true},
+  {"soft-limit-eeprom", s_soft_eeprom, true},
+  {"soft-limit-eeprom-damaged", s_soft_eeprom_damaged, true},
 };
 
 int main(int argc, char **argv) {
