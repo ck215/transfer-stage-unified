@@ -57,6 +57,7 @@ from model import user_store as user_store_module
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
+from model.finalizer import Finalizer
 from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
@@ -274,7 +275,7 @@ PROFILES_ENABLED = os.environ.get("STATION_PROFILES") != "0"
 # 2026-10-04) follows the Transfer Map: its own page, no port.
 # The XYZ Stage (Mega) follows the Teensy XYZ Stage (MEGA_STANDARD, 2026-10-09).
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  XyzStage, XyzStageMega, RgbAnalysis, TransferMap,
+                  XyzStage, XyzStageMega, RgbAnalysis, Finalizer, TransferMap,
                   *((SampleMap,) if SAMPLE_MAP_ENABLED else ())):
     register(_built_in)
 del _built_in
