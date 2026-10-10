@@ -50,7 +50,7 @@ The import rules between the `src/` layers (controller, model, devices, views) a
 
 Inputs that open work still reads, kept with a banner: `root-causes.md`,
 `safety-pattern.md` (in `docs/architecture/`), `docs/rebuild/bench-checklist.md`,
-and `tests/TEST_PORTING.md` (the second test wave). The finding ledger
+(the second test wave closed 2026-10-10, 26/26 mapped; see STATUS History). The finding ledger
 (`progress.md`, `carry.json`), the design data, the legacy audits and `docs/archive`
 are gone from the tree (history: tag pre-root-cleanup-2026-10-07).
 
@@ -89,9 +89,11 @@ file and read pytest's exit code unpiped.
 
 Agent profiles in `.claude/agents/`: `worktree-fixer` (fixes plan items in a
 worktree), `main-feature-auditor` (read-only, `main` vs the rebuild, one
-subsystem each), `docs-pruner`, `mvc-relayout`, `ui-refiner` (the Web view, Impeccable
+subsystem each), `docs-pruner`, `ui-refiner` (the Web view, Impeccable
 in Operate mode, before/after captures), `ui-auditor` (read-only, one design
-skill per agent, fixed finding format). Fresh context, briefed by
+skill per agent, fixed finding format), `firmware-safety` (firmware that can move
+an axis or energize a coil: host simulation first via `dev/firmware_sim/`, every
+board compiled with zero warnings, never uploads). Fresh context, briefed by
 the lead (a brief may pick the model by task). Design skills in `~/.claude/skills`: `impeccable` (primary),
 `web-design-guidelines` (Web accessibility gate), `ui-ux-pro-max` (guideline
 lookups only; its design-system generator is off-target for this product).

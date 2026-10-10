@@ -76,7 +76,28 @@ Safety behaviour: the big STOP button decelerates and keeps holding; **Esc** or 
 
 ### Protocol (for scripting)
 
-Newline-terminated ASCII, case-insensitive; each command gets one `OK <cmd> ...` or `ERR <cmd> <reason>` reply. Unsolicited lines start with `EVT `. Commands: `PING`, `INFO`, `ENABLE`, `DISABLE`, `STOP`, `ESTOP`, `CURRENT <mA>`, `MICROSTEPS <n>` (step resolution, 1..256; position is kept), `SPEED <mm/s>`, `ACCEL <mm/s^2>`, `MODE STEALTH|SPREAD`, `LIMITS NC|NO`, `MOVE <mm>`, `REVS <n>` (whole revolutions), `JOG <-1|0|1>`, `ZERO`, `STATUS`, `TEST UART|COILS|SWEEP|LIMITS|REVS <n>`. Unsolicited sensor lines: `EVT LIMIT lsN tripped pos_mm=... end=±1|+0 [learned=travel travel_mm=...] [pressed_both_ways=1 travel_mm=...]` (see the limit switches above) and `EVT HOME edge level=0|1 pos_mm=...`. A driver that loses VM is reconfigured automatically (`EVT FAULT driver-reset reconfigured`); it stays disabled until ENABLE.
+Newline-terminated ASCII, case-insensitive; each command gets one `OK <cmd> ...` or `ERR <cmd> <reason>` reply. Unsolicited lines start with `EVT `. Commands: `PING`, `INFO`, `ENABLE`, `DISABLE`, `STOP`, `ESTOP`, `CURRENT <mA>`, `MICROSTEPS <n>` (step resolution, 1..256; position is kept), `SPEED <mm/s>`, `ACCEL <mm/s^2>`, `MODE STEALTH|SPREAD`, `LIMITS NC|NO`, `MOVE <mm>`, `REVS <n>` (whole revolutions), `JOG <-1|0|1>`, `ZERO`, `STATUS`, `TEST UART|COILS|SWEEP|LIMITS|REVS <n>`, `SOFTLIMIT [mm]` (the soft travel limit below). Unsolicited sensor lines: `EVT LIMIT lsN tripped pos_mm=... end=±1|+0 [learned=travel travel_mm=...] [pressed_both_ways=1 travel_mm=...]` (see the limit switches above) and `EVT HOME edge level=0|1 pos_mm=...`. A driver that loses VM is reconfigured automatically (`EVT FAULT driver-reset reconfigured`); it stays disabled until ENABLE.
+
+### Soft travel limit (2026-10-10, X-14)
+
+For an axis whose carriage cannot reach one of its switches (the bench probe on axis 1 meets its fixture before LS2):
+`SOFTLIMIT <mm>` (0..100, 0 = none; the GUI's "Soft limit" row) is the most the axis may travel from LS1. It is
+kept in EEPROM at the same place and in the same form as the station firmware's (`xyz_stage_axis`, PROTOCOL.md
+"Soft travel limit"), so a limit set under either sketch holds under the other on the same Teensy; a board that has
+never had one set has none. Set it with the drive disabled (`ERR SOFTLIMIT busy` otherwise). `SOFTLIMIT` alone
+reports it: `OK SOFTLIMIT mm=<travel> ref=0|1[ ls1_mm=..][ limit_mm=..][ damaged=1]`.
+
+- The reference is where LS1 last tripped while the axis moved toward the end it guards. Until LS1 has tripped that way
+  since power-up (or since `LIMITS`, or since a stop while turning or a driver fault), with a limit set, only JOG moves
+  the axis, or a MOVE/REVS toward LS1 once its end is known: `soft-limit-unreferenced:touch-ls1`. The motion TESTs
+  need the reference too. So: power up, enable, jog onto LS1, then work.
+- Once referenced, a MOVE/REVS past the limit is shortened onto it (`clamped=1`, `EVT SOFTLIMIT clamped`); a JOG
+  decelerates onto it (`EVT SOFTLIMIT reached`); anything else (TEST LIMITS, TEST REVS, an overshoot) is halted on it
+  in the step interrupt (`EVT SOFTLIMIT stopped`; a TEST ends `ABORTED reason=soft-limit`). At the limit, motion
+  further out is refused `soft-limit`. Toward LS1 nothing changes.
+- A damaged EEPROM block reads `damaged=1` and allows only JOG until `SOFTLIMIT <mm>` writes it again.
+- Measure the travel first, with no limit set: jog from LS1 toward the obstruction and read how far the carriage can
+  go (`SOFTLIMIT` after the trip gives `ls1_mm`; STATUS `pos_mm` minus it is the travel); set the limit with a margin.
 
 ## Test procedure
 

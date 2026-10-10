@@ -15,7 +15,7 @@
 #      stable/firmware/ has its sketches. A missing piece fails by name.
 #   1. station-web: /api/state 200; / is the bundle's own index.html;
 #      /api/theme.css served; serial enumeration ran; every Setup row ticked
-#      and set to SIM; Launch builds all seven models; /api/estop_all latches
+#      and set to SIM; Launch builds all eight models; /api/estop_all latches
 #      every one; the station_version Setup reports is VERSION's tag and
 #      build date; /api/quit exits 0 within 5 s; its log file names the stop,
 #      the quit and SDL teardown (the gamepad hub opened and closed).
@@ -37,13 +37,13 @@ OUT="$(mktemp -d "${TMPDIR:-/tmp}/station-smoke.XXXXXX")"
 # stores with no port (their choice is "On"), so they are only ticked; rgb_analysis (screen
 # capture) has no row of its own since 2026-09-28: it is drawn on the
 # Transfer Map's page and launches with that row.
-PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotator xyz_stage"
+PORT_ROWS="stepper_probe dc_probe chuck_positioner temperature_controller rotator xyz_stage xyz_stage_mega"
 ALL_ROWS="$PORT_ROWS transfer_map sample_db"
 # The sketch directories firmware/flash_firmware.py's DEVICES table names
 # (tests/test_packaging.py keeps this list equal to the table).
-SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller xyz_stage_axis"
+SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller xyz_stage_axis xyz_stage_mega"
 # The stable app's sketches (controller.flashing.STABLE_BOARDS): the XYZ
-# Stage is station-only.
+# Stage and the XYZ Stage (Mega) are station-only.
 STABLE_SKETCHES="stepper_firmware high_polling_rate chuck_firmware temp_controller"
 # arduino:avr and teensy:avr: the platforms of the flasher's two FQBNs.
 CORES="arduino:avr teensy:avr"
@@ -205,15 +205,15 @@ else
     done
     r="$(run_setup launch)"
     echo "     launch: $r"
-    check "Launch built all seven models" grep -q '"status": "ok"' <<< "$r"
+    check "Launch built all eight models" grep -q '"status": "ok"' <<< "$r"
     n=0
     for _ in $(seq 1 20); do
         get /api/state > "$OUT/state.json"
         n=$(grep -o '"model_mode": "' "$OUT/state.json" | wc -l | tr -d ' ')
-        [ "$n" -ge 7 ] && break
+        [ "$n" -ge 8 ] && break
         sleep_s 0.5
     done
-    check "/api/state shows seven models ($n)" test "$n" -ge 7
+    check "/api/state shows eight models ($n)" test "$n" -ge 8
 
     r="$(post /api/estop_all '{}')"
     echo "     estop_all: $r"
@@ -221,9 +221,9 @@ else
     get /api/state > "$OUT/state.estopped.json"
     latched=$(grep -o '"is_estopped": true' "$OUT/state.estopped.json" | wc -l | tr -d ' ')
     unlatched=$(grep -o '"is_estopped": false' "$OUT/state.estopped.json" | wc -l | tr -d ' ')
-    # seven models plus the station-wide flag
+    # eight models plus the station-wide flag
     check "every model latched ($latched latched, $unlatched not)" \
-        test "$latched" -ge 8 -a "$unlatched" = 0
+        test "$latched" -ge 9 -a "$unlatched" = 0
 
     # Setup reads the running version when an update check runs (the startup
     # check is off here: STATION_NO_UPDATE_CHECK); Check again reads it.
@@ -246,8 +246,8 @@ else
         pass "log file written: $log"
         check "log: Web dashboard served" log_has "$log" "Web Dashboard: serving at"
         check "log: serial ports enumerated" log_has "$log" "[Setup] Ports:"
-        check "log: seven models launched" log_has "$log" \
-            "Launched: Stepper Probe, DC Probe, Chuck Positioner, Temperature Controller, Rotator, XYZ Stage, RGB Analysis"
+        check "log: eight models launched" log_has "$log" \
+            "Launched: Stepper Probe, DC Probe, Chuck Positioner, Temperature Controller, Rotator, XYZ Stage, XYZ Stage (Mega), RGB Analysis"
         check "log: FULL STOP latched" log_has "$log" "FULL STOP"
         check "log: Quit from the Web console" log_has "$log" "Quit from the Web console"
         check "log: gamepad hub closed (SDL down)" log_has "$log" "[gamepad-hub] SDL down"

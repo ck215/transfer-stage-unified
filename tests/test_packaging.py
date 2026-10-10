@@ -210,12 +210,13 @@ def test_smoke_sh_is_executable_and_parses():
 
 @pytest.mark.parametrize("script", ["smoke.sh", "smoke.ps1"])
 def test_smoke_scripts_drive_every_setup_row(script):
-    """The smokes name every row (eight since the Sample DB); they must be the Setup panel's rows."""
-    from controller.setup import MODEL_TYPES
+    """The smokes name every row by its key (`setup._key_for`: "XYZ Stage
+    (Mega)" is xyz_stage_mega); they must be the Setup panel's rows."""
+    from controller.setup import MODEL_TYPES, _key_for
     with open(os.path.join(PACKAGING, script), encoding="utf-8") as f:
         text = f.read()
     for name in MODEL_TYPES:
-        assert name.lower().replace(" ", "_") in text, name
+        assert _key_for(name) in text, name
     for route in ("/api/state", "/api/theme.css", "/api/estop_all", "/api/quit"):
         assert route in text, route
 
@@ -471,7 +472,7 @@ def _tree(base):
 def test_the_layout_reads_the_sketch_table_without_importing_the_flasher(layout):
     assert layout.sketch_dirs() == sorted(
         ["stepper_firmware", "high_polling_rate", "chuck_firmware", "temp_controller",
-         "xyz_stage_axis"])
+         "xyz_stage_axis", "xyz_stage_mega"])
     constants = layout.flash_constants()
     assert constants["MEGA_FQBN"].startswith("arduino:avr:")
     assert constants["TEENSY_FQBN"].startswith("teensy:avr:")

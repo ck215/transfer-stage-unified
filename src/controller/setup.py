@@ -62,6 +62,7 @@ from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from model.xyz_stage import XyzStage
+from model.xyz_stage_mega import XyzStageMega
 from model.user import User
 from model.user_store import AccountError, UserStore
 from panel import Panel
@@ -271,8 +272,9 @@ PROFILES_ENABLED = os.environ.get("STATION_PROFILES") != "0"
 
 # The built-ins, in today's display order. The Sample DB (flake-coords,
 # 2026-10-04) follows the Transfer Map: its own page, no port.
+# The XYZ Stage (Mega) follows the Teensy XYZ Stage (MEGA_STANDARD, 2026-10-09).
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  XyzStage, RgbAnalysis, TransferMap,
+                  XyzStage, XyzStageMega, RgbAnalysis, TransferMap,
                   *((SampleMap,) if SAMPLE_MAP_ENABLED else ())):
     register(_built_in)
 del _built_in
@@ -570,9 +572,11 @@ class PortProbe:
 
     def _tag_for_identity(self, identity):
         """The tag after the identity letter (`t X` -> "X"), or None: a board
-        that is one of several for one model says which one it is."""
-        words = self._text(identity).split()
-        return words[1].upper() if len(words) > 1 else None
+        that is one of several for one model says which one it is. A
+        `key=value` word is not a tag: `m caps=ext1,...` lists the board's
+        capabilities (MEGA_STANDARD section 2), which the model reads."""
+        words = [w for w in self._text(identity).split()[1:] if "=" not in w]
+        return words[0].upper() if words else None
 
     def _log_probe(self, port, name, started):
         events.debug("Probe", f"{port} -> {name or 'nothing'} in "
@@ -1124,6 +1128,12 @@ class Setup(PortProbe, Panel):
                 # The flash tool probes and uploads over these same ports.
                 self._refuse("The firmware is being flashed. Refresh when "
                              "the Flashing cell is empty.")
+            if self._reset_lock.locked():
+                # A Hard reset (or Start) is closing and reopening a port
+                # (arch audit #13): a probe now could open the port being
+                # reopened. Refused under the same lock that claims a scan.
+                self._refuse("A hard reset or start is running. Refresh when "
+                             "it has finished.")
             self._abort.clear()
             self._warned_ports.clear()
             self._busy_ports.clear()
@@ -1406,6 +1416,15 @@ class Setup(PortProbe, Panel):
             self._refuse("A hard reset is already running; wait for it to "
                          "finish, then press Hard reset again if needed.")
         try:
+            # The scan check above ran before the question and outside this
+            # lock: a scan claimed since is caught here, under Setup's lock
+            # (the one `scan` claims under), before anything is stopped.
+            with self._lock:
+                scan_claimed = self.is_scanning or self._scan_thread is not None \
+                    and self._scan_thread.ident is None
+            if scan_claimed:
+                self._refuse("A scan is running. Wait for it, or press Cancel "
+                             "scan, then Hard reset.")
             return self._hard_reset_now(key, name, model, wanted, where,
                                         target if wanted is not None else None)
         finally:

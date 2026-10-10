@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XYZ Mega Wiring</title>
+<style>
+/* Same tokens as "Stage DB9 Wiring.html": one wide schematic, then the connection list the schematic is drawn from */
+:root{--bg:#fbfbf9;--fg:#1c1f23;--muted:#5f6771;--line:#d5d9de;--panel:#f1f3f5;--edge:rgba(28,31,35,.35);--accent:#0064A4;--warn:#9a3412;--warnbg:#fff1e6;--body:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15181c;--fg:#e6e9ec;--muted:#9aa4ae;--line:#2d343c;--panel:#1d2228;--edge:rgba(230,233,236,.4);--accent:#6cb4ee;--warn:#fdba74;--warnbg:#3a2412;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#15181c;--fg:#e6e9ec;--muted:#9aa4ae;--line:#2d343c;--panel:#1d2228;--edge:rgba(230,233,236,.4);--accent:#6cb4ee;--warn:#fdba74;--warnbg:#3a2412;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);margin:0 auto;padding:28px 16px 56px;max-width:1180px;line-height:1.5}
+h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
+h2{font-size:16px;margin:32px 0 8px}
+p{margin:0 0 10px;max-width:76ch}
+.sub{color:var(--muted)}
+.warn{border-left:3px solid var(--warn);background:var(--warnbg);padding:10px 14px;margin:18px 0 0;border-radius:0 6px 6px 0}
+.warn ul{margin:0}
+figure{margin:20px 0 0}
+svg{max-width:100%;height:auto;display:block;font-family:var(--body)}
+figcaption{color:var(--muted);font-size:13px;margin-top:8px;max-width:84ch}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:680px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+td code,.mono,code{font-family:var(--mono);font-size:13px}
+.sw{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid var(--edge);vertical-align:-1px;margin-right:6px}
+ul,ol{padding-left:22px;margin:0}
+li{margin-bottom:6px;max-width:84ch}
+.group td{background:var(--panel);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+svg text{font-family:var(--body)}
+.t{paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round}
+.m{font-family:var(--mono)}
+.schem{overflow-x:auto}.schem svg{min-width:760px}
+.note{border-left:3px solid var(--accent);background:var(--panel);padding:10px 14px;margin:12px 0 0;border-radius:0 6px 6px 0}
+.flag{color:var(--warn);font-weight:600}
+:root{--sig:#0064A4;--gndc:#222;--pwrc:#b91c1c;--vioc:#c2610c;--uartc:#7c3aed}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--sig:#6cb4ee;--gndc:#aab;--pwrc:#f87171;--vioc:#fdba74;--uartc:#c4b5fd}}
+h3{font-size:14px;margin:22px 0 6px}
+.box{fill:var(--panel);stroke:var(--edge)}.drv{fill:var(--panel);stroke:var(--accent);stroke-width:1.5}.part{fill:var(--bg);stroke:var(--fg)}
+.pin{fill:var(--fg)}.dot{fill:var(--fg)}
+.sig{stroke:var(--sig);stroke-width:1.8}.gnd{stroke:var(--gndc);stroke-width:2}.pwr{stroke:var(--pwrc);stroke-width:2}.vio{stroke:var(--vioc);stroke-width:2}.uart{stroke:var(--uartc);stroke-width:2.2}
+svg text{fill:var(--fg);font-size:12px}svg .m{font-size:12px}svg .b{font-weight:600;font-size:13px}svg .s{fill:var(--muted);font-size:11px}
+svg line{fill:none}
+.schem svg{min-width:1000px}
+
+</style>
+</head>
+<body>
+<h1>XYZ Mega Wiring</h1>
+<p class="sub">One Arduino Mega 2560 and three BIGTREETECH TMC2209 V1.2 drivers (X, Y, Z) on one shared UART bus, driving the 50 mm XYZ stage through three DB9 connectors. The pin map is MEGA_STANDARD section 5; this sheet is that map drawn out. Driver pins use the same J1/J2 numbering as the one-axis Teensy sheet (<code>stepper_validator/wiring.html</code>), counted from the potentiometer end.</p>
+<div class="warn" role="note"><ul>
+<li><strong>Never plug or unplug a DB9, a coil wire or a driver with VM powered.</strong> Wait about 5 s after switching off for the capacitors to drain.</li>
+<li><strong>Power order:</strong> USB first, then VM. Off: VM first, then USB.</li>
+<li><strong>Set the address straps (MS1/MS2) before power.</strong> The driver reads them at power-up only.</li>
+<li><strong>100 &#181;F goes on VM and GND only</strong>, at each driver, never on a signal line. Electrolytic: the long, unmarked lead to VM, the striped lead to GND.</li>
+<li>Reversed VM destroys the driver. Meter the PSU leads before they touch a module.</li>
+</ul></div>
+<h2>1. Control lines: Mega to each driver</h2>
+<figure><div class="schem"><svg viewBox="0 0 1200 685" role="img" aria-labelledby="f1t f1d"><title id="f1t">Mega to driver control wiring</title><desc id="f1d">Step, Dir and EN lines from the Mega to J1 of each of the three drivers, the MS1 and MS2 address straps, and where J2 goes.</desc>
+<rect x="20" y="30" width="210" height="625" rx="6" class="box"/>
+<text x="125" y="52" text-anchor="middle" class="t b" >ARDUINO MEGA 2560</text>
+<rect x="640" y="56" width="230" height="180" rx="6" class="drv"/>
+<text x="755" y="72" text-anchor="middle" class="t b" >X driver: BTT TMC2209 V1.2, UART address 0</text>
+<circle cx="640" cy="90" r="3.5" class="pin"/>
+<text x="650" y="94" text-anchor="start" class="t m" >J1-1 EN</text>
+<line x1="230" y1="90" x2="640" y2="90" class="sig"/>
+<circle cx="230" cy="90" r="3.5" class="pin"/>
+<text x="222" y="94" text-anchor="end" class="t m" >pin 34  (X EN)</text>
+<text x="560" y="86" text-anchor="end" class="t s" >active low</text>
+<circle cx="640" cy="108" r="3.5" class="pin"/>
+<text x="650" y="112" text-anchor="start" class="t m" >J1-2 MS1</text>
+<line x1="545" y1="108" x2="640" y2="108" class="gnd"/>
+<text x="540" y="112" text-anchor="end" class="t m" >strap to GND</text>
+<circle cx="640" cy="126" r="3.5" class="pin"/>
+<text x="650" y="130" text-anchor="start" class="t m" >J1-3 MS2</text>
+<line x1="545" y1="126" x2="640" y2="126" class="gnd"/>
+<text x="540" y="130" text-anchor="end" class="t m" >strap to GND</text>
+<circle cx="640" cy="144" r="3.5" class="pin"/>
+<text x="650" y="148" text-anchor="start" class="t m" >J1-4 PDN</text>
+<line x1="545" y1="144" x2="640" y2="144" class="uart"/>
+<text x="540" y="148" text-anchor="end" class="t m" >to PDN_UART junction (fig 2)</text>
+<circle cx="640" cy="162" r="3.5" class="pin"/>
+<text x="650" y="166" text-anchor="start" class="t m" >J1-5 PDN (dup)</text>
+<text x="540" y="166" text-anchor="end" class="t s" >same net as J1-4, leave open</text>
+<circle cx="640" cy="180" r="3.5" class="pin"/>
+<text x="650" y="184" text-anchor="start" class="t m" >J1-6 CLK</text>
+<text x="540" y="184" text-anchor="end" class="t s" >not connected</text>
+<circle cx="640" cy="198" r="3.5" class="pin"/>
+<text x="650" y="202" text-anchor="start" class="t m" >J1-7 STEP</text>
+<line x1="230" y1="198" x2="640" y2="198" class="sig"/>
+<circle cx="230" cy="198" r="3.5" class="pin"/>
+<text x="222" y="202" text-anchor="end" class="t m" >pin 32  (X STEP)</text>
+<circle cx="640" cy="216" r="3.5" class="pin"/>
+<text x="650" y="220" text-anchor="start" class="t m" >J1-8 DIR</text>
+<line x1="230" y1="216" x2="640" y2="216" class="sig"/>
+<circle cx="230" cy="216" r="3.5" class="pin"/>
+<text x="222" y="220" text-anchor="end" class="t m" >pin 33  (X DIR)</text>
+<circle cx="870" cy="90" r="3.5" class="pin"/>
+<text x="862" y="94" text-anchor="end" class="t m" >J2-1 VM</text>
+<line x1="870" y1="90" x2="900" y2="90" class="pwr"/>
+<text x="906" y="94" text-anchor="start" class="t m" >to 12 V rail (fig 2)</text>
+<circle cx="870" cy="108" r="3.5" class="pin"/>
+<text x="862" y="112" text-anchor="end" class="t m" >J2-2 GND</text>
+<line x1="870" y1="108" x2="900" y2="108" class="gnd"/>
+<text x="906" y="112" text-anchor="start" class="t m" >to GND rail (fig 2)</text>
+<circle cx="870" cy="126" r="3.5" class="pin"/>
+<text x="862" y="130" text-anchor="end" class="t m" >J2-3 A2</text>
+<line x1="870" y1="126" x2="900" y2="126" class="sig"/>
+<text x="906" y="130" text-anchor="start" class="t m" >DB9 pin 6</text>
+<circle cx="870" cy="144" r="3.5" class="pin"/>
+<text x="862" y="148" text-anchor="end" class="t m" >J2-4 A1</text>
+<line x1="870" y1="144" x2="900" y2="144" class="sig"/>
+<text x="906" y="148" text-anchor="start" class="t m" >DB9 pin 7</text>
+<circle cx="870" cy="162" r="3.5" class="pin"/>
+<text x="862" y="166" text-anchor="end" class="t m" >J2-5 B1</text>
+<line x1="870" y1="162" x2="900" y2="162" class="sig"/>
+<text x="906" y="166" text-anchor="start" class="t m" >DB9 pin 8</text>
+<circle cx="870" cy="180" r="3.5" class="pin"/>
+<text x="862" y="184" text-anchor="end" class="t m" >J2-6 B2</text>
+<line x1="870" y1="180" x2="900" y2="180" class="sig"/>
+<text x="906" y="184" text-anchor="start" class="t m" >DB9 pin 9</text>
+<circle cx="870" cy="198" r="3.5" class="pin"/>
+<text x="862" y="202" text-anchor="end" class="t m" >J2-7 VDD (VIO)</text>
+<line x1="870" y1="198" x2="900" y2="198" class="vio"/>
+<text x="906" y="202" text-anchor="start" class="t m" >Mega 5V</text>
+<circle cx="870" cy="216" r="3.5" class="pin"/>
+<text x="862" y="220" text-anchor="end" class="t m" >J2-8 GND</text>
+<line x1="870" y1="216" x2="900" y2="216" class="gnd"/>
+<text x="906" y="220" text-anchor="start" class="t m" >GND rail</text>
+<rect x="640" y="261" width="230" height="180" rx="6" class="drv"/>
+<text x="755" y="277" text-anchor="middle" class="t b" >Y driver: BTT TMC2209 V1.2, UART address 1</text>
+<circle cx="640" cy="295" r="3.5" class="pin"/>
+<text x="650" y="299" text-anchor="start" class="t m" >J1-1 EN</text>
+<line x1="230" y1="295" x2="640" y2="295" class="sig"/>
+<circle cx="230" cy="295" r="3.5" class="pin"/>
+<text x="222" y="299" text-anchor="end" class="t m" >pin 24  (Y EN)</text>
+<text x="560" y="291" text-anchor="end" class="t s" >active low</text>
+<circle cx="640" cy="313" r="3.5" class="pin"/>
+<text x="650" y="317" text-anchor="start" class="t m" >J1-2 MS1</text>
+<line x1="545" y1="313" x2="640" y2="313" class="vio"/>
+<text x="540" y="317" text-anchor="end" class="t m" >strap to VIO (5 V)</text>
+<circle cx="640" cy="331" r="3.5" class="pin"/>
+<text x="650" y="335" text-anchor="start" class="t m" >J1-3 MS2</text>
+<line x1="545" y1="331" x2="640" y2="331" class="gnd"/>
+<text x="540" y="335" text-anchor="end" class="t m" >strap to GND</text>
+<circle cx="640" cy="349" r="3.5" class="pin"/>
+<text x="650" y="353" text-anchor="start" class="t m" >J1-4 PDN</text>
+<line x1="545" y1="349" x2="640" y2="349" class="uart"/>
+<text x="540" y="353" text-anchor="end" class="t m" >to PDN_UART junction (fig 2)</text>
+<circle cx="640" cy="367" r="3.5" class="pin"/>
+<text x="650" y="371" text-anchor="start" class="t m" >J1-5 PDN (dup)</text>
+<text x="540" y="371" text-anchor="end" class="t s" >same net as J1-4, leave open</text>
+<circle cx="640" cy="385" r="3.5" class="pin"/>
+<text x="650" y="389" text-anchor="start" class="t m" >J1-6 CLK</text>
+<text x="540" y="389" text-anchor="end" class="t s" >not connected</text>
+<circle cx="640" cy="403" r="3.5" class="pin"/>
+<text x="650" y="407" text-anchor="start" class="t m" >J1-7 STEP</text>
+<line x1="230" y1="403" x2="640" y2="403" class="sig"/>
+<circle cx="230" cy="403" r="3.5" class="pin"/>
+<text x="222" y="407" text-anchor="end" class="t m" >pin 22  (Y STEP)</text>
+<circle cx="640" cy="421" r="3.5" class="pin"/>
+<text x="650" y="425" text-anchor="start" class="t m" >J1-8 DIR</text>
+<line x1="230" y1="421" x2="640" y2="421" class="sig"/>
+<circle cx="230" cy="421" r="3.5" class="pin"/>
+<text x="222" y="425" text-anchor="end" class="t m" >pin 23  (Y DIR)</text>
+<circle cx="870" cy="295" r="3.5" class="pin"/>
+<text x="862" y="299" text-anchor="end" class="t m" >J2-1 VM</text>
+<line x1="870" y1="295" x2="900" y2="295" class="pwr"/>
+<text x="906" y="299" text-anchor="start" class="t m" >to 12 V rail (fig 2)</text>
+<circle cx="870" cy="313" r="3.5" class="pin"/>
+<text x="862" y="317" text-anchor="end" class="t m" >J2-2 GND</text>
+<line x1="870" y1="313" x2="900" y2="313" class="gnd"/>
+<text x="906" y="317" text-anchor="start" class="t m" >to GND rail (fig 2)</text>
+<circle cx="870" cy="331" r="3.5" class="pin"/>
+<text x="862" y="335" text-anchor="end" class="t m" >J2-3 A2</text>
+<line x1="870" y1="331" x2="900" y2="331" class="sig"/>
+<text x="906" y="335" text-anchor="start" class="t m" >DB9 pin 6</text>
+<circle cx="870" cy="349" r="3.5" class="pin"/>
+<text x="862" y="353" text-anchor="end" class="t m" >J2-4 A1</text>
+<line x1="870" y1="349" x2="900" y2="349" class="sig"/>
+<text x="906" y="353" text-anchor="start" class="t m" >DB9 pin 7</text>
+<circle cx="870" cy="367" r="3.5" class="pin"/>
+<text x="862" y="371" text-anchor="end" class="t m" >J2-5 B1</text>
+<line x1="870" y1="367" x2="900" y2="367" class="sig"/>
+<text x="906" y="371" text-anchor="start" class="t m" >DB9 pin 8</text>
+<circle cx="870" cy="385" r="3.5" class="pin"/>
+<text x="862" y="389" text-anchor="end" class="t m" >J2-6 B2</text>
+<line x1="870" y1="385" x2="900" y2="385" class="sig"/>
+<text x="906" y="389" text-anchor="start" class="t m" >DB9 pin 9</text>
+<circle cx="870" cy="403" r="3.5" class="pin"/>
+<text x="862" y="407" text-anchor="end" class="t m" >J2-7 VDD (VIO)</text>
+<line x1="870" y1="403" x2="900" y2="403" class="vio"/>
+<text x="906" y="407" text-anchor="start" class="t m" >Mega 5V</text>
+<circle cx="870" cy="421" r="3.5" class="pin"/>
+<text x="862" y="425" text-anchor="end" class="t m" >J2-8 GND</text>
+<line x1="870" y1="421" x2="900" y2="421" class="gnd"/>
+<text x="906" y="425" text-anchor="start" class="t m" >GND rail</text>
+<rect x="640" y="466" width="230" height="180" rx="6" class="drv"/>
+<text x="755" y="482" text-anchor="middle" class="t b" >Z driver: BTT TMC2209 V1.2, UART address 2</text>
+<circle cx="640" cy="500" r="3.5" class="pin"/>
+<text x="650" y="504" text-anchor="start" class="t m" >J1-1 EN</text>
+<line x1="230" y1="500" x2="640" y2="500" class="sig"/>
+<circle cx="230" cy="500" r="3.5" class="pin"/>
+<text x="222" y="504" text-anchor="end" class="t m" >pin 44  (Z EN)</text>
+<text x="560" y="496" text-anchor="end" class="t s" >active low</text>
+<circle cx="640" cy="518" r="3.5" class="pin"/>
+<text x="650" y="522" text-anchor="start" class="t m" >J1-2 MS1</text>
+<line x1="545" y1="518" x2="640" y2="518" class="gnd"/>
+<text x="540" y="522" text-anchor="end" class="t m" >strap to GND</text>
+<circle cx="640" cy="536" r="3.5" class="pin"/>
+<text x="650" y="540" text-anchor="start" class="t m" >J1-3 MS2</text>
+<line x1="545" y1="536" x2="640" y2="536" class="vio"/>
+<text x="540" y="540" text-anchor="end" class="t m" >strap to VIO (5 V)</text>
+<circle cx="640" cy="554" r="3.5" class="pin"/>
+<text x="650" y="558" text-anchor="start" class="t m" >J1-4 PDN</text>
+<line x1="545" y1="554" x2="640" y2="554" class="uart"/>
+<text x="540" y="558" text-anchor="end" class="t m" >to PDN_UART junction (fig 2)</text>
+<circle cx="640" cy="572" r="3.5" class="pin"/>
+<text x="650" y="576" text-anchor="start" class="t m" >J1-5 PDN (dup)</text>
+<text x="540" y="576" text-anchor="end" class="t s" >same net as J1-4, leave open</text>
+<circle cx="640" cy="590" r="3.5" class="pin"/>
+<text x="650" y="594" text-anchor="start" class="t m" >J1-6 CLK</text>
+<text x="540" y="594" text-anchor="end" class="t s" >not connected</text>
+<circle cx="640" cy="608" r="3.5" class="pin"/>
+<text x="650" y="612" text-anchor="start" class="t m" >J1-7 STEP</text>
+<line x1="230" y1="608" x2="640" y2="608" class="sig"/>
+<circle cx="230" cy="608" r="3.5" class="pin"/>
+<text x="222" y="612" text-anchor="end" class="t m" >pin 42  (Z STEP)</text>
+<circle cx="640" cy="626" r="3.5" class="pin"/>
+<text x="650" y="630" text-anchor="start" class="t m" >J1-8 DIR</text>
+<line x1="230" y1="626" x2="640" y2="626" class="sig"/>
+<circle cx="230" cy="626" r="3.5" class="pin"/>
+<text x="222" y="630" text-anchor="end" class="t m" >pin 43  (Z DIR)</text>
+<circle cx="870" cy="500" r="3.5" class="pin"/>
+<text x="862" y="504" text-anchor="end" class="t m" >J2-1 VM</text>
+<line x1="870" y1="500" x2="900" y2="500" class="pwr"/>
+<text x="906" y="504" text-anchor="start" class="t m" >to 12 V rail (fig 2)</text>
+<circle cx="870" cy="518" r="3.5" class="pin"/>
+<text x="862" y="522" text-anchor="end" class="t m" >J2-2 GND</text>
+<line x1="870" y1="518" x2="900" y2="518" class="gnd"/>
+<text x="906" y="522" text-anchor="start" class="t m" >to GND rail (fig 2)</text>
+<circle cx="870" cy="536" r="3.5" class="pin"/>
+<text x="862" y="540" text-anchor="end" class="t m" >J2-3 A2</text>
+<line x1="870" y1="536" x2="900" y2="536" class="sig"/>
+<text x="906" y="540" text-anchor="start" class="t m" >DB9 pin 6</text>
+<circle cx="870" cy="554" r="3.5" class="pin"/>
+<text x="862" y="558" text-anchor="end" class="t m" >J2-4 A1</text>
+<line x1="870" y1="554" x2="900" y2="554" class="sig"/>
+<text x="906" y="558" text-anchor="start" class="t m" >DB9 pin 7</text>
+<circle cx="870" cy="572" r="3.5" class="pin"/>
+<text x="862" y="576" text-anchor="end" class="t m" >J2-5 B1</text>
+<line x1="870" y1="572" x2="900" y2="572" class="sig"/>
+<text x="906" y="576" text-anchor="start" class="t m" >DB9 pin 8</text>
+<circle cx="870" cy="590" r="3.5" class="pin"/>
+<text x="862" y="594" text-anchor="end" class="t m" >J2-6 B2</text>
+<line x1="870" y1="590" x2="900" y2="590" class="sig"/>
+<text x="906" y="594" text-anchor="start" class="t m" >DB9 pin 9</text>
+<circle cx="870" cy="608" r="3.5" class="pin"/>
+<text x="862" y="612" text-anchor="end" class="t m" >J2-7 VDD (VIO)</text>
+<line x1="870" y1="608" x2="900" y2="608" class="vio"/>
+<text x="906" y="612" text-anchor="start" class="t m" >Mega 5V</text>
+<circle cx="870" cy="626" r="3.5" class="pin"/>
+<text x="862" y="630" text-anchor="end" class="t m" >J2-8 GND</text>
+<line x1="870" y1="626" x2="900" y2="626" class="gnd"/>
+<text x="906" y="630" text-anchor="start" class="t m" >GND rail</text>
+</svg></div>
+<figcaption>Orange lines are 5 V straps (VIO), dark lines are GND straps. The PDN_UART stub on each driver goes to the shared junction in figure 2. J1 and J2 are counted from the potentiometer end of the module.</figcaption></figure>
+<h2>2. Shared UART junction, motor supply and common ground</h2>
+<figure><div class="schem"><svg viewBox="0 0 1060 545" role="img" aria-labelledby="f2t f2d"><title id="f2t">Shared UART, power and ground</title><desc id="f2d">TX2 through 1 kilohm and RX2 direct meet at one junction wired to all three PDN_UART pins. The 12 V supply feeds each VM with a 100 microfarad capacitor across VM and GND at each driver, and one GND rail joins the supply, the drivers and the Mega.</desc>
+<rect x="20" y="30" width="150" height="90" rx="6" class="box"/>
+<text x="95" y="50" text-anchor="middle" class="t b" >MEGA</text>
+<circle cx="170" cy="70" r="3.5" class="pin"/>
+<text x="162" y="74" text-anchor="end" class="t m" >TX2 (16)</text>
+<circle cx="170" cy="105" r="3.5" class="pin"/>
+<text x="162" y="109" text-anchor="end" class="t m" >RX2 (17)</text>
+<line x1="170" y1="70" x2="215" y2="70" class="uart"/><rect x="215" y="60" width="64" height="20" rx="3" class="part"/><text x="247" y="74" text-anchor="middle" class="t m" >1 k&#937;</text><line x1="279" y1="70" x2="400" y2="70" class="uart"/>
+<line x1="170" y1="105" x2="400" y2="105" class="uart"/>
+<line x1="400" y1="60" x2="400" y2="250" class="uart" style="stroke-width:3.5"/>
+<circle cx="400" cy="70" r="4.5" class="dot"/><circle cx="400" cy="105" r="4.5" class="dot"/>
+<text x="300" y="121" text-anchor="middle" class="t s" dy='-8'>direct, no resistor</text>
+<text x="415" y="160" text-anchor="start" class="t b" >shared PDN_UART junction</text>
+<text x="415" y="176" text-anchor="start" class="t s" >one wire, all three PDN pins tied to it</text>
+<circle cx="400" cy="190" r="4.5" class="dot"/><line x1="400" y1="190" x2="620" y2="190" class="uart"/>
+<rect x="620" y="178" width="260" height="24" rx="4" class="drv"/><text x="630" y="194" text-anchor="start" class="t m" >X driver J1-4 PDN_UART (address 0)</text>
+<circle cx="400" cy="220" r="4.5" class="dot"/><line x1="400" y1="220" x2="620" y2="220" class="uart"/>
+<rect x="620" y="208" width="260" height="24" rx="4" class="drv"/><text x="630" y="224" text-anchor="start" class="t m" >Y driver J1-4 PDN_UART (address 1)</text>
+<circle cx="400" cy="250" r="4.5" class="dot"/><line x1="400" y1="250" x2="620" y2="250" class="uart"/>
+<rect x="620" y="238" width="260" height="24" rx="4" class="drv"/><text x="630" y="254" text-anchor="start" class="t m" >Z driver J1-4 PDN_UART (address 2)</text>
+<text x="20" y="300" text-anchor="start" class="t b" >MOTOR POWER AND COMMON GROUND</text>
+<rect x="20" y="320" width="130" height="110" rx="6" class="box"/><text x="85" y="340" text-anchor="middle" class="t b" >12 V PSU</text>
+<circle cx="150" cy="365" r="4.5" class="dot"/><text x="142" y="369" text-anchor="end" class="t m" >+ (red)</text>
+<circle cx="150" cy="405" r="4.5" class="dot"/><text x="142" y="409" text-anchor="end" class="t m" >&#8722; (black)</text>
+<line x1="150" y1="365" x2="1040" y2="365" class="pwr" style="stroke-width:3"/><text x="1040" y="358" text-anchor="end" class="t m" fill='#b91c1c'>+12 V rail</text>
+<line x1="150" y1="405" x2="1040" y2="405" class="gnd" style="stroke-width:3"/><text x="1040" y="397" text-anchor="end" class="t m" >GND rail (common)</text>
+<rect x="190" y="470" width="190" height="56" rx="4" class="drv"/><text x="285" y="487" text-anchor="middle" class="t b" >X driver J2</text>
+<line x1="220" y1="365" x2="220" y2="508" class="pwr"/><circle cx="220" cy="365" r="4.5" class="dot"/><text x="220" y="522" text-anchor="middle" class="t m" >VM (J2-1)</text>
+<line x1="350" y1="405" x2="350" y2="508" class="gnd"/><circle cx="350" cy="405" r="4.5" class="dot"/><text x="350" y="522" text-anchor="middle" class="t m" >GND (J2-2)</text>
+<line x1="220" y1="445" x2="250" y2="445" class="pwr"/><rect x="250" y="435" width="70" height="20" rx="3" class="part"/><text x="285" y="449" text-anchor="middle" class="t m" >100 &#181;F</text><line x1="320" y1="445" x2="350" y2="445" class="gnd"/>
+<text x="245" y="431" text-anchor="end" class="t b" fill='#b91c1c'>+</text><text x="325" y="431" text-anchor="start" class="t b" >&#8722;</text>
+<rect x="420" y="470" width="190" height="56" rx="4" class="drv"/><text x="515" y="487" text-anchor="middle" class="t b" >Y driver J2</text>
+<line x1="450" y1="365" x2="450" y2="508" class="pwr"/><circle cx="450" cy="365" r="4.5" class="dot"/><text x="450" y="522" text-anchor="middle" class="t m" >VM (J2-1)</text>
+<line x1="580" y1="405" x2="580" y2="508" class="gnd"/><circle cx="580" cy="405" r="4.5" class="dot"/><text x="580" y="522" text-anchor="middle" class="t m" >GND (J2-2)</text>
+<line x1="450" y1="445" x2="480" y2="445" class="pwr"/><rect x="480" y="435" width="70" height="20" rx="3" class="part"/><text x="515" y="449" text-anchor="middle" class="t m" >100 &#181;F</text><line x1="550" y1="445" x2="580" y2="445" class="gnd"/>
+<text x="475" y="431" text-anchor="end" class="t b" fill='#b91c1c'>+</text><text x="555" y="431" text-anchor="start" class="t b" >&#8722;</text>
+<rect x="650" y="470" width="190" height="56" rx="4" class="drv"/><text x="745" y="487" text-anchor="middle" class="t b" >Z driver J2</text>
+<line x1="680" y1="365" x2="680" y2="508" class="pwr"/><circle cx="680" cy="365" r="4.5" class="dot"/><text x="680" y="522" text-anchor="middle" class="t m" >VM (J2-1)</text>
+<line x1="810" y1="405" x2="810" y2="508" class="gnd"/><circle cx="810" cy="405" r="4.5" class="dot"/><text x="810" y="522" text-anchor="middle" class="t m" >GND (J2-2)</text>
+<line x1="680" y1="445" x2="710" y2="445" class="pwr"/><rect x="710" y="435" width="70" height="20" rx="3" class="part"/><text x="745" y="449" text-anchor="middle" class="t m" >100 &#181;F</text><line x1="780" y1="445" x2="810" y2="445" class="gnd"/>
+<text x="705" y="431" text-anchor="end" class="t b" fill='#b91c1c'>+</text><text x="785" y="431" text-anchor="start" class="t b" >&#8722;</text>
+<circle cx="1040" cy="405" r="4.5" class="dot"/>
+<text x="1020" y="409" text-anchor="start" class="t " ></text>
+<rect x="890" y="470" width="120" height="56" rx="4" class="box"/><text x="950" y="487" text-anchor="middle" class="t b" >MEGA</text><line x1="950" y1="405" x2="950" y2="508" class="gnd"/><circle cx="950" cy="405" r="4.5" class="dot"/><text x="950" y="522" text-anchor="middle" class="t m" >GND</text>
+</svg></div>
+<figcaption>TX2 reaches the junction only through the 1 k&#937;; RX2 goes straight to it. The junction is one node: three PDN_UART pins and the two Mega wires. Each driver gets its own 100 &#181;F across VM and GND, mounted at that driver. The GND rail is the supply minus, each driver's J2-2 and J2-8, DB9 pin 4 on each stage, and one Mega GND.</figcaption></figure>
+<div class="note"><strong>Common ground:</strong> one rail joins the PSU minus, all three drivers (J2-2 and J2-8, which are tied on the module), each stage's DB9 pin 4 and the Mega GND. Meter once with everything off: the PSU minus to the Mega GND, and to every J2-8, each about 0 &#937;.</div>
+<h2>3. Every Mega pin used</h2>
+<p>Printed labels as on the board. 20 signal pins, plus 5V and GND. Nothing else on the Mega is wired (Serial1, I2C, SPI and all other pins stay free).</p>
+<div class="tbl"><table><thead><tr><th>Function</th><th>Mega pin</th><th>Wired to</th><th>Type</th><th>Notes</th></tr></thead><tbody>
+<tr class="group"><td>Step / Dir / EN, per axis</td><td></td><td></td><td></td><td></td></tr>
+<tr class=""><td>X STEP</td><td><code>32</code></td><td>driver X J1-7 STEP</td><td>digital out</td><td></td></tr>
+<tr class=""><td>X DIR</td><td><code>33</code></td><td>driver X J1-8 DIR</td><td>digital out</td><td></td></tr>
+<tr class=""><td>X EN</td><td><code>34</code></td><td>driver X J1-1 EN</td><td>digital out</td><td>active low</td></tr>
+<tr class=""><td>Y STEP</td><td><code>22</code></td><td>driver Y J1-7 STEP</td><td>digital out</td><td></td></tr>
+<tr class=""><td>Y DIR</td><td><code>23</code></td><td>driver Y J1-8 DIR</td><td>digital out</td><td></td></tr>
+<tr class=""><td>Y EN</td><td><code>24</code></td><td>driver Y J1-1 EN</td><td>digital out</td><td>active low</td></tr>
+<tr class=""><td>Z STEP</td><td><code>42</code></td><td>driver Z J1-7 STEP</td><td>digital out</td><td></td></tr>
+<tr class=""><td>Z DIR</td><td><code>43</code></td><td>driver Z J1-8 DIR</td><td>digital out</td><td></td></tr>
+<tr class=""><td>Z EN</td><td><code>44</code></td><td>driver Z J1-1 EN</td><td>digital out</td><td>active low</td></tr>
+<tr class="group"><td>TMC2209 bus (Serial2)</td><td></td><td></td><td></td><td></td></tr>
+<tr class=""><td>TX2</td><td><code>16</code> (TX2)</td><td>1 k&#937; to the PDN_UART junction</td><td>UART TX</td><td></td></tr>
+<tr class=""><td>RX2</td><td><code>17</code> (RX2)</td><td>the PDN_UART junction, direct</td><td>UART RX</td><td></td></tr>
+<tr class="group"><td>Limit switches (external interrupts)</td><td></td><td></td><td></td><td></td></tr>
+<tr class=""><td>X LS1</td><td><code>2</code></td><td>X DB9 pin 2</td><td>INT, internal pull-up</td><td>other contact side to GND via DB9 pin 4</td></tr>
+<tr class=""><td>X LS2</td><td><code>3</code></td><td>X DB9 pin 3</td><td>INT, internal pull-up</td><td>other contact side to GND via DB9 pin 4</td></tr>
+<tr class=""><td>Y LS1</td><td><code>18</code></td><td>Y DB9 pin 2</td><td>INT, internal pull-up</td><td>other contact side to GND via DB9 pin 4</td></tr>
+<tr class=""><td>Y LS2</td><td><code>19</code></td><td>Y DB9 pin 3</td><td>INT, internal pull-up</td><td>other contact side to GND via DB9 pin 4</td></tr>
+<tr class=""><td>Z LS1</td><td><code>20</code></td><td>Z DB9 pin 2</td><td>INT, internal pull-up</td><td>other contact side to GND via DB9 pin 4</td></tr>
+<tr class=""><td>Z LS2</td><td><code>21</code></td><td>Z DB9 pin 3</td><td>INT, internal pull-up</td><td>other contact side to GND via DB9 pin 4</td></tr>
+<tr class="group"><td>Home photo-interrupters</td><td></td><td></td><td></td><td></td></tr>
+<tr class=""><td>X Vo</td><td><code>A8</code></td><td>X DB9 pin 5</td><td>analog-header pin used as digital (PCINT)</td><td></td></tr>
+<tr class=""><td>Y Vo</td><td><code>A9</code></td><td>Y DB9 pin 5</td><td>analog-header pin used as digital (PCINT)</td><td></td></tr>
+<tr class=""><td>Z Vo</td><td><code>A10</code></td><td>Z DB9 pin 5</td><td>analog-header pin used as digital (PCINT)</td><td></td></tr>
+<tr class="group"><td>Power</td><td></td><td></td><td></td><td></td></tr>
+<tr class=""><td>5V</td><td><code>5V</code></td><td>three driver VIO (J2-7), three DB9 pin 1 (photo-interrupter Vcc)</td><td>5 V out</td><td>any 5V pin on the POWER header, one short bus</td></tr>
+<tr class=""><td>GND</td><td><code>GND</code></td><td>the common ground rail</td><td></td><td>one wire from any Mega GND pin</td></tr>
+</tbody></table></div>
+<h2>4. Each driver, pin by pin</h2>
+<p>Straps first: with the module's pot at the top, J1 is the left header and J2 the right. Address X = 0 (MS1 GND, MS2 GND), Y = 1 (MS1 VIO, MS2 GND), Z = 2 (MS1 GND, MS2 VIO). VIO is J2-7 VDD, fed 5 V from the Mega.</p>
+<h3>Axis X</h3><div class='tbl'><table><thead><tr><th>Driver pin</th><th>Goes to</th><th>What</th><th>Notes</th></tr></thead><tbody><tr class="group"><td>J1 (left header), axis X, address 0</td><td></td><td></td><td></td></tr>
+<tr class=""><td>J1-1 EN</td><td>Mega pin 34</td><td></td><td>active low; driver outputs off until the firmware lowers it</td></tr>
+<tr class=""><td>J1-2 MS1</td><td>GND (J2-8)</td><td>strap</td><td>address bit 0 = 0</td></tr>
+<tr class=""><td>J1-3 MS2</td><td>GND (J2-8)</td><td>strap</td><td>address bit 1 = 0</td></tr>
+<tr class=""><td>J1-4 PDN_UART</td><td>PDN_UART junction</td><td></td><td>fig 2; J1-5 is the same net, leave it open</td></tr>
+<tr class=""><td>J1-5 PDN, J1-6 CLK</td><td>not connected</td><td></td><td></td></tr>
+<tr class=""><td>J1-7 STEP</td><td>Mega pin 32</td><td></td><td></td></tr>
+<tr class=""><td>J1-8 DIR</td><td>Mega pin 33</td><td></td><td></td></tr>
+<tr class="group"><td>J2 (right header), axis X</td><td></td><td></td><td></td></tr>
+<tr class=""><td>J2-1 VM</td><td>+12 V rail</td><td></td><td>with the 100 &#181;F + lead on the same row</td></tr>
+<tr class=""><td>J2-2 GND</td><td>GND rail (PSU &#8722;)</td><td></td><td>with the 100 &#181;F stripe lead on the same row</td></tr>
+<tr class=""><td>J2-3 A2</td><td>DB9 pin 6</td><td>coil A</td><td>stage lead: white (A+)</td></tr>
+<tr class=""><td>J2-4 A1</td><td>DB9 pin 7</td><td>coil A</td><td>stage lead: grey (A&#8722;)</td></tr>
+<tr class=""><td>J2-5 B1</td><td>DB9 pin 8</td><td>coil B</td><td>stage lead: blue (B+)</td></tr>
+<tr class=""><td>J2-6 B2</td><td>DB9 pin 9</td><td>coil B</td><td>stage lead: green (B&#8722;)</td></tr>
+<tr class=""><td>J2-7 VDD (VIO)</td><td>Mega 5V</td><td>logic supply</td><td>5 V, not 3.3 V; also the strap source for MS1/MS2</td></tr>
+<tr class=""><td>J2-8 GND</td><td>GND rail</td><td></td><td>joined to J2-2 on the module</td></tr></tbody></table></div>
+<h3>Axis Y</h3><div class='tbl'><table><thead><tr><th>Driver pin</th><th>Goes to</th><th>What</th><th>Notes</th></tr></thead><tbody><tr class="group"><td>J1 (left header), axis Y, address 1</td><td></td><td></td><td></td></tr>
+<tr class=""><td>J1-1 EN</td><td>Mega pin 24</td><td></td><td>active low; driver outputs off until the firmware lowers it</td></tr>
+<tr class=""><td>J1-2 MS1</td><td>VIO (J2-7)</td><td>strap</td><td>address bit 0 = 1</td></tr>
+<tr class=""><td>J1-3 MS2</td><td>GND (J2-8)</td><td>strap</td><td>address bit 1 = 0</td></tr>
+<tr class=""><td>J1-4 PDN_UART</td><td>PDN_UART junction</td><td></td><td>fig 2; J1-5 is the same net, leave it open</td></tr>
+<tr class=""><td>J1-5 PDN, J1-6 CLK</td><td>not connected</td><td></td><td></td></tr>
+<tr class=""><td>J1-7 STEP</td><td>Mega pin 22</td><td></td><td></td></tr>
+<tr class=""><td>J1-8 DIR</td><td>Mega pin 23</td><td></td><td></td></tr>
+<tr class="group"><td>J2 (right header), axis Y</td><td></td><td></td><td></td></tr>
+<tr class=""><td>J2-1 VM</td><td>+12 V rail</td><td></td><td>with the 100 &#181;F + lead on the same row</td></tr>
+<tr class=""><td>J2-2 GND</td><td>GND rail (PSU &#8722;)</td><td></td><td>with the 100 &#181;F stripe lead on the same row</td></tr>
+<tr class=""><td>J2-3 A2</td><td>DB9 pin 6</td><td>coil A</td><td>stage lead: white (A+)</td></tr>
+<tr class=""><td>J2-4 A1</td><td>DB9 pin 7</td><td>coil A</td><td>stage lead: grey (A&#8722;)</td></tr>
+<tr class=""><td>J2-5 B1</td><td>DB9 pin 8</td><td>coil B</td><td>stage lead: blue (B+)</td></tr>
+<tr class=""><td>J2-6 B2</td><td>DB9 pin 9</td><td>coil B</td><td>stage lead: green (B&#8722;)</td></tr>
+<tr class=""><td>J2-7 VDD (VIO)</td><td>Mega 5V</td><td>logic supply</td><td>5 V, not 3.3 V; also the strap source for MS1/MS2</td></tr>
+<tr class=""><td>J2-8 GND</td><td>GND rail</td><td></td><td>joined to J2-2 on the module</td></tr></tbody></table></div>
+<h3>Axis Z</h3><div class='tbl'><table><thead><tr><th>Driver pin</th><th>Goes to</th><th>What</th><th>Notes</th></tr></thead><tbody><tr class="group"><td>J1 (left header), axis Z, address 2</td><td></td><td></td><td></td></tr>
+<tr class=""><td>J1-1 EN</td><td>Mega pin 44</td><td></td><td>active low; driver outputs off until the firmware lowers it</td></tr>
+<tr class=""><td>J1-2 MS1</td><td>GND (J2-8)</td><td>strap</td><td>address bit 0 = 0</td></tr>
+<tr class=""><td>J1-3 MS2</td><td>VIO (J2-7)</td><td>strap</td><td>address bit 1 = 1</td></tr>
+<tr class=""><td>J1-4 PDN_UART</td><td>PDN_UART junction</td><td></td><td>fig 2; J1-5 is the same net, leave it open</td></tr>
+<tr class=""><td>J1-5 PDN, J1-6 CLK</td><td>not connected</td><td></td><td></td></tr>
+<tr class=""><td>J1-7 STEP</td><td>Mega pin 42</td><td></td><td></td></tr>
+<tr class=""><td>J1-8 DIR</td><td>Mega pin 43</td><td></td><td></td></tr>
+<tr class="group"><td>J2 (right header), axis Z</td><td></td><td></td><td></td></tr>
+<tr class=""><td>J2-1 VM</td><td>+12 V rail</td><td></td><td>with the 100 &#181;F + lead on the same row</td></tr>
+<tr class=""><td>J2-2 GND</td><td>GND rail (PSU &#8722;)</td><td></td><td>with the 100 &#181;F stripe lead on the same row</td></tr>
+<tr class=""><td>J2-3 A2</td><td>DB9 pin 6</td><td>coil A</td><td>stage lead: white (A+)</td></tr>
+<tr class=""><td>J2-4 A1</td><td>DB9 pin 7</td><td>coil A</td><td>stage lead: grey (A&#8722;)</td></tr>
+<tr class=""><td>J2-5 B1</td><td>DB9 pin 8</td><td>coil B</td><td>stage lead: blue (B+)</td></tr>
+<tr class=""><td>J2-6 B2</td><td>DB9 pin 9</td><td>coil B</td><td>stage lead: green (B&#8722;)</td></tr>
+<tr class=""><td>J2-7 VDD (VIO)</td><td>Mega 5V</td><td>logic supply</td><td>5 V, not 3.3 V; also the strap source for MS1/MS2</td></tr>
+<tr class=""><td>J2-8 GND</td><td>GND rail</td><td></td><td>joined to J2-2 on the module</td></tr></tbody></table></div>
+<h2>5. Each axis's DB9</h2>
+<p>Wire by the printed terminal numbers on the breakout, not by connector face position. One stage per axis, three identical cables; only the Mega pins differ.</p>
+<div class="tbl"><table><thead><tr><th>DB9 pin</th><th>Wire</th><th>Function</th><th>X goes to</th><th>Y goes to</th><th>Z goes to</th></tr></thead><tbody>
+<tr class=""><td>1</td><td>yellow</td><td>Vcc, photo-interrupter</td><td>Mega 5V</td><td>Mega 5V</td><td>Mega 5V</td></tr>
+<tr class=""><td>2</td><td>orange</td><td>limit switch 1 (LS1)</td><td>pin 2</td><td>pin 18</td><td>pin 20</td></tr>
+<tr class=""><td>3</td><td>red</td><td>limit switch 2 (LS2)</td><td>pin 3</td><td>pin 19</td><td>pin 21</td></tr>
+<tr class=""><td>4</td><td>brown</td><td>GND: switch return, photo-interrupter ground</td><td>GND rail</td><td>GND rail</td><td>GND rail</td></tr>
+<tr class=""><td>5</td><td>black</td><td>Vo, photo-interrupter output</td><td>A8</td><td>A9</td><td>A10</td></tr>
+<tr class=""><td>6</td><td>white</td><td>coil A+</td><td>X J2-3 A2</td><td>Y J2-3 A2</td><td>Z J2-3 A2</td></tr>
+<tr class=""><td>7</td><td>grey</td><td>coil A&#8722;</td><td>X J2-4 A1</td><td>Y J2-4 A1</td><td>Z J2-4 A1</td></tr>
+<tr class=""><td>8</td><td>blue</td><td>coil B+</td><td>X J2-5 B1</td><td>Y J2-5 B1</td><td>Z J2-5 B1</td></tr>
+<tr class=""><td>9</td><td>green</td><td>coil B&#8722;</td><td>X J2-6 B2</td><td>Y J2-6 B2</td><td>Z J2-6 B2</td></tr>
+</tbody></table></div>
+<div class="note"><strong>Pin 4 vs pin 5 caveat:</strong> the stage's own sheet contradicts itself on whether the limit switches return to pin 4 or pin 5. This sheet follows the one-axis sheet: both switches return to pin 4 (GND). Meter it before trusting the limits: resistance 2 to 4 (LS1) and 3 to 4 (LS2), with the carriage at centre and then on that switch. The reading must change. If 2-4 never changes, test 2-5 and stop to report it: with a pin-5 return a switch only reads while the home slot is clear. Under normally-open contacts the Mega reads a switch only when its other side reaches GND.</div>
+<div class="note"><strong>Motor (42BYGH613-01B), if you wire the motor directly:</strong> black and green are coil A, red and blue are coil B (datasheet). Coil A goes on J2-3/J2-4 and coil B on J2-5/J2-6; swapping the two wires of one coil only reverses that axis. Never mix an A lead with a B lead on one driver pair. Each coil reads about 1.5 &#937;, and the two coils are open to each other.</div>
+<h2>Parts</h2>
+<ul>
+<li>Arduino Mega 2560 and a USB cable.</li>
+<li>Three BIGTREETECH TMC2209 V1.2 (or V1.3) modules.</li>
+<li>One 1 k&#937; resistor in series with TX2.</li>
+<li>Three 100 &#181;F electrolytics, rated at least 25 V (35 V for a 24 V supply).</li>
+<li>Motor supply: 12 V DC, sized for three axes (at least 3 A; the bench supply is set to 12.0 V, then check each axis current), red and black leads, 22 AWG or heavier.</li>
+<li>Three DB9 breakouts, one per stage axis. A multimeter.</li>
+</ul>
+<h2>Meter checks before power</h2>
+<p>USB unplugged, VM off, PSU off, stages not yet plugged into the drivers.</p>
+<ul>
+<li><strong>Straps:</strong> read each module before power. X: MS1 and MS2 both to GND. Y: MS1 to VIO, MS2 to GND. Z: MS1 to GND, MS2 to VIO. Meter each strap to J2-8 (GND) and to J2-7 (VIO).</li>
+<li><strong>Junction:</strong> the three J1-4 pins read about 0 &#937; to each other and to RX2 (17); TX2 (16) to the junction reads about 1 k&#937;.</li>
+<li><strong>Power polarity:</strong> PSU + (red) on VM, PSU &#8722; (black) on GND, metered at the leads before they touch the modules. Each capacitor: stripe on GND.</li>
+<li><strong>No short:</strong> VM to GND on each driver is not 0 &#937; (a capacitor charging is fine).</li>
+<li><strong>Common ground:</strong> PSU &#8722; to Mega GND, and to J2-8 of each driver, about 0 &#937;.</li>
+<li><strong>VIO:</strong> J2-7 is on the Mega 5V line, not on VM and not on 3.3 V.</li>
+<li><strong>Each DB9</strong> on its breakout: coils 6-7 and 8-9 read about 1.5-2.5 &#937;, 6 or 7 to 8 or 9 open, any coil pin to 4 open. Photo-interrupter LED on diode test, red on 1, black on 4: about 1.1-1.4 V, OL reversed. Limit switches 2-4 and 3-4 change with the carriage on the switch (see the pin 4 vs pin 5 caveat).</li>
+</ul>
+<h2>Bring-up order</h2>
+<ol>
+<li><strong>Everything off.</strong> Wire it all, straps first.</li>
+<li><strong>Meter checks</strong> (above).</li>
+<li><strong>Connect each DB9</strong> to its axis with VM off, carriages about 25 mm from each end.</li>
+<li><strong>USB in, VM off.</strong> The address straps were set before power, so after VM comes on and the firmware reads the drivers, <code>#INFO</code> must show <code>x_tmc=y_tmc=z_tmc=1</code>. If an axis shows 0, a strap or the PDN_UART junction is wrong; power down and re-meter.</li>
+<li><strong>VM on</strong> (the TMC2209 logic runs from VM, so UART replies only appear once VM is up), then check <code>#INFO</code>.</li>
+<li><strong>Shut down:</strong> disable, VM off, wait about 5 s, then USB.</li>
+</ol>
+</body>
+</html>

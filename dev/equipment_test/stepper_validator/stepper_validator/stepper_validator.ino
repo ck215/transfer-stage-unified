@@ -65,6 +65,15 @@ const float    PARKED_TRAVEL_MM = 0.5f;    // PROVISIONAL, owner bench check: tr
                                            // release travel from the hard stop (overtravel + differential travel), else a carriage
                                            // parked against the hard stop learns the wrong end on its way off
 
+// Soft travel limit (2026-10-10, X-14), as in firmware/xyz_stage_axis. An axis whose carriage cannot reach one of its
+// switches (the bench probe on axis 1 meets its fixture before LS2) is held to SOFTLIMIT <mm> of travel from LS1,
+// measured from where LS1 last tripped while the axis moved toward the end it guards. Kept in EEPROM at the same
+// address and layout as the station sketch's, so a limit set under either holds under the other on the same Teensy.
+// The travel is the owner's, set over SOFTLIMIT; an erased block means no limit.
+const int      SOFT_EEPROM_ADDR   = 4;     // 9 bytes: SOFT_MAGIC, the travel in um (4 bytes, little-endian), its complement
+const unsigned char SOFT_MAGIC    = 0x5C;
+const float    SOFT_MAX_MM        = 100.0f; // SOFTLIMIT refuses more (bad-arg): twice the 50 mm travel
+
 // Safety
 const unsigned long JOG_TIMEOUT_MS   = 250;     // JOG dead-man: motion stops if no JOG arrives within this time
 const unsigned long HOST_TIMEOUT_MS  = 2500;    // No line for this long stops motion/tests. Chrome throttles hidden-tab timers to ~1 Hz, so 1000 ms aborted tests on tab switch; a closed page/port still ESTOPs at once via the DTR guard
@@ -83,6 +92,7 @@ const float    SG_MIN_SPEED_MM  = 0.0625f;      // Software stall check only abo
 #include <Arduino.h>
 #include <TMCStepper.h>
 #include <AccelStepper.h>
+#include <EEPROM.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,6 +148,16 @@ static const uint8_t    HOME_EDGES = 8;         // ring of home edges (position,
 static volatile long    s_homeEdgePos[HOME_EDGES];
 static volatile uint8_t s_homeEdgeLvl[HOME_EDGES];
 static volatile uint8_t s_homeHead, s_homeTail;
+// Soft travel limit (X-14, SOFTLIMIT): LS1 tripping while the axis moves toward the end it guards is the reference,
+// taken here at the exact step; the limit lies the soft travel from it, away from that end. A motion about to step past
+// it halts here, as at a limit switch. MOVE/REVS and JOG plan to stop on it (loop()); this holds everything else.
+static volatile long    s_softSteps;            // the soft travel in steps at the current resolution; 0 = no limit
+static volatile bool    s_softRefOk;            // LS1 has given the reference since boot, LIMITS or the last position loss
+static volatile long    s_softRef;              // where LS1 tripped (steps; moves with the origin)
+static volatile long    s_softLim;              // the limit (steps; moves with the origin): valid while s_softRefOk
+static volatile bool    s_softRefNew;           // a new reference; loop() reports it
+static volatile bool    s_softHit;              // the ISR halted motion on the limit; loop() reports it
+static volatile long    s_softHitPos;
 
 static inline bool trippedLevel(uint8_t level) { return s_limitsNc ? level == HIGH : level == LOW; }
 
@@ -176,6 +196,21 @@ static void stepIsr() {
     }
     if (t[i] && dir != 0 && s_lsEnd[i] == dir) halt = true;
   }
+  // Soft travel limit (X-14). The reference: LS1 trips while the axis moves toward the end it guards (its end known).
+  // The halt: the next step would leave the limit behind. AccelStepper's speed says which way that step goes (its sign
+  // stays the motion's while it overshoots a target, when distanceToGo already points back).
+  if ((newTrip & 1) && dir != 0 && s_lsEnd[0] == dir && (s_lsFirm & 1)) {
+    s_softRef = p; s_softRefOk = true; s_softRefNew = true; s_softLim = p - (long)dir * s_softSteps;
+  }
+  if (s_softSteps > 0 && s_softRefOk) {
+    const float v = stepper.speed();
+    if (s_lsEnd[0] > 0 ? (v < 0.0f && p <= s_softLim) : (v > 0.0f && p >= s_softLim)) {
+      halt = true;
+      // A motion planned onto the limit can arrive with a step's worth of speed left at low ACCEL (AccelStepper then
+      // overshoots by a step and comes back): held here, it is an arrival, not news. Anything else is reported.
+      if (togo != 0) { s_softHit = true; s_softHitPos = p; }
+    }
+  }
   if (halt) {
     stepper.setCurrentPosition(p);                // zero speed, target here
     for (uint8_t i = 0; i < 2; i++) if (t[i]) { s_lsHit |= 1 << i; s_lsHitPos[i] = p; }
@@ -198,16 +233,20 @@ static void spSetPos(long p) {          // a new origin (ZERO): the parked trave
   long d = p - stepper.currentPosition();
   stepper.setCurrentPosition(p);
   for (uint8_t i = 0; i < 2; i++) { s_lsLo[i] += d; s_lsHi[i] += d; }
+  s_softRef += d; s_softLim += d;               // the soft limit too (X-14)
 }
 static long rescaled(long x, uint16_t n, uint16_t d) {   // x * n / d rounded half away from zero, as lround() would
   long long v = (long long)x * n;
   return (long)((v >= 0 ? v + d / 2 : v - d / 2) / d);
 }
-static void spRescale(uint16_t newMs, uint16_t oldMs, long parkSteps) {   // MICROSTEPS: the same carriage positions in new steps
+static void spRescale(uint16_t newMs, uint16_t oldMs, long parkSteps, long softSteps) {   // MICROSTEPS: the same carriage positions in new steps
   IrqGuard g;
   stepper.setCurrentPosition(rescaled(stepper.currentPosition(), newMs, oldMs));
   for (uint8_t i = 0; i < 2; i++) { s_lsLo[i] = rescaled(s_lsLo[i], newMs, oldMs); s_lsHi[i] = rescaled(s_lsHi[i], newMs, oldMs); }
   s_parkSteps = parkSteps;
+  s_softRef = rescaled(s_softRef, newMs, oldMs);  // the soft limit: the reference rescaled, the travel re-derived from um
+  s_softSteps = softSteps;
+  s_softLim = s_softRef - (long)s_lsEnd[0] * softSteps;
 }
 static void spHalt()                    { IrqGuard g; stepper.setCurrentPosition(stepper.currentPosition()); }
 static long spPos()                     { IrqGuard g; return stepper.currentPosition(); }
@@ -237,6 +276,10 @@ static uint32_t g_lastPollMs = 0;
 static uint8_t  g_zeroDrvCount = 0;
 static bool     g_applyPending = false;         // speed/accel changed while moving; applied once stopped (lowering
                                                 // AccelStepper's max speed mid-move drops the speed in one step)
+// Soft travel limit (X-14): the stored travel, and a damaged EEPROM block. Fail safe: a damaged block allows only jogs
+// until SOFTLIMIT writes it again, rather than reading as "no limit" (an erased block is no limit: never written).
+static uint32_t g_softUm = 0;                   // SOFTLIMIT in um; 0 = no limit
+static bool     g_softBad = false;
 
 // latest driver sample (filled by pollDriver)
 static uint32_t g_drv = 0;
@@ -286,7 +329,36 @@ static const char *limitBlock(int dir, bool jog) {
     if (dir > 0 ? p >= s_lsHi[i] : p <= s_lsLo[i])   // the parked travel is spent this way too
       return i ? "limit-ls2-pressed-both-ways:check-switch" : "limit-ls1-pressed-both-ways:check-switch";
   }
+  // Soft travel limit (X-14). Before LS1 has given the reference only a JOG moves the axis, or a move toward LS1 once
+  // its end is known (that is how the reference is taken); with it, nothing starts out from the limit.
+  if (g_softBad && !jog) return "soft-limit-eeprom-damaged:set-SOFTLIMIT";
+  bool refOk; int8_t e1; long lim, p, soft;
+  { IrqGuard g; refOk = s_softRefOk; e1 = s_lsEnd[0]; lim = s_softLim; p = stepper.currentPosition(); soft = s_softSteps; }
+  if (soft > 0) {
+    if (!refOk) { if (!jog && !(e1 != 0 && dir == e1)) return "soft-limit-unreferenced:touch-ls1"; }
+    else if (dir == -e1 && (dir > 0 ? p >= lim : p <= lim)) return "soft-limit";
+  }
   return nullptr;
+}
+// The soft limit ahead of motion toward dir: true (and its position) when it is set, referenced and dir heads out.
+static bool softAhead(int dir, long &lim) {
+  IrqGuard g;
+  if (s_softSteps <= 0 || !s_softRefOk || dir != -s_lsEnd[0]) return false;
+  lim = s_softLim;
+  return true;
+}
+// The motion TESTs may run either way, so they need the reference before they start.
+static const char *softStartBlock() {
+  if (g_softBad) return "soft-limit-eeprom-damaged:set-SOFTLIMIT";
+  IrqGuard g;
+  return (s_softSteps > 0 && !s_softRefOk) ? "soft-limit-unreferenced:touch-ls1" : nullptr;
+}
+// A JOG's far target: JOG_SPAN away, or the soft limit when the jog heads out toward it, so AccelStepper decelerates
+// onto it (the ISR halt stays the backstop).
+static long jogTarget(long p, int dir) {
+  long lim;
+  if (softAhead(dir, lim)) return lim;
+  return p + (long)dir * JOG_SPAN;
 }
 static float jogCapMm(float mm) {               // a jog's speed (mm/s, positive), capped while a switch is parked
   if (!anyParked()) return mm;
@@ -356,9 +428,18 @@ static void driverOff() {
   driver.toff(0);
   g_enabled = false;
 }
-static void estop() {
+// The soft limit's reference goes with the step count: outputs off while the motor turned (the rotor coasts unpowered),
+// or a driver reset or fault (its microstep counter restarts). ZERO and MICROSTEPS move it with the origin (X-14).
+static void softRefLost(const char *why) {
+  bool was;
+  { IrqGuard g; was = s_softRefOk; s_softRefOk = false; }
+  if (was && g_softUm) evt("SOFTLIMIT lost reason=%s", why);
+}
+static void estop(const char *why) {
+  bool moving = spSpeed() != 0.0f;
   hardHalt();
   driverOff();
+  if (moving) softRefLost(why);
 }
 static void driverOn() {
   driver.toff(4);
@@ -385,6 +466,48 @@ static void bootReport() {
       g_bootVersion == EXPECTED_VERSION ? "OK" : "FAIL");
 }
 
+// ---------- soft travel limit in EEPROM (X-14; the station sketch's block) ----------
+static const uint32_t SOFT_MAX_UM = (uint32_t)(SOFT_MAX_MM * 1000.0f);
+// g_softUm and g_softBad from the block: erased (all 0xFF, never written) is no limit; a wrong magic, a complement
+// that disagrees or a travel out of range is damaged (g_softBad: jogs only until SOFTLIMIT rewrites it).
+static void softLoad() {
+  uint8_t raw[9]; bool erased = true;
+  for (uint8_t i = 0; i < 9; i++) { raw[i] = EEPROM.read(SOFT_EEPROM_ADDR + i); if (raw[i] != 0xFF) erased = false; }
+  uint32_t v = 0, c = 0;
+  for (uint8_t i = 0; i < 4; i++) { v |= (uint32_t)raw[1 + i] << (8 * i); c |= (uint32_t)raw[5 + i] << (8 * i); }
+  bool good = raw[0] == SOFT_MAGIC && c == ~v && v <= SOFT_MAX_UM;
+  g_softUm = good ? v : 0;
+  g_softBad = !good && !erased;
+}
+static bool writeSoftUm(uint32_t v) {
+  for (uint8_t i = 0; i < 4; i++) {
+    EEPROM.update(SOFT_EEPROM_ADDR + 1 + i, (uint8_t)(v >> (8 * i)));
+    EEPROM.update(SOFT_EEPROM_ADDR + 5 + i, (uint8_t)(~v >> (8 * i)));
+  }
+  EEPROM.update(SOFT_EEPROM_ADDR, SOFT_MAGIC);
+  softLoad();                                                              // read back, never assume
+  return !g_softBad && g_softUm == v;
+}
+// The ISR's travel (and the limit, when referenced) from g_softUm at the current resolution.
+static void softSetSteps() {
+  long steps = toSteps(g_softUm / 1000.0f);
+  IrqGuard g;
+  s_softSteps = steps;
+  s_softLim = s_softRef - (long)s_lsEnd[0] * steps;
+}
+// "mm=<travel> ref=<0|1>[ ls1_mm=<reference>][ limit_mm=<limit>][ damaged=1][ stored=1]" (SOFTLIMIT's reply).
+static void softReply(bool stored) {
+  bool ok; long ref, lim;
+  { IrqGuard g; ok = s_softRefOk; ref = s_softRef; lim = s_softLim; }
+  char b[150];
+  int n = snprintf(b, sizeof b, "mm=%.3f ref=%d", (double)(g_softUm / 1000.0f), ok);
+  if (ok) n += snprintf(b + n, sizeof b - n, " ls1_mm=%.5f", (double)toMm(ref));
+  if (ok && g_softUm) n += snprintf(b + n, sizeof b - n, " limit_mm=%.5f", (double)toMm(lim));
+  if (g_softBad) n += snprintf(b + n, sizeof b - n, " damaged=1");
+  if (stored) snprintf(b + n, sizeof b - n, " stored=1");
+  reply("SOFTLIMIT", "%s", b);
+}
+
 // ---------- driver polling and guards ----------
 static void pollDriver() {
   g_drv = driver.DRV_STATUS();
@@ -394,7 +517,7 @@ static void pollDriver() {
   // GSTAT.reset: the driver lost VM (or restarted) and is back on its pin/OTP defaults: 1/8 from MS1/MS2, current
   // from the VREF pot, chopper on. Stop, write our configuration back, and say so. A driver with no VM reads 0 here.
   if (driver.GSTAT() & 1) {
-    estop();
+    estop("driver-reset"); softRefLost("driver-reset");   // the driver's microstep counter restarted with it
     configureDriver();                                   // also clears GSTAT
     g_bootVersion = driver.version();
     evt("FAULT driver-reset reconfigured version=0x%02X microsteps=%u", g_bootVersion, readDriverMicrosteps());
@@ -402,13 +525,13 @@ static void pollDriver() {
   }
 
   if (g_enabled) {                  // all-zero DRV_STATUS while enabled means the UART is not answering
-    if (g_drv == 0) { if (++g_zeroDrvCount >= 3) { g_zeroDrvCount = 0; estop(); evt("FAULT uart-lost"); testFault("uart-lost"); } }
+    if (g_drv == 0) { if (++g_zeroDrvCount >= 3) { g_zeroDrvCount = 0; estop("uart-lost"); softRefLost("uart-lost"); evt("FAULT uart-lost"); testFault("uart-lost"); } }
     else g_zeroDrvCount = 0;
   }
   if (g_drv & (B_OT | B_OTPW)) {
-    estop(); evt("FAULT overtemp ot=%d otpw=%d", !!(g_drv & B_OT), !!(g_drv & B_OTPW)); testFault("overtemp");
+    estop("overtemp"); softRefLost("overtemp"); evt("FAULT overtemp ot=%d otpw=%d", !!(g_drv & B_OT), !!(g_drv & B_OTPW)); testFault("overtemp");
   } else if (g_drv & B_SHORTS) {
-    estop(); evt("FAULT short s2ga=%d s2gb=%d s2vsa=%d s2vsb=%d", !!(g_drv & B_S2GA), !!(g_drv & B_S2GB),
+    estop("short"); softRefLost("short"); evt("FAULT short s2ga=%d s2gb=%d s2vsa=%d s2vsb=%d", !!(g_drv & B_S2GA), !!(g_drv & B_S2GB),
                  !!(g_drv & B_S2VSA), !!(g_drv & B_S2VSB));
     testFault("short");
   }
@@ -421,7 +544,7 @@ static void guards() {
   if (connected && !g_wasConnected) { g_lastRxMs = now; g_hostTimedOut = false; bootReport(); }
   g_wasConnected = connected;
   if (!connected && (g_enabled || isBusy() || g_test != T_NONE)) {
-    estop(); testAbort("host-gone");
+    estop("host-gone"); testAbort("host-gone");
   }
   // heartbeat: any received line counts
   if (!g_hostTimedOut && (isBusy() || g_test != T_NONE) && (now - g_lastRxMs) > HOST_TIMEOUT_MS) {
@@ -432,7 +555,7 @@ static void guards() {
   }
   // still silent HOST_SILENT_OFF_MS after that stop (any line clears g_hostTimedOut): outputs off, ENABLE needed again
   if (g_hostTimedOut && g_enabled && (now - g_hostTimedOutMs) >= HOST_SILENT_OFF_MS) {
-    estop();
+    estop("host-timeout");
     testAbort("host-timeout");
     evt("FAULT host-timeout-disabled silent_ms=%lu", (unsigned long)(now - g_lastRxMs));
   }
@@ -541,6 +664,20 @@ static void serviceSensors() {
     hits = s_lsHit; trav = s_lsTravel; both = s_lsBoth; s_lsHit = s_lsTravel = s_lsBoth = 0;
     hp[0] = s_lsHitPos[0]; hp[1] = s_lsHitPos[1];
   }
+  bool softNew, softHit; long softRef, softLim, softAt;             // the soft travel limit (X-14)
+  {
+    IrqGuard g;
+    softNew = s_softRefNew; softHit = s_softHit; s_softRefNew = s_softHit = false;
+    softRef = s_softRef; softLim = s_softLim; softAt = s_softHitPos;
+  }
+  if (softNew && g_softUm)
+    evt("SOFTLIMIT referenced ls1_mm=%.5f limit_mm=%.5f travel_mm=%.3f", (double)toMm(softRef), (double)toMm(softLim),
+        (double)(g_softUm / 1000.0f));
+  if (softHit) {                                // the ISR halted motion on the limit: a TEST, or a backstop
+    g_jog = false;
+    evt("SOFTLIMIT stopped pos_mm=%.5f limit_mm=%.5f", (double)toMm(softAt), (double)toMm(softLim));
+    if (g_test != T_NONE) testAbort("soft-limit");
+  }
   if (hits) {
     g_jog = false;
     for (uint8_t i = 0; i < 2; i++) {
@@ -570,7 +707,7 @@ static void testStep() {
   if (g_test == T_NONE) return;
   uint32_t now = millis();
   if (now - t_start > t_limitMs) { testAbort("time-limit"); return; }
-  if (s_lsHit) return;                  // a limit just halted the motor: serviceSensors() hands it over first, next pass
+  if (s_lsHit || s_softHit) return;     // a limit just halted the motor: serviceSensors() hands it over first, next pass
   if (g_test != T_UART && anyParked()) { testAbort("limit-end-unknown"); return; }   // only a slow jog may move now
   bool fresh = g_newSample;
   g_newSample = false;
@@ -830,9 +967,14 @@ static void handleLine(char *line) {
     if (readDriverMicrosteps() != g_microsteps) { err("ENABLE", "driver-readback-mismatch"); return; }
     driverOn(); reply("ENABLE", "enabled=1 microsteps=%u", g_microsteps);
   }
-  else if (!strcmp(cmd, "DISABLE")) { hardHalt(); testAbort("disabled"); driverOff(); reply("DISABLE", "enabled=0"); }
+  else if (!strcmp(cmd, "DISABLE")) {
+    bool moving = spSpeed() != 0.0f;
+    hardHalt(); testAbort("disabled"); driverOff();
+    if (moving) softRefLost("disabled");
+    reply("DISABLE", "enabled=0");
+  }
   else if (!strcmp(cmd, "STOP")) { softStop(); testAbort("stop"); reply("STOP", "pos_mm=%.5f", (double)toMm(spPos())); }
-  else if (!strcmp(cmd, "ESTOP")) { estop(); testAbort("estop"); reply("ESTOP", "enabled=0 pos_mm=%.5f", (double)toMm(spPos())); }
+  else if (!strcmp(cmd, "ESTOP")) { estop("estop"); testAbort("estop"); reply("ESTOP", "enabled=0 pos_mm=%.5f", (double)toMm(spPos())); }
   else if (!strcmp(cmd, "CURRENT")) {
     if (!parseLong(a1, iv) || iv < 0) { err("CURRENT", "bad-arg"); return; }
     bool clamped = iv > (long)MAX_CURRENT_MA;
@@ -850,7 +992,7 @@ static void handleLine(char *line) {
     setDriverMicrosteps((uint16_t)iv);
     if (readDriverMicrosteps() != iv) { setDriverMicrosteps(oldMs); err("MICROSTEPS", "driver-readback-mismatch"); return; }
     g_microsteps = (uint16_t)iv;
-    spRescale(g_microsteps, oldMs, toSteps(PARKED_TRAVEL_MM));   // position and parked travel windows
+    spRescale(g_microsteps, oldMs, toSteps(PARKED_TRAVEL_MM), toSteps(g_softUm / 1000.0f));   // position, parked windows, soft limit
     bool slowed = g_speedMm > maxSpeedMm();               // only the step-rate ceiling can bind, at fine resolutions
     if (slowed) g_speedMm = maxSpeedMm();
     applyMotion();
@@ -898,9 +1040,14 @@ static void handleLine(char *line) {
     long steps = toSteps(mm);
     if (isBusy()) { err(cmd, "busy"); return; }           // one move at a time; a move never re-ramps one in progress
     if (steps != 0) { const char *why = limitBlock(steps > 0 ? 1 : -1, false); if (why) { err(cmd, why); return; } }
+    long softLim = 0, asked = spPos() + steps; bool softClamped = false;   // X-14: no farther than the soft limit
+    if (steps != 0 && softAhead(steps > 0 ? 1 : -1, softLim) && (steps > 0 ? asked > softLim : asked < softLim)) {
+      steps = softLim - spPos(); softClamped = clamped = true;
+    }
     applyMotion();
     spMove(steps);
     reply(cmd, "mm=%.5f target_mm=%.5f clamped=%d", (double)toMm(steps), (double)toMm(spTarget()), clamped);
+    if (softClamped) evt("SOFTLIMIT clamped cmd=%s target_mm=%.5f limit_mm=%.5f", cmd, (double)toMm(asked), (double)toMm(softLim));
   }
   else if (!strcmp(cmd, "JOG")) {
     if (!g_enabled) { err("JOG", "not-enabled"); return; }
@@ -914,7 +1061,7 @@ static void handleLine(char *line) {
       if (spRunning()) { err("JOG", "busy"); return; }
       applyMotion();
       if (anyParked()) spSetMaxSpeed(jogCapMm(g_speedMm) * stepsPerMm());   // parked: slow for this whole jog
-      spMove(iv > 0 ? JOG_SPAN : -JOG_SPAN);
+      spMoveTo(jogTarget(spPos(), (int)iv));            // JOG_SPAN away, or onto the soft limit (X-14)
     }
     else if ((spTarget() - spPos() > 0) != (iv > 0)) { softStop(); err("JOG", "reverse:release-first"); return; }
     g_jog = true; g_lastJogMs = millis();
@@ -931,6 +1078,8 @@ static void handleLine(char *line) {
     if (!strcmp(a1, "UART")) { testBegin(T_UART); reply("TEST", "UART started"); return; }
     if (!g_enabled) { err("TEST", "not-enabled"); return; }
     if (lsTripped(0) || lsTripped(1)) { err("TEST", "limit-tripped:jog-off-it"); return; }   // every motion test starts clear of both ends
+    const char *soft = softStartBlock();                  // and, with a soft limit, referenced (X-14)
+    if (soft) { err("TEST", soft); return; }
     if (!strcmp(a1, "COILS")) {
       float v = COILS_SPEED_MM < maxSpeedMm() ? COILS_SPEED_MM : maxSpeedMm();
       testBegin(T_COILS); t_limitMs = planMs(COILS_REVS * LEAD_MM, v);
@@ -970,7 +1119,17 @@ static void handleLine(char *line) {
       long p = stepper.currentPosition();
       for (uint8_t i = 0; i < 2; i++) { s_lsLo[i] = p - s_parkSteps; s_lsHi[i] = p + s_parkSteps; }
     }
+    softRefLost("limits-changed");                        // LS1's end is forgotten, and the reference with it (X-14)
     reply("LIMITS", "limits=%s ls1=%d ls2=%d ends=forgotten", s_limitsNc ? "NC" : "NO", lsTripped(0), lsTripped(1));
+  }
+  else if (!strcmp(cmd, "SOFTLIMIT")) {                   // X-14: SOFTLIMIT [mm] (0 = no limit); stored in EEPROM
+    if (a1) {
+      if (!parseFloat(a1, fv) || fv < 0 || fv > SOFT_MAX_MM) { err("SOFTLIMIT", "bad-arg"); return; }
+      if (g_enabled || isBusy() || g_test != T_NONE) { err("SOFTLIMIT", "busy"); return; }
+      if (!writeSoftUm((uint32_t)lroundf(fv * 1000.0f))) { softSetSteps(); err("SOFTLIMIT", "eeprom-verify-failed"); return; }
+      softSetSteps();
+    }
+    softReply(a1 != nullptr);
   }
   else { err(cmd, "unknown-command"); }
 }
@@ -984,6 +1143,7 @@ void setup() {
   pinMode(LS1_PIN, INPUT_PULLUP); pinMode(LS2_PIN, INPUT_PULLUP); pinMode(HOME_PIN, INPUT_PULLUP);
   delayMicroseconds(50);                                 // let the pull-ups settle, then seed the filters so boot is not an edge
   s_level[0] = digitalReadFast(LS1_PIN); s_level[1] = digitalReadFast(LS2_PIN); s_level[2] = digitalReadFast(HOME_PIN);
+  softLoad();                                            // the soft travel limit (X-14); unreferenced until LS1 trips
   Serial.begin(115200);                                  // baud ignored on Teensy USB
 
   DRIVER_SERIAL.begin(DRIVER_BAUD, DRIVER_HALF_DUPLEX ? SERIAL_8N1_HALF_DUPLEX : SERIAL_8N1);
@@ -997,6 +1157,7 @@ void setup() {
   stepper.setCurrentPosition(0);
   s_parkSteps = toSteps(PARKED_TRAVEL_MM);               // a switch pressed at power-up is parked: its travel counts from here
   for (uint8_t i = 0; i < 2; i++) { s_lsLo[i] = -s_parkSteps; s_lsHi[i] = s_parkSteps; }
+  softSetSteps();
   g_lastRxMs = millis();
   stepTimer.begin(stepIsr, 25);                          // start stepping last, after the stepper is configured
 }
@@ -1005,6 +1166,7 @@ void loop() {
   static char buf[96];
   static uint8_t len = 0;
   static bool overflow = false;
+  const bool jogWas = g_jog;                             // a jog that ends on the soft limit says so (below)
 
   while (Serial.available()) {
     char c = Serial.read();
@@ -1021,6 +1183,10 @@ void loop() {
   serviceSensors();                                      // limit hits first, so testStep() never mistakes a halt for a finished leg
   guards();
   if (g_jog && !spRunning()) g_jog = false;
+  if (jogWas && !g_jog && !spRunning()) {                // X-14: a jog stopped by its far target, the soft limit
+    long lim;
+    if ((softAhead(1, lim) || softAhead(-1, lim)) && spPos() == lim) evt("SOFTLIMIT reached limit_mm=%.5f", (double)toMm(lim));
+  }
   if (g_applyPending && !spRunning() && g_test == T_NONE) { g_applyPending = false; applyMotion(); }
   testStep();
 }
