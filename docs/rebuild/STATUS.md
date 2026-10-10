@@ -428,7 +428,7 @@ Branch `fix/xyz-followups` (60b5a8a), PR #2, open and mergeable, 25 commits ahea
 - the `firmware-safety` agent profile;
 - the **XYZ Mega**: `docs/rebuild/MEGA_STANDARD.md`, `firmware/xyz_stage_mega/`, the Probe-family caps and `#` channel, `XYZ Stage (Mega)`, its simulator, and the wiring sheet `dev/equipment_test/xyz_mega/`.
 
-Gate: macOS, 5011 passed (2 known macOS serial-lock failures and 1 load flake that passes alone 3/3), golden 77. **CI on PR #2 is RED on Ubuntu** (run 38006660927, `60b5a8a`): 1 failed, 4846 passed, 183 skipped, 1 xfailed; the failure is `tests/test_probe.py::test_a_hundred_mode_round_trips_leak_nothing` (an interlock thread left alive), the same test the macOS notes call a load flake. It is a hard failure on the runner, so PR #2 is not merge-ready until that test or the leak it catches is fixed (in flight 2026-10-10, `rb-leak`). Every push to `main` since 2026-10-08 19:17Z is green.
+Gate: macOS, 5011 passed (2 known macOS serial-lock failures and 1 load flake that passes alone 3/3), golden 77. **CI on PR #2 is RED on Ubuntu** (run 38006660927, `60b5a8a`): 1 failed, 4846 passed, 183 skipped, 1 xfailed; the failure is `tests/test_probe.py::test_a_hundred_mode_round_trips_leak_nothing` (an interlock thread left alive), the same test the macOS notes call a load flake. It is a hard failure on the runner, so PR #2 is not merge-ready until that test or the leak it catches is fixed (being fixed 2026-10-10 by the lead; a `rb-leak` worktree exists). Every push to `main` since 2026-10-08 19:17Z is green.
 
 **Bench (owner + lead, live, Teensy 3.5 validator, one axis at a time):**
 - **Axis 2 is validated:**
@@ -1173,6 +1173,10 @@ rows are being reconciled against the code (`handoff/audit-tier-d-2026-09-26.md`
 
 ## History
 
+- 2026-10-10: `OPEN_ISSUES-2026-10-08.md` (the 8 Oct morning report) folded into "Open items" above and deleted
+  (history: `git show 60b5a8a:docs/rebuild/OPEN_ISSUES-2026-10-08.md`). Its decided items: Settings order kept
+  (owner, 2026-10-08); a store on the cloud drive is worked on through a local working copy (`e05fe01`); the P2 backend and UX
+  items and the flaky-test hardening are fixed (`b5a6c37`, `1790d7f`, `df392d9`, `ac2f716`, `e8b5895`, `028f028`, `558b47e`).
 - 2026-10-10: `tests/TEST_PORTING.md` closed and deleted. Its 26 "must have a ported
   equivalent" safety tests each map to a test in `tests/` (grep by name and
   assertion): transport truth -> `test_serial_port::test_a_failed_write_marks_the_link_lost_and_raises`,
