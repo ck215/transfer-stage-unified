@@ -1,8 +1,8 @@
 # Rebuild status — cold-resume document
 
-Last updated 2026-10-08, after the proposal round, the lab merge, the root
+Last updated 2026-10-10 (doc alignment against the 2026-10-10 audit), after the proposal round, the lab merge, the root
 cleanup and the move to `~/GitHub` ("Round 2026-10-07" and "Round 2026-10-07
-(proposal)" below), and the night's feature merges ("Round 2026-10-08 (night)"). Read this first; then `BRIEF.md` (the architecture contract and its addenda),
+(proposal)" below), the night's feature merges ("Round 2026-10-08 (night)"), the XYZ Stage (PR #1, merged as `a5bc7a7`) and the XYZ Mega round on `fix/xyz-followups` (PR #2, open; "Resume here" below). Read this first; then `BRIEF.md` (the architecture contract and its addenda),
 `DESIGN_BRIEF.md` (its predecessor `WEB_DESIGN_BRIEF.md` was removed (history: tag pre-root-cleanup-2026-10-07)), and
 `BUGFIX_PLAN.md` (the ranked defect list with a delegation route per item).
 Paths are `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/...` (the
@@ -20,7 +20,7 @@ the only frontend since 2026-10-07).
 |---|---|
 | The new app | `src/` on branch `main`, the one checkout, the folder `main/` (branch model: "Round 2026-10-07 (proposal)"). The Web view (`src/views/web/`, over `views/base.py`) is the only frontend; `src/views/tk.py` and `qt.py` are frozen at `413f504`, unregistered, with a banner on line 1, kept intact for reference. Also since the layout below: `devices/{screen_recorder,camera}.py`, `model/{trial_telemetry,transfer_map_analysis,sample_store}.py`, `controller/{flashing,updater,user_config}.py`. Built as the `station/` package on the `rebuild` branch (the refactor redone from scratch), fast-forwarded here and retired 2026-09-23, then moved to `src/` the same day. Layout: `src/app.py` (run as a script), `events.py panel.py param.py schema.py result.py palette.py`, `controller/{controller,setup}.py`, `model/base.py` + `model/{probe,heater,rotator,red_monitor,plot_data}.py`, `devices/`, `views/`. |
 | The old app | Removed from the tree 2026-10-07 (history: tag pre-root-cleanup-2026-10-07); its wire bytes are pinned in `tests/golden/*.json`. The pre-rebuild repair history ends at `91b5dc9` on `mvc-refactor`. |
-| Worktrees | `main/` (the one checkout, branch `main`; it holds the one venv, `main/.venv`, the `$PY` of the skills) and, while a fix round runs, one `rb-<name>` per agent beside it; no others between rounds. `dev/swap_branch.sh legacy` makes `../legacy-app` from the `legacy` branch when the old app is needed. The eleven stale merged `rb-*` worktrees were removed on 2026-10-07 (rb-clean). |
+| Worktrees | `main/` (the one checkout, branch `main`; it holds the one venv, `main/.venv`, the `$PY` of the skills) and, while a fix round runs, one `rb-<name>` per agent beside it; no others between rounds (2026-10-10: `rb-fixes`, `rb-fw-limits`, `rb-leak`, `rb-ux`, `rb-docs` are live; `rb-mega-fw` and `rb-mega-station` are fully merged into `fix/xyz-followups` and are leftovers to remove with `git worktree remove` + `git branch -d`, the owner's call). `dev/swap_branch.sh legacy` makes `../legacy-app` from the `legacy` branch when the old app is needed. The eleven stale merged `rb-*` worktrees were removed on 2026-10-07 (rb-clean). |
 | Agent handoffs | `handoff/*.md` inside each worktree, git-ignored (`handoff/` stays ignored). The handoff files that code and docs cite were removed from the tree (history: tag pre-root-cleanup-2026-10-07); a worktree's own handoff for a round is `handoff/fix-<name>.md`. Each has DONE / TESTS / MUST-SATISFY / UNVERIFIED / NOTES sections. |
 | **Timeouts, audit round 8, the model contract (2026-09-26)** | Owner: warn before closing the tab with devices energized, validate the watchdog and the idle timeout in every view, warn before the timeout with a way to extend. Core (**Tier N/O**): `Probe.idle_remaining` + one "Idle Timeout Soon" warning inside the last 60 s + `extend_idle`; `Controller.is_energized` / `state()["energized"]` (a probe in a mode, a heating heater, a recording run); the Web watchdog keys on it; stop-class commands and `set_mode("disabled")` skip input validation (`Panel.UNGATED_COMMANDS`, schema `stop=True`) so a stop is never refused over bad text in a box; `/api/data` runs only schema-declared sources, JSON POSTs need an Origin, frame-blocking headers; `views.base.GATE_WORDS` / `gate_reason` as the one direction-aware table, served to the Web; Setup's `stop_system` / `launch` ask while anything is energized; the schema's `fault` gate; `Heater.heating_to`. Views (rb-o-{tk,qt,web}, `handoff/fix-o-*.md`): a countdown line per probe under the disc with **Extend**; energized ring and faulted "!" marks; "Disable failed. Treat as live." in tier 1; quit / close questions name what is energized; Web `beforeunload` while energized, `/api/quit` answers after the stop with the unconfirmed named, busy commands, refusal at its field, commit on release, tier 1 pinned; live regions (Web) and announcements (Qt); one Qt Tab order. Audits: round 8 with one skill per auditor (`handoff/audit-ui-round8-*.md`), the architecture audit (intact with debt), and the **model contract** audit (`handoff/audit-model-contract-2026-09-26.md`: a `PiezoStage` written from the new `docs/rebuild/MODEL_CONTRACT.md` drove all three views unedited once CON-1/3/4/5/9 were fixed; `tests/test_model_contract.py`, 160 cases). Headless validation: the watchdog warns at 4.9 s and stops every model at 15.2 s of browser silence; no memory leak. Gates **fast 2290 (+11 window tests deferred, 1 xfail = CON-13), golden 78, Qt 212**. Open: O17 (lead part), O19–O23, CON-6/7/11, CON-13 (owner), the display-dependent captures, owner calls below. |
 | **Owner's Web pass + audit round 7 (2026-09-26)** | Tier K from the owner's look at the merged E views: the gamepad choice is tier 1; every tier-2 disclosure names its device and sits at the foot of the tier-1 body above its well; the sheet has an **Overview** page (rail's first item, every model compact, no wells, pressable heads) and a **device page** (one model alone). Tier L from three real-display auditors (`handoff/audit-ui-round7-{web,tk,qt}.md`): the S1 in every view was that one model's own stop read as "Every model is stopped." and turned the disc to Clear over five live models (`is_estopped` = any). Core: `Controller.stop_state` {latched, unconfirmed, every, since}, `Model.stop_confirmed`, `views.base.stop_words()` / `event_line()`, `events.forget` on clear; views: disc face from the words, per-model rail marks, reasons on disabled commands, 24/36 px targets, slider keys, tier 1 pinned on the device page, Quit asks in Qt, Tab reaches every Qt control. Also: `handoff/proposal-probe-zeroing.md` (K5: TMC2209 on a Mega; host-only set-zero now, optical home switches later); the `window` test marker + `STATION_NO_WINDOWS=1` (owner: strictly background while at the Mac); a memory-leak check (none: 49→23 MB flat under a 10 Hz client). Gates **fast 2056 (+11 window tests deferred), golden 78, Qt 195**. Open: Tier M; owner calls below. |
@@ -303,9 +303,8 @@ what landed. The row-by-row closures are in `BUGFIX_PLAN.md`
   SMC100 pacing comparison and the heater ramp-decimals cross-check.
 
 **The move.** The repository moved from `~/Documents/GitHub` to
-`~/GitHub/transfer-stage-unified/`: `mvc-refactor/` (the one checkout, still named after the
-branch until re-cloned; the one venv `.venv` made from the `[dev]` extra), `main/` (a plain
-checkout of the lab's original app, for `dev/swap_branch.sh`; absent after a fresh clone), `rb-<name>/`
+`~/GitHub/transfer-stage-unified/`: `main/` (the one checkout, renamed from `mvc-refactor/` on 2026-10-08; the one venv `.venv` made from the `[dev]` extra; the folder that was a plain
+checkout of the lab's original app is gone, `dev/swap_branch.sh legacy` makes `../legacy-app` on demand), `rb-<name>/`
 siblings while a round runs. The lab deploys by git today (a fresh `git clone --branch main <url>`,
 `pip install -e .`, `run.sh`); the
 first installed release comes after v1.0.0.
@@ -328,7 +327,7 @@ final gate. Collected under `-m "not qt"`: 4211 (collect-only, 2026-10-07).
   fixed, and the shade thresholds (contact line, 0.10, the thirds).
 - The lab PC's code must reach a branch before a release is installed there
   (`packaging/README.md`); the stale `rb-estimators` and `rb-rootclean` directories beside
-  `mvc-refactor/` are leftovers, not worktrees.
+  `main/` are leftovers, not worktrees.
 
 ## Round 2026-10-08 (night)
 
@@ -354,7 +353,7 @@ then lower; newest wins) on the Sample DB and the trial setup.
 
 ## Round 2026-10-09 (XYZ Stage)
 
-Branch `feat/xyz-stage`, by PR. A new device: the 50 mm XYZ stage, one Teensy 3.5
+Branch `feat/xyz-stage`, merged to `main` as `a5bc7a7` (PR #1, 2026-10-09 19:44Z). A new device: the 50 mm XYZ stage, one Teensy 3.5
 and one TMC2209 (single-wire UART) per axis.
 
 What landed:
@@ -424,12 +423,12 @@ the lead screw is unmeasured, and the page says so.
 
 ## Resume here (2026-10-09 evening, bench paused)
 
-Branch `fix/xyz-followups`, PR'd tonight. It holds:
+Branch `fix/xyz-followups` (60b5a8a), PR #2, open and mergeable, 25 commits ahead of `main`; exists only on origin and the owner's Mac. It holds:
 - the XYZ follow-ups: µsteps lines, gates, per-move acceleration, the favicon fix, the pin flicker fix;
 - the `firmware-safety` agent profile;
 - the **XYZ Mega**: `docs/rebuild/MEGA_STANDARD.md`, `firmware/xyz_stage_mega/`, the Probe-family caps and `#` channel, `XYZ Stage (Mega)`, its simulator, and the wiring sheet `dev/equipment_test/xyz_mega/`.
 
-Gate on the merged tip: 5011 passed. The 2 known macOS serial-lock failures and 1 load flake (passes alone 3/3) remain. Golden 77.
+Gate: macOS, 5011 passed (2 known macOS serial-lock failures and 1 load flake that passes alone 3/3), golden 77. **CI on PR #2 is RED on Ubuntu** (run 38006660927, `60b5a8a`): 1 failed, 4846 passed, 183 skipped, 1 xfailed; the failure is `tests/test_probe.py::test_a_hundred_mode_round_trips_leak_nothing` (an interlock thread left alive), the same test the macOS notes call a load flake. It is a hard failure on the runner, so PR #2 is not merge-ready until that test or the leak it catches is fixed (in flight 2026-10-10, `rb-leak`). Every push to `main` since 2026-10-08 19:17Z is green.
 
 **Bench (owner + lead, live, Teensy 3.5 validator, one axis at a time):**
 - **Axis 2 is validated:**
@@ -476,6 +475,110 @@ Gate on the merged tip: 5011 passed. The 2 known macOS serial-lock failures and 
 - **Bench values still PROVISIONAL:** `PARKED_TRAVEL_MM` (0.5 mm), HOME speeds, `HOME_DIR`, `HOME_FLAG_LEVEL`.
 
 ## Open items
+
+### Open since the 2026-10-10 audit (re-homed; evidence is a commit, a line or a doc)
+
+Statuses: **OWNER/BENCH** (only the owner can judge or do it), **ENG** (an agent can
+do it). Items already tracked above ("Resume here", Round 2026-10-09 "Open,
+bench-only", `CHECKPOINT.md`) are not repeated.
+
+- **OWNER/BENCH: validate the heater host-gone watchdog** (`b4449c4`,
+  `firmware/temp_controller`; spec was `origin/heater-firmware-watchdog-proposal`
+  `f53ce9c`). Set a temperature, then pull the Teensy's USB (or kill the
+  station): within about 5 s the board drops to SP=0 by itself. A normal
+  session must never trip it (the station holds DTR while the port is open):
+  run a normal heat for a few minutes and watch for drops. The sketch's
+  comments (lines 39/94/121) still say "PROPOSED - NOT FLASHED"; they were left
+  so on purpose, since editing them re-hashes the sketch and asks for a
+  second flash. (From OPEN_ISSUES-2026-10-08 §1, folded 2026-10-10.)
+- **OWNER/BENCH: validate the chuck runaway guards** (`87a24f1`,
+  `firmware/chuck_firmware`, copied from the stepper's `5dec4e4`). After
+  power-up the coils are free until Enable (they used to hold from boot). Jog
+  every axis (stick, D-pad, bumpers) at low speed and at 600: unchanged, no
+  stutter. Hold a jog and pull USB: stops within about 250 ms (the dead-man),
+  coils holding. Hold a jog and click away from the station window: stops,
+  holding. Stop during a large D-pad step: stops at once. Disable frees the
+  coils. Risk: the watchdog-reset path is untested on the chuck's Mega
+  bootloader (some old Mega bootloaders loop after a watchdog reset).
+- **OWNER/BENCH, and a warning: the Launcher now flashes these sketches by
+  itself.** `2328ac4` (Launcher) and `3b15c68` (Classic) flash any board whose
+  firmware hash differs before the app starts, so the lab PC's first launch
+  of a fresh `main` clone flashes the unvalidated heater and chuck sketches.
+  This supersedes the old "press Flash only at the bench". The owner's
+  decision on architecture-audit #5 (off-main, or a Firmware-row note) was
+  never recorded. Until the two items above pass, treat the first launch as a
+  bench session with the hardware watched.
+- **OWNER/BENCH: five behaviours new on 2026-10-08, unit-tested only.**
+  (1) Settings after launch: change a device's Port, press **Apply & reset**:
+  it stops, closes, reopens on the new port. (2) Hard reset on an energized
+  device: asks once, stops it, comes back fresh. (3) **Start** a device plugged
+  in after launch (Refresh, pick its port, Start). (4) Close the browser tab:
+  Chrome asks "Leave site?"; Leave stops every device (heater confirmed off)
+  and the station exits within about 8 s. (5) Double-click the Launcher while
+  a station runs: the running station's page opens, no second station starts.
+  (The 10-08 UX audit could not observe (4): headless Chrome does not fire
+  `beforeunload`.)
+- **OWNER/BENCH: the 2026-10-09 bench-only residue** (the "Open, bench-only"
+  list of Round 2026-10-09, which Resume reduced to the limit-switch story):
+  the axis tag survives an upload and a power cycle; the sign of each stick
+  and trigger per axis; park on LS1 then LS2 (jog off learns the right sign,
+  jog in halts within 0.5 mm); jog off each switch repeatedly with no
+  `EVT LIMIT`; a host silent with the port open disables the axis after 10 s;
+  HOME repeatability within +-2 usteps. Also: the Stepper Probe Mega's
+  `int x_steps` wraps past 32767 steps (`firmware/stepper_firmware`,
+  `stepper_firmware.ino:304`); the station refuses such a Step (`963aec6`),
+  changing it to `long` in the firmware is a bench change. And the
+  0.625 um/count scale is unverified (the lead screw is unmeasured; the page
+  says so). Re-flash the validator on the Teensy first (it runs `limit_seek`).
+- **OWNER/BENCH: lab-PC housekeeping** (from OPEN_ISSUES-2026-10-08 §3 and the
+  10-08 UX audit; nothing here is verifiable from the Mac): delete the old
+  Sample DB copy in `<checkout>/data/` (2.3 GB) once the store in
+  `~/transfer-stage-runs/stores/ialbinog/` looks right (8 samples, 23 chips,
+  191 flakes, 363 pictures); the old flat backup in
+  `QMDL_Drive/transfer-stage-dbs/ialbinog@uci.edu/` can go once the per-store
+  subfolder backup (`<name>-<hash>/`, about 2.3 GB on the first run) is
+  checked; delete the empty `~/transfer-stage-runs/stores/transfer_map.sqlite`
+  (0 trials, created 2026-10-07 23:48, origin unclear); check the steppers'
+  holding torque and power-cycle the boards (the 2026-10-07 "unconfirmed
+  stop" incident, a second station resetting live boards); restart any
+  station still running on :8080 from before 2026-10-08. The UX audit's SIM
+  runs also wrote `transfer_map.sqlite` and `sample_map.sqlite` under
+  `~/transfer-stage-runs/stores/op@lab.test/` before `01b1b53`: check and
+  delete them.
+- **ENG: the Web finalizer.** The data finalizer exists only in the frozen
+  Qt view (`model/finalize.py`, `views/qt_finalizer.py`); the Web "Finalize
+  data..." is not built.
+- **ENG: per-user layout, `default_fields`, `sample_base`.** Reserved
+  settings keys only (`53abaee`); nothing reads them.
+- **ENG: a design and accessibility pass with the primary skills**
+  (`impeccable`, `web-design-guidelines`), owed since 2026-10-08 (not
+  installed on the lab PC; the night's passes used design-critique,
+  accessibility-review and ux-copy).
+- **ENG (in flight 2026-10-10, `rb-ux` / `rb-fixes`; check before starting):**
+  - Hard reset is not refused during a scan (architecture audit #13, the
+    Hard reset half).
+  - The Update row shows env-var names in dev/SIM (UX 10-08 #14).
+  - Settings' Transfer Map / Sample DB rows read "Sign in to use" beside a key
+    "On" (UX 10-08 #19; `e8b5895` renamed the caption only, the rest is
+    unverified).
+  - The 2026-10-07 UX proposals never built: compact rail on short and phone
+    screens (the rail at 1366x768 is a daily bench monitor size), the
+    device-page measure at about 75rem, ghost Hard reset keys before the
+    launch, the tutorial card over the entry head's state word, the
+    status-dot legend, the bench scale. The dim theme (proposal 7) is an
+    owner ruling, not an engineering item.
+- **ENG: housekeeping the audit found.** The `xfail` at
+  `tests/test_model_contract.py:344` (CON-13) was not removed after
+  `c56cf76`; `tests/test_view_web_tutorial.py:561` still carries the
+  first-trial xfail; `src/model/rgb_analysis.py:2011` names the deleted
+  `views/picking.py`; the heater sketch banners still say "PROPOSED - NOT
+  FLASHED" (leave until the bench items pass).
+- **OWNER: cleanup after the bench items above:** delete
+  `origin/heater-firmware-watchdog-proposal` and
+  `origin/chuck-firmware-runaway-guards-proposal` (both ahead 0 of
+  `origin/main`; their commit bodies are the only spec of the checks until
+  this section is acted on). Keep `legacy` and `stable` (documented live
+  refs).
 
 ### Classic and the station on the same boards (2026-10-08)
 
