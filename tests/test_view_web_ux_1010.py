@@ -200,3 +200,29 @@ def test_a_guests_locked_row_offers_no_key_and_update_names_no_variable(guest_st
     assert "Sign in" in out["locked"]["title"], out
     assert "STATION_" not in out["locked"]["update"], out
     assert out["locked"]["update"].startswith("The update check is off for this run"), out
+
+
+# ------------------------------------------------------------- status-dot legend
+@needs_browser
+def test_the_rail_says_what_its_dots_mean(xyz_station, tmp_path):
+    """Enabled, Disabled and Error: the legend's marks are the dots' own
+    classes and its words are the dots' accessible names."""
+    out = _browse(xyz_station, _READY + r"""
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(500);
+      return await page.evaluate(() => {
+        const legend = document.getElementById('nav-legend');
+        const dots = Array.from(document.querySelectorAll('#model-nav .nav-dot'))
+          .map((d) => d.getAttribute('aria-label'));
+        return { shown: legend.getClientRects().length > 0,
+                 words: Array.from(legend.querySelectorAll('.nav-legend-item')).map((i) => i.textContent.trim()),
+                 marks: Array.from(legend.querySelectorAll('.nav-dot')).map((d) => d.className.replace('nav-dot', '').trim()),
+                 dots, top: legend.getBoundingClientRect().top,
+                 navBottom: document.getElementById('model-nav').getBoundingClientRect().bottom };
+      });
+    """, tmp_path)
+    assert out["shown"], out
+    assert out["words"] == ["Enabled", "Disabled", "Error"], out
+    assert out["marks"] == ["is-on", "", "is-error"], out
+    assert out["top"] >= out["navBottom"] - 1, out
+    assert out["dots"] and out["dots"][0] in ("Enabled", "Disabled") or out["dots"][0].startswith("Error"), out

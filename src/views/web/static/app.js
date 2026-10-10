@@ -3682,6 +3682,7 @@ class Dashboard {
       headlineText: document.querySelector('#sheet-headline .headline'),
       headlineNote: document.querySelector('#sheet-headline .headline-note'),
       nav: document.getElementById('model-nav'),
+      navLegend: document.getElementById('nav-legend'),
       simLine: document.getElementById('sim-line'),
       cards: document.getElementById('cards'),
       log: document.getElementById('event-log'),
@@ -5327,6 +5328,8 @@ class Dashboard {
       this.setEnergized(this.energized);
       this.setDots();
     }
+    const showLegend = names.length > 0;
+    if (this.dom.navLegend && this.dom.navLegend.hidden === showLegend) this.dom.navLegend.hidden = !showLegend;
     for (const link of this.dom.nav.querySelectorAll('.model-link')) {
       const current = link.dataset.page === 'overview' ? !this.opened
         : link.dataset.model === this.opened;

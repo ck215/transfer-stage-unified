@@ -82,6 +82,14 @@
       <span class="account-name" translate="no"></span>
     </button>
     <nav id="model-nav" class="model-nav" aria-label="Pages"></nav>
+    <!-- What the dots before the names mean (UX audit 2026-10-07 #5): the
+         same marks as the dots, with their words. Drawn once there are
+         models; each dot keeps its own name for a screen reader. -->
+    <p id="nav-legend" class="nav-legend" hidden>
+      <span class="nav-legend-item"><span class="nav-dot is-on" aria-hidden="true"></span>Enabled</span>
+      <span class="nav-legend-item"><span class="nav-dot" aria-hidden="true"></span>Disabled</span>
+      <span class="nav-legend-item"><span class="nav-dot is-error" aria-hidden="true"></span>Error</span>
+    </p>
     <div class="rail-foot">
       <button id="tutorials-link" type="button" class="ghost rail-control"
               title="Step-by-step tutorials that point at the controls">Tutorials</button>

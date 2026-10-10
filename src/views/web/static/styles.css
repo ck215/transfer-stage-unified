@@ -815,6 +815,20 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .nav-dot.is-on { background: var(--trace); }
 
+/* The legend under the page list: the three marks with their words, in
+   the caption size, quiet (the dots carry the colour). */
+.nav-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  padding: 0 var(--space-4);
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+.nav-legend[hidden] { display: none; }
+.nav-legend-item { display: inline-flex; align-items: center; gap: var(--space-2); }
+
 /* An error is a diamond, not a dot (UX audit 2026-10-07 #5): the three
    fills are all dark (grey/blue 1.13:1, grey/red 1.20:1 between them), so
    colour alone did not tell them apart. Each fill clears 3:1 on the rail
