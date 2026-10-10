@@ -438,8 +438,8 @@ def test_the_shipped_tutorials_are_the_ones_named():
         "Your first trial": "sim", "Register a sample": "any"}
     first = files["first-trial.json"]
     texts = [s["anchor"].get("text") for s in first["steps"]]
-    assert texts[1:] == ["Arm trial", "Capture region…", "Mark force",
-                         "End recording", "Finish trial"]
+    assert texts[1:] == ["New tip…", "Sample", "Arm trial", "Capture region…",
+                         "Mark force", "End recording", "Finish trial"]
     assert first["steps"][0]["anchor"] == {"selector": "#setup-link"}
     register = [s["anchor"]["text"] for s in files["register-sample.json"]["steps"]]
     for wanted in ("New sample…", "Add photo…", "Add sample",
@@ -558,14 +558,58 @@ def test_a_probe_tutorial_picks_a_controller_before_manual_mode(page):
     assert [m for m in modes if m] == ["autonomous", "disabled", "manual", "disabled"]
 
 
-@pytest.mark.xfail(reason="2026-10-07: the first-trial tutorial predates the sample pickers and the tip prompt; "
-                          "Arm now refuses without a sample, so the walk stalls at step 3 until the tutorial is re-anchored", strict=False)
+def test_the_first_trial_tutorial_waits_are_the_phases_a_sim_station_walks(sim_station):
+    """The walk test's contract without a browser: drive the same operator
+    actions through the controller and check that every state the tutorial
+    waits for is reached, in order, and that every step before Arm is a
+    plain Next (nothing there can stall on a phase the operator may skip,
+    such as New tip when a tip already exists)."""
+    view, transfer, samples = sim_station
+    store = samples._store
+    store.add_sample("S1", "hBN")
+    store.add_chip("S1", "C1")
+    store.add_flake("S1", "C1", "F1")
+    steps = _files()["first-trial.json"]["steps"]
+    waits = [(s["wait"] or {}).get("state", {}).get("equals") for s in steps]
+    assert waits == [None, None, None, "region", "live", "marked", "finish", "setup"]
+    assert steps[1]["wait"] is None and steps[2]["wait"] is None
+
+    def run(command, *args, **inputs):
+        result = transfer.run(command, inputs or None, tuple(args))
+        if result.needs_confirm:
+            result = transfer.run(result.command, result.inputs or None,
+                                  tuple(result.args or ()) + (True,))
+        assert result.is_ok, (command, result)
+
+    phase = lambda: transfer.phase
+    assert phase() == "setup"
+    run("new_tip")
+    assert phase() == "new_tip"
+    run("set_new_tip_model", "TAP300")
+    run("add_tip", new_tip_id="T12")
+    assert phase() == "setup"
+    for command, label in (("pick_sample", "S1"), ("pick_chip", "C1"),
+                           ("pick_flake", "F1")):
+        run(command, label)
+    reached = []
+    run("arm_trial"); reached.append(phase())
+    run("set_region", 0, 0, 100, 80); reached.append(phase())
+    run("mark_force"); reached.append(phase())
+    run("end_recording"); reached.append(phase())
+    run("finish_trial"); reached.append(phase())
+    assert reached == ["region", "live", "marked", "finish", "setup"]
+
+
 @needs_browser
 def test_your_first_trial_walks_a_sim_transfer_map_to_the_end(sim_station, tmp_path):
     """Real SIM models, a real server, headless Chrome and a synthetic
     recorder: the tutorial follows the phases the operator (here, the API)
     drives, and runs no command of its own."""
     view, transfer, samples = sim_station
+    store = samples._store
+    store.add_sample("S1", "hBN")
+    store.add_chip("S1", "C1")
+    store.add_flake("S1", "C1", "F1")
     shots = os.environ.get("STATION_TUTORIAL_CAPTURES", "")
     out = _browse(view, r"""
       const SHOTS = %s;
@@ -608,27 +652,37 @@ def test_your_first_trial_walks_a_sim_transfer_map_to_the_end(sim_station, tmp_p
       const look = async () => { const c = await cardNow(); fits.push(c && c.box[0] >= 0 && c.box[1] >= 0
         && c.box[2] <= 1600 && c.box[3] <= 900 && !(c.box[2] > c.stop[0] && c.box[0] < c.stop[2]
         && c.box[3] > c.stop[1] && c.box[1] < c.stop[3]) ? true : JSON.stringify(c)); };
-      seen.s1 = await at('Step 1 of 6'); await sleep(500); await look(); await shot('01_setup_step.png');
+      seen.s1 = await at('Step 1 of 8'); await sleep(500); await look(); await shot('01_setup_step.png');
       await page.click('#setup-link');                     // the operator opens Setup
-      seen.s2 = await at('Step 2 of 6'); await sleep(900); await look(); await shot('02_arm_step.png');
-      await run('Transfer Map', '_commit', { tip_id: 'T12' });
+      seen.s2 = await at('Step 2 of 8'); await sleep(900); await look(); await shot('02_tip_step.png');
+      await run('Transfer Map', 'new_tip');                // New tip..., then Add tip
+      await run('Transfer Map', 'set_new_tip_model', null, ['TAP300']);
+      await run('Transfer Map', 'add_tip', { new_tip_id: 'T12' });
+      await page.click('.tutorial-next');
+      seen.s3 = await at('Step 3 of 8'); await sleep(900); await look(); await shot('03_pickers_step.png');
+      await run('Transfer Map', 'pick_sample', null, ['S1']);
+      await run('Transfer Map', 'pick_chip', null, ['C1']);
+      await run('Transfer Map', 'pick_flake', null, ['F1']);
+      await page.click('.tutorial-next');
+      seen.s4 = await at('Step 4 of 8'); await sleep(900); await look(); await shot('04_arm_step.png');
       await run('Transfer Map', 'arm_trial');
-      seen.s3 = await at('Step 3 of 6'); await sleep(900); await look(); await shot('03_region_step.png');
+      seen.s5 = await at('Step 5 of 8'); await sleep(900); await look(); await shot('05_region_step.png');
       await run('Transfer Map', 'set_region', null, [0, 0, 100, 80]);
-      seen.s4 = await at('Step 4 of 6'); await sleep(1500);
+      seen.s6 = await at('Step 6 of 8'); await sleep(1500);
       await run('Transfer Map', 'mark_force');
-      seen.s5 = await at('Step 5 of 6'); await sleep(900);
+      seen.s7 = await at('Step 7 of 8'); await sleep(900);
       await run('Transfer Map', 'end_recording');
-      seen.s6 = await at('Step 6 of 6'); await sleep(900); await look(); await shot('04_finish_step.png');
+      seen.s8 = await at('Step 8 of 8'); await sleep(900); await look(); await shot('06_finish_step.png');
       await run('Transfer Map', 'finish_trial');
       seen.done = await until(() => document.getElementById('tutorial-card').hidden, 6000);
       const saved = await page.evaluate(() => localStorage.getItem('station.tutorial.first-trial'));
       return { seen, saved, posts, fits };
     """ % json.dumps(shots), tmp_path)
     assert all(out["seen"].values()), out
-    assert out["fits"] == [True] * 4, "a card left the viewport or covered the stop"
+    assert out["fits"] == [True] * 6, "a card left the viewport or covered the stop"
     assert out["saved"] is None, "a finished tutorial forgets its place"
-    ours = {"_commit", "arm_trial", "set_region", "mark_force", "end_recording", "finish_trial"}
+    ours = {"new_tip", "set_new_tip_model", "add_tip", "pick_sample", "pick_chip",
+            "pick_flake", "arm_trial", "set_region", "mark_force", "end_recording", "finish_trial"}
     assert set(out["posts"]) <= ours | {"extend_idle"}, out["posts"]
     assert out["posts"].count("arm_trial") == 2   # the ask and the confirmed press, both the test's
 
