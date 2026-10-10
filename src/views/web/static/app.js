@@ -1010,6 +1010,10 @@ function renderReadonly(panel, element) {
       // the incoming commits, the address - is shown as the model gives it
       // (W2: "d66c462" had read "D66c462").
       if (isStatusLine) shown = sentence(shown);
+      // An environment variable's name is for the one who set it, not the
+      // operator reading Setup's Update row (UX audit 2026-10-08 #14); the
+      // sentence keeps its meaning without it.
+      if (panel.name === SETUP_NAME) shown = shown.replace(/\s*\(STATION_[A-Z0-9_]+\)/g, '');
       // Status by exception, tier 1 only: tiers 2 and 3 are where a normal
       // state is still read on purpose. A model's key reading (`rail: true`)
       // is never hidden: unknown is information, drawn "--" muted at the
@@ -5634,6 +5638,21 @@ class Dashboard {
         (w) => w.element && w.element.model_attr === row.key + '_port');
       const block = choice && choice.node && choice.node.closest('.section-row');
       if (block) block.classList.toggle('portless-row', row.needs_port === false);
+      // A guest cannot use the Transfer Map or the Sample DB: the row says
+      // "Sign in to use", so its On/SIM key is not offered beside it (it
+      // read "On" next to "Sign in to use", UX audit 2026-10-08 #19).
+      const pick = choice && choice.node && choice.node.querySelector('select');
+      if (pick) {
+        const locked = /^sign in to use$/i.test(String(row.status || '').trim());
+        if (locked) {
+          pick.disabled = true;
+          pick.dataset.signInLock = '1';
+          pick.title = 'Sign in to use ' + row.name;
+        } else if (pick.dataset.signInLock) {
+          delete pick.dataset.signInLock;
+          pick.disabled = false;
+        }
+      }
       const widget = byCommand('hard_reset_' + row.key);
       const button = widget && widget.node && widget.node.querySelector('button');
       if (!button) continue;

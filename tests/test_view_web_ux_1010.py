@@ -129,3 +129,74 @@ def test_a_tutorial_step_with_no_anchor_sits_under_the_head_not_over_its_state(p
     """, tmp_path, {"a.json": free})
     assert out["head"], out
     assert out["card"][1] >= out["head"][3], out
+
+
+# ------------------------------------------- Setup's Update row and guest rows
+class GuestSetup(FakeSetup):
+    """A guest's Setup: the Transfer Map row says "sign in to use" and the
+    Update row carries the check-off sentence with its variable name."""
+
+    def __init__(self):
+        super().__init__()
+        self.tm_port = "On"
+        self.tm_status = "sign in to use"
+        self.update_status = ("The update check is off for this run "
+                              "(STATION_NO_UPDATE_CHECK). Press Check again to check now.")
+        self.guest = True
+
+    @property
+    def schema(self):
+        return sch.schema(
+            sch.section("Devices", sch.button("Refresh", "scan")),
+            sch.section("Transfer Map",
+                        sch.dropdown("Run", "tm_port", "set_port", "tm_options"),
+                        sch.readonly("Status", "tm_status"), layout="row"),
+            sch.section("Update", sch.readonly("Updates", "update_status")))
+
+    def tm_options(self):
+        return ["On", "SIM"]
+
+    @property
+    def state(self):
+        snapshot = super().state
+        status = "sign in to use" if self.guest else "on"
+        snapshot.update({"is_launched": False, "rows": [
+            {"key": "tm", "name": "Transfer Map", "status": status, "needs_port": False}]})
+        snapshot["values"]["tm_status"] = status
+        return snapshot
+
+
+@pytest.fixture
+def guest_station():
+    controller = Controller()
+    controller.add("Fake Proc", FakeProc(), {"kind": "Fake Proc"})
+    setup = GuestSetup()
+    view = WebView(controller, setup, port=0, open_browser=False)
+    assert view.open(), "the server did not bind an ephemeral port"
+    try:
+        yield view, setup
+    finally:
+        view.close()
+
+
+@needs_browser
+def test_a_guests_locked_row_offers_no_key_and_update_names_no_variable(guest_station, tmp_path):
+    view, setup = guest_station
+    out = _browse(view, _READY + r"""
+      if (!(await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open')))) {
+        await page.evaluate(() => document.getElementById('setup-link').click());
+      }
+      await until(() => document.querySelectorAll('#drawer-body select').length >= 1);
+      await sleep(900);
+      const read = () => page.evaluate(() => {
+        const s = document.querySelector('#drawer-body select[name="tm_port"]');
+        const u = document.querySelector('#drawer-body [data-attr="update_status"] .value');
+        return { disabled: s.disabled, title: s.title, update: u && u.textContent };
+      });
+      const locked = await read();
+      return { locked };
+    """, tmp_path)
+    assert out["locked"]["disabled"] is True, out
+    assert "Sign in" in out["locked"]["title"], out
+    assert "STATION_" not in out["locked"]["update"], out
+    assert out["locked"]["update"].startswith("The update check is off for this run"), out
