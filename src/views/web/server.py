@@ -1073,8 +1073,16 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length > 0 else b"{}"
         try:
             return True, json.loads(raw.decode("utf-8") or "{}")
-        except Exception:
+        except ValueError:
+            # json.JSONDecodeError and UnicodeDecodeError are both ValueErrors.
             self._send_json(400, {"status": "error", "reason": "invalid JSON"})
+            return False, None
+        except Exception as exc:
+            events.debug("Request Body Unreadable",
+                         f"{self.command} {self.path}: {type(exc).__name__}: {exc}",
+                         source=SOURCE, exception=exc, every=1.0)
+            self._send_json(400, {"status": "error",
+                                  "reason": "request body unreadable"})
             return False, None
 
     @staticmethod
@@ -1501,8 +1509,13 @@ class WebView:
             try:
                 self._check_heartbeat()
             except Exception as exc:
-                events.debug("Watchdog Check Failed", str(exc), source=SOURCE,
-                             exception=exc, every=1.0)
+                # The watchdog is what turns a dead browser into a full stop;
+                # a check that cannot run must be visible (BUGFIX A2). The
+                # event log folds a repeat of the same sentence into a count.
+                events.warn("Watchdog Check Failed",
+                            f"The browser-liveness check raised {type(exc).__name__}: "
+                            f"{exc}. A dead browser would not be stopped.",
+                            source=SOURCE, exception=exc)
 
     def _check_last_tab(self):
         """Quit when no page is left (owner 2026-10-07). Two rules, both

@@ -792,3 +792,30 @@ def test_a_stale_page_is_refused_but_its_stop_always_lands(served):
     assert status == 200 and answer["status"] == "ok"
     waiter.join(timeout=3.0)
     assert not waiter.is_alive()
+
+
+# --------------------------------------------------------------------------
+# BUGFIX_PLAN A2: a watchdog that cannot check says so
+# --------------------------------------------------------------------------
+def test_a_failing_watchdog_check_is_reported(watched, captured, monkeypatch):
+    view, _, _ = watched
+    view.WATCH_SECONDS = 0.01
+
+    def broken():
+        raise RuntimeError("heartbeat table unreadable")
+
+    monkeypatch.setattr(view, "_check_heartbeat", broken)
+    thread = threading.Thread(target=view._watch_loop, daemon=True)
+    thread.start()
+    deadline = time.time() + 5
+    try:
+        while time.time() < deadline and not [
+                e for e in captured if e.title == "Watchdog Check Failed"]:
+            time.sleep(0.01)
+    finally:
+        view._halt.set()
+        thread.join(2)
+    reported = [e for e in captured if e.title == "Watchdog Check Failed"]
+    assert reported and reported[0].severity == "warning"
+    assert "RuntimeError" in reported[0].message
+    assert len(reported) == 1, "the same fault must fold into one line, not many"
