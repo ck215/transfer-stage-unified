@@ -12,6 +12,7 @@ disagreed on the name, and nothing failed until the bench.
 node is not a dependency of this project.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1737,3 +1738,15 @@ def test_the_page_names_its_icon_so_no_favicon_request_404s():
     """Every load asked for /favicon.ico and logged a 404 in the console
     (2026-10-09). An empty data icon asks nothing and names no colour."""
     assert '<link rel="icon" href="data:,">' in INDEX
+
+
+def test_node_is_present_where_the_run_requires_it():
+    """BUGFIX A9: every JS-client test above skips when node is absent, and a
+    run with nothing to say is green. `STATION_REQUIRE_NODE=1` (set it in CI)
+    turns that silence into this failure; `pytest -rs` lists the skips on any
+    other box."""
+    if os.environ.get("STATION_REQUIRE_NODE") != "1":
+        pytest.skip("STATION_REQUIRE_NODE is not set")
+    assert NODE is not None, (
+        "STATION_REQUIRE_NODE=1 but node is not on PATH: the Web client's "
+        "JS tests did not run")
