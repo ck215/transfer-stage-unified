@@ -9,8 +9,10 @@ Before the ruling every probe entry carried `disabled_when=("autonomous",
 gated setter refused the write. The ruling unlocks this one field in this one
 mode. Everything else stays as it was:
 
-- Autonomous Speed, the step sizes and the target distances stay locked in
-  both motion modes; Manual Speed stays locked in AUTONOMOUS.
+- Autonomous Speed and the target distances stay locked in both motion
+  modes; Manual Speed stays locked in AUTONOMOUS. (The step sizes joined
+  Manual Speed in being live in manual, BUGFIX D14, 2026-10-11; see the
+  tests at the foot of this file.)
 - A new speed is validated before it can reach a frame (the Param's minimum,
   finite, a number). A refused value leaves the previous speed in effect.
 - The stop latch outranks the speed: with it set, no jog frame is written.
@@ -96,8 +98,7 @@ def test_an_invalid_manual_speed_is_refused_and_the_old_one_stays(manual, bad):
     assert probe.man_full_speed == 250
 
 
-@pytest.mark.parametrize("attr", ["full_speed", "x_step", "y_step", "z_step",
-                                  "x_dist", "y_dist", "z_dist"])
+@pytest.mark.parametrize("attr", ["full_speed", "x_dist", "y_dist", "z_dist"])
 def test_every_other_motion_field_stays_locked_in_manual(manual, attr):
     probe, _port = manual
     before = getattr(probe, attr)
@@ -294,4 +295,54 @@ def test_the_tk_entry_is_live_in_manual_and_commits(monkeypatch):
         assert _speed_of_next_frame(probe, port) == 288.0
     finally:
         view.close()
+        probe._stop_threads()
+
+
+# -- BUGFIX D14: the step sizes are live in manual too ------------------------
+
+@pytest.mark.parametrize("axis", ["x", "y", "z"])
+def test_a_step_size_is_accepted_in_manual_and_the_next_frame_carries_it(manual, axis):
+    probe, port = manual
+    field = f"{axis}_step_um" if isinstance(probe, StepperProbe) else f"{axis}_step"
+    typed = "1.875" if isinstance(probe, StepperProbe) else "3"   # 3 counts
+    assert probe.run("_commit", inputs={field: typed}).is_ok
+    assert getattr(probe, f"{axis}_step") == 3
+    port.writes.clear()
+    assert probe._gamepad_tick() is True
+    frame = _jogs(probe, port)[0]
+    assert frame[5 + "xyz".index(axis)] == 3, "the jog frame did not carry it"
+    assert probe.run("_commit", inputs={field: "0"}).is_refused   # strict parse
+    assert getattr(probe, f"{axis}_step") == 3
+
+
+@pytest.mark.parametrize("cls", CLASSES, ids=lambda c: c.__name__)
+def test_a_step_size_stays_locked_in_autonomous(cls):
+    probe, _port, _pad = make_probe(cls, levels=LEVELS)
+    try:
+        probe.set_mode("autonomous")
+        field = "x_step_um" if isinstance(probe, StepperProbe) else "x_step"
+        before = probe.x_step
+        assert probe.run("_commit", inputs={field: "7"}).is_refused
+        with pytest.raises(Refused):
+            setattr(probe, field, 7)
+        assert probe.x_step == before
+    finally:
+        probe._stop_threads()
+
+
+def test_the_stepper_re_expresses_its_target_when_the_step_changes_in_manual():
+    """The distance entry is locked in manual, but the target length must
+    still not grow when the step size does: it is re-stored with the step."""
+    probe, _port, _pad = make_probe(StepperProbe, levels=LEVELS)
+    try:
+        probe.x_step_um = 2.5            # step 4
+        probe.x_dist_um = 100            # 40 units of 2.5 um
+        before = probe.x_dist_um
+        probe.set_mode("manual")
+        with pytest.raises(Refused):
+            probe.x_dist_um = 50         # still locked
+        probe.x_step_um = 5              # step 8: 20 units, same 100 um
+        assert probe.x_step_um == 5
+        assert probe.x_dist_um == before
+    finally:
         probe._stop_threads()

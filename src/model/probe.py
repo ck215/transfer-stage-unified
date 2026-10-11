@@ -103,6 +103,13 @@ _MOTION_GATE = ("autonomous", "manual")
 #: speed stays in effect.
 _MANUAL_SPEED_GATE = ("autonomous",)
 
+#: The step sizes' gate (BUGFIX D14): a step size is one D-pad press, so the
+#: operator sets it while jogging, exactly as the speed; leaving manual to do
+#: it would de-energize the coils. It is the same tuple as Manual Speed's,
+#: named for what it gates. Distances and Autonomous Speed keep `_MOTION_GATE`.
+_STEP_GATE = _MANUAL_SPEED_GATE
+_STEP_ATTRS = ("x_step", "y_step", "z_step")
+
 #: The stepper board's ceiling for both speeds, steps/s (owner ruling
 #: 2026-09-26). Each probe class declares its own `MAX_SPEED` (owner,
 #: 2026-10-07: the chuck positioner's bench value is 600); the operator reads
@@ -1999,7 +2006,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
             sch.section(
                 "Configuration",
                 *[sch.entry(P[name].label + ":", name, P[name],
-                            disabled_when=_MOTION_GATE)
+                            disabled_when=(_STEP_GATE if name in _STEP_ATTRS
+                                           else _MOTION_GATE))
                   for name in self.CONFIG_PARAMS],
                 # The disclosure names the device (Tier K): once the press
                 # sits above its well instead of beside the model's name,
@@ -2247,9 +2255,17 @@ def _step_um_property(axis):
         target_um = _stored(self, dist) * old * STEPPER_UM_PER_COUNT
         units = um_to_counts(target_um, counts * STEPPER_UM_PER_COUNT)
         _refuse_past_the_move_limit(self, axis, units, counts)
+        ok, units = self.PARAMS[dist].parse(units)
+        if not ok:
+            self._refuse(units)
+        # The step's own gate refuses first (autonomous), before anything
+        # changed. The re-expressed distance is a consequence of this edit,
+        # not an operator edit of the target, so it is stored directly: its
+        # own entry is locked in manual, where the step size is now live
+        # (BUGFIX D14).
         setattr(self, step, counts)
         if units != _stored(self, dist):
-            setattr(self, dist, units)
+            self._param_store[dist] = units
 
     return property(getter, setter)
 
@@ -2390,7 +2406,7 @@ class StepperProbe(Probe):
                 # One step size per axis: a D-pad press moves it and the
                 # Step command carries it.
                 *[e for a in "xyz" for e in physical(
-                    f"{a}_step_um", f"{a}_step", _MOTION_GATE)],
+                    f"{a}_step_um", f"{a}_step", _STEP_GATE)],
                 tier=2, disclosure=f"Configure {self.NAME}",
             ),
             sch.section(

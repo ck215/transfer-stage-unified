@@ -1218,12 +1218,15 @@ def test_motion_entries_are_gated_while_a_run_is_engaged(probe):
     assert entries
     # Updated (owner ruling 2026-09-26): Manual Speed is live while jogging,
     # so its entry is locked in autonomous only; every other entry keeps both
-    # motion modes (tests/test_manual_speed_live.py).
+    # motion modes (tests/test_manual_speed_live.py). The step sizes joined it
+    # (BUGFIX D14): one D-pad press is set while jogging.
     for element in entries:
         # The Stepper speaks um and um/s (owner 2026-10-09): its Manual Speed
         # entry is man_full_speed_um_s; the DC and Chuck dial is the percent.
         expected = (["autonomous"] if element["model_attr"]
-                    in ("man_full_speed_pct", "man_full_speed_um_s")
+                    in ("man_full_speed_pct", "man_full_speed_um_s",
+                        "x_step", "y_step", "z_step",
+                        "x_step_um", "y_step_um", "z_step_um")
                     else ["autonomous", "manual"])
         assert element["disabled_when"] == expected
         assert element["writable"] is True
