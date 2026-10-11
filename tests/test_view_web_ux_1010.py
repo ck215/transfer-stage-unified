@@ -161,7 +161,8 @@ class GuestSetup(FakeSetup):
         snapshot = super().state
         status = "sign in to use" if self.guest else "on"
         snapshot.update({"is_launched": False, "rows": [
-            {"key": "tm", "name": "Transfer Map", "status": status, "needs_port": False}]})
+            {"key": "tm", "name": "Transfer Map", "status": status,
+             "needs_port": False, "enabled": not self.guest, "locked": self.guest}]})
         snapshot["values"]["tm_status"] = status
         return snapshot
 

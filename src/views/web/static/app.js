@@ -5731,7 +5731,9 @@ class Dashboard {
       // read "On" next to "Sign in to use", UX audit 2026-10-08 #19).
       const pick = choice && choice.node && choice.node.querySelector('select');
       if (pick) {
-        const locked = /^sign in to use$/i.test(String(row.status || '').trim());
+        // The controller says so (`locked`, with `enabled` false); the words
+        // of `status` are not parsed.
+        const locked = row.locked === true;
         if (locked) {
           pick.disabled = true;
           pick.dataset.signInLock = '1';
