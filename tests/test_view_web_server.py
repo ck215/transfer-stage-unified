@@ -4030,10 +4030,31 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
       await until(() => document.querySelector('.card.is-opened .disclosure[data-tier="3"]'), 8000);
       await page.click('.card.is-opened .disclosure[data-tier="2"]');
       await page.click('.card.is-opened .disclosure[data-tier="3"]');
-      await sleep(300);
+      // Layout quiet, not a fixed sleep: the page's geometry is the same on
+      // five reads in a row (100 ms apart) and the fonts are in. How long
+      // that takes is the machine's business (C-8: the old 300 ms sleeps).
+      const geometry = () => page.evaluate(async () => {
+        await document.fonts.ready;
+        const c = document.querySelector('.card.is-opened');
+        const at = (n) => { const b = n.getBoundingClientRect(); return [b.top, b.height].join(','); };
+        return [at(c.querySelector('.card-head')), at(c.querySelector('.card-body')),
+                at(c.querySelector('.tier-well')), document.documentElement.scrollHeight,
+                c.classList.contains('is-pinned')].join('|');
+      });
+      const quiet = async () => {
+        let last = '', same = 0;
+        for (let i = 0; i < 100 && same < 5; i++) {
+          const now = await geometry();
+          same = now === last ? same + 1 : 0;
+          last = now;
+          await sleep(100);
+        }
+        return same >= 5;
+      };
+      if (!(await quiet())) throw new Error('the device page never settled');
       // From the top of the page, whatever focus scrolled into view.
       await page.evaluate(() => window.scrollTo(0, 0));
-      await sleep(300);
+      await until(() => window.scrollY === 0);
       const top = () => page.evaluate(() => {
         const c = document.querySelector('.card.is-opened');
         return { head: c.querySelector('.card-head').getBoundingClientRect().top,
@@ -4045,7 +4066,8 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
       });
       const before = await top();
       await page.evaluate(() => window.scrollBy(0, 160));
-      await sleep(300);
+      await until(() => window.scrollY > 60);
+      if (!(await quiet())) throw new Error('the device page never settled after the scroll');
       return { before, after: await top(),
                pinned: await page.evaluate(() => document.querySelector('.card.is-opened').classList.contains('is-pinned')) };
     """, tmp_path)

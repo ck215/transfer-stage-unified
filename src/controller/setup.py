@@ -854,6 +854,10 @@ class Setup(PortProbe, Panel):
                 "key": key,
                 "name": row["name"],
                 "enabled": getattr(self, f"{key}_enabled"),
+                # A signed-in-only row under a Guest: not usable, so the view
+                # disables its Run key from this flag, not from the words of
+                # `status` (rb-tails, UX audit second core request).
+                "locked": self._row_locked(row),
                 "port": choice,
                 "gamepad": getattr(self, f"{key}_gamepad"),
                 "status": getattr(self, f"{key}_status"),
@@ -3471,10 +3475,20 @@ class Setup(PortProbe, Panel):
             setattr(self, f"{key}_status", self._row_status(key, row, found))
         self._refresh_summary()
 
+    def _row_locked(self, row):
+        """The row belongs to a signed-in-only model while a Guest works: the
+        state publishes it as `locked` (with `enabled` False), so a view never
+        reads the Status text to find out."""
+        return bool(self.guest_locked and is_signed_in_only(row["name"]))
+
     def _will_launch(self, key, row, found):
         """A row launches when its board answered as this model on its port,
         when it is set to SIM, or when it needs no port. Nothing else. A
-        tagged row (one board per axis) launches only with every tag found."""
+        tagged row (one board per axis) launches only with every tag found.
+        A row a Guest may not use (`guest_locked`) never launches, whatever
+        its Run choice says."""
+        if self._row_locked(row):
+            return False
         choice = getattr(self, f"{key}_port")
         if choice == SIM or not row["needs_port"]:
             return True

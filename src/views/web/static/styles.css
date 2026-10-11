@@ -598,6 +598,12 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  /* Bounded, never folded: however many lines arrive, the block stops
+     growing and scrolls, so the rail's foot stays in view (U7-12). It takes
+     focus (index.html) so the keyboard can scroll it. */
+  max-height: min(11rem, 28vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .rail-alert[hidden] { display: none; }
@@ -3317,6 +3323,7 @@ label.row-title[for] { cursor: pointer; }
   .plate { gap: var(--space-2); padding: var(--space-3) var(--space-4); }
   .rail-control { min-height: var(--hit-panel); }
   .rail-foot .rail-control { min-height: var(--hit); }
+  .rail-alert { max-height: 6.5rem; }
 }
 
 /* Under 760 px the entries stack in one column. */

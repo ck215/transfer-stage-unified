@@ -89,7 +89,7 @@ file and read pytest's exit code unpiped.
 
 Agent profiles in `.claude/agents/`: `worktree-fixer` (fixes plan items in a
 worktree), `main-feature-auditor` (read-only, `main` vs the rebuild, one
-subsystem each), `docs-pruner`, `ui-refiner` (the Web view, Impeccable
+subsystem each), `ui-refiner` (the Web view, Impeccable
 in Operate mode, before/after captures), `ui-auditor` (read-only, one design
 skill per agent, fixed finding format), `firmware-safety` (firmware that can move
 an axis or energize a coil: host simulation first via `dev/firmware_sim/`, every
@@ -112,6 +112,14 @@ lookups only; its design-system generator is off-target for this product).
   hand-drives the feature, and merges. Core files change only by the lead.
 - **No platform-specific UI** (owner ruling 2026-09-25): shortcuts and copy
   are identical on macOS, Windows and Linux. Ctrl+. is the one stop chord.
+- **Docs are true of the tree or they are not kept** (the rule the retired
+  `docs-pruner` profile carried): a page whose every sentence holds stays;
+  a mostly true page is corrected; a page describing a state that no longer
+  exists, with nothing open depending on it, is archived with `git mv`, never
+  deleted by an agent (the lead deletes); a stale input that open work still
+  reads gets a one-line banner and nothing else. The code beats a doc,
+  `STATUS.md` beats `BRIEF.md`; where `STATUS.md` and the code disagree, list
+  the conflict for the lead and leave the sentence alone.
 - Never push, never amend, unless the lead says so.
 - Scratch files, patches and logs never land in the repo root.
 

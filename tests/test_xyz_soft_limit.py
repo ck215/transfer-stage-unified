@@ -8,10 +8,11 @@ readouts, sets it while the stage is disabled, refuses a Step that would
 cross a referenced limit before anything is sent, and treats the board's
 stop on the limit as a LIMIT: a Step in flight ends on every axis.
 
-The station's protocol simulators predate the feature (their port is a
-follow-up outside this round's write set), so each test grafts the
-firmware's answer onto them: `SoftBoard` for an axis board, `SoftMega` for
-the Mega.
+The station's protocol simulators model the feature as the firmware does
+(`AxisSimulator`, `MegaStandardSim` with the `soft` cap; their own
+behaviour is pinned at the end of this file), so these tests drive the
+stage against the simulators as they are. `SoftBoard` and `SoftMega` only
+set the board's EEPROM word and give it LS1's reference the short way.
 """
 import pytest
 
@@ -28,52 +29,55 @@ AXES = ("X", "Y", "Z")
 # == the XYZ Stage (Teensy per axis) =========================================================
 
 class SoftBoard:
-    """`SOFTLIMIT [mm]` as xyz_stage_axis answers it (PROTOCOL.md, "Soft
-    travel limit"), grafted on one axis's protocol simulator. LS1 is at the
-    - end, so the limit lies `mm` above the reference."""
+    """A handle on one axis simulator's soft limit. LS1 is at the - end, so
+    the limit lies `mm` above the reference."""
 
     def __init__(self, board, mm=0.0):
-        self.board, self.mm = board, mm
-        self.ref, self.ls1_mm, self.damaged, self.refuse = False, None, False, None
-        board._cmd_softlimit = self.handle
+        self.board = board
+        self.mm = mm
+
+    @property
+    def mm(self):
+        return self.board.soft_mm
+
+    @mm.setter
+    def mm(self, value):
+        self.board._soft_um = int(round(value * 1000))
 
     def reference(self, ls1_mm):
-        self.ref, self.ls1_mm = True, ls1_mm
+        """LS1 has given the reference at counter `ls1_mm`."""
+        self.board.soft_reference(ls1_mm)
 
-    def body(self):
-        words = [f"mm={self.mm:.3f}", f"ref={int(self.ref)}"]
-        if self.ref:
-            words.append(f"ls1_mm={self.ls1_mm:.5f}")
-        if self.ref and self.mm:
-            words.append(f"limit_mm={self.ls1_mm + self.mm:.5f}")
-        if self.damaged:
-            words.append("damaged=1")
-        return " ".join(words)
+    @property
+    def damaged(self):
+        return self.board.soft_damaged
 
-    def handle(self, command, args):
-        if args:
-            if self.refuse:
-                return self.board._err(command, self.refuse)
-            try:
-                value = float(args[0])
-            except ValueError:
-                return self.board._err(command, "bad-arg")
-            if self.board.enabled:
-                return self.board._err(command, "busy")
-            self.mm, self.damaged = value, False
-            return self.board._ok(command, self.body() + " stored=1")
-        return self.board._ok(command, self.body())
+    @damaged.setter
+    def damaged(self, value):
+        if value:
+            self.board.damage_soft()
+
+    @property
+    def refuse(self):
+        return self.board.refuse_softlimit
+
+    @refuse.setter
+    def refuse(self, reason):
+        self.board.refuse_softlimit = reason
 
 
 @pytest.fixture
 def teensy():
-    """XyzStage on SIM links, fast ramps; `soft` grafts SoftBoard on every
-    axis before it opens. Always closed."""
+    """XyzStage on SIM links, fast ramps; without `soft` the boards answer
+    SOFTLIMIT as an old firmware does (unknown-command). Always closed."""
     built = []
 
     def _make(soft=True, opened=True):
         stage = fast(XyzStage(sim=True, gamepad=None, port_x="SIM", port_y="SIM",
                               port_z="SIM"))
+        if not soft:
+            for a in AXES:                       # an old firmware: no such command
+                sim(stage, a)._cmd_softlimit = None
         boards = {a: SoftBoard(sim(stage, a)) for a in AXES} if soft else None
         built.append(stage)
         if opened:
@@ -225,53 +229,40 @@ def test_the_page_shows_each_soft_limit_beside_the_usteps_and_limit_readouts(tee
 # == the XYZ Stage (Mega) =====================================================================
 
 class SoftMega:
-    """`#SOFTLIMIT A [counts]` and its `#INFO` keys as xyz_stage_mega answers
-    them (MEGA_STANDARD section 3-4), grafted on the standard board's
-    simulator built with the `soft` cap."""
+    """A handle on the standard board simulator's per-axis soft limit
+    (`#SOFTLIMIT`, `#INFO` x_soft words): the EEPROM word in counts, and
+    LS1's reference the short way."""
 
     def __init__(self, board):
         self.board = board
-        self.counts = {a: 0 for a in AXES}
-        self.lim = {a: None for a in AXES}               # set: referenced, the limit in counts
-        board._x_softlimit = self.handle
-        real_ok = board._ok
+        self.counts = _Counts(board)
 
-        def ok(command, detail=""):
-            if command == "INFO":
-                detail += "".join(self.info_words(a) for a in AXES)
-            real_ok(command, detail)
+    def reference(self, axis, limit):
+        """LS1 gave axis `axis` the reference that puts the limit at `limit`
+        counts (LS1 at the - end: the limit lies `counts` above it)."""
+        self.board.soft_reference(axis, limit - self.board.axes[axis].soft_counts)
 
-        board._ok = ok
 
-    def info_words(self, axis):
-        low, lim = axis.lower(), self.lim[axis]
-        words = f" {low}_soft={self.counts[axis]} {low}_soft_ref={int(lim is not None)}"
-        if lim is not None and self.counts[axis]:
-            words += f" {low}_soft_lim={lim}"
-        return words
+class _Counts:
+    def __init__(self, board):
+        self.board = board
 
-    def handle(self, command, args):
-        axis = args[0].upper() if args else ""
-        if axis not in AXES or len(args) > 2:
-            return self.board._err(command, "bad-arg")
-        if len(args) == 2:
-            if self.board.enabled:
-                return self.board._err(command, "busy")
-            self.counts[axis] = int(args[1])
-        extra = " stored=1" if len(args) == 2 else ""
-        self.board._ok(command, f"axis={axis} counts={self.counts[axis]} "
-                                f"ref={int(self.lim[axis] is not None)}{extra}")
+    def __getitem__(self, axis):
+        return self.board.axes[axis].soft_counts
+
+    def __setitem__(self, axis, value):
+        self.board.axes[axis].soft_counts = int(value)
 
 
 @pytest.fixture
 def mega():
-    """XyzStageMega on a standard board's simulator; `soft` adds the cap and
-    grafts SoftMega. Always closed."""
+    """XyzStageMega on a standard board's simulator; `soft` adds the cap.
+    Always closed."""
     built = []
 
     def _make(soft=True):
         board = MegaStandardSim(caps=CAPS + (("soft",) if soft else ()))
-        grafted = SoftMega(board) if soft else None
+        grafted = SoftMega(board)
         stage = XyzStageMega(port=MegaStandardPort("SIM", simulator=board), gamepad=FakePad())
         built.append(stage)
         stage.open()
@@ -328,7 +319,8 @@ def test_the_mega_shows_its_soft_limits_and_sets_them_only_while_disabled(mega):
 def test_a_mega_step_that_would_cross_a_referenced_limit_is_refused_before_its_frame(mega):
     stage, board, soft = mega()
     board.axes["X"].ls_end[0] = -1                     # LS1 guards the - end: the limit lies +
-    soft.counts["X"], soft.lim["X"] = 44800, 1600      # 1 mm above where the axis stands (0)
+    soft.counts["X"] = 44800
+    soft.reference("X", 1600)                          # the limit 1 mm above where the axis stands (0)
     stage._ext_request("INFO")
     assert wait_for(lambda: (stage._soft("X") or {}).get("lim") == 1600, 2.0)
     frames = len(board.frames)
@@ -356,3 +348,352 @@ def test_the_megas_stop_on_a_soft_limit_ends_the_step(mega):
         assert wait_for(lambda: "Move Refused" in seen.text("warning"), 2.0)
     assert "has not touched LS1" in seen.text("warning")
     assert stage.mode in (ProbeMode.AUTO, ProbeMode.DISABLED)
+
+
+# == the simulators model the firmware (X-14, read from the sketches) ==========================
+# The stage tests above run against these simulators, so they are held to the
+# firmware's rules here: xyz_stage_axis PROTOCOL.md "Soft travel limit" for the
+# axis board, MEGA_STANDARD.md section 4 for the Mega. A virtual clock, no stage.
+
+import re
+import struct
+
+from devices.mega_standard_sim import JOG_FORMAT
+from devices.teensy_axis import AxisSimulator
+
+
+class Clock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def run(board, clock, seconds, beat=None, step=0.05):
+    """Advance `seconds`, sending `beat` every `step` (a jog's dead-man);
+    every line the board printed meanwhile."""
+    lines, end = [], clock.t + seconds
+    ask = board.ask
+    while clock.t < end:
+        clock.t = min(end, clock.t + step)
+        lines += ask(beat) if beat else board.drain_lines()
+    return lines + board.drain_lines()
+
+
+def num(line, key):
+    return float(re.search(rf"\b{key}=(-?[0-9.]+)", line).group(1))
+
+
+# -- the axis board -------------------------------------------------------------------------
+
+def axis_board(clock, mm=3.0):
+    """An axis whose LS1 is 2 mm below the boot position, with `mm` of travel
+    stored; open, disabled."""
+    board = AxisSimulator("X", clock=clock, limits_mm=(-2.0, 25.0))
+    board.open()
+    if mm:
+        assert board.ask(f"SOFTLIMIT {mm}")[0].endswith("stored=1")
+    return board
+
+
+def referenced_axis(clock, mm=3.0):
+    """The same, enabled, after a real approach: jogged into LS1, which gives
+    the reference, then jogged off it."""
+    board = axis_board(clock, mm)
+    board.ask("ENABLE")
+    lines = run(board, clock, 3.0, beat="JOGV -2.5")
+    assert any(line.startswith("EVT SOFTLIMIT referenced") for line in lines), lines
+    run(board, clock, 0.6, beat="JOGV 2.5")
+    assert board.ask("JOGV 0") and run(board, clock, 1.0) is not None
+    return board
+
+
+def test_axis_softlimit_is_set_queried_bounded_and_kept_across_a_reboot():
+    clock = Clock()
+    board = AxisSimulator("X", clock=clock)
+    board.open()
+    assert board.ask("SOFTLIMIT") == ["OK SOFTLIMIT mm=0.000 ref=0"]
+    assert board.ask("SOFTLIMIT 28") == ["OK SOFTLIMIT mm=28.000 ref=0 stored=1"]
+    for bad in ("-1", "100.5", "far"):
+        assert board.ask(f"SOFTLIMIT {bad}") == ["ERR SOFTLIMIT bad-arg"], bad
+    board.refuse_softlimit = "eeprom-verify-failed"
+    assert board.ask("SOFTLIMIT 5") == ["ERR SOFTLIMIT eeprom-verify-failed"]
+    board.refuse_softlimit = None
+    board.reboot()
+    board.drain_lines()
+    assert board.ask("SOFTLIMIT") == ["OK SOFTLIMIT mm=28.000 ref=0"]    # EEPROM
+    board.ask("ENABLE")
+    assert board.ask("SOFTLIMIT 5") == ["ERR SOFTLIMIT busy"]
+    board.ask("DISABLE")
+    assert board.ask("SOFTLIMIT 0") == ["OK SOFTLIMIT mm=0.000 ref=0 stored=1"]
+
+
+def test_axis_with_a_limit_is_jog_only_until_ls1_gives_the_reference():
+    clock = Clock()
+    board = axis_board(clock)
+    board.ask("ENABLE")
+    assert board.ask("MOVE 1") == ["ERR MOVE soft-limit-unreferenced:touch-ls1"]
+    assert board.ask("MOVETO 1") == ["ERR MOVETO soft-limit-unreferenced:touch-ls1"]
+    assert board.ask("HOME") == ["ERR HOME soft-limit-unreferenced:touch-ls1"]
+    assert board.ask("MOVE -1") == ["ERR MOVE soft-limit-unreferenced:touch-ls1"]   # LS1's end is not known yet
+    assert board.ask("JOGV 0.5")[0].startswith("OK JOGV")                          # a jog is allowed
+    lines = run(board, clock, 0.1, beat="JOGV -2.5")
+    assert not [line for line in lines if line.startswith("ERR")]
+    lines = run(board, clock, 3.0, beat="JOGV -2.5")
+    referenced = next(line for line in lines if line.startswith("EVT SOFTLIMIT referenced"))
+    assert any(line.startswith("EVT LIMIT ls1") for line in lines)
+    ref, limit = num(referenced, "ls1_mm"), num(referenced, "limit_mm")
+    assert -2.01 < ref < -1.99 and abs(limit - ref - 3.0) < 1e-6 and num(referenced, "travel_mm") == 3.0
+    reply = board.ask("SOFTLIMIT")[0]
+    assert reply.startswith("OK SOFTLIMIT mm=3.000 ref=1 ls1_mm=") and num(reply, "limit_mm") == limit
+
+
+def test_axis_without_a_limit_takes_the_reference_silently_and_needs_none():
+    clock = Clock()
+    board = axis_board(clock, mm=0)
+    board.ask("ENABLE")
+    assert board.ask("MOVE 1")[0].startswith("OK MOVE")           # no limit, nothing is refused
+    run(board, clock, 2.0)
+    lines = run(board, clock, 3.0, beat="JOGV -2.5")
+    assert not [line for line in lines if "SOFTLIMIT" in line]    # no limit set: nothing to report
+    assert board.ask("SOFTLIMIT") == ["OK SOFTLIMIT mm=0.000 ref=1 ls1_mm=%s" % (
+        re.search(r"ls1_mm=(\S+)", board.ask("SOFTLIMIT")[0]).group(1))]
+
+
+def test_axis_move_past_the_limit_is_shortened_onto_it_and_at_it_nothing_goes_out():
+    clock = Clock()
+    board = referenced_axis(clock)
+    limit = num(board.ask("SOFTLIMIT")[0], "limit_mm")
+    here = board.position_mm
+    asked = board.ask("MOVE 10 2.5")
+    reply = asked[0]
+    assert "clamped=1" in reply and abs(num(reply, "target_mm") - limit) < 1e-3, reply
+    lines = asked[1:] + run(board, clock, 6.0)           # the event follows the OK at once
+    event = next(line for line in lines if line.startswith("EVT SOFTLIMIT clamped"))
+    assert "cmd=MOVE" in event and abs(num(event, "target_mm") - (here + 10)) < 1e-3
+    assert abs(num(event, "limit_mm") - limit) < 1e-3
+    assert abs(board.position_mm - limit) < 1e-3 and not board.moving
+    assert not [line for line in lines if line.startswith("EVT SOFTLIMIT stopped")]   # an arrival
+    assert board.ask("MOVE 0.5") == ["ERR MOVE soft-limit"]
+    assert board.ask("JOGV 1") == ["ERR JOGV soft-limit"]
+    assert board.ask("MOVE -0.5")[0].startswith("OK MOVE")                # toward LS1: nothing changes
+
+
+def test_axis_jog_out_decelerates_onto_the_limit_and_says_reached():
+    clock = Clock()
+    board = referenced_axis(clock)
+    limit = num(board.ask("SOFTLIMIT")[0], "limit_mm")
+    lines = run(board, clock, 8.0, beat="JOGV 2.5")
+    assert [line for line in lines if line.startswith("EVT SOFTLIMIT reached")], lines
+    assert abs(board.position_mm - limit) < 1e-3 and not board.moving
+    assert not [line for line in lines if line.startswith(("EVT LIMIT", "EVT SOFTLIMIT stopped"))]
+
+
+def test_axis_step_isr_halts_a_motion_about_to_pass_the_limit():
+    clock = Clock()
+    board = referenced_axis(clock)
+    here = board.position_mm
+    room = num(board.ask("SOFTLIMIT")[0], "limit_mm") - here
+    assert room > 1.0
+    assert "clamped=0" in board.ask(f"MOVE {room - 0.2:.4f} 1")[0]
+    run(board, clock, 0.4)
+    # The reference moves up, so the limit now lies before where it is heading.
+    board.soft_reference(board.position_mm + 0.3 - 3.0)
+    lines = run(board, clock, 4.0)
+    stopped = next(line for line in lines if line.startswith("EVT SOFTLIMIT stopped"))
+    limit = num(board.ask("SOFTLIMIT")[0], "limit_mm")
+    assert abs(num(stopped, "limit_mm") - limit) < 1e-3 and abs(board.position_mm - limit) < 1e-3
+    assert not board.moving
+
+
+def test_axis_reference_survives_a_stationary_stop_and_zero_but_not_a_stop_while_turning():
+    clock = Clock()
+    board = referenced_axis(clock)
+    ref = num(board.ask("SOFTLIMIT")[0], "ls1_mm")
+    here = board.position_mm
+    assert board.ask("ZERO")[0].startswith("OK ZERO")
+    reply = board.ask("SOFTLIMIT")[0]
+    assert "ref=1" in reply and abs(num(reply, "ls1_mm") - (ref - here)) < 1e-3   # the origin moved, the limit did not
+    board.ask("ESTOP")                                   # standing still: the count is intact
+    assert "ref=1" in board.ask("SOFTLIMIT")[0]
+    board.ask("ENABLE")
+    board.ask("JOGV 0.5")
+    run(board, clock, 0.2, beat="JOGV 0.5")
+    lines = board.ask("ESTOP") + run(board, clock, 0.1)
+    assert "EVT SOFTLIMIT lost reason=estop" in lines, lines
+    assert "ref=0" in board.ask("SOFTLIMIT")[0]
+    board.ask("ENABLE")
+    assert board.ask("MOVE 0.5") == ["ERR MOVE soft-limit-unreferenced:touch-ls1"]
+    assert board.ask("MOVE -0.5")[0].startswith("OK MOVE")      # toward LS1, whose end is still known
+
+
+def test_axis_new_limits_meaning_loses_the_reference_and_a_reboot_does_too():
+    clock = Clock()
+    board = referenced_axis(clock)
+    board.ask("DISABLE")
+    assert "EVT SOFTLIMIT lost reason=limits-changed" in board.ask("LIMITS NO") + board.drain_lines()
+    board = referenced_axis(Clock())
+    board.reboot()
+    board.drain_lines()
+    assert "ref=0" in board.ask("SOFTLIMIT")[0]
+
+
+def test_axis_damaged_block_is_jog_only_until_softlimit_writes_it_again():
+    clock = Clock()
+    board = axis_board(clock)
+    board.damage_soft()
+    assert board.ask("SOFTLIMIT") == ["OK SOFTLIMIT mm=0.000 ref=0 damaged=1"]
+    board.ask("ENABLE")
+    assert board.ask("MOVE 1") == ["ERR MOVE soft-limit-eeprom-damaged:set-SOFTLIMIT"]
+    assert board.ask("HOME") == ["ERR HOME soft-limit-eeprom-damaged:set-SOFTLIMIT"]
+    assert board.ask("JOGV 0.5")[0].startswith("OK JOGV")
+    board.ask("JOGV 0")
+    run(board, clock, 1.0)
+    board.reboot()
+    board.drain_lines()
+    assert board.ask("SOFTLIMIT") == ["OK SOFTLIMIT mm=0.000 ref=0 damaged=1"]    # it is EEPROM
+    assert board.ask("SOFTLIMIT 3") == ["OK SOFTLIMIT mm=3.000 ref=0 stored=1"]
+    assert board.ask("SOFTLIMIT") == ["OK SOFTLIMIT mm=3.000 ref=0"]
+
+
+# -- the standard Mega ----------------------------------------------------------------------
+
+def _frame(y_counts, speed=3200.0):
+    return f"1,1,1,0,{speed},0,0,0.0,{y_counts},0.0,0,1\n".encode()
+
+
+def _jog(y=0.0, speed=3200.0):
+    return struct.pack(JOG_FORMAT, 0xAA, 1, 0.0, y, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, speed)
+
+
+def mega_board(clock, counts=2000, caps=CAPS + ("soft",)):
+    board = MegaStandardSim(clock=clock, caps=caps, limits=(-4000, 20000))
+    board.open()
+    if counts:
+        assert board.ask(f"#SOFTLIMIT Y {counts}") == [
+            f"#OK SOFTLIMIT axis=Y counts={counts} ref=0 stored=1"]
+    return board
+
+
+def referenced_mega(clock, counts=2000):
+    """Enabled, after a real approach: Y jogged into LS1 (the reference),
+    then off it."""
+    board = mega_board(clock, counts)
+    board.write(b"e")
+    run(board, clock, 0.1)
+    lines = run(board, clock, 2.5, beat=_jog(y=-1.0))
+    assert any(line.startswith("#EVT SOFTLIMIT Y referenced") for line in lines), lines
+    run(board, clock, 0.5, beat=_jog(y=1.0))
+    board.write(_jog(y=0.0, speed=0.0))
+    run(board, clock, 0.3)
+    return board
+
+
+def test_mega_without_the_soft_cap_has_no_softlimit_and_no_soft_words():
+    board = mega_board(Clock(), counts=0, caps=CAPS)
+    assert board.ask("#SOFTLIMIT Y 100") == ["#ERR SOFTLIMIT unknown-command"]
+    assert "_soft" not in board.ask("#INFO")[0]
+
+
+def test_mega_softlimit_is_set_queried_bounded_and_kept_across_a_reboot():
+    clock = Clock()
+    board = mega_board(clock, counts=0)
+    assert board.ask("#SOFTLIMIT Y") == ["#OK SOFTLIMIT axis=Y counts=0 ref=0"]
+    assert board.ask("#SOFTLIMIT Y 44800") == ["#OK SOFTLIMIT axis=Y counts=44800 ref=0 stored=1"]
+    for bad in ("#SOFTLIMIT Y -1", "#SOFTLIMIT Y 160001", "#SOFTLIMIT Q 5", "#SOFTLIMIT Y 1 2"):
+        assert board.ask(bad) == ["#ERR SOFTLIMIT bad-arg"], bad
+    info = board.ask("#INFO")[0]
+    assert "y_soft=44800 y_soft_ref=0" in info and "x_soft=0 x_soft_ref=0" in info
+    board.reboot()
+    board.drain_lines()
+    assert board.ask("#SOFTLIMIT Y") == ["#OK SOFTLIMIT axis=Y counts=44800 ref=0"]
+    board.write(b"e")
+    run(board, clock, 0.1)
+    assert board.ask("#SOFTLIMIT Y 5") == ["#ERR SOFTLIMIT busy"]
+
+
+def test_mega_axis_with_a_limit_is_jog_only_until_ls1_gives_the_reference():
+    clock = Clock()
+    board = mega_board(clock)
+    board.write(b"e")
+    run(board, clock, 0.1)
+    board.write(_frame(500))
+    assert "#EVT REFUSED Y reason=soft-limit-unreferenced:touch-ls1" in run(board, clock, 0.1)
+    assert board.ask("#HOME Y") == ["#ERR HOME soft-limit-unreferenced:touch-ls1"]
+    lines = run(board, clock, 2.5, beat=_jog(y=-1.0))             # a jog is allowed, into LS1
+    referenced = next(line for line in lines if line.startswith("#EVT SOFTLIMIT Y referenced"))
+    ref = int(num(referenced, "ls1"))
+    assert int(num(referenced, "lim")) == ref + 2000
+    assert board.limit_end("Y", 1) == -1
+    info = board.ask("#INFO")[0]
+    assert "y_soft_ref=1" in info and f"y_soft_lim={ref + 2000}" in info
+    reply = board.ask("#SOFTLIMIT Y")[0]
+    assert f"ls1={ref} lim={ref + 2000}" in reply
+
+
+def test_mega_stops_a_motion_on_the_limit_and_refuses_one_starting_out_from_it():
+    clock = Clock()
+    board = referenced_mega(clock)
+    ref = board.axes["Y"].soft_ref - board.axes["Y"].origin
+    limit = int(ref + 2000)
+    board.write(_frame(30000))                                     # far past it
+    lines = run(board, clock, 6.0)
+    assert f"#EVT SOFTLIMIT Y stopped pos={limit} lim={limit}" in lines, lines
+    assert board.position[1] == limit and not board.moving
+    assert not [line for line in lines if line.startswith("#EVT LIMIT")]    # never a LIMIT line
+    board.write(_frame(100))
+    assert "#EVT REFUSED Y reason=soft-limit" in run(board, clock, 0.1)
+    board.write(_jog(y=1.0))                                       # a jog out is refused too
+    run(board, clock, 0.3, beat=_jog(y=1.0))
+    assert board.position[1] == limit
+    board.write(_frame(-300))                                      # toward LS1: nothing changes
+    run(board, clock, 1.0)
+    assert board.position[1] == limit - 300
+
+
+def test_mega_arrival_exactly_on_the_limit_is_not_a_stop():
+    clock = Clock()
+    board = referenced_mega(clock)
+    here = board.position[1]
+    ref = board.axes["Y"].soft_ref - board.axes["Y"].origin
+    board.write(_frame(int(ref + 2000 - here)))
+    lines = run(board, clock, 4.0)
+    assert board.position[1] == ref + 2000
+    assert not [line for line in lines if "SOFTLIMIT" in line], lines
+
+
+def test_mega_reference_moves_with_zero_and_is_lost_by_a_disable_while_turning():
+    clock = Clock()
+    board = referenced_mega(clock)
+    before = int(num(board.ask("#SOFTLIMIT Y")[0], "lim"))
+    here = board.position[1]
+    assert board.ask("#ZERO Y") == ["#OK ZERO axis=Y"]
+    assert int(num(board.ask("#SOFTLIMIT Y")[0], "lim")) == before - here
+    board.write(_frame(3000, speed=800.0))
+    run(board, clock, 0.2)
+    assert board.moving
+    board.write(b"d")
+    assert "#EVT SOFTLIMIT Y lost reason=disabled" in run(board, clock, 0.1)
+    assert "y_soft_ref=0" in board.ask("#INFO")[0]
+
+
+def test_mega_damaged_entry_is_jog_only_until_softlimit_writes_it_again():
+    clock = Clock()
+    board = mega_board(clock, counts=0)
+    board.damage_soft("Y")
+    assert board.ask("#SOFTLIMIT Y") == ["#OK SOFTLIMIT axis=Y counts=0 ref=0 damaged=1"]
+    assert "y_soft_damaged=1" in board.ask("#INFO")[0]
+    board.write(b"e")
+    run(board, clock, 0.1)
+    board.write(_frame(500))
+    assert "#EVT REFUSED Y reason=soft-limit-eeprom-damaged:set-SOFTLIMIT" in run(board, clock, 0.1)
+    assert board.ask("#HOME Y") == ["#ERR HOME soft-limit-eeprom-damaged:set-SOFTLIMIT"]
+    board.write(_jog(y=1.0))
+    run(board, clock, 0.3, beat=_jog(y=1.0))
+    assert board.position[1] > 0                                  # a jog moves it
+    board.write(_jog(y=0.0, speed=0.0))
+    run(board, clock, 0.3)
+    board.write(b"d")
+    assert board.ask("#SOFTLIMIT Y 1600") == ["#OK SOFTLIMIT axis=Y counts=1600 ref=0 stored=1"]
+    assert "y_soft_damaged" not in board.ask("#INFO")[0]

@@ -22,7 +22,14 @@ pyserial handle `SerialPort` drives (`write`, `read`, `in_waiting`, ...), as
   with its learned ends, the parked switch (jog only, 160 counts/s, 800
   counts of travel), `#EVT REFUSED` for a frame it will not run, the host
   timeout and its 10 s disable, driver faults, absent hardware inert, and a
-  switch seen once.
+  switch seen once;
+* with the `soft` capability, the soft travel limit (section 4, X-14):
+  `#SOFTLIMIT A [counts]` kept like the EEPROM block it is (it survives a
+  reboot), the reference LS1 gives when it trips toward the end it guards,
+  a limit that is jog-only until that reference, a damaged block that is
+  jog-only too, `soft-limit` refusals, the step ISR's stop on the limit
+  (`#EVT SOFTLIMIT A stopped`), the reference lost with the step count, and
+  `#INFO`'s `x_soft` words. Test hooks: `damage_soft()`, `soft_reference()`.
 
 A board built with `caps=()` and letter `s` is an OLD board: `DEV: s`, no
 `#` handling at all. Its parser drops `#` and the letters after it, and
@@ -32,7 +39,8 @@ byte to a board that did not advertise ext1" rule exists for, and the tests
 use this board to show the station never sends one.
 
 Test hooks: trip or release a switch, move a home edge, power up parked on
-a switch, go silent (a hung loop: no reply, no stream, while the step
+a switch, damage the soft-limit block, give the soft limit its reference,
+go silent (a hung loop: no reply, no stream, while the step
 pulses keep the axes moving), inject a driver fault, reboot, unplug, fail
 writes, and mark any axis's hardware absent.
 
@@ -60,6 +68,10 @@ from devices.serial_port import SerialPort
 AXES = ("X", "Y", "Z")
 #: Every capability token the standard defines (section 2), in its order.
 CAPS = ("ext1", "log", "hostto", "home", "limits", "tmc")
+#: The soft travel limit's capability token (a sketch that has it adds it).
+SOFT = "soft"
+#: `#SOFTLIMIT`'s ceiling (STD_SOFT_MAX: 100 mm), counts.
+SOFT_MAX = 160000
 #: The XYZ Mega's identity letter (section 2). Taken: s, d, c, t, x.
 LETTER = "m"
 #: What INFO names: the sketch and the extension protocol.
@@ -109,6 +121,10 @@ class _Axis:
         #: EEPROM (`#AXISCFG`): survives a reboot.
         self.cfg_limits = bool(limits_on)
         self.cfg_home = bool(home_on)
+        #: The SOFTLIMIT EEPROM block (survives a reboot): the travel in counts
+        #: from LS1, 0 = none; and whether the block is damaged.
+        self.soft_counts = 0
+        self.soft_bad = False
         #: The driver answered on the TMC bus at boot (auto-detected).
         self.tmc_fitted = bool(tmc)
         self.phys = 0.0               # the carriage, stage frame, counts
@@ -134,6 +150,11 @@ class _Axis:
         self.ls_lo = [self.phys - MegaStandardSim.PARKED_TRAVEL] * 2
         self.ls_hi = [self.phys + MegaStandardSim.PARKED_TRAVEL] * 2
         self.ls_was = [self.tripped(0), self.tripped(1)]
+        #: Where LS1 last tripped toward its end, stage frame (so #ZERO and
+        #: HOME keep the limit on the same carriage position); None until it
+        #: does, after every boot.
+        self.soft_ref = None
+        self.soft_halted = False      # the ISR stopped this axis on the limit this tick
 
     @property
     def limits_active(self):
@@ -337,6 +358,25 @@ class MegaStandardSim:
             axis.phys = float(low - depth if int(number) == 1 else high + depth)
             self._boot()
 
+    def damage_soft(self, name):
+        """Test hook: axis `name`'s SOFTLIMIT entry is damaged (wrong magic or
+        complement): no limit is read, and only jogs move that axis."""
+        with self._lock:
+            axis = self.axis(name)
+            axis.soft_counts, axis.soft_bad, axis.soft_ref = 0, True, None
+
+    def soft_reference(self, name, counter=None):
+        """Test hook: LS1 has just given axis `name` its reference at
+        `counter` (the present count by default), as if the axis had touched
+        it moving toward the end it guards (taught as the - end if not yet
+        learned). The real approach is the step ISR's (`_limit_isr`)."""
+        with self._lock:
+            self._advance()
+            axis = self.axis(name)
+            if not axis.ls_end[0]:
+                axis.ls_end[0], axis.ls_firm[0] = -1, True
+            axis.soft_ref = axis.origin + (axis.counter if counter is None else int(counter))
+
     def set_home_edge(self, name, counts):
         """Move an axis's home edge (stage frame); None: no beam at all."""
         with self._lock:
@@ -361,6 +401,7 @@ class MegaStandardSim:
         high, and the board says which."""
         with self._lock:
             self._advance()
+            self._lose_position(what, also=self.axis(name))
             self._halt_motion("fault")
             self.enabled = False
             self._emit(f"#EVT FAULT {what} {str(name).upper()}")
@@ -513,6 +554,7 @@ class MegaStandardSim:
             elif head == ord("d"):
                 del self._rx[:1]
                 self.received.append((self.clock(), "d"))
+                self._lose_position("disabled")
                 self.enabled = False
                 self._halt_motion("disabled")
                 self._dbg("enabled=0")
@@ -652,6 +694,19 @@ class MegaStandardSim:
             self._abort_home(axis, why)
             axis.halt()
 
+    def _lose_position(self, why, also=None):
+        """The outputs went off while an axis turned (or its driver faulted):
+        the step count may no longer match the carriage, and the soft limit's
+        reference goes with it (firmware outputsOff / driverFault)."""
+        for axis in self.axes.values():
+            if axis is also or axis.v != 0.0:
+                self._soft_lost(axis, why)
+
+    def _soft_lost(self, axis, why):
+        was, axis.soft_ref = axis.soft_ref is not None, None
+        if was and axis.soft_counts:
+            self._evt(f"SOFTLIMIT {axis.name} lost reason={why}")
+
     def _abort_home(self, axis, why):
         if axis.homing is not None:
             axis.homing = None
@@ -692,8 +747,54 @@ class MegaStandardSim:
                       f"{low}_ls2_end={_end(axis.ls_end[1])}"]
         for name in AXES:
             words.append(f"{name.lower()}_homed={int(self.axes[name].homed)}")
+        if self.has(SOFT):
+            for name in AXES:
+                words.append(self._soft_words(self.axes[name], info=True))
         words += [f"log={self.log_level}", f"hostto_ms={self.host_timeout_ms or 0}"]
         self._ok(command, " ".join(words))
+
+    def _soft_limit(self, axis):
+        """The limit in force, stage frame counts, or None: a travel is set,
+        LS1 has given the reference and its end is known."""
+        end = axis.ls_end[0]
+        if not self.has(SOFT) or axis.soft_counts <= 0 or axis.soft_ref is None or not end:
+            return None
+        return axis.soft_ref - end * axis.soft_counts
+
+    def _soft_words(self, axis, info=False):
+        """`#INFO`'s per-axis words (`x_soft=N x_soft_ref=0|1 [x_soft_lim=N]
+        [x_soft_damaged=1]`) or `#SOFTLIMIT`'s reply body."""
+        referenced = axis.soft_ref is not None
+        limit = self._soft_limit(axis)
+        if info:
+            low = axis.name.lower()
+            words = f"{low}_soft={axis.soft_counts} {low}_soft_ref={int(referenced)}"
+            if referenced and axis.soft_counts and limit is not None:
+                words += f" {low}_soft_lim={int(limit - axis.origin)}"
+            return words + (f" {low}_soft_damaged=1" if axis.soft_bad else "")
+        words = f"axis={axis.name} counts={axis.soft_counts} ref={int(referenced)}"
+        if referenced:
+            words += f" ls1={int(axis.soft_ref - axis.origin)}"
+        if referenced and axis.soft_counts and limit is not None:
+            words += f" lim={int(limit - axis.origin)}"
+        return words + (" damaged=1" if axis.soft_bad else "")
+
+    def _x_softlimit(self, command, args):
+        if not self.has(SOFT):
+            return self._err(command, "unknown-command")
+        axis = self._axis_arg(args)
+        if axis is None or len(args) > 2:
+            return self._err(command, "bad-arg")
+        stored = ""
+        if len(args) == 2:
+            text = args[1]
+            if not (text.isdigit() and int(text) <= SOFT_MAX):
+                return self._err(command, "bad-arg")
+            if self.enabled or self._busy():
+                return self._err(command, "busy")
+            axis.soft_counts, axis.soft_bad = int(text), False
+            stored = " stored=1"
+        self._ok(command, self._soft_words(axis) + stored)
 
     def _x_axiscfg(self, command, args):
         axis = self._axis_arg(args)
@@ -710,6 +811,7 @@ class MegaStandardSim:
             return self._err(command, "busy")
         if "limits" in values and values["limits"] != axis.cfg_limits:
             axis.cfg_limits = values["limits"]
+            self._soft_lost(axis, "axiscfg")     # and LS1's soft-limit reference with them
             axis.ls_end = [0, 0]                 # a new meaning: forget the ends
             axis.ls_firm = [False, False]
             axis.ls_seen = [False, False]
@@ -768,6 +870,9 @@ class MegaStandardSim:
             for index in (0, 1):
                 if axis.parked(index):
                     return self._err(command, f"limit-ls{index + 1}-end-unknown:jog-off-it")
+        why = self._soft_start_block(axis)       # it may search either way
+        if why:
+            return self._err(command, why)
         axis.homing = {"phase": "seek", "dir": -1, "speed": self.HOME_SEEK,
                        "started": self.clock(), "reversed": False}
         self._ok(command, "started")
@@ -779,8 +884,42 @@ class MegaStandardSim:
         a jog may move an axis whose switch is parked."""
         if not axis.tmc:
             return "tmc-missing"
-        if not (self.has("limits") and axis.limits_active):
+        why = None
+        if self.has("limits") and axis.limits_active:
+            why = self._switch_block(axis, direction, jog)
+        return why or self._soft_block(axis, direction, jog)
+
+    def _soft_block(self, axis, direction, jog):
+        """The soft limit's refusals (the tail of the sketch's limitBlock): a
+        damaged entry allows only jogs; with a limit set, nothing but a jog
+        (or a move toward LS1, once its end is known) starts before LS1 has
+        given the reference; with it, nothing starts out from the limit."""
+        if not self.has(SOFT):
             return None
+        if axis.soft_bad:
+            return None if jog else "soft-limit-eeprom-damaged:set-SOFTLIMIT"
+        if axis.soft_counts <= 0:
+            return None
+        end = axis.ls_end[0]
+        if axis.soft_ref is None:
+            if not jog and not (end and direction == end):
+                return "soft-limit-unreferenced:touch-ls1"
+        elif direction == -end:
+            limit = self._soft_limit(axis)
+            if limit is not None and (axis.phys >= limit if direction > 0 else axis.phys <= limit):
+                return "soft-limit"
+        return None
+
+    def _soft_start_block(self, axis):
+        """HOME may search either way: with a soft limit it needs the
+        reference before it starts."""
+        if not self.has(SOFT):
+            return None
+        if axis.soft_bad:
+            return "soft-limit-eeprom-damaged:set-SOFTLIMIT"
+        return "soft-limit-unreferenced:touch-ls1" if axis.soft_counts and axis.soft_ref is None else None
+
+    def _switch_block(self, axis, direction, jog):
         tripped = [axis.tripped(0), axis.tripped(1)]
         if all(tripped):
             return "limits-both-tripped:check-wiring-or-LIMITS-NC|NO"
@@ -866,6 +1005,7 @@ class MegaStandardSim:
             self._evt("FAULT host-timeout")
         if (self._timed_out and self.enabled
                 and t - self._timed_out_at >= self.HOST_SILENT_OFF):
+            self._lose_position("host-timeout")
             self.enabled = False
             self._halt_motion("host-timeout")
             self._evt(f"FAULT host-timeout-disabled silent_ms={int((t - self._last_rx) * 1000)}")
@@ -931,8 +1071,28 @@ class MegaStandardSim:
                 axis.v = 0.0
                 axis.target = None
                 self._dbg(f"done {axis.name} pos={axis.counter}")
+        self._soft_isr(axis)
         if self.has("limits"):
             self._limit_isr(axis, (axis.v > 0) - (axis.v < 0))
+
+    def _soft_isr(self, axis):
+        """The step ISR's soft-limit stop: no step past the limit, whatever
+        started the motion (a frame, a jog, a D-pad step, HOME's search):
+        the axis stops on it and says `#EVT SOFTLIMIT A stopped`. A motion
+        that arrives on the limit as its target is an arrival, not news."""
+        axis.soft_halted = False
+        limit = self._soft_limit(axis)
+        if limit is None or axis.v == 0.0 or (axis.v > 0) != (-axis.ls_end[0] > 0):
+            return
+        if (axis.phys < limit) if axis.v > 0 else (axis.phys > limit):
+            return
+        axis.phys = float(limit)
+        axis.v = 0.0
+        axis.target = None
+        axis.jog = None
+        axis.soft_halted = True
+        at = int(limit - axis.origin)
+        self._evt(f"SOFTLIMIT {axis.name} stopped pos={at} lim={at}")
 
     def _limit_isr(self, axis, direction):
         """The interlock, per axis, once per tick, with the direction of the
@@ -951,6 +1111,7 @@ class MegaStandardSim:
         halt = direction != 0 and tripped[0] and tripped[1]
         travel = [False, False]
         both = [False, False]
+        ls1_new = tripped[0] and not axis.ls_was[0]
         for i in (0, 1):
             now, was = tripped[i], axis.ls_was[i]
             new_trip, new_clear = now and not was, was and not now
@@ -995,6 +1156,15 @@ class MegaStandardSim:
                 why = " pressed_both_ways=1"
             self._evt(f"LIMIT {axis.name} ls{i + 1} pos={axis.counter} "
                       f"end={_end(axis.ls_end[i])}{why}")
+        if (self.has(SOFT) and ls1_new and direction and axis.ls_end[0] == direction
+                and axis.ls_firm[0] and axis.limits_active):
+            # X-14: LS1 tripped while the axis moved toward the end it guards
+            # (that end known, the interlock armed): the soft limit's
+            # reference, at this count.
+            axis.soft_ref = axis.origin + axis.counter
+            if axis.soft_counts:
+                self._evt(f"SOFTLIMIT {axis.name} referenced ls1={axis.counter} "
+                          f"lim={int(self._soft_limit(axis) - axis.origin)}")
 
     def _home_step(self, axis, t):
         homing = axis.homing
@@ -1017,7 +1187,7 @@ class MegaStandardSim:
         elif phase == "search":
             if axis.home_level() == 1 and axis.home_was_low:
                 self._home_phase(axis, "seek", -1, self.HOME_SEEK)
-            elif high_hit:
+            elif high_hit or axis.soft_halted:       # the soft limit is an end too
                 return self._home_failed(axis, "no-edge")
             axis.home_was_low = axis.home_was_low or axis.home_level() == 0
         elif phase == "approach":

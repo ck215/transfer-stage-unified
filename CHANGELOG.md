@@ -153,6 +153,17 @@ How this file is kept:
 
 ### Changed
 
+- **A Guest's locked rows say so in the state,** not only in their Status
+  words: the Transfer Map and Sample DB rows carry `locked` and `enabled`
+  false, and the Web view disables their Run key from that.
+- **The rail's alert lines are bounded and scroll** on every screen (11rem on
+  a desktop, 6.5rem on a short one, 7rem on a phone), take keyboard focus,
+  and never push the rail's foot out of view.
+- **The simulated boards model the soft travel limit** as the firmware does
+  (`SOFTLIMIT` / `#SOFTLIMIT`: jog-only until LS1 is referenced, shortened
+  moves, a stop on the limit, a damaged block means jog-only), so a SIM XYZ
+  Stage and a SIM XYZ Stage (Mega) behave like the sketches; both stages'
+  tutorials say what a soft limit does.
 - **The Sample Map is now called the Sample DB** everywhere it is shown.
   Settings saved under the old name still apply.
 

@@ -137,6 +137,12 @@
     },
     {
       "page": "XYZ Stage (Mega)",
+      "anchor": {"text": "Limit switches"},
+      "say": "A soft limit (Configuration, in µm from LS1) is the board's own stop too. Until the axis has touched LS1 only a jog moves it; after, nothing goes past the limit, and a Step that would is refused.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage (Mega)",
       "anchor": {"text": "Stop this model"},
       "say": "Stop this model latches only this stage. Pressed again (it then reads Stopped) it clears just this stage, after asking.",
       "wait": null

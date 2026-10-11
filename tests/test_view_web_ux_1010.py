@@ -161,7 +161,8 @@ class GuestSetup(FakeSetup):
         snapshot = super().state
         status = "sign in to use" if self.guest else "on"
         snapshot.update({"is_launched": False, "rows": [
-            {"key": "tm", "name": "Transfer Map", "status": status, "needs_port": False}]})
+            {"key": "tm", "name": "Transfer Map", "status": status,
+             "needs_port": False, "enabled": not self.guest, "locked": self.guest}]})
         snapshot["values"]["tm_status"] = status
         return snapshot
 
@@ -273,6 +274,69 @@ def test_the_rail_keeps_its_foot_in_view_on_a_1366_by_768_screen(xyz_station, tm
     assert max(f[1]["bottom"] for f in out["foot"]) <= out["vh"], out
     assert not out["scrolls"], out
     assert out["stop"]["bottom"] <= out["vh"], out
+
+
+_MANY_ALERTS = r"""
+      await page.evaluate(() => window.station.showPage('Fake Proc'));
+      await sleep(500);
+      await page.evaluate(() => {
+        const a = document.getElementById('rail-alert');
+        for (let i = 1; i <= 8; i++) {
+          const line = document.createElement('div'); line.className = 'rail-alert-line';
+          const words = document.createElement('span'); words.className = 'rail-alert-text';
+          words.textContent = 'Device ' + i + ' did not answer. Check its cable and power, then press Refresh.';
+          line.appendChild(words); a.appendChild(line);
+        }
+        a.hidden = false;
+      });
+      await sleep(300);
+      const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+      const read = await page.evaluate(%s);
+      const alert = await page.evaluate(() => {
+        const a = document.getElementById('rail-alert');
+        const box = a.getBoundingClientRect();
+        const style = getComputedStyle(a);
+        const first = a.firstElementChild.getBoundingClientRect();
+        a.scrollTop = a.scrollHeight;
+        const last = a.lastElementChild.getBoundingClientRect();
+        const after = a.getBoundingClientRect();
+        return { h: box.height, scrollH: a.scrollHeight, clientH: a.clientHeight, overflowY: style.overflowY,
+                 firstH: first.height, lastInside: last.bottom <= after.bottom + 1 && last.top >= after.top - 1,
+                 scrolled: a.scrollTop, tab: a.tabIndex };
+      });
+      return { rem, alert, rail: read };
+"""
+
+
+@needs_browser
+def test_many_rail_alert_lines_are_bounded_and_scroll_on_a_short_screen(xyz_station, tmp_path):
+    """U7-12 tail: eight alert lines no longer grow the rail (they were
+    folded, then unbounded on a desktop): the block stops at 6.5rem on a
+    1366x768 screen, scrolls to its last line, takes focus for the keyboard,
+    and the rail's foot stays in view."""
+    out = _browse(xyz_station, _READY + r"""
+      await page.setViewport({ width: 1366, height: 768 });
+    """ + _MANY_ALERTS % _RAIL, tmp_path)
+    alert, rem = out["alert"], out["rem"]
+    assert alert["overflowY"] in ("auto", "scroll"), out
+    assert alert["scrollH"] > alert["clientH"] + 20 and alert["h"] <= 6.5 * rem + 2, out
+    assert alert["scrolled"] > 0 and alert["lastInside"], out
+    assert alert["tab"] == 0, out
+    assert alert["firstH"] > 0, out
+    assert not out["rail"]["scrolls"], out
+    assert max(f[1]["bottom"] for f in out["rail"]["foot"]) <= out["rail"]["vh"], out
+
+
+@needs_browser
+def test_many_rail_alert_lines_are_bounded_on_a_desktop_too(xyz_station, tmp_path):
+    out = _browse(xyz_station, _READY + r"""
+      await page.setViewport({ width: 1400, height: 900 });
+    """ + _MANY_ALERTS % _RAIL, tmp_path)
+    alert, rem = out["alert"], out["rem"]
+    assert alert["overflowY"] in ("auto", "scroll"), out
+    assert alert["scrollH"] > alert["clientH"] + 20 and alert["h"] <= 11 * rem + 2, out
+    assert alert["scrolled"] > 0 and alert["lastInside"], out
+    assert not out["rail"]["scrolls"], out
 
 
 @needs_browser

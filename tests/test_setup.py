@@ -739,7 +739,7 @@ def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
                      "needs_port": True, "needs_gamepad": True,
                      "is_chosen": False, "seen_after_launch": None,
                      "pending_reset": False, "can_start": False,
-                     "options_command": "port_options"}
+                     "options_command": "port_options", "locked": False}
     assert state["values"]["scan_status"] == "not scanned yet"
     assert state["scan"]["elapsed"] is None and state["scan"]["port"] is None
 
