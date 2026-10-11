@@ -138,6 +138,9 @@ class EventLog:
         self._events, self._recent, self._subscribers = [], {}, []
         self._max_events, self._clock, self._next_id = max_events, clock, 1
         self._debug_seen, self._file, self._file_lock = {}, None, threading.Lock()
+        #: True once a write to the run log failed (BUGFIX A7): every later
+        #: diagnostic is being lost, and a view can show "logging off".
+        self.logging_failed = False
 
     def error(self, title, message, *, source="", exception=None, ack=True,
               action=None):
@@ -180,10 +183,18 @@ class EventLog:
         directory = directory or os.path.join(
             os.environ.get("TRANSFER_STAGE_DATA_ROOT")
             or os.path.join(os.path.expanduser("~"), "transfer-stage-runs"), "logs")
-        os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, time.strftime("station-%Y%m%d-%H%M%S.log"))
+        try:
+            os.makedirs(directory, exist_ok=True)
+            handle = open(path, "a", buffering=1, encoding="utf-8")
+        except OSError as exc:
+            # An unwritable log must not stop the station (BUGFIX A7): say so
+            # once, raise the flag, run on without a file.
+            with self._file_lock:
+                self._file_failed(exc)
+            return path
         with self._file_lock:
-            self._file = open(path, "a", buffering=1, encoding="utf-8")
+            self._file = handle
         self._write_file("info", "EventLog", f"log opened: {path}", None)
         return path
 
@@ -195,14 +206,26 @@ class EventLog:
                 try:
                     self._file.flush()
                     os.fsync(self._file.fileno())
-                except (OSError, ValueError):
-                    pass
+                except (OSError, ValueError) as exc:
+                    self._file_failed(exc)
 
     def close_file(self):
         with self._file_lock:
             if self._file:
                 self._file.close()
             self._file = None
+
+    def _file_failed(self, exc):
+        """The run log cannot be written: say so once on stderr and raise the
+        flag. Called with `_file_lock` held; never raises."""
+        if self.logging_failed:
+            return
+        self.logging_failed = True
+        try:
+            print(f"station: the run log can no longer be written ({exc}); "
+                  "diagnostics are being lost", file=sys.stderr)
+        except Exception:
+            pass
 
     def _write_file(self, severity, source, text, exception):
         with self._file_lock:
@@ -219,8 +242,8 @@ class EventLog:
                     type(exception), exception, exception.__traceback__))
             try:
                 self._file.write(line)
-            except (OSError, ValueError):
-                pass
+            except (OSError, ValueError) as exc:
+                self._file_failed(exc)
 
     def _publish(self, severity, source, title, message, exception, needs_ack,
                  action=None, resolves=None):

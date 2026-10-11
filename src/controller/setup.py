@@ -3518,7 +3518,10 @@ class Setup(PortProbe, Panel):
             found = dict(self._found)
         for key, row in self._rows.items():
             setattr(self, f"{key}_enabled", self._will_launch(key, row, found))
-            setattr(self, f"{key}_status", self._row_status(key, row, found))
+            status = self._row_status(key, row, found)
+            # Sentence case, once, here (BUGFIX M7): a view no longer has to
+            # capitalise the word it was handed.
+            setattr(self, f"{key}_status", status[:1].upper() + status[1:])
         self._refresh_summary()
 
     def _row_locked(self, row):

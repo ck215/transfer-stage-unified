@@ -160,8 +160,10 @@ def test_the_other_probes_are_untouched():
 
 @pytest.mark.schema
 def test_gates_are_those_of_the_count_fields(stepper):
-    for attr in ("x_dist_um", "x_step_um", "full_speed_um_s"):
+    for attr in ("x_dist_um", "full_speed_um_s"):
         assert element(stepper, attr)["disabled_when"] == ["autonomous", "manual"]
+    # BUGFIX D14: the step size is live in manual, locked in autonomous.
+    assert element(stepper, "x_step_um")["disabled_when"] == ["autonomous"]
     assert element(stepper, "man_full_speed_um_s")["disabled_when"] == ["autonomous"]
     stepper.set_mode("autonomous")
     with pytest.raises(Refused):

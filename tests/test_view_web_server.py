@@ -4882,3 +4882,38 @@ def test_the_pages_own_reload_does_not_ask(leaving_station, tmp_path):
     """, tmp_path)
     assert out == {"dialogs": [], "reloaded": True}, out
     assert len(leaves) >= 1, "the reload sent no leave"
+
+
+# --------------------------------------------------------------------------
+# BUGFIX_PLAN A5: only a JSON failure is "invalid JSON"
+# --------------------------------------------------------------------------
+def test_a_malformed_body_is_invalid_json_and_any_other_failure_is_logged(
+        station, monkeypatch):
+    view, _, _ = station
+    seen = []
+    monkeypatch.setattr(web_server.events, "debug",
+                        lambda title, message, **kw: seen.append((title, message)))
+    sent = {"Content-Type": "application/json",
+            "Origin": f"http://127.0.0.1:{view.port}"}
+
+    def post_raw(raw):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{view.port}/api/run", data=raw, headers=sent,
+            method="POST")
+        try:
+            urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+
+    status, data = post_raw(b"{not json")
+    assert (status, data["reason"]) == (400, "invalid JSON")
+    status, data = post_raw(b"\xff\xfe")          # not UTF-8: still a ValueError
+    assert (status, data["reason"]) == (400, "invalid JSON")
+    assert not [s for s in seen if s[0] == "Request Body Unreadable"]
+
+    # Nesting past the interpreter's limit raises RecursionError, which is
+    # not a ValueError: it is not "invalid JSON", and it is logged by type.
+    status, data = post_raw(b"[" * 200000 + b"]" * 200000)
+    assert status == 400 and data["reason"] != "invalid JSON"
+    logged = [m for t, m in seen if t == "Request Body Unreadable"]
+    assert logged and "RecursionError" in logged[0]

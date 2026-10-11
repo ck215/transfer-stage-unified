@@ -159,6 +159,13 @@ How this file is kept:
 
 ### Changed
 
+- **Step sizes can be edited while a probe is in Manual,** like Manual Speed,
+  and the next jog frame carries the new size; they stay locked during an
+  autonomous run, and a Stepper's target distance keeps its length (BUGFIX
+  D14).
+- **A log stream can carry its own empty-state sentence** (`empty=`), as plots
+  and images do (BUGFIX E2).
+
 - **A Guest's locked rows say so in the state,** not only in their Status
   words: the Transfer Map and Sample DB rows carry `locked` and `enabled`
   false, and the Web view disables their Run key from that.
@@ -232,6 +239,19 @@ How this file is kept:
   demanded.
 
 ### Fixed
+
+- **Failures that used to vanish now leave a trace** (BUGFIX A2-A5, A7, C3). A
+  Web watchdog check that cannot run raises a warning; a request body that
+  fails for a reason other than bad JSON is logged instead of called "invalid
+  JSON"; an unreadable run sidecar warns "Run Metadata Unreadable" and the
+  samples still plot; a broken probe position source and the gamepad's
+  swallowed SDL errors are written to the log; a run log that cannot be
+  written says so once on stderr and the station runs on.
+- **Loading a run with no file chosen says "Choose a saved run to load."**
+  and an idle RGB Analysis run name stays one slug until a run starts or you
+  type a name, instead of ticking every second (BUGFIX E8, M2).
+- **Setup's row status words start with a capital** ("Not connected",
+  "Detected: ...") as the model publishes them (BUGFIX M7).
 
 - A Quit waits for the store backup only after every device has closed, in
   one 15 s budget; closing a device while a Hard reset or Quit runs can no

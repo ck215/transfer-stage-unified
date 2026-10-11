@@ -603,8 +603,8 @@ def test_auto_assign_points_each_row_at_the_port_that_answered(panel):
     assert panel.beta_port == "/dev/ttyUSB0" and panel.beta_enabled is True
     assert panel.alpha_port == station_setup.NOT_CONNECTED
     assert panel.alpha_enabled is False
-    assert panel.beta_status == "detected: Beta"
-    assert panel.alpha_status == "not connected"
+    assert panel.beta_status == "Detected: Beta"
+    assert panel.alpha_status == "Not connected"
 
 
 def test_auto_assign_never_overrides_what_the_operator_chose(panel):
@@ -636,19 +636,19 @@ def test_two_ports_answering_as_one_model_keeps_the_first_and_warns(
 # -- the status column -----------------------------------------------------
 
 def test_the_status_column_says_not_connected_simulated_or_detected(panel):
-    assert panel.alpha_status == "not connected"
+    assert panel.alpha_status == "Not connected"
     select(panel, "alpha", "port", SIM)
-    assert panel.alpha_status == "simulated"
+    assert panel.alpha_status == "Simulated"
     offer(panel, "/dev/ttyUSB0")
     select(panel, "alpha", "port", "/dev/ttyUSB0")
-    assert panel.alpha_status == "not scanned"
+    assert panel.alpha_status == "Not scanned"
     assert panel.alpha_enabled is False
     panel._found["/dev/ttyUSB0"] = None
     panel._refresh_rows()
-    assert panel.alpha_status == "not connected" and panel.alpha_enabled is False
+    assert panel.alpha_status == "Not connected" and panel.alpha_enabled is False
     panel._found["/dev/ttyUSB0"] = "Alpha"
     panel._refresh_rows()
-    assert panel.alpha_status == "detected: Alpha" and panel.alpha_enabled is True
+    assert panel.alpha_status == "Detected: Alpha" and panel.alpha_enabled is True
 
 
 def test_a_row_pointed_at_a_port_that_answered_otherwise_says_so(panel):
@@ -656,7 +656,7 @@ def test_a_row_pointed_at_a_port_that_answered_otherwise_says_so(panel):
     select(panel, "alpha", "port", "/dev/ttyUSB0")
     panel._found["/dev/ttyUSB0"] = "Beta"
     panel._refresh_rows()
-    assert panel.alpha_status == "detected: Beta"
+    assert panel.alpha_status == "Detected: Beta"
     # Not connected as Alpha, so it does not launch (and build() refuses it).
     assert "Alpha" not in [c["model"] for c in panel.configs]
     assert panel.run("launch").is_ok
@@ -734,7 +734,7 @@ def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
     alpha = next(r for r in state["rows"] if r["key"] == "alpha")
     assert alpha == {"key": "alpha", "name": "Alpha", "enabled": False,
                      "port": station_setup.NOT_CONNECTED,
-                     "gamepad": "None", "status": "not connected",
+                     "gamepad": "None", "status": "Not connected",
                      "detected": None,
                      "needs_port": True, "needs_gamepad": True,
                      "is_chosen": False, "seen_after_launch": None,
@@ -923,10 +923,10 @@ def test_every_port_row_starts_not_connected_and_a_row_with_no_port_is_on(panel)
 def test_sim_puts_a_row_in_the_configs_and_losing_the_board_takes_it_out(panel):
     connect(panel, "alpha")
     assert [c["model"] for c in panel.configs] == ["Alpha", "Screen"]
-    assert panel.alpha_status == "simulated"
+    assert panel.alpha_status == "Simulated"
     disconnect(panel, "alpha")
     assert [c["model"] for c in panel.configs] == ["Screen"]
-    assert panel.alpha_status == "not connected"
+    assert panel.alpha_status == "Not connected"
 
 
 def test_not_connected_is_not_on_offer(panel):
@@ -1219,7 +1219,7 @@ def test_a_changed_port_that_has_not_answered_says_so_and_is_not_applied(panel):
     old = _launch_alpha_on(panel)
     offer(panel, "/dev/ttyUSB1")            # listed, never identified
     select(panel, "alpha", "port", "/dev/ttyUSB1")
-    assert panel.alpha_status == "changed: not identified there; press Refresh"
+    assert panel.alpha_status == "Changed: not identified there; press Refresh"
     result = panel.run("hard_reset_alpha", args=(True,))
     assert result.is_refused and "Refresh" in result.reason
     assert panel.controller._model("Alpha") is old and old.closed == 0
@@ -1251,7 +1251,7 @@ def test_hard_reset_applies_a_changed_port_stop_path_first(
     assert panel.is_launched, "no station Restart"
     row = next(r for r in panel.state["rows"] if r["key"] == "alpha")
     assert row["pending_reset"] is False
-    assert panel.alpha_status == "detected: Alpha"
+    assert panel.alpha_status == "Detected: Alpha"
 
 
 def test_hard_reset_applies_a_changed_gamepad(panel, monkeypatch):
@@ -1312,7 +1312,7 @@ def test_a_port_chosen_before_the_launch_is_not_pending(panel):
     select(panel, "alpha", "port", "/dev/ttyUSB0")
     row = next(r for r in panel.state["rows"] if r["key"] == "alpha")
     assert row["pending_reset"] is False
-    assert panel.alpha_status == "detected: Alpha"
+    assert panel.alpha_status == "Detected: Alpha"
     assert panel.run("hard_reset_alpha", args=(True,)).is_refused
 
 
@@ -1356,7 +1356,7 @@ def test_a_board_plugged_in_after_the_launch_is_seen_and_offered_start_not_start
     _scan_with(panel, monkeypatch, answers)
     assert "Beta" not in panel.controller.model_names, "never started by itself"
     assert panel.beta_port == "/dev/ttyUSB1", "its row is pointed at it"
-    assert panel.beta_status == "seen on /dev/ttyUSB1: press Start"
+    assert panel.beta_status == "Seen on /dev/ttyUSB1: press Start"
     row = next(r for r in panel.state["rows"] if r["key"] == "beta")
     assert row["seen_after_launch"] == "/dev/ttyUSB1" and row["can_start"] is True
     alpha = next(r for r in panel.state["rows"] if r["key"] == "alpha")
@@ -1385,7 +1385,7 @@ def test_a_device_plugged_in_after_the_launch_starts_from_its_row(panel, monkeyp
     assert panel.controller._model("Alpha") is alpha, "nothing else restarts"
     row = next(r for r in panel.state["rows"] if r["key"] == "beta")
     assert row["can_start"] is False and row["seen_after_launch"] is None
-    assert panel.beta_status == "detected: Beta"
+    assert panel.beta_status == "Detected: Beta"
     # Running now: its key is Hard reset again, and Start is refused.
     assert panel.run("start_beta").is_refused
     assert panel.run("hard_reset_beta").needs_confirm
@@ -1397,7 +1397,7 @@ def test_the_rows_key_starts_a_row_that_is_not_running(panel, monkeypatch):
     offer(panel, "/dev/ttyUSB1")
     panel._found["/dev/ttyUSB1"] = "Beta"
     select(panel, "beta", "port", "/dev/ttyUSB1")
-    assert panel.beta_status == "not running: press Start"
+    assert panel.beta_status == "Not running: press Start"
     assert panel.run("hard_reset_beta").is_ok
     assert "Beta" in panel.controller.model_names
 
@@ -2857,3 +2857,11 @@ def test_hard_reset_rechecks_for_a_scan_inside_its_lock(panel):
         panel.hard_reset_alpha(True)
     assert panel.controller._model("Alpha") is old and old.closed == 0
     panel._scan_thread = None
+
+
+def test_a_row_status_word_is_published_in_sentence_case(panel):
+    """BUGFIX M7: the model capitalises once; no view has to."""
+    panel.refresh_rows() if hasattr(panel, "refresh_rows") else panel._refresh_rows()
+    statuses = [getattr(panel, f"{key}_status") for key in panel._rows]
+    assert statuses and all(s[:1] == s[:1].upper() and s[:1].isalpha()
+                            for s in statuses), statuses

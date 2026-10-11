@@ -561,8 +561,9 @@ bench-only", `CHECKPOINT.md`) are not repeated.
   delete them.
 - **DONE 2026-10-10: the Web finalizer** (`b8fb9f8`, `a60ab57`, merge `1e9abe1`): Finalize Data on the Transfer Map page, hosted model `src/model/finalizer.py`. In-page video playback landed after, on `rb-video` (see "Landed 2026-10-10").
 - **ENG: per-user layout, `default_fields`, `sample_base`.** Reserved
-  settings keys only (`53abaee`); nothing reads them.
-- **DONE 2026-10-11 on `rb-web-a11y` (not merged): OI-6, the design and
+  settings keys only (`53abaee`); nothing reads them. Proposal:
+  `PER-USER-SETTINGS-PROPOSAL.md` (C-12).
+- **DONE 2026-10-11 on `rb-web-a11y` (merged into `wave3-2026-10-11`): OI-6, the design and
   accessibility pass with the primary skills** (`impeccable`,
   `web-design-guidelines`; static read only, nothing rendered). No S1 or S2;
   four S3 and five S4 in `docs/reviews/web-a11y-pass-2026-10-11.md`, three

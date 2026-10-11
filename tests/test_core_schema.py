@@ -286,6 +286,12 @@ def test_a_plot_declares_its_own_empty_state():
     assert sch.plot("S", "s", empty="Nothing yet.")["empty"] == "Nothing yet."
 
 
+def test_a_log_stream_takes_empty_text_and_carries_it_only_when_given():
+    """BUGFIX E2: like `plot` and `image`; left out, the element is unchanged."""
+    assert sch.log_stream("Log", "lines", empty="No lines yet.")["empty"] == "No lines yet."
+    assert "empty" not in sch.log_stream("Log", "lines")
+
+
 # -- phases: drawn or not, per procedure step (2026-10-07) ---------------------
 
 def test_a_section_takes_phases_and_an_unphased_one_is_always_shown():

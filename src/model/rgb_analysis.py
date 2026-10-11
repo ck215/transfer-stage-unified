@@ -496,6 +496,7 @@ class RgbAnalysis(Model):
         self.region = None
         self.output_root = self._default_output_root()
         self.baseline_red = 0.0
+        self._idle_slug = None
 
         #: REDPERCENT-5: one attribute holding the pair, swapped in one
         #: assignment, so every poller sees the old pair or the new one and
@@ -601,7 +602,16 @@ class RgbAnalysis(Model):
         needs a name."""
         if self._run is not None:
             return self._run.run_id
-        return (self.run_name or "").strip() or time.strftime("run_%Y%m%d_%H%M%S")
+        name = (self.run_name or "").strip()
+        if name:
+            self._idle_slug = None      # a name ends the idle period's slug
+            return name
+        # One slug per idle period (BUGFIX M2): minted at the first read and
+        # kept until a run starts or a name is typed, so the readout does not
+        # tick every second.
+        if self._idle_slug is None:
+            self._idle_slug = time.strftime("run_%Y%m%d_%H%M%S")
+        return self._idle_slug
 
     @property
     def run_dir(self):
@@ -883,7 +893,13 @@ class RgbAnalysis(Model):
             return None
         try:
             age = source.position_age
-        except Exception:
+        except AttributeError:
+            return None         # a source with no such attribute: no sample yet
+        except Exception as exc:
+            # A broken probe is not "no sample yet": velocity going missing
+            # must leave a trace (BUGFIX A3).
+            events.debug("Position Age Failed", f"{type(exc).__name__}: {exc}",
+                         source="RgbAnalysis", exception=exc, every=5.0)
             return None
         return None if age is None else float(age)
 
@@ -1119,6 +1135,7 @@ class RgbAnalysis(Model):
             red_threshold=self.red_threshold,
         )
         self._run = run
+        self._idle_slug = None
         self._saved_rows = 0
         self._red_state = (0.0, 0.0)
         self._rgb_state = None
@@ -1927,6 +1944,10 @@ class RgbAnalysis(Model):
         This lived in a PySide-only `PlotDialog`, so Tk and the Web client had
         no way to look at a finished run at all (REDPERCENT-17, PYSIDE-18).
         """
+        if path is None or not str(path).strip():
+            # `Path("")` is the current directory: say what is missing instead
+            # of "Could not read ." (BUGFIX E8).
+            raise Refused("Choose a saved run to load.")
         try:
             loaded = plot_data.load_run(path)
         except OSError as exc:
