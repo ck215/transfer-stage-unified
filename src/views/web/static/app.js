@@ -3536,11 +3536,29 @@ class PanelCard {
     const url = '/api/data?name=' + encodeURIComponent(this.name)
       + '&command=' + encodeURIComponent(widget.dataCommand);
     if (widget.isBinary) {
-      widget.setData(url + '&t=' + Date.now());
+      this.loadPicture(widget, url);
       return;
     }
     apiGet(url).then((data) => {
       if (data && data.status !== 'refused' && data.status !== 'failed') widget.setData(data);
+    }).catch(() => {});
+  }
+
+  /** I11: a figure is fetched with the ETag of the one on screen and left
+   *  alone on a 304; only a changed picture is turned into a new object
+   *  URL (the old one is released). */
+  loadPicture(widget, url) {
+    const headers = widget.etag ? { 'If-None-Match': widget.etag } : {};
+    api(url, { method: 'GET', headers }).then(async (response) => {
+      if (response.status === 304) return;
+      const type = response.headers.get('Content-Type') || '';
+      if (!response.ok || type.indexOf('image/') !== 0) return;
+      const blobUrl = URL.createObjectURL(await response.blob());
+      const old = widget.objectUrl;
+      widget.objectUrl = blobUrl;
+      widget.etag = response.headers.get('ETag') || '';
+      widget.setData(blobUrl);
+      if (old) URL.revokeObjectURL(old);
     }).catch(() => {});
   }
 

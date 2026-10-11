@@ -36,6 +36,7 @@ Two things live here and nowhere else:
 """
 import base64
 import errno
+import hashlib
 import http.server
 import json
 import mimetypes
@@ -581,7 +582,7 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             return self._send_json(200, self._result_dict(result))
         value = result.value
         if isinstance(value, (bytes, bytearray)):
-            return self._send_bytes(200, "image/png", bytes(value))
+            return self._send_picture(bytes(value))
         if isinstance(value, dict) and isinstance(value.get("image"), (bytes, bytearray)):
             # A picture with its geometry (a region picker's `screen_image`:
             # the PNG, and the area it was scaled from). The bytes stay
@@ -590,11 +591,25 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                         for key in ("left", "top", "width", "height")
                         if isinstance(value.get(key), (int, float))
                         and not isinstance(value.get(key), bool)}
-            return self._send_bytes(200, "image/png", bytes(value["image"]),
-                                    geometry)
+            return self._send_picture(bytes(value["image"]), geometry)
         if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
             return self._send_json(200, {"status": "ok", "lines": list(value)})
         return self._send_json(200, {"status": "ok", "data": value})
+
+    def _send_picture(self, payload, headers=None):
+        """A PNG with a strong ETag over its bytes and geometry (I11): the
+        figure is polled every second and mostly unchanged, so a matching
+        If-None-Match is answered 304 with no body."""
+        digest = hashlib.sha256(payload)
+        for key, value in sorted((headers or {}).items()):
+            digest.update(f"{key}={value}".encode("ascii"))
+        etag = '"' + digest.hexdigest()[:32] + '"'
+        sent = dict(headers or {}, ETag=etag)
+        tags = [t.strip() for t in
+                (self.headers.get("If-None-Match") or "").split(",")]
+        if etag in tags:
+            return self._send_bytes(304, "image/png", b"", sent)
+        return self._send_bytes(200, "image/png", payload, sent)
 
     def _is_data_command(self, name, command):
         """True when `command` is a `data_command`/`source_command` of an

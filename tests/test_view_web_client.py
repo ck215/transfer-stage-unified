@@ -1750,3 +1750,10 @@ def test_node_is_present_where_the_run_requires_it():
     assert NODE is not None, (
         "STATION_REQUIRE_NODE=1 but node is not on PATH: the Web client's "
         "JS tests did not run")
+
+
+def test_the_figure_fetch_sends_if_none_match_and_leaves_a_304_alone():
+    """I11: no `&t=` cache-buster; the client keeps the ETag and skips a 304."""
+    js = APP_JS
+    assert "'If-None-Match'" in js and "response.status === 304" in js
+    assert "widget.setData(url + '&t=' + Date.now())" not in js

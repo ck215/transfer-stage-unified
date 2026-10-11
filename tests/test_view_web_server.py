@@ -572,6 +572,19 @@ def test_a_plot_series_is_json_and_a_figure_is_a_png(station):
     assert body.startswith(b"\x89PNG")
 
 
+def test_a_figure_carries_an_etag_and_a_matching_if_none_match_gets_a_304(station):
+    """I11: the figure is polled every second; an unchanged one is not re-sent."""
+    view, _, _ = station
+    path = "/api/data?name=Fake+Probe&command=figure"
+    status, headers, body = _request(view, path)
+    etag = headers["ETag"]
+    assert status == 200 and etag.startswith('"') and etag.endswith('"') and body
+    status, headers, body = _request(view, path, headers={"If-None-Match": etag})
+    assert status == 304 and body == b"" and headers["ETag"] == etag
+    status, _, body = _request(view, path, headers={"If-None-Match": '"stale"'})
+    assert status == 200 and body.startswith(b"\x89PNG")
+
+
 def test_a_log_stream_comes_back_as_lines(station):
     view, _, _ = station
     _, data = _get(view, "/api/data?name=Fake+Probe&command=log_lines")
