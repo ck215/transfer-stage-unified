@@ -21,6 +21,10 @@ How this file is kept:
 
 ### Added
 
+- **The finalizer plays the trial's video.** Finalize Data on the Transfer Map's
+  page shows the recorded video in the page, with its frame count, and you can
+  scrub through it; a trial with no playable file keeps the words that say
+  where it is.
 - **The whole display is recorded.** Every trial keeps a full-screen video
   at the display's own resolution (`screen.mp4`, which survives a crash),
   the time of every frame (`frames.csv`), every device's readings on one

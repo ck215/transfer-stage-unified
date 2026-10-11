@@ -477,7 +477,7 @@ Gate, 9 Oct at `60b5a8a`: macOS 5011 passed (2 known macOS serial-lock failures 
 ## Open items
 
 ### Landed 2026-10-10 (lead sprint), with their tails
-- **Finalize Data on the Transfer Map page** (Web finalizer, `src/model/finalizer.py`): stills, outcome figure and save through the map's finalize_save. TAIL (ENG): no in-page video playback; the page shows the video's place and frame count. Needs a Range route in `src/views/web/server.py`.
+- **Finalize Data on the Transfer Map page** (Web finalizer, `src/model/finalizer.py`): stills, outcome figure and save through the map's finalize_save. In-page video playback is in (branch `rb-video`, not merged): `/api/video` in `src/views/web/server.py` serves a trial's `screen.mp4` with HTTP Range (206/416; only an `.mp4` directly inside a numbered trial folder of the map's output root; gated like `/api/image`), and the finalizer's Video row plays it in a `<video controls preload="metadata">` under the frame count, falling back to the words when there is no playable file. No wire bytes change. Bench/browser playback of a real recording is the owner's check.
 - **Setup**: `file_open` carries instrument and magnification (schema key `choices`); the version sentence no longer names an env var. TAIL (ENG): a locked row's `needs_port`/`enabled` wording (setup.py ~3563/3595), the UX agent's second core request.
 - **Soft travel limit** on every XYZ board, the validator and `limit_seek` (MAXTRAVEL per boot); `long` step counts on the Stepper and Chuck Megas. OWNER: flash all four sketches; confirm the two defaults (jog-only until LS1 is referenced; a damaged EEPROM block means jog-only, unlike AXISCFG).
 - **PR #2 red test**: unclosed probes in other tests, not a station leak; every armed probe stops its threads at teardown. Gate green on a949051.
@@ -552,7 +552,7 @@ bench-only", `CHECKPOINT.md`) are not repeated.
   runs also wrote `transfer_map.sqlite` and `sample_map.sqlite` under
   `~/transfer-stage-runs/stores/op@lab.test/` before `01b1b53`: check and
   delete them.
-- **DONE 2026-10-10: the Web finalizer** (`b8fb9f8`, `a60ab57`, merge `1e9abe1`): Finalize Data on the Transfer Map page, hosted model `src/model/finalizer.py`. Tail: no in-page video playback (see "Landed 2026-10-10").
+- **DONE 2026-10-10: the Web finalizer** (`b8fb9f8`, `a60ab57`, merge `1e9abe1`): Finalize Data on the Transfer Map page, hosted model `src/model/finalizer.py`. In-page video playback landed after, on `rb-video` (see "Landed 2026-10-10").
 - **ENG: per-user layout, `default_fields`, `sample_base`.** Reserved
   settings keys only (`53abaee`); nothing reads them.
 - **ENG: a design and accessibility pass with the primary skills**

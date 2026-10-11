@@ -321,6 +321,15 @@ def file_open(text, command, *, extensions=("csv",), role="neutral",
     return element
 
 
+def video(element, src_attr):
+    """Mark a readonly as also playable: `src_attr` names the
+    `state["values"]` entry holding the URL of a video the page can play
+    ("" when there is none). A view that cannot play it shows the readonly's
+    words, so no new element type is needed."""
+    element["video_attr"] = src_attr
+    return element
+
+
 def image(text, data_command, *, role="neutral", empty="No image yet.",
           model_attr=None, alt_attr=None):
     """A picture the model supplies as PNG bytes through `data_command`;
