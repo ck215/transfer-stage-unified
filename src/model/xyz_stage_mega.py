@@ -36,14 +36,15 @@ the hardware is absent. The wire never assumes: no `#` byte goes out until
 the board's own identity lists ext1.
 """
 import schema as sch
-from devices.mega_standard_sim import CAPS, LETTER, MegaStandardPort
+from devices.mega_standard_sim import (CAPS, LETTER, SOFT, MegaStandardPort,
+                                       MegaStandardSim)
 from events import events
 from model.probe import (AXES, EXT, STEPPER_UM_PER_COUNT, ProbeMode, StepperProbe,
                          _stored)
 from param import Param
 
-#: The capability of the soft travel limit (MEGA_STANDARD section 2).
-SOFT = "soft"
+#: The capability of the soft travel limit (MEGA_STANDARD section 2): `SOFT`,
+#: from the simulator's module, which models it as the sketch does.
 #: `#SOFTLIMIT`'s ceiling on the board (STD_SOFT_MAX: 100 mm), counts.
 MAX_SOFT_COUNTS = 160000
 #: A soft limit is set only while the stage is disabled (the board refuses
@@ -78,7 +79,8 @@ class XyzStageMega(StepperProbe):
     NEEDS_PORT = True
     NEEDS_GAMEPAD = True
     #: The standard's caps, for the schema while the board has not answered:
-    #: the simulator's set, plus the soft limit this sketch has (X-14).
+    #: the base set plus the soft limit this sketch has (X-14). The SIM board
+    #: of this model is built with the same set (`_build_port`).
     ASSUMED_CAPS = frozenset(CAPS) | {SOFT}
 
     PARAMS = {**StepperProbe.PARAMS, **{p.name: p for p in (
@@ -95,7 +97,11 @@ class XyzStageMega(StepperProbe):
         board's simulator behind the real transport; a port name is the
         board. A port object handed in (a test's) is used as it is."""
         if port is None or isinstance(port, str):
-            return MegaStandardPort("SIM" if sim else port, owner=self.NAME)
+            if sim or port in (None, "SIM"):
+                # This sketch has the soft limit: so does its simulator.
+                return MegaStandardPort("SIM", simulator=MegaStandardSim(caps=CAPS + (SOFT,)),
+                                        owner=self.NAME)
+            return MegaStandardPort(port, owner=self.NAME)
         return port
 
     @property

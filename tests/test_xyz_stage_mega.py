@@ -92,7 +92,7 @@ def test_sim_builds_a_standard_board_and_reads_its_caps(make):
     stage = make()
     assert isinstance(stage.port, MegaStandardPort)
     assert isinstance(board(stage), MegaStandardSim)
-    assert stage.caps == frozenset(CAPS)
+    assert stage.caps == frozenset(CAPS) | {"soft"}      # the sketch's set: its SIM board has the soft limit
     state = stage.state
     assert state["link"]["status"] == "simulated"
     assert state["hardware_devices"] == ["MegaStandardPort"]

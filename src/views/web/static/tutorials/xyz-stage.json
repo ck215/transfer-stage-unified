@@ -137,6 +137,12 @@
     },
     {
       "page": "XYZ Stage",
+      "anchor": {"text": "Limit switches"},
+      "say": "An axis that cannot reach one of its switches can carry a soft limit (Configuration, in µm from LS1). It shows here. Until the axis has touched LS1 only a jog moves it; a Step that would pass the limit is refused.",
+      "wait": null
+    },
+    {
+      "page": "XYZ Stage",
       "anchor": {"text": "Stop this model"},
       "say": "Stop this model latches only this stage. Pressed again (it then reads Stopped) it clears just this stage, after asking.",
       "wait": null
