@@ -13,16 +13,20 @@ commit that closes the last item below.
   gate is green on every push to `main` since 2026-10-08. `legacy` is the
   lab's original Tk app, frozen. `mvc-refactor` is gone; the checkout is
   `main/`. `stable` is the packaging ref only.
-- **PR #2 (`fix/xyz-followups`, `60b5a8a`) is open and in flight:** the XYZ
-  follow-ups and the XYZ Mega (a Mega 2560 version of the stage, firmware,
-  simulator, `docs/rebuild/MEGA_STANDARD.md`). It exists only on origin and
-  the owner's Mac, so a fresh clone of `main` does not have it. Its Ubuntu CI
-  gate is red on one test (`test_a_hundred_mode_round_trips_leak_nothing`).
-  Do not merge it from here.
-- **Gates:** on the PR #2 tip, fast suite 5011 passed on macOS (2 known macOS
-  serial-lock failures, 1 load flake) and 4846 passed, 183 skipped, 1 failed
-  on the Ubuntu runner; golden 77 (wire bytes unchanged); Web launch answers
-  `/api/setup` with 200. The old 4194 / 4099 figures are retired.
+- **PR #2 (`fix/xyz-followups`, `5600e72` after the 2026-10-10 sprint) is open,
+  green and mergeable:** the XYZ follow-ups, the XYZ Mega (a Mega 2560 version
+  of the stage, firmware, simulator, `docs/rebuild/MEGA_STANDARD.md`), and the
+  10 Oct landings (docs, the probe-thread leak fix, UX round, Hard reset during
+  a scan, soft travel limits on every XYZ board, the Web finalizer). It exists
+  only on origin and the owner's Mac, so a fresh clone of `main` does not have
+  it. The Ubuntu gate is green at `5600e72`. The merge (`gh pr merge 2 --merge`)
+  is the owner's; do not merge it from here.
+- **Gates:** on the PR #2 tip `5600e72`, the Ubuntu gate is green; the local
+  full suite at `b1cfd65` was 5037 passed, 5 skipped, 13 failed (10 Tk layout
+  tests that fail identically on base `a5bc7a7` on an undocked Mac, 1 tutorial
+  walk under load, 2 known macOS serial-lock tests); golden 77 (wire bytes
+  unchanged); Web launch answers `/api/setup` with 200. The old 4194 / 4099
+  and 5011 / 4846 figures are retired.
 - **No release is cut yet.** `station --version` prints `0.0.0+<sha>` until
   the owner runs `dev/release.sh v1.0.0 --push` on main. Do not cut it.
 - **The force model is the lab's tip-shade estimator** (`src/model/tip_shade.py`,

@@ -131,6 +131,22 @@ How this file is kept:
 - **Ramp rate** is a tier-1 setting on the Temperature Controller, 1 to 20
   s/degC.
 
+- **A soft travel limit on every XYZ board.** `SOFTLIMIT` sets a per-axis
+  travel ceiling measured from LS1 (`#SOFTLIMIT` reads it back); it is held in
+  its own EEPROM block, the bench validator and `limit_seek` honour it, and
+  `limit_seek` needs `MAXTRAVEL` first. An axis is jog-only until LS1 is
+  referenced, and a damaged soft-limit block means jog-only (defaults pending
+  the owner's bench confirmation; nothing flashed yet). The Stepper and Chuck
+  Megas hold a move and a D-pad step size in `long`.
+- **Finalize Data on the Transfer Map page.** The Web view hosts the data
+  finalizer (stills, outcome figure, save through the map's finalize_save) as a
+  model on the map's page; no in-page video playback yet, the page shows the
+  video's place and frame count.
+- **Setup's photo prompt carries the instrument and magnification**, and the
+  Web rail is compact on short and phone screens, keeps a device page's measure
+  near 75rem, shows a legend for its status dots, and offers no ghost Hard
+  reset keys before the launch.
+
 ### Changed
 
 - **The Sample Map is now called the Sample DB** everywhere it is shown.
@@ -206,3 +222,12 @@ How this file is kept:
 - A Classic launch records what it flashed, so the Launcher no longer reads a
   board flashed by Classic as current.
 - The wire is unchanged for every existing board (golden 77).
+- **Hard reset is refused during a scan, and a scan during a reset** (the two
+  can no longer overlap).
+- **Setup's Update row names no environment variable** in dev/SIM, and a
+  guest's locked On/SIM key is disabled rather than shown live.
+- **Tests no longer leak interlock threads.** Golden replays and the
+  silent-board test armed probes and never stopped their threads, which made
+  `test_a_hundred_mode_round_trips_leak_nothing` fail on the Ubuntu gate; every
+  armed probe now stops its threads at teardown. The station itself never
+  leaked.

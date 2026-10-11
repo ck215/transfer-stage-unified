@@ -423,12 +423,12 @@ the lead screw is unmeasured, and the page says so.
 
 ## Resume here (2026-10-09 evening, bench paused)
 
-Branch `fix/xyz-followups` (60b5a8a), PR #2, open and mergeable, 25 commits ahead of `main`; exists only on origin and the owner's Mac. It holds:
+Branch `fix/xyz-followups`: `60b5a8a` on 9 Oct, `5600e72` after the 2026-10-10 lead sprint (see "Landed 2026-10-10" below), PR #2, open and mergeable, pushed; exists only on origin and the owner's Mac. It holds:
 - the XYZ follow-ups: µsteps lines, gates, per-move acceleration, the favicon fix, the pin flicker fix;
 - the `firmware-safety` agent profile;
 - the **XYZ Mega**: `docs/rebuild/MEGA_STANDARD.md`, `firmware/xyz_stage_mega/`, the Probe-family caps and `#` channel, `XYZ Stage (Mega)`, its simulator, and the wiring sheet `dev/equipment_test/xyz_mega/`.
 
-Gate: macOS, 5011 passed (2 known macOS serial-lock failures and 1 load flake that passes alone 3/3), golden 77. **CI on PR #2 is RED on Ubuntu** (run 38006660927, `60b5a8a`): 1 failed, 4846 passed, 183 skipped, 1 xfailed; the failure is `tests/test_probe.py::test_a_hundred_mode_round_trips_leak_nothing` (an interlock thread left alive), the same test the macOS notes call a load flake. It is a hard failure on the runner, so PR #2 is not merge-ready until that test or the leak it catches is fixed (being fixed 2026-10-10 by the lead; a `rb-leak` worktree exists). Every push to `main` since 2026-10-08 19:17Z is green.
+Gate, 9 Oct at `60b5a8a`: macOS 5011 passed (2 known macOS serial-lock failures and 1 failure then called a load flake), golden 77; **CI on PR #2 was RED on Ubuntu** (run 38006660927): `tests/test_probe.py::test_a_hundred_mode_round_trips_leak_nothing`, an interlock thread left alive. **Resolved 2026-10-10:** it was never a load flake and never a station leak; golden replays and the silent-board test armed probes and never stopped their threads (103 and 17 interlocks outlived their tests), fixed in `26e71d3`, `5bdfedd`, `a949051` (merge `7528a26`). **CI on PR #2 is GREEN on Ubuntu at `5600e72`** (run 38095160253) and at `a949051`. PR #2 is merge-ready: `gh pr merge 2 --merge` is the owner's call. Local full suite at `b1cfd65`: 5037 passed, 5 skipped, 13 failed, of which 10 are the display-dependent Tk layout tests (fail identically on base `a5bc7a7` on the undocked Mac), 1 the first-trial tutorial walk under full-suite load (passes alone), 2 the known macOS serial-lock tests. Every push to `main` since 2026-10-08 19:17Z is green.
 
 **Bench (owner + lead, live, Teensy 3.5 validator, one axis at a time):**
 - **Axis 2 is validated:**
@@ -436,7 +436,7 @@ Gate: macOS, 5011 passed (2 known macOS serial-lock failures and 1 load flake th
   - LS1 and LS2 trip and the interlock stops on each;
   - travel between switches 51.94 mm;
   - TEST LIMITS parks it centred.
-- **Axis 1** carries a custom probe extension and **cannot reach its + switch (LS2)**. Only LS1 protects it. It needs a software travel limit measured from LS1 (not built yet).
+- **Axis 1** carries a custom probe extension and **cannot reach its + switch (LS2)**. Only LS1 protects it. It needs a software travel limit measured from LS1 (built 2026-10-10 as `SOFTLIMIT` on every XYZ board, the validator and `limit_seek`, merge `b1cfd65`; not yet flashed or measured on the bench, see "Landed 2026-10-10").
 - **Wiring faults found and fixed:**
   - the DB9 pin-4 return was on Teensy 3.3 V, not GND, so pressed switches read HIGH and were invisible to pull-up firmware;
   - both coil-B wires (then coil A) had open contacts: TEST COILS showed open_a/open_b, and the motor wiggled while the step count advanced.
@@ -552,34 +552,19 @@ bench-only", `CHECKPOINT.md`) are not repeated.
   runs also wrote `transfer_map.sqlite` and `sample_map.sqlite` under
   `~/transfer-stage-runs/stores/op@lab.test/` before `01b1b53`: check and
   delete them.
-- **ENG: the Web finalizer.** The data finalizer exists only in the frozen
-  Qt view (`model/finalize.py`, `views/qt_finalizer.py`); the Web "Finalize
-  data..." is not built.
+- **DONE 2026-10-10: the Web finalizer** (`b8fb9f8`, `a60ab57`, merge `1e9abe1`): Finalize Data on the Transfer Map page, hosted model `src/model/finalizer.py`. Tail: no in-page video playback (see "Landed 2026-10-10").
 - **ENG: per-user layout, `default_fields`, `sample_base`.** Reserved
   settings keys only (`53abaee`); nothing reads them.
 - **ENG: a design and accessibility pass with the primary skills**
   (`impeccable`, `web-design-guidelines`), owed since 2026-10-08 (not
   installed on the lab PC; the night's passes used design-critique,
   accessibility-review and ux-copy).
-- **ENG (in flight 2026-10-10, `rb-ux` / `rb-fixes`; check before starting):**
-  - Hard reset is not refused during a scan (architecture audit #13, the
-    Hard reset half).
-  - The Update row shows env-var names in dev/SIM (UX 10-08 #14).
-  - Settings' Transfer Map / Sample DB rows read "Sign in to use" beside a key
-    "On" (UX 10-08 #19; `e8b5895` renamed the caption only, the rest is
-    unverified).
-  - The 2026-10-07 UX proposals never built: compact rail on short and phone
-    screens (the rail at 1366x768 is a daily bench monitor size), the
-    device-page measure at about 75rem, ghost Hard reset keys before the
-    launch, the tutorial card over the entry head's state word, the
-    status-dot legend, the bench scale. The dim theme (proposal 7) is an
-    owner ruling, not an engineering item.
-- **ENG: housekeeping the audit found.** The `xfail` at
-  `tests/test_model_contract.py:344` (CON-13) was not removed after
-  `c56cf76`; `tests/test_view_web_tutorial.py:561` still carries the
-  first-trial xfail; `src/model/rgb_analysis.py:2011` names the deleted
-  `views/picking.py`; the heater sketch banners still say "PROPOSED - NOT
-  FLASHED" (leave until the bench items pass).
+- **DONE 2026-10-10 (`rb-ux` merge `5053762`, `rb-fixes` merges `e317ae5` and `1e9abe1`):**
+  - Hard reset is refused during a scan, and a scan during a reset (`0dd4a57`, architecture audit #13b).
+  - The Update row no longer names an env var in dev/SIM (`571d95d`, `d2a1fb5`; UX 10-08 #14).
+  - A guest's locked On/SIM key is disabled (`571d95d`, UX 10-08 #19b); the "Sign in to use" caption itself stays as renamed in `e8b5895`.
+  - The 2026-10-07 UX proposals: compact rail on short and phone screens (`5bbbe9b`), device-page measure about 75rem (`5cecc75`), status-dot legend (`79fcaf0`, `bd12016`), Setup table and tutorial card placement (`7e795c7`), no ghost Hard reset keys (in `5053762`). **Still ENG:** the bench scale. The dim theme (proposal 7) remains an owner ruling.
+- **Housekeeping the audit found, DONE 2026-10-10 except the banners:** the CON-13 `xfail` removed (`a60468e`); the first-trial tutorial xfail removed, the walk passes headless (`e96937d`, `3e023b6`); the `rgb_analysis.py` comment no longer cites `views/picking.py` (`8822d89`). **Left on purpose:** the heater sketch banners still say "PROPOSED - NOT FLASHED" until the bench items pass.
 - **OWNER: cleanup after the bench items above:** delete
   `origin/heater-firmware-watchdog-proposal` and
   `origin/chuck-firmware-runaway-guards-proposal` (both ahead 0 of
