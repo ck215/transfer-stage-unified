@@ -1,5 +1,7 @@
 # Bugfix plan — post-push sweep
 
+Status column added 2026-10-11 from code and git evidence; method: for each row the code it names was grepped on `fix/xyz-followups` (a superset of `main`), `git log -S` / `--grep` found the commit that did it and its diff was read, and `STATUS.md`, `CHECKPOINT.md` and `CHANGELOG.md` were read for recorded closures; the plan's own prose was never taken as proof. Each Status cell is one of DONE <sha>, DONE-UNSHA'D (fixed in code, no commit names it; file:line), OPEN (defect still in code; file:line), BENCH (owner) (Tier B and every row routed to the owner or the bench), SUPERSEDED <by what> (Tk- and Qt-only rows are retired by the Web-only ruling, `79ae0bd`), or UNVERIFIED <reason>. Tier E, left out of the request, was done too. Tiers R and S already had a Status column, so theirs is headed "Status 2026-10-11". The two "closed" round tables at the top carry no column. Line numbers are as of `fix/xyz-followups` at `83a3bb2`; `red_monitor.py` is now `rgb_analysis.py`.
+
 Written 2026-09-23 from a sweep of `station/`, `tests/station/` and
 `docs/rebuild/` (now `src/` and `tests/`: paths below are corrected for the
 move, line numbers are as of `8228991`) for swallowed exceptions, unverified constants, stop-path
