@@ -272,13 +272,19 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             # values are "normal" and so not drawn in tier 1 (status by
             # exception), and the default disclosure texts. Served rather
             # than copied into app.js, so the three views read one list.
-            from views.base import GATE_WORDS
+            from panel import Panel
+            from views.base import ENABLED_BY_WORDS, GATE_WORDS
             return self._send_json(200, {
                 "quiet_values": sorted(theme.QUIET_VALUES),
                 "tier_labels": {str(k): v for k, v in theme.TIER_LABELS.items()},
                 # Why a control is greyed, in both directions (views.base.GATE_WORDS):
                 # [when the mode is in disabled_when, when it is missing from enabled_when].
                 "gate_words": {k: list(v) for k, v in GATE_WORDS.items()},
+                # ... and for a control held by an off tick box (O20).
+                "enabled_by_words": dict(ENABLED_BY_WORDS),
+                # The commands that take hardware down: never held by the
+                # busy guard (O23, Panel.UNGATED_COMMANDS).
+                "ungated_commands": sorted(Panel.UNGATED_COMMANDS),
                 "watchdog": {"warn_seconds": WebView.WARN_SECONDS,
                              "stop_seconds": WebView.STOP_SECONDS},
                 # The event titles the page keys on (ARCH-4): served, so a

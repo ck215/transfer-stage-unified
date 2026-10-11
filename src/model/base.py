@@ -386,6 +386,16 @@ class Model(Panel):
     def is_faulted(self):
         return bool(self._fault_reason)
 
+    #: What a view says at the head of a faulted entry (O23). A mode of
+    #: "fault" is a disable that did not reach the board; any other fault is
+    #: still a device in a state the operator cannot vouch for. A model whose
+    #: faults mean something else overrides this.
+    @property
+    def fault_line(self):
+        if self.gate_mode == "fault":
+            return "Disable failed. Treat as live."
+        return "Faulted. Treat as live."
+
     @property
     def is_active(self):
         """Moving, heating or recording right now."""
@@ -413,7 +423,8 @@ class Model(Panel):
         snapshot.update({
             "is_estopped": self.is_estopped, "is_faulted": self.is_faulted,
             "stop_confirmed": self.stop_confirmed, "latched_at": self.latched_at,
-            "fault": self.fault, "is_active": self.is_active,
+            "fault": self.fault, "fault_line": self.fault_line,
+            "is_active": self.is_active,
             # Seconds since this model's own loop last reported alive; None
             # when it has no loop to be stale about (an idle recorder).
             "age": (round(time.monotonic() - self._updated_at, 2)

@@ -320,6 +320,9 @@ function titler(control) {
 //: and "Not in manual mode" can never be swapped again. One table, three
 //: views: none is kept here (the one this file had said the inverse).
 let GATE_WORDS = {};
+//: The `enabled_by` direction of the same table (O20): {named, unnamed},
+//: served as `enabled_by_words` (`views.base.ENABLED_BY_WORDS`).
+let ENABLED_BY_WORDS = {};
 
 /** One side of a gate word's pair, or '' when the table has none. */
 function gateWords(mode, direction) {
@@ -331,11 +334,13 @@ function gateWords(mode, direction) {
  *  the element's own gate lists in the same order as the Python - plus the
  *  one rule it does not cover, a Setup row's Launch tick (`enabled_by`).
  *  '' when the element is live. */
-function gateReason(element, mode, values) {
+function gateReason(element, mode, values, captionOf) {
   const by = element.enabled_by;
   if (by && values !== null && values !== undefined && !values[by]) {
     if (element.enabled_by_reason) return String(element.enabled_by_reason);
-    return /_enabled$/.test(by) ? 'Tick Launch on this row first' : 'Not available yet';
+    const name = captionOf ? captionOf(by) : '';
+    return name ? String(ENABLED_BY_WORDS.named || '').replace('{name}', name)
+      : String(ENABLED_BY_WORDS.unnamed || '');
   }
   const word = String(mode || '');
   const disabled = element.disabled_when || [];
@@ -349,22 +354,24 @@ function gateReason(element, mode, values) {
 }
 
 //: The commands that take hardware DOWN (`Panel.UNGATED_COMMANDS` in
-//: src/panel.py, plus `set_mode` to "disabled"): never held back by the
-//: busy guard (O10), because a stop must never wait for an earlier press.
-const STOP_COMMANDS = ['toggle_estop', 'estop', 'clear_estop', 'halt', 'stop_run', 'extend_idle'];
+//: src/panel.py, served as `ungated_commands` in /api/theme.json - O23 -
+//: plus `set_mode` to "disabled"): never held back by the busy guard (O10),
+//: because a stop must never wait for an earlier press.
+let STOP_COMMANDS = [];
 
 function isStopCommand(element, args) {
   const command = element && element.command;
+  // `element.stop` is the schema's own mark, so a stop is never held even
+  // before the served list has arrived.
+  if (element && element.stop) return true;
   if (STOP_COMMANDS.indexOf(command) !== -1) return true;
   return command === 'set_mode' && Array.isArray(args) && args[0] === 'disabled';
 }
 
-/** O4: what a faulted entry says at its head. A probe in FAULT is a
- *  disable that did not reach the board; any other fault is still a device
- *  in a state this page cannot vouch for. */
+/** O4: what a faulted entry says at its head - the model's own
+ *  `fault_line` (O23), which names what its fault means. */
 function faultWords(state) {
-  return state && state.mode === 'fault' ? 'Disable failed. Treat as live.'
-    : 'Faulted. Treat as live.';
+  return (state && state.fault_line) ? String(state.fault_line) : '';
 }
 
 /** Names as a sentence says them: "A", "A and B", "A, B and C". */
@@ -2860,6 +2867,12 @@ class PanelCard {
     return result;
   }
 
+  /** The caption of the entry that holds `attr`, for "Tick Launch first". */
+  captionOfAttr(attr) {
+    const widget = this.widgets.find((w) => w.element.model_attr === attr);
+    return widget ? captionText(widget.element).replace(/\s*:\s*$/, '') : '';
+  }
+
   widgetFor(element) {
     return this.widgets.find((w) => w.element === element) || null;
   }
@@ -3051,7 +3064,7 @@ class PanelCard {
       widget.setEnabled(isEnabled(element, mode, this.values) && !held);
       // L3: a disabled control says why, from the same gate.
       if (widget.setReason) {
-        widget.setReason(held ? (link.reason || '') : gateReason(element, mode, this.values));
+        widget.setReason(held ? (link.reason || '') : gateReason(element, mode, this.values, (attr) => this.captionOfAttr(attr)));
       }
       if (widget.onlyWhileOn && widget.node) {
         const off = !isEnabled(element, mode, this.values);
@@ -4343,6 +4356,8 @@ class Dashboard {
       QUIET_VALUES = new Set((rules && rules.quiet_values) || []);
       if (rules && rules.tier_labels) TIER_LABELS = Object.assign({}, TIER_LABELS, rules.tier_labels);
       if (rules && rules.gate_words) GATE_WORDS = rules.gate_words;
+      if (rules && rules.enabled_by_words) ENABLED_BY_WORDS = rules.enabled_by_words;
+      if (rules && rules.ungated_commands) STOP_COMMANDS = rules.ungated_commands;
       if (rules && rules.watchdog) WATCHDOG = rules.watchdog;
       // The titles the page keys on, as core names them (events.py).
       const titles = (rules && rules.event_titles) || {};

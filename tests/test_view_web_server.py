@@ -3283,6 +3283,16 @@ def test_theme_json_serves_the_gate_words_and_the_watchdog_seconds(station):
     assert body["watchdog"] == {"warn_seconds": 5.0, "stop_seconds": 15.0}
 
 
+def test_theme_json_serves_the_enabled_by_words_and_the_ungated_commands(station):
+    """O20, O23: the tick-box phrase and the stop list come from core."""
+    from panel import Panel
+    from views.base import ENABLED_BY_WORDS
+    view, _, _ = station
+    _, body = _get(view, "/api/theme.json")
+    assert body["enabled_by_words"] == ENABLED_BY_WORDS
+    assert body["ungated_commands"] == sorted(Panel.UNGATED_COMMANDS)
+
+
 # ==========================================================================
 # Tier N + O (2026-09-26): the idle countdown, the close-tab warning, the
 # energized and faulted marks, the Quit end state, live regions, busy
@@ -3384,6 +3394,10 @@ class ModeProbe(Panel):
                          "stop_confirmed": self.stop_confirmed if self.is_estopped else None,
                          "is_active": self.is_active, "is_faulted": self.is_faulted,
                          "fault": self.fault, "devices": {},
+                         # What core's Model.state serves (O23).
+                         "fault_line": ("Disable failed. Treat as live."
+                                        if self.mode == "fault"
+                                        else "Faulted. Treat as live."),
                          "idle_remaining": self.idle_remaining,
                          "idle_warn_seconds": self.idle_warn_seconds})
         return snapshot

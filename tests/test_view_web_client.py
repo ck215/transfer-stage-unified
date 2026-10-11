@@ -131,7 +131,7 @@ def test_a_refusal_is_a_status_line_on_the_card_and_never_a_popup():
     assert "this.showRefused(" in run
     assert "alert(" not in run, "a refusal opened a modal"
     assert "putText(this.status, reason)" in _body(
-        r"showRefused\(reason, element\) \{(.*?)\n  \}")
+        r"showRefused\(reason, element, attr\) \{(.*?)\n  \}")
 
 
 def test_only_an_event_that_asks_to_be_acknowledged_opens_a_modal():
@@ -1207,8 +1207,23 @@ def test_a_disabled_command_says_the_gates_reason():
     got = _node_value(f"(() => {{ GATE_WORDS = {table}; return [{calls}]; }})()")
     assert got == [gate_reason(e, m) for e, m in cases], got
     assert got[1] == "In manual mode" and got[2] == "In autonomous mode", got
-    ticked = _node_value("gateReason({enabled_by: 'probe_enabled'}, 'ready', {probe_enabled: false})")
-    assert ticked == "Tick Launch on this row first"
+    # O20: the tick-box direction is `views.base`'s too, served as
+    # `enabled_by_words`; no phrase of its own is kept here.
+    from views.base import ENABLED_BY_WORDS
+    words = json.dumps(dict(ENABLED_BY_WORDS))
+    element = {"enabled_by": "probe_enabled"}
+    caption = lambda attr: "Launch"
+    ticked = _node_value(
+        f"(() => {{ ENABLED_BY_WORDS = {words}; return ["
+        f"gateReason({json.dumps(element)}, 'ready', {{probe_enabled: false}}, () => 'Launch'),"
+        f"gateReason({json.dumps(element)}, 'ready', {{probe_enabled: false}}),"
+        f"gateReason({json.dumps(dict(element, enabled_by_reason='Choose a sample first'))}, 'ready', {{probe_enabled: false}}),"
+        f"gateReason({json.dumps(element)}, 'ready', {{probe_enabled: true}})]; }})()")
+    assert ticked == [gate_reason(element, "ready", {"probe_enabled": False}, caption),
+                      gate_reason(element, "ready", {"probe_enabled": False}),
+                      "Choose a sample first", ""], ticked
+    assert ticked[0] == "Tick Launch first" and ticked[1] == "Not available yet"
+    assert "Tick Launch" not in CODE
     assert "MODE_REASONS" not in CODE and "Not in manual mode" not in CODE, (
         "app.js keeps its own gate table")
 
@@ -1756,6 +1771,14 @@ def test_a_refusal_is_placed_by_its_attribute_not_its_caption():
     """O21: `fieldFor` takes `result.attr`; no caption matching remains."""
     assert "fieldFor(attr)" in APP_JS and "w.element.model_attr === attr" in APP_JS
     assert "said.indexOf(caption" not in APP_JS
+
+
+def test_the_page_keeps_no_copy_of_the_stop_list_or_the_fault_sentence():
+    """O23: STOP_COMMANDS is filled from /api/theme.json; the fault sentence
+    is the model's `state.fault_line`."""
+    assert "let STOP_COMMANDS = [];" in APP_JS and "rules.ungated_commands" in APP_JS
+    assert "Disable failed. Treat" not in APP_JS and "Faulted. Treat" not in APP_JS
+    assert "state.fault_line" in APP_JS
 
 
 def test_the_figure_fetch_sends_if_none_match_and_leaves_a_304_alone():

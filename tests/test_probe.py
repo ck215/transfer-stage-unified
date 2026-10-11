@@ -1933,3 +1933,12 @@ def test_the_mode_toggles_say_power_down_not_stop(cls):
             assert "press to stop" not in toggle["true_text"].lower()
     finally:
         probe._stop_threads()
+
+
+def test_the_state_carries_the_fault_line_the_page_shows(probe):
+    """O23: the sentence at the head of a faulted entry is the model's, in
+    `state`, not copied into each view."""
+    probe._fault("The disable was not confirmed")
+    state = probe.state
+    assert state["is_faulted"] and state["mode"] == "fault"
+    assert state["fault_line"] == "Disable failed. Treat as live."
