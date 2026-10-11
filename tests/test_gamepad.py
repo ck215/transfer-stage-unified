@@ -1207,3 +1207,43 @@ def test_the_chuck_steps_from_the_same_press():
         assert len(made.steps()) == 1
     finally:
         made.close()
+
+
+# ----------------------------------------------------------------------
+# BUGFIX_PLAN C3: an SDL failure that is swallowed leaves a debug line
+# ----------------------------------------------------------------------
+
+def test_every_swallowed_sdl_failure_leaves_a_debug_line(hub, fake_sdl, monkeypatch):
+    seen = []
+    monkeypatch.setattr(events, "debug",
+                        lambda title, message, **kw: seen.append(title))
+    assert hub.open()
+
+    def boom(*a, **k):
+        raise FakeError("SDL gone")
+
+    # a joystick whose name cannot be read: that index is skipped, and said
+    fake_sdl.joystick.devices[0].is_dead = True
+    assert hub._enumerate() is not None
+    assert "Joystick name unreadable" in seen
+
+    # the count read fails: 0, and said
+    monkeypatch.setattr(fake_sdl.joystick, "get_count", boom)
+    assert hub.count == 0
+    assert "Count failed" in seen
+
+    # the pump fails: no raise, and said
+    monkeypatch.setattr(fake_sdl.event, "pump", boom)
+    hub.pump()
+    assert "Pump failed" in seen
+
+    # a handle that will not quit on release: no raise, and said
+    class Stubborn:
+        quit = boom
+    hub._handles["Owner"] = (0, Stubborn())
+    hub.release("Owner")
+    assert "Handle quit failed" in seen
+
+    # the layout probe on a dead joystick: False, and said
+    assert Gamepad._is_dinput(fake_sdl.joystick.devices[0]) is False
+    assert "Layout probe failed" in seen

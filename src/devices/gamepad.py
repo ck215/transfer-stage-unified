@@ -197,8 +197,10 @@ class GamepadHub:
                 for index in range(pygame.joystick.get_count()):
                     try:
                         found.append((index, pygame.joystick.Joystick(index).get_name()))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        events.debug("Joystick name unreadable",
+                                     f"index {index}: {exc}", source=self.SOURCE,
+                                     every=5.0)
                 return found
             except Exception as exc:
                 events.debug("Enumeration failed", str(exc), source=self.SOURCE,
@@ -219,7 +221,9 @@ class GamepadHub:
         with self._lock:
             try:
                 return pygame.joystick.get_count()
-            except Exception:
+            except Exception as exc:
+                events.debug("Count failed", str(exc), source=self.SOURCE,
+                             every=5.0)
                 return 0
 
     def is_connected(self, index):
@@ -273,8 +277,9 @@ class GamepadHub:
         if entry is not None:
             try:
                 entry[1].quit()
-            except Exception:
-                pass
+            except Exception as exc:
+                events.debug("Handle quit failed", f"{owner_id}: {exc}",
+                             source=self.SOURCE, every=5.0)
             events.debug("Claim released", f"{owner_id} let go of index {entry[0]}",
                          source=self.SOURCE)
 
@@ -305,8 +310,9 @@ class GamepadHub:
         with self._lock:
             try:
                 pygame.event.pump()
-            except Exception:
-                pass
+            except Exception as exc:
+                events.debug("Pump failed", str(exc), source=self.SOURCE,
+                             every=5.0)
 
 
 #: The process-wide hub. `Gamepad(owner_id)` uses it unless handed another.
@@ -823,7 +829,9 @@ class Gamepad(Device):
         """Logitech F310 switch position. Was `_is_dinput_mode`."""
         try:
             return joystick.get_numaxes() <= 4 and joystick.get_numbuttons() >= 8
-        except Exception:
+        except Exception as exc:
+            events.debug("Layout probe failed", str(exc), source=GamepadHub.SOURCE,
+                         every=5.0)
             return False
 
     def _release_binding(self, reason):
