@@ -2007,8 +2007,9 @@ class RgbAnalysis(Model):
         """The desktop as PNG for the browser's region picker: `{"image":
         bytes, "left", "top", "width", "height"}` (the full-size bounds the
         picture was scaled from), or None when capture is unavailable."""
-        # Full size since 2026-09-28: the desktop pickers draw it 1:1 in
-        # desktop coordinates (views/picking.py); the browser scales it.
+        # Full size since 2026-09-28, so the region is chosen in desktop
+        # coordinates; the Web view's region picker scales it to fit. (The
+        # desktop pickers, views/picking.py, are deleted.)
         png, bounds = self.screen.screenshot_png(max_width=None)
         return None if png is None else {"image": png, **bounds}
 

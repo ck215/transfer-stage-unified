@@ -104,7 +104,7 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   the fix. A `STATION_BACKUP_DIR` elsewhere on a dropped mount is still made
   as typed (would need a "must exist" rule; documented).
 
-### 4. The Quit backup wait sits inside the Controller's close loop (documented)
+### 4. The Quit backup wait sits inside the Controller's close loop (fixed `c05fb7c`)
 
 - **Evidence.** `Controller._close_models` (`controller.py:136-156`) closes the
   models one at a time and notifies `"removed"` after each.
@@ -188,7 +188,7 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
 
 ## P2: structure
 
-### 8. The picture preview's cost on every state poll (documented)
+### 8. The picture preview's cost on every state poll (fixed `d7aa310`)
 
 - **Evidence.** `Panel.state` (`src/panel.py:86-100`) reads every `model_attr`
   in the schema on every poll, whatever the phase. The Transfer Map's
@@ -213,7 +213,7 @@ an unmounted drive), the **picture preview's cost on every state poll**, a
   falls back to the next picture on disk, and the Shown line agrees with
   the frame (`1f0759d`).
 
-### 9. `Controller.add` after `close()`; `remove` drops before it stops (documented; core)
+### 9. `Controller.add` after `close()`; `remove` drops before it stops (fixed `979d177`, `d08a732`, `901150e`)
 
 - **Evidence.** `add` (`controller.py:46-60`) never checks `_closed`; a Hard
   reset or sign-in that lands during a tab-close quit adds a model nobody

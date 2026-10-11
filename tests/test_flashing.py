@@ -94,7 +94,7 @@ def test_the_board_table_matches_the_sketch_directories_on_disk():
 
 def test_the_chips_are_three_megas_and_the_teensy_boards():
     assert [cfg["board"] for cfg in flashing.BOARDS.values()] == [
-        "mega", "mega", "mega", "teensy", "teensy"]
+        "mega", "mega", "mega", "teensy", "teensy", "mega"]
 
 
 def test_the_xyz_stage_is_three_tagged_boards_and_station_only():
@@ -102,7 +102,23 @@ def test_the_xyz_stage_is_three_tagged_boards_and_station_only():
     assert flashing.stamp_keys("XYZ Stage") == ["XYZ Stage X", "XYZ Stage Y", "XYZ Stage Z"]
     assert flashing.stamp_keys("DC Probe") == ["DC Probe"]
     assert "XYZ Stage" not in flashing.STABLE_BOARDS
-    assert set(flashing.STABLE_BOARDS) == set(flashing.BOARDS) - {"XYZ Stage"}
+    assert set(flashing.STABLE_BOARDS) == set(flashing.BOARDS) - {"XYZ Stage",
+                                                                   "XYZ Stage (Mega)"}
+
+
+def test_the_xyz_stage_mega_is_one_untagged_mega_and_station_only():
+    """MEGA_STANDARD (2026-10-09): one Mega 2560 for all three axes, named
+    by its identity letter (`DEV: m caps=...`); flashed like the probes."""
+    assert flashing.BOARDS["XYZ Stage (Mega)"] == {"dir": "xyz_stage_mega", "board": "mega"}
+    assert list(flashing.BOARDS).index("XYZ Stage (Mega)") == \
+        list(flashing.BOARDS).index("XYZ Stage") + 1
+    assert flashing.stamp_keys("XYZ Stage (Mega)") == ["XYZ Stage (Mega)"]
+    assert "XYZ Stage (Mega)" not in flashing.STABLE_BOARDS
+    assert "XYZ Stage (Mega)" in station_setup.MODEL_TYPES
+    tools = flashing.Tools("cli", "loader")
+    (argv,) = flashing.commands("XYZ Stage (Mega)", "COM9", Path("/fw"), tools)
+    assert argv[:5] == ["cli", "compile", "--fqbn", flashing.MEGA_FQBN, "--upload"]
+    assert "COM9" in argv and str(Path("/fw") / "xyz_stage_mega") in argv
 
 
 # -- detection: Setup's handshake, COM ports included (OP-12) -------------------

@@ -21,6 +21,10 @@ How this file is kept:
 
 ### Added
 
+- **The finalizer plays the trial's video.** Finalize Data on the Transfer Map's
+  page shows the recorded video in the page, with its frame count, and you can
+  scrub through it; a trial with no playable file keeps the words that say
+  where it is.
 - **The whole display is recorded.** Every trial keeps a full-screen video
   at the display's own resolution (`screen.mp4`, which survives a crash),
   the time of every frame (`frames.csv`), every device's readings on one
@@ -69,9 +73,97 @@ How this file is kept:
 - **The lab's stage changes** (2026-10-07): the Transfer Map store at version
   8 (chip, flake and cut on every trial, the invalid flag, six tip-shade
   columns), the tip-shade force, and the lab's offline shade tools.
+- **Sign in first, then Setup, then the Dashboard.** The station opens on a
+  sign-in screen (email and password, or Guest, which has the tool controls
+  only and no Transfer Map or Sample DB). Setup is full-screen and becomes
+  Settings after the launch; a step strip shows where you are. The account
+  menu holds your name, your backup controls and sign-out.
+- **The Dashboard** (formerly "Overview"): standard tiles for every device,
+  Wide or normal, reordered by drag or by keyboard and kept per browser.
+- **Your own store.** The Transfer Map and the Sample DB each keep a store per
+  user. A user with no store is asked where to create one, never handed
+  another user's. A store on a cloud drive is worked on through a local copy
+  that syncs back after saves and at Quit; neither copy is overwritten
+  silently.
+- **Backups.** After saves and at Quit the stores are copied to
+  `QMDL_Drive/transfer-stage-dbs/<email>/<store>-<hash>/` (or the folder you
+  set). A backup never goes into a store's own folder, never copies a video
+  still being recorded, and an unmounted `QMDL_Drive` says it is unavailable.
+- **Hard reset** on every device row: it stops the device, closes it and
+  opens it fresh, on a changed port or gamepad too. It is never refused for
+  being energized, and one runs at a time.
+- **Start a device plugged in after the launch,** from Settings: refresh,
+  pick its port, Start. Changing a port and pressing **Apply & reset** moves
+  the device to it.
+- **One station per computer.** Closing the browser tab asks "Leave site?"
+  while anything is energized; leaving stops every device and quits the
+  station. A second launch opens the running station's page instead of
+  starting another. Serial ports are exclusive. One page is live; **Take
+  over** moves it, and Stop works from any window.
+- **The Launcher flashes first.** The Launcher icon and Classic flash any
+  board whose firmware differs before they start, and never start the app
+  unflashed behind held ports.
+- **Picture previews** (100x, then 50x, then lower) on the Sample DB and in a
+  trial's setup; a missing file falls back to the next picture and says so.
+- **Tutorials for every device,** and "End tutorial" in place of a second
+  Stop.
+- **A local device log.** One file, `device_log.sqlite`, beside the station's
+  logs records every event and a once-a-second snapshot of every open
+  device, kept 14 days or 200 MB. The heater's readings are also kept with
+  each trial.
+- **The XYZ Stage.** The 50 mm XYZ stage, one Teensy 3.5 and TMC2209 per
+  axis: the Stepper Probe's modes, vector Step and gamepad jog, per-axis Zero
+  and Home, readouts in um and um/s. The row launches only when all three
+  boards are found (otherwise "fault: Z missing"), and the three are flashed
+  all or none. Limit switches stop the axis; a host silent for 10 s disables
+  the drivers. Bench values (home speeds and direction, the 0.5 mm parked
+  travel) are provisional.
+- **The XYZ Stage (Mega)** (branch `fix/xyz-followups`): the same stage on
+  one Mega 2560 with three TMC2209 drivers, under the lab's new Mega
+  standard (`docs/rebuild/MEGA_STANDARD.md`). The Probe family learns what a
+  board can do from its identity and talks to it on a new `#` channel;
+  boards that predate it are unchanged on the wire.
+- **The Stepper Probe in physical units.** Distances, step sizes and speeds
+  are entered in um and um/s with the stored counts in small type beneath
+  (the 0.625 um/count scale is unverified). A Step past the board's 16-bit
+  move is refused.
+- **Firmware guards.** The heater drops to a setpoint of 0 about 5 s after
+  the host disappears, and reads setpoint 0 back before any close. The chuck
+  has the stepper's runaway guards: coils free until Enable, a 250 ms
+  jog dead-man, a stop in a D-pad step. These are on `main` and not yet
+  bench-validated.
+- **Ramp rate** is a tier-1 setting on the Temperature Controller, 1 to 20
+  s/degC.
+
+- **A soft travel limit on every XYZ board.** `SOFTLIMIT` sets a per-axis
+  travel ceiling measured from LS1 (`#SOFTLIMIT` reads it back); it is held in
+  its own EEPROM block, the bench validator and `limit_seek` honour it, and
+  `limit_seek` needs `MAXTRAVEL` first. An axis is jog-only until LS1 is
+  referenced, and a damaged soft-limit block means jog-only (defaults pending
+  the owner's bench confirmation; nothing flashed yet). The Stepper and Chuck
+  Megas hold a move and a D-pad step size in `long`.
+- **Finalize Data on the Transfer Map page.** The Web view hosts the data
+  finalizer (stills, outcome figure, save through the map's finalize_save) as a
+  model on the map's page; no in-page video playback yet, the page shows the
+  video's place and frame count.
+- **Setup's photo prompt carries the instrument and magnification**, and the
+  Web rail is compact on short and phone screens, keeps a device page's measure
+  near 75rem, shows a legend for its status dots, and offers no ghost Hard
+  reset keys before the launch.
 
 ### Changed
 
+- **A Guest's locked rows say so in the state,** not only in their Status
+  words: the Transfer Map and Sample DB rows carry `locked` and `enabled`
+  false, and the Web view disables their Run key from that.
+- **The rail's alert lines are bounded and scroll** on every screen (11rem on
+  a desktop, 6.5rem on a short one, 7rem on a phone), take keyboard focus,
+  and never push the rail's foot out of view.
+- **The simulated boards model the soft travel limit** as the firmware does
+  (`SOFTLIMIT` / `#SOFTLIMIT`: jog-only until LS1 is referenced, shortened
+  moves, a stop on the limit, a damaged block means jog-only), so a SIM XYZ
+  Stage and a SIM XYZ Stage (Mega) behave like the sketches; both stages'
+  tutorials say what a soft limit does.
 - **The Sample Map is now called the Sample DB** everywhere it is shown.
   Settings saved under the old name still apply.
 
@@ -102,6 +194,24 @@ How this file is kept:
   windows are retired and exit.
 - **Branches.** `main` is the pre-release line and `legacy` is the lab's
   original Tk app; the original app's packaging ref stays `stable`.
+- **Settings order:** Devices and Launch first, then Update and Firmware,
+  then the station defaults; the Update and Flash keys are ink, not coloured.
+  At phone width a row's port reads whole.
+- **Status dots** are shapes as well as colours: an error is a diamond.
+- **Copy.** Real plurals ("1 device detected"), "trial store" throughout,
+  the link-lost words say Hard reset it in Settings, Return in a text entry
+  presses the key that takes it, and the skip link reads "Skip to the main
+  content". A photo's file name gives its magnification; nothing is ever
+  silently 10x.
+- **Transfer Map Setup** shows Tilt and Speed ("Now:") under the entries that
+  override them. A prompt opened in a tile no longer grows without end, and
+  focus moves to the next step's first control when a prompt closes.
+- **The Rotator in simulation** shows no stale badge or red dot, and its Stop
+  confirms.
+- **Probe boards' ordinary text** is logged as "Board Says", not counted as a
+  garbled packet.
+- **A vector Step on the XYZ Stage** scales each axis's acceleration too, so
+  the axes arrive together.
 
 ### Removed
 
@@ -114,3 +224,25 @@ How this file is kept:
   is stored and drawn once at review.
 - The trial's tilt is collected with every trial but no longer drawn or
   demanded.
+
+### Fixed
+
+- A Quit waits for the store backup only after every device has closed, in
+  one 15 s budget; closing a device while a Hard reset or Quit runs can no
+  longer orphan it.
+- An Arm pressed while a user is being switched is refused; a stop during
+  Arm's stage still always wins (no "Stage Taken" with nothing armed).
+- Typing in an entry while the station polls no longer flips the box back to
+  the old value.
+- A Classic launch records what it flashed, so the Launcher no longer reads a
+  board flashed by Classic as current.
+- The wire is unchanged for every existing board (golden 77).
+- **Hard reset is refused during a scan, and a scan during a reset** (the two
+  can no longer overlap).
+- **Setup's Update row names no environment variable** in dev/SIM, and a
+  guest's locked On/SIM key is disabled rather than shown live.
+- **Tests no longer leak interlock threads.** Golden replays and the
+  silent-board test armed probes and never stopped their threads, which made
+  `test_a_hundred_mode_round_trips_leak_nothing` fail on the Ubuntu gate; every
+  armed probe now stops its threads at teardown. The station itself never
+  leaked.

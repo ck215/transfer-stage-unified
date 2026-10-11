@@ -631,3 +631,92 @@ def test_info_names_the_firmware_and_protocol_as_the_firmware_does(clock):
     info = board(clock, tag="Y").ask("INFO")[0]
     assert " fw=xyz_stage_axis proto=1 axis=Y " in info + " ", info
     assert "protocol=" not in info
+
+
+# -- per-move acceleration: a vector Step's axes arrive together (2026-10-09) ---------
+
+def _legs(clock, lines):
+    """Each line on its own enabled board, all sent at the same instant (the
+    station writes a Step's MOVEs back to back). Advances one tick at a time
+    -> ([arrival seconds per board], [[(t, pos_mm)] per board]); arrival
+    is the first tick at which the board no longer moves."""
+    boards = [board(clock) for _ in lines]
+    for sim in boards:
+        sim.ask("ENABLE")
+    started = clock.t
+    for sim, line in zip(boards, lines):
+        assert sim.ask(line)[0].startswith("OK MOVE"), line
+    arrived, paths = [None] * len(boards), [[] for _ in boards]
+    while None in arrived and clock.t - started < 10.0:
+        clock.advance(AxisSimulator.STEP_S)
+        for i, sim in enumerate(boards):
+            paths[i].append((clock.t - started, sim.position_mm))
+            if arrived[i] is None and not sim.moving:
+                arrived[i] = clock.t - started
+    return arrived, paths
+
+
+def _off_the_line(paths, dx, dy):
+    """The farthest the two axes' joint position strays from the straight
+    line of (dx, dy), in mm, sampled every tick."""
+    length = (dx * dx + dy * dy) ** 0.5
+    return max(abs(x * dy - y * dx) / length
+               for (_t, x), (_u, y) in zip(paths[0], paths[1]))
+
+
+def test_a_move_with_its_own_acceleration_runs_the_same_trapezoid_scaled(clock):
+    """The station's vector Step: a short diagonal (0.6, 0.2) mm at the full
+    2.5 mm/s, the board's ACCEL 2.5 mm/s^2. With the speed share alone both
+    axes ramp at the one ACCEL, so the shorter leg finishes far earlier and
+    the path bows. With the acceleration share as well (|d_i|/|d| x ACCEL)
+    each axis runs the same trapezoid scaled to its distance: they finish
+    within one simulator tick and never leave the line by a microstep."""
+    dx, dy, v, a = 0.6, 0.2, 2.5, AxisSimulator.DEFAULT_ACCEL_MM_S2
+    length = (dx * dx + dy * dy) ** 0.5
+    kx, ky = dx / length, dy / length
+    microstep = 1.0 / 1600
+    old, old_paths = _legs(clock, [f"MOVE {dx:.4f} {kx * v:.4f}", f"MOVE {dy:.4f} {ky * v:.4f}"])
+    assert abs(old[0] - old[1]) > 0.2, old
+    assert _off_the_line(old_paths, dx, dy) > 0.02
+    new, new_paths = _legs(clock, [f"MOVE {dx:.4f} {kx * v:.4f} {kx * a:.4f}",
+                                   f"MOVE {dy:.4f} {ky * v:.4f} {ky * a:.4f}"])
+    assert abs(new[0] - new[1]) <= AxisSimulator.STEP_S + 1e-9, new
+    assert _off_the_line(new_paths, dx, dy) <= microstep, _off_the_line(new_paths, dx, dy)
+    assert new_paths[0][-1][1] == pytest.approx(dx) and new_paths[1][-1][1] == pytest.approx(dy)
+
+
+def test_the_acceleration_argument_is_clamped_refused_and_for_that_move_only(clock):
+    """As the firmware: clamped to ACCEL's bounds (0.25..25), refused with
+    `bad-accel` when it is not a number above 0 (nothing moves), echoed in
+    the reply, and the board's ACCEL is back once the move has stopped; a
+    two-argument MOVE and its reply are unchanged."""
+    sim = enabled_board(clock)
+    assert sim.ask("MOVE 0.1 0.5 100") == [
+        "OK MOVE mm=0.10000 target_mm=0.10000 clamped=0 accel_mm_s2=25.0000 accel_clamped=1"]
+    clock.advance(1.0)
+    assert sim.ask("MOVETO 0 0.5 0.01") == [
+        "OK MOVETO mm=-0.10000 target_mm=0.00000 clamped=0 accel_mm_s2=0.2500 accel_clamped=1"]
+    clock.advance(5.0)
+    for bad in ("MOVE 1 0.5 0", "MOVE 1 0.5 -2", "MOVE 1 0.5 fast", "MOVETO 3 0.5 nan"):
+        assert sim.ask(bad) == [f"ERR {bad.split()[0]} bad-accel"], bad
+        assert not sim.moving
+    assert " accel_mm_s2=2.5000 " in sim.ask("INFO")[0]
+    # A STOP mid-move decelerates at the move's own rate, then the board's is back.
+    sim.ask("MOVE 5 0.5 0.25")
+    clock.advance(0.5)
+    sim.ask("STOP")
+    clock.advance(2.0)
+    assert not sim.moving
+
+    def timed(axis_board):
+        reply = axis_board.ask("MOVE 0.3 2.5")[0]
+        started = clock.t
+        while axis_board.moving:
+            clock.advance(AxisSimulator.STEP_S)
+        return reply, clock.t - started
+
+    fresh = enabled_board(clock)
+    after, plain = timed(sim), timed(fresh)
+    assert plain[0] == "OK MOVE mm=0.30000 target_mm=0.30000 clamped=0"
+    assert after[0].startswith("OK MOVE mm=0.30000 ") and "accel" not in after[0]
+    assert abs(after[1] - plain[1]) <= AxisSimulator.STEP_S + 1e-9, (after, plain)

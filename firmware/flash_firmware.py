@@ -88,6 +88,7 @@ DEVICES = {
     "Chuck Positioner": {"dir": "chuck_firmware", "board": "mega"},
     "Temperature Controller": {"dir": "temp_controller", "board": "teensy"},
     "XYZ Stage": {"dir": "xyz_stage_axis", "board": "teensy", "tags": ["X", "Y", "Z"]},
+    "XYZ Stage (Mega)": {"dir": "xyz_stage_mega", "board": "mega"},
 }
 
 

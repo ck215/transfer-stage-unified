@@ -188,6 +188,12 @@ def test_a_guest_launch_has_no_transfer_map_or_sample_map(setup):
         "Transfer Map", "Sample DB", "RGB Analysis")], setup.configs
     statuses = {row["name"]: row["status"] for row in setup.state["rows"]}
     assert statuses["Transfer Map"] == statuses["Sample DB"] == "sign in to use"
+    rows = {row["name"]: row for row in setup.state["rows"]}
+    for name in ("Transfer Map", "Sample DB"):
+        # The state says it; a view never reads the Status words.
+        assert rows[name]["locked"] is True and rows[name]["enabled"] is False, rows[name]
+        assert rows[name]["needs_port"] is False, rows[name]
+    assert rows["Stepper Probe"]["locked"] is False
     assert set(setup.state["account"]["signed_in_only"]) >= {
         "Transfer Map", "Sample DB", "RGB Analysis"}
 

@@ -160,9 +160,11 @@ def test_model_types_is_every_model_class_keyed_by_its_name():
     assert list(MODEL_TYPES) == ["Stepper Probe", "DC Probe",
                                  "Chuck Positioner", "Temperature Controller",
                                  "Rotator", "XYZ Stage",                       # 2026-10-09
-                                 "RGB Analysis", "Transfer Map",               # Tier S; RG-3
+                                 "XYZ Stage (Mega)",                           # MEGA_STANDARD
+                                 "RGB Analysis", "Finalize Data",              # RG-3; the Web finalizer, hosted
+                                 "Transfer Map",                                # Tier S
                                  *(["Sample DB"] if station_setup.SAMPLE_MAP_ENABLED else [])]
-    assert len(set(MODEL_TYPES.values())) == 8 + station_setup.SAMPLE_MAP_ENABLED
+    assert len(set(MODEL_TYPES.values())) == 10 + station_setup.SAMPLE_MAP_ENABLED
 
 
 def test_model_types_is_the_only_list_of_models(panel, fake_types):
@@ -737,7 +739,7 @@ def test_state_carries_the_scan_phase_ports_rows_and_launch_flag(panel):
                      "needs_port": True, "needs_gamepad": True,
                      "is_chosen": False, "seen_after_launch": None,
                      "pending_reset": False, "can_start": False,
-                     "options_command": "port_options"}
+                     "options_command": "port_options", "locked": False}
     assert state["values"]["scan_status"] == "not scanned yet"
     assert state["scan"]["elapsed"] is None and state["scan"]["port"] is None
 
@@ -1554,7 +1556,13 @@ def test_no_test_ever_fetches_the_startup_check_is_off(fake_types):
     assert panel._update_thread is None
     assert updater.checks == 0
     assert panel.has_update is False
-    assert panel.state["values"]["station_version"] == "unknown"
+    # The check is off, the version is not: the Station row says what is
+    # running, never "unknown" (UX audit 10-08 #14 core change), and the
+    # Updates sentence does not name an environment variable.
+    panel._version_thread.join(5.0)
+    assert panel.state["values"]["station_version"] == "abc1234, 2026-09-28"
+    assert "STATION_" not in panel.state["values"]["update_status"]
+    assert panel.state["values"]["update_status"] == Setup.CHECK_OFF
 
 
 def test_the_startup_check_runs_on_a_thread_and_publishes(fake_types, checking):
@@ -2790,3 +2798,61 @@ def test_answering_the_sign_in_screen_rescans_when_the_station_has_scanned(
     panel.open_as_guest()
     assert scans == [1]
 
+
+
+class _ClaimsAScanOnAcquire:
+    """A `_reset_lock` stand-in: the instant a reset takes it, a scan has
+    already been claimed (the race between Hard reset's first scan check and
+    its lock)."""
+    def __init__(self, panel, real):
+        self.panel, self.real = panel, real
+
+    def acquire(self, blocking=True):
+        got = self.real.acquire(blocking)
+
+        class Alive:
+            def is_alive(self):
+                return True
+        self.panel._scan_thread = Alive()
+        return got
+
+    def release(self):
+        self.real.release()
+
+    def locked(self):
+        return self.real.locked()
+
+
+def test_a_scan_that_starts_while_a_hard_reset_runs_is_refused(panel, fake_types,
+                                                              monkeypatch):
+    """Arch audit #13, Hard reset half: Refresh inside the reset window must
+    not probe the port being reopened. The scan is refused under Setup's
+    lock while the reset holds `_reset_lock`."""
+    _launch_alpha_on(panel)
+    seen = []
+    original = fake_types["Alpha"].open
+
+    def open_(self):
+        try:
+            panel.scan()
+            seen.append("started")
+        except Refused as refusal:
+            seen.append(refusal.reason)
+        return original(self)
+    monkeypatch.setattr(fake_types["Alpha"], "open", open_)
+    assert panel.run("hard_reset_alpha", args=(True,)).is_ok
+    assert len(seen) == 1 and "reset" in seen[0].lower(), seen
+    assert not panel.is_scanning
+    panel.scan()                       # the lock is released: a scan works again
+    panel.cancel_scan()
+
+
+def test_hard_reset_rechecks_for_a_scan_inside_its_lock(panel):
+    """A scan claimed between the first check and the reset's lock is still
+    caught: nothing is stopped or closed."""
+    old = _launch_alpha_on(panel)
+    panel._reset_lock = _ClaimsAScanOnAcquire(panel, panel._reset_lock)
+    with pytest.raises(Refused, match="scan"):
+        panel.hard_reset_alpha(True)
+    assert panel.controller._model("Alpha") is old and old.closed == 0
+    panel._scan_thread = None

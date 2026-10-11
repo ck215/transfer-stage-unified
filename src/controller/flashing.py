@@ -68,12 +68,19 @@ BOARDS = {
     # `DEV: x <axis>` (its EEPROM tag). All three are flashed, each on its own
     # port, or none (owner ruling 2026-10-09). Its libraries are MEGA_LIBS'
     # (TMCStepper, AccelStepper): arduino-cli libraries serve every core.
+    # The axis boards are Teensy 3.5, like the heater: every Teensy here is
+    # built for TEENSY_FQBN and loaded with --mcu=TEENSY_MCU. The sketch also
+    # builds for a 4.1, but a 4.1 axis board is flashed by hand.
     "XYZ Stage": {"dir": "xyz_stage_axis", "board": "teensy", "tags": ["X", "Y", "Z"]},
+    # The XYZ stage on one Mega 2560, all three axes (MEGA_STANDARD,
+    # 2026-10-09): the frame protocol plus the `#` channel. One board,
+    # answering `DEV: m caps=...`; station-only, like the XYZ Stage.
+    "XYZ Stage (Mega)": {"dir": "xyz_stage_mega", "board": "mega"},
 }
 
 #: The boards the stable app (the lab's original app, frozen) has firmware
-#: for. The XYZ Stage is station-only: a switch to stable leaves its boards
-#: on the station's firmware.
+#: for. The XYZ Stage and the XYZ Stage (Mega) are station-only: a switch to
+#: stable leaves their boards on the station's firmware.
 STABLE_BOARDS = ("Stepper Probe", "DC Probe", "Chuck Positioner", "Temperature Controller")
 
 #: The status a tagged board gets when detection found an incomplete set.

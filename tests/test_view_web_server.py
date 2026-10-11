@@ -1789,7 +1789,7 @@ def sim_station():
     signed = setup.run("sign_in", {"account_email": "sim@uci.edu",
                                    "account_password": "correct-horse-4821"})
     assert signed.is_ok, signed.reason
-    assert len(setup.launch()) == 9   # the devices (XYZ Stage 2026-10-09), the Transfer Map (Tier S), the Sample DB
+    assert len(setup.launch()) == 11  # the devices (XYZ Stage and XYZ Stage (Mega), 2026-10-09), the Transfer Map (Tier S) with its RGB analysis and Finalize Data, the Sample DB
     view = WebView(controller, setup, port=0, open_browser=False)
     assert view.open(), "the server did not bind an ephemeral port"
     try:
@@ -2723,9 +2723,9 @@ def test_closing_the_shown_device_returns_to_the_overview(sim_station, tmp_path)
     assert out["device"]["shown"] == ["Rotator"], out
     after = out["after"]
     assert after["current"] == ["Dashboard"] and "Rotator" not in after["nav"], after
-    # Nine models (Tier S, the Sample DB, the XYZ Stage), one closed; Red
+    # Ten models (Tier S, the Sample DB, the two XYZ Stages), one closed; Red
     # Percent is on the Map's entry (D).
-    assert len(after["shown"]) == 7 and after["wells"] == 0, after
+    assert len(after["shown"]) == 8 and after["wells"] == 0, after
 
 
 # --------------------------------------------------------------------------
@@ -3003,7 +3003,7 @@ def test_every_pressable_is_a_real_target(sim_station, tmp_path):
         assert not small, (key, small)
         short = [t for t in out[key] if t["command"] and t["h"] < 35.5]
         assert not short, (key, short)
-    assert out["setup"]["ticks"] == 0 and out["setup"]["resets"] == 6, out["setup"]   # one per port row
+    assert out["setup"]["ticks"] == 0 and out["setup"]["resets"] == 7, out["setup"]   # one per port row
 
 
 @needs_browser
@@ -4030,10 +4030,31 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
       await until(() => document.querySelector('.card.is-opened .disclosure[data-tier="3"]'), 8000);
       await page.click('.card.is-opened .disclosure[data-tier="2"]');
       await page.click('.card.is-opened .disclosure[data-tier="3"]');
-      await sleep(300);
+      // Layout quiet, not a fixed sleep: the page's geometry is the same on
+      // five reads in a row (100 ms apart) and the fonts are in. How long
+      // that takes is the machine's business (C-8: the old 300 ms sleeps).
+      const geometry = () => page.evaluate(async () => {
+        await document.fonts.ready;
+        const c = document.querySelector('.card.is-opened');
+        const at = (n) => { const b = n.getBoundingClientRect(); return [b.top, b.height].join(','); };
+        return [at(c.querySelector('.card-head')), at(c.querySelector('.card-body')),
+                at(c.querySelector('.tier-well')), document.documentElement.scrollHeight,
+                c.classList.contains('is-pinned')].join('|');
+      });
+      const quiet = async () => {
+        let last = '', same = 0;
+        for (let i = 0; i < 100 && same < 5; i++) {
+          const now = await geometry();
+          same = now === last ? same + 1 : 0;
+          last = now;
+          await sleep(100);
+        }
+        return same >= 5;
+      };
+      if (!(await quiet())) throw new Error('the device page never settled');
       // From the top of the page, whatever focus scrolled into view.
       await page.evaluate(() => window.scrollTo(0, 0));
-      await sleep(300);
+      await until(() => window.scrollY === 0);
       const top = () => page.evaluate(() => {
         const c = document.querySelector('.card.is-opened');
         return { head: c.querySelector('.card-head').getBoundingClientRect().top,
@@ -4045,7 +4066,8 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
       });
       const before = await top();
       await page.evaluate(() => window.scrollBy(0, 160));
-      await sleep(300);
+      await until(() => window.scrollY > 60);
+      if (!(await quiet())) throw new Error('the device page never settled after the scroll');
       return { before, after: await top(),
                pinned: await page.evaluate(() => document.querySelector('.card.is-opened').classList.contains('is-pinned')) };
     """, tmp_path)
@@ -4062,6 +4084,44 @@ def test_o15_the_device_page_pins_its_head_and_tier_one(sim_station, tmp_path):
     assert abs((after["body"] - after["head"]) - before["headHeight"]) < 1.5, out
     assert after["well"] < before["well"] - 60, "the details did not scroll under it"
     assert out["pinned"], "the entry was not pinned"
+
+
+@needs_browser
+def test_o15_the_pin_does_not_flicker_at_the_limit(sim_station, tmp_path):
+    """O15: at 800 tall the XYZ Stage's tier 1 (435 px unpinned, 460 pinned)
+    sits next to the pin limit (445.8 px). The decision measures tier 1 as
+    it would be unpinned, so the pinned state never changes over 2.5 s,
+    through resizes that re-run it."""
+    view, controller = sim_station
+    out = _browse(view, r"""
+      await page.setViewport({ width: 1400, height: 800 });
+      await until(() => document.querySelector('#model-nav [data-model="XYZ Stage"]'), 8000);
+      if (await page.evaluate(() => document.getElementById('setup-drawer').classList.contains('open'))) {
+        await page.click('#drawer-close'); await sleep(300);
+      }
+      await page.click('#model-nav [data-model="XYZ Stage"]');
+      await until(() => document.querySelector('.card.is-opened .disclosure[data-tier="3"]'), 8000);
+      await sleep(500);
+      await page.evaluate(() => {
+        const c = document.querySelector('.card.is-opened');
+        window.__pinFlips = 0;
+        window.__pinStart = c.classList.contains('is-pinned');
+        new MutationObserver(() => {
+          const now = c.classList.contains('is-pinned');
+          if (now !== window.__pinLast) window.__pinFlips++;
+          window.__pinLast = now;
+        }).observe(c, { attributes: true, attributeFilter: ['class'] });
+        window.__pinLast = window.__pinStart;
+      });
+      for (let i = 0; i < 10; i++) {
+        await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+        await sleep(250);
+      }
+      return await page.evaluate(() => ({ flips: window.__pinFlips, start: window.__pinStart,
+        end: document.querySelector('.card.is-opened').classList.contains('is-pinned') }));
+    """, tmp_path)
+    assert out["flips"] == 0 and out["start"] == out["end"], out
+    assert out["end"], "tier 1 (435 px) is under the 445.8 px limit: pinned"
 
 
 @needs_browser
@@ -4141,9 +4201,9 @@ def test_o16_under_640_the_chord_hint_and_every_stop_mark_stay_visible(sim_stati
       });
     """, tmp_path)
     assert out["hint"], out
-    # Nine models (Tier S, the Sample DB, the XYZ Stage), eight links: Red
+    # Ten models (Tier S, the Sample DB, the two XYZ Stages), nine links: Red
     # Percent's stop is folded into the Transfer Map's link (D, 2026-09-28).
-    assert len(out["marks"]) == 8 and all(out["marks"]), out
+    assert len(out["marks"]) == 9 and all(out["marks"]), out
     assert not out["sideways"], out
 
 

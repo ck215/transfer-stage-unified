@@ -63,9 +63,11 @@ float manual_z_value = 0.0;
 int dpad_LR = 0;
 int dpad_UD = 0;
 int bumpers = 0;
-int x_step_size = 16;
-int y_step_size = 16;
-int z_step_size = 16;
+// long, not int (2026-10-10, review R-2 / X-19): an int is 16 bits on the Mega, and a jog packet may carry a step
+// size up to 100000 (fieldIsStep), so a size past 32767 wrapped and the D-pad step ran the other way.
+long x_step_size = 16;
+long y_step_size = 16;
+long z_step_size = 16;
 
 // Possible states of the motors in autonomous mode
 bool ALL_AXES_DONE = true; 
@@ -300,10 +302,11 @@ void parseSerialAuto() // only run if there is new information in the buffer
                 YAXIS_DIST = getValue(incomingData, ',', 8).toInt(); 
                 ZAXIS_DIST = -1*getValue(incomingData, ',', 9).toInt(); 
 
-                // calculate these once, as they are used twice
-                int x_steps = XAXIS_SIZE*XAXIS_DIST;
-                int y_steps = YAXIS_SIZE*YAXIS_DIST;
-                int z_steps = ZAXIS_SIZE*ZAXIS_DIST;
+                // calculate these once, as they are used twice. long, not int (2026-10-10, review R-2 / X-19): size x
+                // distance past 32767 counts wrapped in the Mega's 16-bit int and the axis ran the other way.
+                long x_steps = XAXIS_SIZE*XAXIS_DIST;
+                long y_steps = YAXIS_SIZE*YAXIS_DIST;
+                long z_steps = ZAXIS_SIZE*ZAXIS_DIST;
 
                 // Serial2.print("New Targets -> X: "); Serial2.print(x_steps);
                 // Serial2.print(" | Y: "); Serial2.print(y_steps);
@@ -356,7 +359,7 @@ void parseHybridSerial() {
 
         // --- OPTION A: MANUAL BINARY PACKET ---
         if (peekChar == 0xAA) {
-            if (Serial.available() >= BINARY_PACKET_SIZE) {
+            if (Serial.available() >= (int)BINARY_PACKET_SIZE) {   // (int): available() is an int; -Wsign-compare
                 Serial.readBytes((char*)&incomingPacket, BINARY_PACKET_SIZE);
                 if (incomingPacket.mode == 1 && !packetIsValid()) {
                     incomingPacket.mode = 255;     // ignored below
@@ -673,7 +676,6 @@ void status_update_print_serial()
             return;
         }
         long current_x_count, current_y_count, current_z_count;
-        long abs_x, abs_y, abs_z;
         
         current_x_count = x_axis.currentPosition(); 
         current_y_count = y_axis.currentPosition();

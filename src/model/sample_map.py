@@ -140,6 +140,10 @@ class _BackedStore(ss.SampleStore):
         return result
 
 
+#: What the photo dialog (`file_open`) carries beside the path, in the order
+#: its command takes them after the path.
+PHOTO_CHOICES = ("image_instrument", "image_magnification")
+
 #: "100x", "_50X", "chip 20x" in a file name: a magnification the store
 #: knows, not part of a longer number ("1000x") or word ("10xyz").
 _NAMED_MAGNIFICATION = re.compile(r"(?<![0-9])([0-9]+)\s*x(?![a-z0-9])", re.IGNORECASE)
@@ -1694,10 +1698,29 @@ class SampleMap(store_choice.StorePrompt, Model):
     def _level_text(self):
         return self.SEP.join(x for x in self._picked() if x)
 
-    def add_image(self, path):
+    def _take_photo_choices(self, instrument, magnification):
+        """The photo dialog's own instrument and magnification (`file_open`
+        `choices`, in that order): checked together, then set, so a bad one
+        changes nothing. Blank keeps the page's pick."""
+        instrument, magnification = str(instrument or ""), str(magnification or "")
+        if instrument and instrument not in ss.IMAGE_INSTRUMENTS:
+            self.set_image_instrument(instrument)           # raises the refusal
+        if magnification:
+            try:
+                ss._magnification(magnification)
+            except ss.StoreRefused as refusal:
+                raise Refused(str(refusal))
+        if instrument:
+            self.set_image_instrument(instrument)
+        if magnification:
+            self.set_image_magnification(magnification)
+
+    def add_image(self, path, instrument="", magnification=""):
         """Copy the chosen picture, unmodified, into the store at the picked
         level (the flake, else the chip, else the sample) with the instrument
-        and magnification picked above."""
+        and magnification picked above (or the photo dialog's own, which
+        become the page's pick)."""
+        self._take_photo_choices(instrument, magnification)
         sample_id, chip, flake = self._picked()
         if not sample_id:
             raise Refused("Pick the sample the picture belongs to, then add it.")
@@ -1874,11 +1897,14 @@ class SampleMap(store_choice.StorePrompt, Model):
         self._touch()
         return name
 
-    def stage_photo(self, path):
-        """Remember a picture for the Add button (nothing is copied yet)."""
+    def stage_photo(self, path, instrument="", magnification=""):
+        """Remember a picture for the Add button (nothing is copied yet).
+        The dialog's own instrument and magnification, when given, become
+        the page's pick (`_take_photo_choices`)."""
         source = Path(str(path))
         if not source.is_file():
             raise Refused(f"Could not find the picture {source.name or source}.")
+        self._take_photo_choices(instrument, magnification)
         magnification = self._photo_magnification(source)
         self._staged.append(str(source))
         self._staged_mags.append(magnification)
@@ -2293,6 +2319,7 @@ class SampleMap(store_choice.StorePrompt, Model):
                                  "image_magnification_options"),
                     sch.file_open("Add photo\u2026", "stage_photo",
                                   extensions=self.IMAGE_EXTENSIONS,
+                                  choices=PHOTO_CHOICES,
                                   placeholder="Path to a saved microscope image "
                                               f"(photo {need})"),
                     sch.readonly("Photos", "staged_text"),
@@ -2335,6 +2362,7 @@ class SampleMap(store_choice.StorePrompt, Model):
                 sch.entry("Image note", "image_note", P["image_note"]),
                 sch.file_open("Add photo\u2026", "add_image",
                               extensions=self.IMAGE_EXTENSIONS, role="go",
+                              choices=PHOTO_CHOICES,
                               placeholder="Path to a saved microscope image"),
                 sch.readonly("Pictures", "image_text"),
                 sch.log_stream("Image log", "image_log"),

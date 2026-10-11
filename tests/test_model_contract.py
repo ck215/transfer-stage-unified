@@ -336,12 +336,10 @@ def test_estop_latches_calls_halt_and_reports(model, monkeypatch):
 
 
 def test_estop_confirms_in_sim(model):
-    """Informational: a SIM model that cannot confirm its stop makes every
-    FULL STOP in a simulated session read 'did not confirm'. The SIM Rotator
-    is that model today (CON-13, owner call): an expected failure, not a
-    licence."""
-    if type(model).__name__ == "Rotator":
-        pytest.xfail("CON-13: the SIM Rotator has no device, so its stop never confirms")
+    """A SIM model that cannot confirm its stop would make every FULL STOP in
+    a simulated session read 'did not confirm'. The SIM Rotator builds no
+    stage, so nothing it commanded can be moving: its stop confirms
+    (CON-13, fixed c56cf76)."""
     assert model.estop() is True
 
 

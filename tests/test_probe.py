@@ -403,8 +403,18 @@ def test_a_hundred_mode_round_trips_leak_nothing(probe):
     times with a bound pad and the loops running. The last mode wins, the
     wire ends at rest (the zero frame of the final entry, then at most the
     pump's one neutral packet for leaving manual, I-4.2), and exactly one
-    interlock and one pump thread are alive."""
+    interlock and one pump thread are alive.
+
+    Counted among the threads this test starts, never the whole process by
+    name: an armed probe that another test built and never closed keeps its
+    `interlock-Stepper Probe` thread until INTERLOCK_TIMEOUT, by design (it
+    is the thread that powers an energized board down). CI run 38006660927
+    counted 17 such threads, left by `test_mega_standard.py`'s golden replay,
+    as this probe's (18 == 1). The bystander is that situation, on purpose."""
     import struct
+    bystander, _port, _pad = make_probe()
+    bystander.set_mode("autonomous")    # armed: its interlock is running
+    before = set(threading.enumerate())
     probe._start_threads()
     try:
         for _ in range(100):
@@ -417,12 +427,14 @@ def test_a_hundred_mode_round_trips_leak_nothing(probe):
             v == 0 for v in struct.unpack("<ffffffffff", p[2:])[:3]))
         assert tail[-1] == ZERO or (neutral(tail[-1]) and tail[-2] == ZERO), tail
         alive = [t.name for t in threading.enumerate()
-                 if t.name.endswith(f"-{probe.NAME}") and t.is_alive()]
+                 if t not in before and t.name.endswith(f"-{probe.NAME}")
+                 and t.is_alive()]
         assert alive.count(f"interlock-{probe.NAME}") == 1, alive
         assert alive.count(f"gamepad-{probe.NAME}") == 1, alive
         assert alive.count(f"sample-{probe.NAME}") == 1, alive
     finally:
         probe._stop_threads()
+        bystander.close()
 
 
 @pytest.mark.mode
@@ -1755,25 +1767,31 @@ def test_steps_per_second_still_apply_by_name_to_the_stored_value():
     """Profiles and older callers write steps/s; it applies, is bounded by the
     class ceiling, and the dial follows."""
     chuck, _, _ = make_probe(ChuckPositioner)
-    assert chuck.apply_defaults({"full_speed": 300, "man_full_speed": 150}) == {}
-    assert (chuck.full_speed, chuck.man_full_speed) == (300, 150)
-    assert (chuck.full_speed_pct, chuck.man_full_speed_pct) == (50, 25)
-    refused = chuck.apply_defaults({"full_speed": 3200})
-    assert "full_speed" in refused and chuck.full_speed == 300
-    assert chuck.run("_commit", inputs={"full_speed": "450"}).is_ok
-    assert chuck.full_speed_pct == 75
-    chuck.set_mode("autonomous")
-    assert chuck.run("_commit", inputs={"full_speed": "100"}).is_refused
-    assert chuck.run("_commit", inputs={"full_speed_pct": "10"}).is_refused
+    try:
+        assert chuck.apply_defaults({"full_speed": 300, "man_full_speed": 150}) == {}
+        assert (chuck.full_speed, chuck.man_full_speed) == (300, 150)
+        assert (chuck.full_speed_pct, chuck.man_full_speed_pct) == (50, 25)
+        refused = chuck.apply_defaults({"full_speed": 3200})
+        assert "full_speed" in refused and chuck.full_speed == 300
+        assert chuck.run("_commit", inputs={"full_speed": "450"}).is_ok
+        assert chuck.full_speed_pct == 75
+        chuck.set_mode("autonomous")
+        assert chuck.run("_commit", inputs={"full_speed": "100"}).is_refused
+        assert chuck.run("_commit", inputs={"full_speed_pct": "10"}).is_refused
+    finally:
+        chuck._stop_threads()       # the armed interlock, as the fixture does
 
 
 def test_the_wire_carries_the_steps_per_second_the_dial_set():
     p, port, _ = make_probe(StepperProbe)
-    p.full_speed_pct = 50
-    p.x_dist = 3
-    p.step()
-    sent = [w.payload for w in port.calls if b"1600.0" in w.payload]
-    assert sent, [w.payload for w in port.calls]
+    try:
+        p.full_speed_pct = 50
+        p.x_dist = 3
+        p.step()
+        sent = [w.payload for w in port.calls if b"1600.0" in w.payload]
+        assert sent, [w.payload for w in port.calls]
+    finally:
+        p._stop_threads()           # step() armed it; stop its interlock
 
 
 @pytest.mark.schema

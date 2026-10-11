@@ -75,7 +75,7 @@ rules are a test (`tests/test_architecture.py`): `views/` never imports
 Read, in order: `docs/rebuild/STATUS.md`, `BRIEF.md` (paths pre-move; its
 banner maps them), `BUGFIX_PLAN.md` (Tier A code defects, B bench, C
 hygiene, D `legacy`-vs-rebuild regressions).
-`tests/TEST_PORTING.md` lists the VOID families (features removed on purpose).
+STATUS.md History (2026-10-10) lists the VOID families (features removed on purpose); TEST_PORTING.md is closed and deleted.
 
 ## Run and test (from `main/` or your `rb-*` worktree; the one venv is `main/.venv`)
 

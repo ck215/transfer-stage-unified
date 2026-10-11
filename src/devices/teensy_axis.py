@@ -404,6 +404,16 @@ class AxisSimulator:
     comment and `stepIsr`; PROTOCOL.md "Safety behaviour"): which end a switch
     guards is unknown at boot and learned from its first filtered change while
     the axis moves; a switch pressed with its end unconfirmed is "parked".
+
+    The soft travel limit is the firmware's too (PROTOCOL.md "Soft travel
+    limit", X-14): `SOFTLIMIT [mm]` is kept like the EEPROM word it is (it
+    survives a reboot), the reference is where LS1 last tripped while the axis
+    moved toward the end it guards, an axis with a limit is jog-only until
+    LS1 has given that reference, a MOVE past the limit is shortened onto it,
+    a jog decelerates onto it, the step ISR halts anything else about to pass
+    it, a damaged block means jog-only, and the reference is lost with the
+    step count. Test hooks: `damage_soft()`, `soft_reference()`,
+    `refuse_softlimit`.
     """
 
     FULL_STEPS_PER_REV = 200
@@ -412,6 +422,9 @@ class AxisSimulator:
     MAX_SPEED_MM_S = 2.5
     DEFAULT_SPEED_MM_S = 0.5
     DEFAULT_ACCEL_MM_S2 = 2.5
+    #: ACCEL's clamp (MIN_ACCEL_MM, MAX_ACCEL_MM), which MOVE's per-move
+    #: acceleration shares.
+    ACCEL_RANGE_MM_S2 = (0.25, 25.0)
     MAX_CURRENT_MA = 1000
     JOG_TIMEOUT_MS = 250
     DEFAULT_HOST_TIMEOUT_MS = 2500
@@ -427,6 +440,8 @@ class AxisSimulator:
     #: The firmware's HOST_SILENT_OFF_MS: silence after EVT FAULT host-timeout
     #: that switches the outputs off.
     HOST_SILENT_OFF_MS = 10000
+    #: The firmware's SOFT_MAX_MM: SOFTLIMIT refuses more (bad-arg).
+    SOFT_MAX_MM = 100.0
     #: The simulated HOME (time-compressed: a simulated session homes in a
     #: moment). The real sequence and its speeds are the firmware's.
     HOME_SEEK_MM_S = 5.0
@@ -462,6 +477,13 @@ class AxisSimulator:
         self.refuse_enable = None
         self.home_seek_mm_s = self.HOME_SEEK_MM_S
         self.home_approach_mm_s = self.HOME_APPROACH_MM_S
+        #: The soft travel limit's EEPROM block (it survives `_boot`): the
+        #: travel in um from LS1, 0 = none (an erased block), and whether the
+        #: block is damaged (jogs only until SOFTLIMIT writes it again).
+        self._soft_um = 0
+        self.soft_damaged = False
+        #: A reason SOFTLIMIT <mm> answers with ERR (e.g. "eeprom-verify-failed").
+        self.refuse_softlimit = None
         self._forced = [False, False]
         self._lock = threading.RLock()
         self._out = bytearray()
@@ -482,6 +504,8 @@ class AxisSimulator:
         self._v = 0.0
         self._target = None          # counter mm
         self._cruise = None
+        #: A MOVE's own acceleration (mm/s^2), until that motion is at rest.
+        self._ramp = None
         self._jog = None             # mm/s, signed; 0.0 = decelerating to rest
         self._jog_capped = False     # the jog was started while a switch was parked
         self._last_jog = now
@@ -508,6 +532,11 @@ class AxisSimulator:
         self._ls_hi = [self._phys + self.PARKED_TRAVEL_MM] * 2
         self._timed_out_at = None    # when EVT FAULT host-timeout stopped the axis
         self._home_was = self._home_level()
+        # The soft limit's reference lives in RAM: where LS1 last tripped, in
+        # the stage frame (so ZERO, HOME and MICROSTEPS keep the limit on the
+        # same carriage position); None until LS1 gives it after a boot.
+        self._soft_ref = None
+        self._soft_halted = False    # the ISR halted a motion on the limit this tick
 
     @property
     def step_mm(self):
@@ -535,6 +564,83 @@ class AxisSimulator:
         """Pressed with its end not confirmed (firmware lsParked)."""
         return self._tripped(index) and not self._ls_firm[index]
 
+    # -- the soft travel limit (X-14) --------------------------------------------
+    @property
+    def soft_mm(self):
+        """SOFTLIMIT's travel from LS1, mm (0: none)."""
+        return self._soft_um / 1000.0
+
+    def _soft_limit_phys(self):
+        """The limit in force, stage frame mm, or None: a travel is set, LS1
+        has given the reference and its end is known."""
+        end = self._ls_end[0]
+        if self._soft_um <= 0 or self._soft_ref is None or not end:
+            return None
+        return self._soft_ref - end * self.soft_mm
+
+    def _soft_out(self):
+        """The direction the limit lies in (away from LS1's end)."""
+        return -self._ls_end[0]
+
+    def _soft_ahead(self, direction):
+        """The limit (counter mm) in front of motion toward `direction`, or
+        None (firmware softAhead): set, referenced, and heading out."""
+        limit = self._soft_limit_phys()
+        if limit is None or direction != self._soft_out():
+            return None
+        return limit - self._origin
+
+    def _soft_block(self, direction, jog):
+        """Why motion toward `direction` is refused by the soft limit, or
+        None (the tail of the firmware's limitBlock)."""
+        if self.soft_damaged and not jog:
+            return "soft-limit-eeprom-damaged:set-SOFTLIMIT"
+        if self._soft_um <= 0:
+            return None
+        end = self._ls_end[0]
+        if self._soft_ref is None:
+            if not jog and not (end != 0 and direction == end):
+                return "soft-limit-unreferenced:touch-ls1"
+        elif direction == -end:
+            limit = self._soft_limit_phys()
+            if (self._phys >= limit - 1e-6) if direction > 0 else (self._phys <= limit + 1e-6):
+                return "soft-limit"
+        return None
+
+    def _soft_start_block(self):
+        """HOME and the motion TESTs may run either way, so they need the
+        reference before they start (firmware softStartBlock)."""
+        if self.soft_damaged:
+            return "soft-limit-eeprom-damaged:set-SOFTLIMIT"
+        if self._soft_um > 0 and self._soft_ref is None:
+            return "soft-limit-unreferenced:touch-ls1"
+        return None
+
+    def _soft_lost(self, why):
+        """The reference goes with the step count (firmware softRefLost)."""
+        was, self._soft_ref = self._soft_ref is not None, None
+        if was and self._soft_um:
+            self._emit(f"EVT SOFTLIMIT lost reason={why}")
+
+    def damage_soft(self):
+        """Test hook: the EEPROM block is damaged (wrong magic or
+        complement): no limit is read, and only jogs move the axis."""
+        with self._lock:
+            self._soft_um, self.soft_damaged = 0, True
+            self._soft_ref = None
+
+    def soft_reference(self, counter_mm=None):
+        """Test hook: LS1 has just given the reference at `counter_mm` (the
+        present counter by default), as if the axis had touched it moving
+        toward the end it guards (taught as the - end if not yet learned).
+        The real approach is the step ISR's (`_limit_isr`)."""
+        with self._lock:
+            self._advance()
+            if not self._ls_end[0]:
+                self._ls_end[0], self._ls_firm[0] = -1, True
+            at = self._counter() if counter_mm is None else float(counter_mm)
+            self._soft_ref = self._origin + self._quantize(at)
+
     def limit_end(self, number):
         """The end switch `number` guards as the board has learned it: +1,
         -1, or 0 for not learned (the firmware's ls1_end / ls2_end)."""
@@ -543,6 +649,11 @@ class AxisSimulator:
     def _home_level(self):
         edge = self.home_edge_mm
         return 1 if edge is not None and self._phys >= edge else 0
+
+    def _accel(self):
+        """The ramp in force: a MOVE's own acceleration while that motion
+        lasts (a STOP decelerates at it too), else ACCEL."""
+        return self._ramp or self.accel_mm_s2
 
     def _busy(self):
         return (self._target is not None or self._homing is not None
@@ -590,6 +701,7 @@ class AxisSimulator:
         """A driver fault: the board ESTOPs itself and says why."""
         with self._lock:
             self._advance()
+            self._soft_lost(reason)              # the driver's counter restarted (X-14)
             self._halt(disable=True, why="fault")
             self._emit(f"EVT FAULT {reason}")
 
@@ -779,7 +891,7 @@ class AxisSimulator:
                      else self._phys <= self._ls_lo[index] + 1e-9)
             if spent:                                # the parked travel is spent this way too
                 return f"limit-{name}-pressed-both-ways:check-switch"
-        return None
+        return self._soft_block(direction, jog)
 
     def _parked_jog_cap(self, speed):
         """A jog's speed (positive mm/s), capped while a switch is parked
@@ -789,10 +901,14 @@ class AxisSimulator:
         return speed
 
     def _halt(self, *, disable, why):
-        """Stop at once (the ISR halt); ESTOP and DISABLE also power down."""
+        """Stop at once (the ISR halt); ESTOP and DISABLE also power down. The
+        outputs going off while the motor turned loses the step count, and
+        the soft limit's reference with it."""
+        if disable and self._v != 0.0:
+            self._soft_lost(why)
         self._abort_home(why)
         self._v = 0.0
-        self._target = self._cruise = self._jog = None
+        self._target = self._cruise = self._jog = self._ramp = None
         if disable:
             self.enabled = False
 
@@ -866,7 +982,7 @@ class AxisSimulator:
         value = self._float(args, 0)
         if value is None or value <= 0:
             return self._err(command, "bad-arg")
-        self.accel_mm_s2 = min(max(value, 0.25), 25.0)
+        self.accel_mm_s2 = min(max(value, self.ACCEL_RANGE_MM_S2[0]), self.ACCEL_RANGE_MM_S2[1])
         self._ok(command, f"accel_mm_s2={self.accel_mm_s2:.4f} "
                           f"clamped={int(self.accel_mm_s2 != value)} applies=now")
 
@@ -898,6 +1014,7 @@ class AxisSimulator:
             return self._err(command, "bad-arg-NC|NO")
         if self._busy():
             return self._err(command, "busy")
+        self._soft_lost("limits-changed")    # LS1's end is forgotten, and the reference with it
         self._ls_end = [0, 0]                # new meaning: forget the ends; a pressed switch is parked
         self._ls_firm = [False, False]
         self._ls_seen = [False, False]
@@ -915,6 +1032,14 @@ class AxisSimulator:
         speed = self._float(args, 1) if len(args) > 1 else None
         if value is None or (len(args) > 1 and (speed is None or speed <= 0)):
             return self._err(command, "bad-arg")
+        accel = None                 # MOVE <mm> [mm_s [mm_s2]]: an acceleration for this move only
+        if len(args) > 2:
+            accel = self._float(args, 2)
+            if accel is None or accel <= 0:
+                return self._err(command, "bad-accel")
+            low, high = self.ACCEL_RANGE_MM_S2
+            accel_clamped = not low <= accel <= high
+            accel = min(max(accel, low), high)
         here = self._counter()
         distance = value - here if absolute else value
         clamped = abs(distance) > self.MAX_MOVE_MM
@@ -923,13 +1048,29 @@ class AxisSimulator:
             return self._err(command, "busy")
         target = self._quantize(here + distance)
         distance = target - self._quantize(here)
+        soft_clamp = None
         if distance:
-            why = self._limit_block(1 if distance > 0 else -1)
+            direction = 1 if distance > 0 else -1
+            why = self._limit_block(direction)
             if why:
                 return self._err(command, why)
+            limit = self._soft_ahead(direction)
+            if limit is not None and (target > limit if direction > 0 else target < limit):
+                # No farther than the soft limit: shortened onto it.
+                soft_clamp = (target, limit)
+                target = self._quantize(limit)
+                distance = target - self._quantize(here)
+                clamped = True
             self._target = target
             self._cruise = min(speed or self.speed_mm_s, self.MAX_SPEED_MM_S)
-        self._ok(command, f"mm={distance:.5f} target_mm={target:.5f} clamped={int(clamped)}")
+            self._ramp = accel
+        detail = f"mm={distance:.5f} target_mm={target:.5f} clamped={int(clamped)}"
+        if accel is not None:
+            detail += f" accel_mm_s2={accel:.4f} accel_clamped={int(accel_clamped)}"
+        self._ok(command, detail)
+        if soft_clamp:
+            self._emit(f"EVT SOFTLIMIT clamped cmd={command} target_mm={soft_clamp[0]:.5f} "
+                       f"limit_mm={soft_clamp[1]:.5f}")
 
     def _cmd_moveto(self, command, args):
         self._cmd_move(command, args, absolute=True)
@@ -962,6 +1103,7 @@ class AxisSimulator:
         if not keep:
             self._jog_capped = self._parked(0) or self._parked(1)
         self._jog = velocity
+        self._ramp = None                            # a jog ramps at ACCEL
         self._last_jog = self.clock()
         self._ok(command, echo(velocity, clamped))
 
@@ -996,10 +1138,37 @@ class AxisSimulator:
         for index in (0, 1):                         # a parked switch could be either end
             if self._parked(index):
                 return self._err(command, f"limit-ls{index + 1}-end-unknown:jog-off-it")
+        why = self._soft_start_block()               # it may search either way
+        if why:
+            return self._err(command, why)
         self._homing = {"phase": "seek", "dir": -1, "speed": self.home_seek_mm_s,
                         "started": self.clock(), "reversed": False}
         self._ok(command, "started")
         self._emit("EVT HOME phase=seek dir=-1")
+
+    def _cmd_softlimit(self, command, args):
+        """SOFTLIMIT [mm]: the travel from LS1 (0 = none), kept in EEPROM."""
+        stored = ""
+        if args:
+            value = self._float(args, 0)
+            if value is None or value < 0 or value > self.SOFT_MAX_MM:
+                return self._err(command, "bad-arg")
+            if self.enabled or self._busy():
+                return self._err(command, "busy")
+            if self.refuse_softlimit:
+                return self._err(command, self.refuse_softlimit)
+            self._soft_um = int(round(value * 1000.0))
+            self.soft_damaged = False
+            stored = " stored=1"
+        detail = f"mm={self.soft_mm:.3f} ref={int(self._soft_ref is not None)}"
+        if self._soft_ref is not None:
+            detail += f" ls1_mm={self._soft_ref - self._origin:.5f}"
+            limit = self._soft_limit_phys()
+            if limit is not None:
+                detail += f" limit_mm={limit - self._origin:.5f}"
+        if self.soft_damaged:
+            detail += " damaged=1"
+        self._ok(command, detail + stored)
 
     def _cmd_hosttimeout(self, command, args):
         value = self._int(args, 0)
@@ -1043,6 +1212,9 @@ class AxisSimulator:
                 return self._err(command, "not-enabled")
             if self._tripped(0) or self._tripped(1):   # every motion test starts clear of both ends
                 return self._err(command, "limit-tripped:jog-off-it")
+            why = self._soft_start_block()
+            if why:
+                return self._err(command, why)
         self._err(command, "not-simulated")
 
     # -- time ---------------------------------------------------------------------------
@@ -1097,11 +1269,18 @@ class AxisSimulator:
             return self._homing["dir"] * self._homing["speed"]
         if self._target is not None:
             remaining = self._target - self._counter()
-            stopping = math.sqrt(2.0 * self.accel_mm_s2 * abs(remaining))
+            stopping = math.sqrt(2.0 * self._accel() * abs(remaining))
             speed = min(self._cruise, max(stopping, min(self._cruise, 0.005)))
             return math.copysign(speed, remaining)
         if self._jog is not None:
-            return self._jog
+            wanted = self._jog
+            limit = self._soft_ahead(1 if wanted > 0 else -1) if wanted else None
+            if limit is not None:
+                # A jog heading out takes the soft limit as its far target
+                # and decelerates onto it (firmware jogTarget).
+                stopping = math.sqrt(2.0 * self._accel() * abs(limit - self._counter()))
+                wanted = math.copysign(min(abs(wanted), max(stopping, 0.005)), wanted)
+            return wanted
         return 0.0
 
     def _isr(self, dt):
@@ -1109,7 +1288,7 @@ class AxisSimulator:
             self._v = 0.0
             self._target = self._cruise = self._jog = None
         wanted = self._desired_velocity()
-        step = self.accel_mm_s2 * dt
+        step = self._accel() * dt
         if self._homing is not None:
             self._v = wanted                         # homing speeds are slow
         elif self._v < wanted:
@@ -1124,14 +1303,39 @@ class AxisSimulator:
                 self._phys = self._origin + self._target
                 self._v = 0.0
                 self._target = self._cruise = None
+        self._soft_isr()
         if self._jog == 0.0 and self._v == 0.0:
             self._jog = None
+        if self._ramp is not None and self._target is None and self._jog is None and self._v == 0.0:
+            self._ramp = None                        # at rest: the board's ACCEL is back
         self._limit_isr()
         level = self._home_level()
         if level != self._home_was:
             self._home_was = level
             self._emit(f"EVT HOME edge level={level} "
                        f"pos_mm={self._quantize(self._counter()):.4f}")
+
+    def _soft_isr(self):
+        """The step ISR's soft-limit halt: no step past the limit, whatever
+        started the motion. A jog that decelerated onto it says `reached`;
+        anything else (a HOME leg, an overshoot) says `stopped`. A motion
+        that arrives on it as its target is an arrival, not news."""
+        self._soft_halted = False
+        limit = self._soft_limit_phys()
+        if limit is None or self._v == 0.0 or (self._v > 0) != (self._soft_out() > 0):
+            return
+        if (self._phys < limit - 1e-9) if self._v > 0 else (self._phys > limit + 1e-9):
+            return
+        jogging = self._jog is not None and self._target is None and self._homing is None
+        self._phys = limit
+        self._v = 0.0
+        self._target = self._cruise = self._jog = self._ramp = None
+        self._soft_halted = True
+        at = self._quantize(limit - self._origin)
+        if jogging:
+            self._emit(f"EVT SOFTLIMIT reached limit_mm={at:.5f}")
+        else:
+            self._emit(f"EVT SOFTLIMIT stopped pos_mm={at:.5f} limit_mm={at:.5f}")
 
     def _limit_isr(self):
         """The firmware's step-ISR interlock (stepIsr), once per tick, with
@@ -1142,6 +1346,7 @@ class AxisSimulator:
         halt = direction != 0 and tripped[0] and tripped[1]
         travel = [False, False]
         both = [False, False]
+        ls1_new = tripped[0] and not self._ls_was[0]
         for i in (0, 1):
             now, was = tripped[i], self._ls_was[i]
             new_trip, new_clear = now and not was, was and not now
@@ -1174,7 +1379,7 @@ class AxisSimulator:
         if not halt:
             return
         self._v = 0.0                                # zero speed, target here
-        self._target = self._cruise = self._jog = None
+        self._target = self._cruise = self._jog = self._ramp = None
         pos = self._quantize(self._counter())
         for i in (0, 1):
             if not tripped[i]:
@@ -1186,6 +1391,14 @@ class AxisSimulator:
                 why = f" pressed_both_ways=1 travel_mm={self.PARKED_TRAVEL_MM:.3f}"
             self._emit(f"EVT LIMIT ls{i + 1} tripped pos_mm={pos:.4f} "
                        f"end={self._ls_end[i]:+d}{why}")
+        if ls1_new and direction != 0 and self._ls_end[0] == direction and self._ls_firm[0]:
+            # X-14: LS1 tripped while the axis moved toward the end it guards
+            # (that end known): the soft limit's reference, at this step.
+            self._soft_ref = self._origin + pos
+            if self._soft_um:
+                limit = self._soft_limit_phys() - self._origin
+                self._emit(f"EVT SOFTLIMIT referenced ls1_mm={pos:.5f} limit_mm={limit:.5f} "
+                           f"travel_mm={self.soft_mm:.3f}")
 
     def _home_step(self, t):
         homing = self._homing
@@ -1208,7 +1421,7 @@ class AxisSimulator:
         elif phase == "search":
             if self._home_level() == 1 and self._home_was_low:
                 self._home_phase("seek", -1, self.home_seek_mm_s)
-            elif high_hit:
+            elif high_hit or self._soft_halted:      # the soft limit is an end too
                 return self._home_failed("no-edge")
             self._home_was_low = self._home_was_low or self._home_level() == 0
         elif phase == "approach":

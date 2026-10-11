@@ -601,7 +601,7 @@ compared; both a detector and an operator Mark key. Brief:
 
 ## Out of scope here
 
-- The second test wave (135 old files, 26 safety tests: `tests/TEST_PORTING.md`) is a programme, not a bugfix batch; it stays under STATUS.md item 3.
+- The second test wave (135 old files, 26 safety tests; closed 2026-10-10, see STATUS History) was a programme, not a bugfix batch; it stays under STATUS.md item 3.
 - Cutover (`legacy/` deleted 2026-10-07, history: tag pre-root-cleanup-2026-10-07; merge to `main`) stays under STATUS.md item 4 and follows the test wave.
 
 ## Order

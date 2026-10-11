@@ -261,14 +261,17 @@ def test_the_jog_pump_sends_neutral_to_a_silent_board_even_without_the_sampler()
     """Defence in depth: the sampler is what trips the latch, but the pump
     on its own never hands a silent board a non-zero frame."""
     probe, board = make()
-    probe._note_position((1, 2, 3))
-    probe.set_mode("manual")
-    probe._position_time = time.monotonic() - (SILENT_AFTER + 1.0)
-    board.timed_writes.clear()
-    probe._gamepad_tick()
-    jogs = [p for p in board.writes if len(p) == 42]
-    assert jogs, "the pump still writes (a neutral frame stops a live board)"
-    assert not any(is_nonzero_jog(probe, p) for p in jogs)
+    try:
+        probe._note_position((1, 2, 3))
+        probe.set_mode("manual")
+        probe._position_time = time.monotonic() - (SILENT_AFTER + 1.0)
+        board.timed_writes.clear()
+        probe._gamepad_tick()
+        jogs = [p for p in board.writes if len(p) == 42]
+        assert jogs, "the pump still writes (a neutral frame stops a live board)"
+        assert not any(is_nonzero_jog(probe, p) for p in jogs)
+    finally:
+        probe._stop_threads()                # no interlock thread outlives the test
 
 
 # -- (b) a stop to a silent board is not "confirmed" --------------------------

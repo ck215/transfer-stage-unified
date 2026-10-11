@@ -124,10 +124,14 @@ def record_writes(stage):
     return seen
 
 
+#: The fastest ramp a board accepts (the firmware's MAX_ACCEL_MM), mm/s^2.
+FAST_ACCEL = AxisSimulator.ACCEL_RANGE_MM_S2[1]
+
+
 def fast(stage):
     for link in stage.axes.values():
         if link.simulator is not None:
-            link.simulator.accel_mm_s2 = 1000.0
+            link.simulator.accel_mm_s2 = FAST_ACCEL
     return stage
 
 
@@ -658,6 +662,88 @@ def test_home_one_axis_never_writes_home_after_the_mode_changed(make):
     assert not sim(stage, "X").moving
 
 
+# -- a Step and a ZERO are gated inside the write lock too (R-8's class) -------------
+
+def _on_write(stage, axis, starts, action):
+    """Run `action` on `axis`'s link just before a payload starting with
+    `starts` takes the write lock: inside the window between the caller's
+    own check and the bytes going out."""
+    link = stage.axes[axis]
+    real = link.write
+
+    def write(payload, *, priority=False, abort_if=None):
+        if payload.startswith(starts):
+            action()
+        return real(payload, priority=priority, abort_if=abort_if)
+
+    link.write = write
+
+
+_LEAVE = {"idle": lambda stage: stage.set_mode("idle"),
+          "disabled": lambda stage: stage.set_mode("disabled"),
+          "latched": lambda stage: stage.estop()}
+
+
+@pytest.mark.parametrize("how", sorted(_LEAVE))
+def test_a_step_never_writes_move_once_the_stage_left_autonomous(make, how):
+    """Item 2: the stage leaves autonomous (or latches) between the Step's
+    own checks and its first MOVE write. The write's in-lock check must see
+    it: no axis gets a MOVE, nothing moves outside AUTO (where the watchdog
+    is off), and the Step is refused."""
+    stage = make()
+    _on_write(stage, "X", b"MOVE", lambda: _LEAVE[how](stage))
+    result = stage.run("step", {"x_dist": 300, "y_dist": 400, "z_dist": 100,
+                                "full_speed": 500})
+    assert result.is_refused, result
+    assert stage.mode is not StageMode.AUTO
+    for axis in AXES:
+        assert received(stage, axis, "MOVE") == [], axis
+        assert not sim(stage, axis).moving, axis
+    if how != "latched":
+        assert "left autonomous" in result.reason, result.reason
+
+
+def test_a_step_left_mid_write_sends_no_further_move_and_stops_what_started(make):
+    """Item 2: X's MOVE went out in AUTO; the operator leaves autonomous
+    before Y's. Y and Z never get theirs, and X is stopped: a Step is all
+    three axes or none."""
+    stage = make()
+    _on_write(stage, "Y", b"MOVE", lambda: stage.set_mode("idle"))
+    result = stage.run("step", {"x_dist": 2000, "y_dist": 2000, "z_dist": 2000,
+                                "full_speed": 500})
+    assert result.is_refused and "left autonomous" in result.reason, result
+    assert stage.mode is StageMode.IDLE
+    assert received(stage, "X", "MOVE")
+    assert received(stage, "Y", "MOVE") == [] and received(stage, "Z", "MOVE") == []
+    move_at = [t for t, line in sim(stage, "X").received if line.startswith("MOVE")][0]
+    assert [t for t in received_at(stage, "X", "STOP") if t > move_at]
+    assert wait_for(lambda: not sim(stage, "X").moving, 1.0)
+
+
+def test_zero_never_writes_zero_once_its_axis_started_moving(make):
+    """Item 2: a Step lands on X between zero_axis's own busy check and its
+    ZERO write. The write's in-lock check must see X's move in flight (its
+    MOVE taken, no P line since): no ZERO reaches a moving axis."""
+    stage = make()
+    assert stage.run("_commit", {"x_dist": 1000, "full_speed": 500}).is_ok
+    armed(stage)
+    _on_write(stage, "X", b"ZERO", stage.step)
+    result = stage.run("zero_axis", None, ("X",))
+    assert result.is_refused and "moving" in result.reason, result
+    assert received(stage, "X", "MOVE")
+    assert received(stage, "X", "ZERO") == []
+
+
+def test_zero_never_writes_zero_once_latched(make):
+    """Item 2, the latch half: a stop lands between the check and the ZERO
+    write; the ZERO is never written."""
+    stage = armed(make())
+    _on_write(stage, "Y", b"ZERO", stage.estop)
+    result = stage.run("zero_axis", None, ("Y",))
+    assert result.is_refused
+    assert received(stage, "Y", "ZERO") == []
+
+
 # == FEATURES ======================================================================
 
 # -- modes, parity with the Stepper Probe ------------------------------------------
@@ -700,9 +786,10 @@ def test_a_step_gives_each_axis_its_share_of_the_vector_speed(make):
                                 "full_speed": 1000})
     assert result.is_ok, result
     assert stage.mode is StageMode.AUTO
-    # |d| = 500 um; X gets 300/500 of 1000 um/s, Y 400/500; Z does not move.
-    assert received(stage, "X", "MOVE") == ["MOVE 0.3000 0.6000"]
-    assert received(stage, "Y", "MOVE") == ["MOVE -0.4000 0.8000"]
+    # |d| = 500 um; X gets 300/500 of 1000 um/s and of the boards' ACCEL
+    # (25 mm/s^2 here), Y 400/500; Z does not move.
+    assert received(stage, "X", "MOVE") == ["MOVE 0.3000 0.6000 15.0000"]
+    assert received(stage, "Y", "MOVE") == ["MOVE -0.4000 0.8000 20.0000"]
     assert received(stage, "Z", "MOVE") == []
     assert stage.is_moving
     assert wait_for(lambda: not stage.is_moving, 3.0)
@@ -724,6 +811,92 @@ def test_the_axes_of_a_step_arrive_together(make):
 
     assert wait_for(note, 3.0)
     assert max(finished.values()) - min(finished.values()) < 0.12
+
+
+def _boards_at(make, accel):
+    """A stage whose three boards ramp at `accel` mm/s^2 (INFO says so)."""
+    stage = make(opened=False)
+    for axis, value in zip(AXES, accel):
+        sim(stage, axis).accel_mm_s2 = value
+    stage.open()
+    return stage
+
+
+def _finish_times(stage, axes):
+    """{axis: when its P stream first said it stopped, away from 0}."""
+    finished = {}
+
+    def note():
+        for axis in axes:
+            p = stage.axes[axis].p
+            if axis not in finished and p and not p["mv"] and p["pos"] != 0:
+                finished[axis] = time.monotonic()
+        return len(finished) == len(axes)
+
+    assert wait_for(note, 5.0), finished
+    return finished
+
+
+def test_a_step_scales_each_axis_ramp_too_so_a_short_diagonal_arrives_together(make):
+    """Item 3: a short diagonal at full speed, at the boards' own ACCEL (2.5
+    mm/s^2, the firmware's boot value): each axis gets |d_i|/|d| of the speed
+    AND of ACCEL, so every axis runs the same trapezoid scaled. With the
+    speed share alone they ramp alike and X finishes ~0.4 s after Y."""
+    stage = _boards_at(make, (2.5, 2.5, 2.5))
+    result = stage.run("step", {"x_dist": 600, "y_dist": 200, "z_dist": 0,
+                                "full_speed": 2500})
+    assert result.is_ok, result
+    assert received(stage, "X", "MOVE") == ["MOVE 0.6000 2.3717 2.3717"]
+    assert received(stage, "Y", "MOVE") == ["MOVE 0.2000 0.7906 0.7906"]
+    finished = _finish_times(stage, ("X", "Y"))
+    assert abs(finished["X"] - finished["Y"]) < 0.12, finished
+    assert stage.position[0] == pytest.approx(600.0, abs=0.7)
+    assert stage.position[1] == pytest.approx(200.0, abs=0.7)
+
+
+def test_a_step_scales_the_gentlest_moving_boards_accel(make):
+    """No axis ramps harder than its own board is set to: the Step scales
+    the lowest ACCEL among the boards that move (Z, still, does not count)."""
+    stage = _boards_at(make, (2.5, 1.0, 0.5))
+    assert stage.run("step", {"x_dist": 300, "y_dist": -400, "z_dist": 0,
+                              "full_speed": 1000}).is_ok
+    assert received(stage, "X", "MOVE") == ["MOVE 0.3000 0.6000 0.6000"]
+    assert received(stage, "Y", "MOVE") == ["MOVE -0.4000 0.8000 0.8000"]
+
+
+def test_a_board_that_has_not_said_its_accel_gets_the_two_argument_move(make):
+    """The station never invents a bench value: without INFO's accel_mm_s2
+    from every moving board, the Step goes as before, speed share only."""
+    stage = make(opened=False)
+    board = sim(stage, "Y")
+    real = board._cmd_info
+
+    def info(command, args):
+        real(command, args)
+        board._out[:] = board._out.replace(b" accel_mm_s2=", b" accel=")
+
+    board._cmd_info = info
+    stage.open()
+    assert stage.run("step", {"x_dist": 300, "y_dist": -400, "full_speed": 1000}).is_ok
+    assert received(stage, "X", "MOVE") == ["MOVE 0.3000 0.6000"]
+    assert received(stage, "Y", "MOVE") == ["MOVE -0.4000 0.8000"]
+
+
+def test_a_board_that_ignores_the_accel_is_reported_once(make):
+    """A board on firmware from before the per-move acceleration takes the
+    MOVE and ignores the third argument; its reply has no accel_mm_s2. The
+    operator is told once per link that its Step can arrive apart."""
+    stage = make()
+    board = sim(stage, "Y")
+    real = board._cmd_move
+    board._cmd_move = lambda command, args, absolute=False: real(command, args[:2], absolute)
+    with Collected() as seen:
+        assert stage.run("step", {"x_dist": 300, "y_dist": 400, "full_speed": 1000}).is_ok
+        assert wait_for(lambda: not stage.is_moving, 3.0)
+        assert stage.run("step").is_ok
+    warned = [e for e in seen.of("warning") if "Axis Y" in e.message and "firmware" in e.message]
+    assert len(warned) == 1, seen.text("warning")
+    assert not [e for e in seen.of("warning") if "Axis X" in e.message]
 
 
 def test_a_step_is_refused_while_moving_and_repeats_once_arrived(make):
@@ -797,6 +970,24 @@ def test_dpad_and_bumpers_step_each_axis_by_its_step_size(make):
     assert wait_for(lambda: received(stage, "Z", "MOVE") == ["MOVE 0.0200 0.5000"])
     pad.press("bumper_right", 1)
     assert wait_for(lambda: received(stage, "Z", "MOVE")[-1:] == ["MOVE -0.0200 0.5000"])
+
+
+@pytest.mark.parametrize("starts, press", [
+    (b"MOVE", lambda pad: pad.press("hat_x", 1)),             # a D-pad step
+    (b"JOGV 0.", lambda pad: pad.levels.update(axis_x=0.8))])  # a stick jog
+def test_a_manual_move_is_never_written_once_the_stage_left_manual(make, starts, press):
+    """The D-pad/bumper MOVE and a stick's JOGV were gated on the latch only
+    (R-8's class): the operator leaves manual between the gamepad tick's
+    checks and the write. The in-lock check must see it: nothing moves."""
+    pad = FakePad()
+    stage = make(gamepad=pad)
+    armed(stage, "manual")
+    _on_write(stage, "X", starts, lambda: stage.set_mode("idle"))
+    press(pad)
+    assert wait_for(lambda: stage.mode is StageMode.IDLE, 2.0)
+    time.sleep(0.2)
+    assert [l for l in received(stage, "X") if l.startswith(starts.decode())] == []
+    assert not sim(stage, "X").moving
 
 
 # -- zeroing and homing --------------------------------------------------------------------
@@ -881,6 +1072,29 @@ def test_positions_read_in_micrometres_with_a_microstep_line_beneath(make):
         assert readout["text"] == f"{axis.upper()}:"
         nxt = elements[index + 1]
         assert nxt["model_attr"] == f"position_{axis}_usteps" and nxt.get("secondary")
+
+
+def test_distances_and_step_sizes_have_a_microstep_line_beneath_at_the_boards_resolution(make):
+    """The owner's "translation into step language in a smaller font nearby":
+    each Target dist and Step Size entry has its µsteps line directly beneath
+    it, as the positions and speeds do, at that axis board's own resolution
+    (um x microsteps / 5). Y runs at 16 microsteps here, X and Z at 8."""
+    stage = make(opened=False)
+    sim(stage, "Y").microsteps = 16
+    stage.open()
+    assert wait_for(lambda: all(stage.axes[a].last_reply("INFO") is not None for a in AXES))
+    assert stage.run("_commit", {"x_dist": 125, "y_dist": -40, "z_dist": 5,
+                                 "x_step": 5, "y_step": 10, "z_step": 1000}).is_ok
+    elements = [e for s in stage.schema["sections"] for e in s["elements"]]
+    index = {e.get("model_attr"): i for i, e in enumerate(elements)}
+    expected = {"x_dist": 200, "y_dist": -128, "z_dist": 8,
+                "x_step": 8, "y_step": 32, "z_step": 1600}
+    for name, usteps in expected.items():
+        assert elements[index[name]]["type"] == "entry", name
+        line = elements[index[name] + 1]
+        assert line["type"] == "readonly" and line.get("secondary"), (name, line)
+        assert line["model_attr"] == f"{name}_usteps" and line["unit"] == "µsteps", line
+        assert getattr(stage, line["model_attr"]) == usteps, name
 
 
 def test_speeds_are_micrometres_per_second_with_a_steps_line(make):

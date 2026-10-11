@@ -57,11 +57,13 @@ from model import user_store as user_store_module
 from model.base import Model
 from model.heater import Heater
 from model.probe import ChuckPositioner, DCProbe, StepperProbe
+from model.finalizer import Finalizer
 from model.rgb_analysis import RgbAnalysis
 from model.rotator import Rotator
 from model.sample_map import SampleMap
 from model.transfer_map import TransferMap
 from model.xyz_stage import XyzStage
+from model.xyz_stage_mega import XyzStageMega
 from model.user import User
 from model.user_store import AccountError, UserStore
 from panel import Panel
@@ -271,8 +273,9 @@ PROFILES_ENABLED = os.environ.get("STATION_PROFILES") != "0"
 
 # The built-ins, in today's display order. The Sample DB (flake-coords,
 # 2026-10-04) follows the Transfer Map: its own page, no port.
+# The XYZ Stage (Mega) follows the Teensy XYZ Stage (MEGA_STANDARD, 2026-10-09).
 for _built_in in (StepperProbe, DCProbe, ChuckPositioner, Heater, Rotator,
-                  XyzStage, RgbAnalysis, TransferMap,
+                  XyzStage, XyzStageMega, RgbAnalysis, Finalizer, TransferMap,
                   *((SampleMap,) if SAMPLE_MAP_ENABLED else ())):
     register(_built_in)
 del _built_in
@@ -570,9 +573,11 @@ class PortProbe:
 
     def _tag_for_identity(self, identity):
         """The tag after the identity letter (`t X` -> "X"), or None: a board
-        that is one of several for one model says which one it is."""
-        words = self._text(identity).split()
-        return words[1].upper() if len(words) > 1 else None
+        that is one of several for one model says which one it is. A
+        `key=value` word is not a tag: `m caps=ext1,...` lists the board's
+        capabilities (MEGA_STANDARD section 2), which the model reads."""
+        words = [w for w in self._text(identity).split()[1:] if "=" not in w]
+        return words[0].upper() if words else None
 
     def _log_probe(self, port, name, started):
         events.debug("Probe", f"{port} -> {name or 'nothing'} in "
@@ -849,6 +854,10 @@ class Setup(PortProbe, Panel):
                 "key": key,
                 "name": row["name"],
                 "enabled": getattr(self, f"{key}_enabled"),
+                # A signed-in-only row under a Guest: not usable, so the view
+                # disables its Run key from this flag, not from the words of
+                # `status` (rb-tails, UX audit second core request).
+                "locked": self._row_locked(row),
                 "port": choice,
                 "gamepad": getattr(self, f"{key}_gamepad"),
                 "status": getattr(self, f"{key}_status"),
@@ -1124,6 +1133,12 @@ class Setup(PortProbe, Panel):
                 # The flash tool probes and uploads over these same ports.
                 self._refuse("The firmware is being flashed. Refresh when "
                              "the Flashing cell is empty.")
+            if self._reset_lock.locked():
+                # A Hard reset (or Start) is closing and reopening a port
+                # (arch audit #13): a probe now could open the port being
+                # reopened. Refused under the same lock that claims a scan.
+                self._refuse("A hard reset or start is running. Refresh when "
+                             "it has finished.")
             self._abort.clear()
             self._warned_ports.clear()
             self._busy_ports.clear()
@@ -1406,6 +1421,15 @@ class Setup(PortProbe, Panel):
             self._refuse("A hard reset is already running; wait for it to "
                          "finish, then press Hard reset again if needed.")
         try:
+            # The scan check above ran before the question and outside this
+            # lock: a scan claimed since is caught here, under Setup's lock
+            # (the one `scan` claims under), before anything is stopped.
+            with self._lock:
+                scan_claimed = self.is_scanning or self._scan_thread is not None \
+                    and self._scan_thread.ident is None
+            if scan_claimed:
+                self._refuse("A scan is running. Wait for it, or press Cancel "
+                             "scan, then Hard reset.")
             return self._hard_reset_now(key, name, model, wanted, where,
                                         target if wanted is not None else None)
         finally:
@@ -2315,8 +2339,8 @@ class Setup(PortProbe, Panel):
         "no_release": "No release has been published yet.",
     }
     CHECKING = "Checking for updates…"
-    CHECK_OFF = ("The update check is off for this run "
-                 "(STATION_NO_UPDATE_CHECK). Press Check again to check now.")
+    CHECK_OFF = ("The update check is off for this run. "
+                 "Press Check again to check now.")
 
     def _init_updates(self, updater):
         """The Update row's state, then - unless `STATION_NO_UPDATE_CHECK` is
@@ -2332,13 +2356,18 @@ class Setup(PortProbe, Panel):
         self._warned_updates = set()
         #: What is RUNNING: read once, so a landed update does not claim to be
         #: running before the restart.
-        self.station_version = "unknown"
+        self.station_version = "reading..."
+        self._version_thread = None
         self.has_update = False
         self.update_log = ""
         if os.environ.get("STATION_NO_UPDATE_CHECK", "") not in ("", "0"):
             self.update_status = self.CHECK_OFF
             events.debug("Update Check", "off: STATION_NO_UPDATE_CHECK is set",
                          source=self.NAME)
+            # The check is off; what is running is still worth saying.
+            self._version_thread = threading.Thread(
+                target=self._read_version, daemon=True, name="setup-version")
+            self._version_thread.start()
             return
         self.update_status = self.CHECKING
         self._start_update_thread()
@@ -2435,6 +2464,17 @@ class Setup(PortProbe, Panel):
         self._update_thread = threading.Thread(
             target=self._check_worker, daemon=True, name="setup-update-check")
         self._update_thread.start()
+
+    def _read_version(self):
+        """The running version, once (the check-off path's own thread)."""
+        try:
+            if not self._version_read:
+                self.station_version = self._updater.version()
+                self._version_read = True
+        except Exception as exc:
+            self.station_version = "unknown"
+            events.debug("Version Unread", repr(exc), source=self.NAME,
+                         exception=exc)
 
     def _check_worker(self):
         try:
@@ -3435,10 +3475,20 @@ class Setup(PortProbe, Panel):
             setattr(self, f"{key}_status", self._row_status(key, row, found))
         self._refresh_summary()
 
+    def _row_locked(self, row):
+        """The row belongs to a signed-in-only model while a Guest works: the
+        state publishes it as `locked` (with `enabled` False), so a view never
+        reads the Status text to find out."""
+        return bool(self.guest_locked and is_signed_in_only(row["name"]))
+
     def _will_launch(self, key, row, found):
         """A row launches when its board answered as this model on its port,
         when it is set to SIM, or when it needs no port. Nothing else. A
-        tagged row (one board per axis) launches only with every tag found."""
+        tagged row (one board per axis) launches only with every tag found.
+        A row a Guest may not use (`guest_locked`) never launches, whatever
+        its Run choice says."""
+        if self._row_locked(row):
+            return False
         choice = getattr(self, f"{key}_port")
         if choice == SIM or not row["needs_port"]:
             return True

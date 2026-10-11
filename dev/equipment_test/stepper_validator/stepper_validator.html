@@ -82,6 +82,10 @@ table{border-collapse:collapse;width:100%}td,th{padding:3px 6px;border-bottom:1p
     <div class="row">
       <label>Limit switches<select id="limits"><option value="NC" selected>NC (closed at rest)</option><option value="NO">NO (open at rest)</option></select></label><button data-need data-apply="limits">Apply</button>
     </div>
+    <div class="row">
+      <label>Soft limit (mm from LS1, 0 = none)<input id="softlimit" type="number" value="0" min="0" max="100" step="any"></label><button data-need data-apply="softlimit">Apply</button>
+    </div>
+    <p class="note">Soft limit: the most this axis may travel from LS1, for a probe that cannot reach LS2 (axis 1). Set it with the drive disabled; it is kept on the board. It holds once the axis has touched LS1 since power-up: until then only the jog buttons move it (jog onto LS1 first). Nothing then passes the limit; a Move past it stops on it.</p>
     <p class="note">Distances in mm, speeds in mm/s (1 motor rev = 1 mm on this stage). Step resolution only sets the size of one commanded step: the driver interpolates every setting to 1/256, so smoothness, torque and heat do not change. Fine resolutions lower the top speed (step-rate ceiling). The firmware clamps values, replies with what it applied, and these fields follow its replies.</p>
   </section>
 
@@ -235,6 +239,8 @@ table{border-collapse:collapse;width:100%}td,th{padding:3px 6px;border-bottom:1p
     else if (parts[0] === "EVT" && parts[1] === "FAULT") banner("FAULT: " + parts.slice(2).join(" "));
     else if (parts[0] === "EVT" && parts[1] === "BOOT") { if (/uart=FAIL/.test(line)) banner("Boot: driver UART check FAILED (IOIN VERSION != 0x21)."); }
     else if (parts[0] === "EVT" && parts[1] === "LIMIT") banner("Limit: " + parts.slice(2).join(" "), "limit");
+    else if (parts[0] === "EVT" && parts[1] === "SOFTLIMIT" && parts[2] !== "referenced") banner("Soft limit: " + parts.slice(2).join(" "), "soft");
+    if (parts[0] === "OK" && parts[1] === "SOFTLIMIT") { const kv = parseKV(parts.slice(2)); if (kv.mm !== undefined) $("softlimit").value = parseFloat(kv.mm); }
     if (parts[0] === "OK" && ["INFO", "MICROSTEPS", "SPEED", "ACCEL", "CURRENT", "LIMITS"].includes(parts[1])) syncFields(parseKV(parts.slice(2)));
   }
 
@@ -270,7 +276,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:3px 6px;border-bottom:1p
       setConnected(true);
       log("", "connected");
       readLoop();
-      await send("PING"); await send("INFO");
+      await send("PING"); await send("INFO"); await send("SOFTLIMIT");
       pollTimer = setInterval(() => {
         if (pendingStatus > 2) { pendingStatus = 0; }
         pendingStatus++; send("STATUS", true);
@@ -323,7 +329,8 @@ table{border-collapse:collapse;width:100%}td,th{padding:3px 6px;border-bottom:1p
   $("clearlog").addEventListener("click", () => { $("log").textContent = ""; });
   document.querySelectorAll("[data-apply]").forEach((b) => b.addEventListener("click", () => {
     const k = b.dataset.apply, v = $(k).value;
-    const cmd = { current: "CURRENT", microsteps: "MICROSTEPS", speed: "SPEED", accel: "ACCEL", mode: "MODE", limits: "LIMITS" }[k];
+    const cmd = { current: "CURRENT", microsteps: "MICROSTEPS", speed: "SPEED", accel: "ACCEL", mode: "MODE", limits: "LIMITS",
+                  softlimit: "SOFTLIMIT" }[k];
     send(cmd + " " + v);
   }));
   document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", () => {

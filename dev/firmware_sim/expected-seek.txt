@@ -1,0 +1,5 @@
+SCENARIO seek-max-travel-mandatory            PASS  (9 checks, 0 failed)
+SCENARIO seek-soft-limit-shortened            PASS  (11 checks, 0 failed)
+SCENARIO seek-soft-limit-lost                 PASS  (5 checks, 0 failed)
+SCENARIO seek-soft-limit-damaged              PASS  (4 checks, 0 failed)
+failed scenarios: 0

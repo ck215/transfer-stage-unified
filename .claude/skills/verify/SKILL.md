@@ -24,9 +24,10 @@ legacy gate any more. A count that moved is a finding, not noise.
 
 Known flakes, not regressions (rerun the test alone before calling a red fast gate):
 
-- `test_view_web_tutorial.py`: the first-trial walk is an **xfail** until the
-  tutorial is re-anchored to the sample/chip/flake pickers.
-- `test_o15` (the pinned head): can fail under load.
+- `test_view_web_tutorial.py`: the first-trial walk is re-anchored and passes
+  alone (`e96937d`), but the module run whole fails one of two tests on
+  alternate runs (`xyz-stage-mega` or `first_trial`, 2026-10-11): a fixed
+  `sleep(450)` before geometry checks. Rerun the failing test alone.
 - `test_sample_map.py`: a "rated later" test is timing-flaky.
 - `test_transfer_map.py::test_mark_appears_in_the_index_and_the_label_from_the_mark_on`
   (the transfer-map mark timing, a 1 ms bound): fails about one run in three.
