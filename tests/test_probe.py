@@ -1917,3 +1917,19 @@ def test_the_summary_divides_autonomous_from_manual(cls):
     entries = [e["model_attr"] for s in p.schema["sections"] for e in s["elements"]
                if e["type"] == "entry"]
     assert sorted(entries) == sorted(p.ENTRY_PARAMS)
+
+
+@pytest.mark.parametrize("cls", [StepperProbe, DCProbe])
+def test_the_mode_toggles_say_power_down_not_stop(cls):
+    """O22: the toggles' aside names what pressing does."""
+    import schema as sch
+    probe, _, _ = make_probe(cls)
+    try:
+        toggles = {e["model_attr"]: e for e in sch.elements(probe.schema)
+                   if e["type"] == "toggle" and e["model_attr"] in ("is_auto", "is_manual")}
+        assert set(toggles) == {"is_auto", "is_manual"}
+        for toggle in toggles.values():
+            assert "(press to power down)" in toggle["true_text"], toggle
+            assert "press to stop" not in toggle["true_text"].lower()
+    finally:
+        probe._stop_threads()
