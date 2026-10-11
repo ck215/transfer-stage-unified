@@ -1752,6 +1752,12 @@ def test_node_is_present_where_the_run_requires_it():
         "JS tests did not run")
 
 
+def test_a_refusal_is_placed_by_its_attribute_not_its_caption():
+    """O21: `fieldFor` takes `result.attr`; no caption matching remains."""
+    assert "fieldFor(attr)" in APP_JS and "w.element.model_attr === attr" in APP_JS
+    assert "said.indexOf(caption" not in APP_JS
+
+
 def test_the_figure_fetch_sends_if_none_match_and_leaves_a_304_alone():
     """I11: no `&t=` cache-buster; the client keeps the ETag and skips a 304."""
     js = APP_JS

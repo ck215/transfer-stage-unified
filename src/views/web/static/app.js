@@ -2810,7 +2810,7 @@ class PanelCard {
       // their boxes now, whatever the answer (2026-10-07).
       this.clearSecrets(element);
       if (result.status === 'ok') this.showRefused('');
-      else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element);
+      else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element, result.attr);
       // R4: the station is going away on purpose; the page waits for the
       // new one instead of calling it "not answering".
       if (isRestartAnswer(this.name, element.command, result)) {
@@ -2854,7 +2854,7 @@ class PanelCard {
       this.showRefused('');
     } else {
       if (widget && widget.revert) widget.revert();
-      this.showRefused(result.reason || '', element);
+      this.showRefused(result.reason || '', element, result.attr);
     }
     await this.dashboard.refreshNow();
     return result;
@@ -2874,23 +2874,12 @@ class PanelCard {
     }
   }
 
-  /** O10 (WDG8-4): the entry a refusal is about, read from its words - the
-   *  refusal names the field ("X step size must be at least 1"). The
-   *  longest caption that starts the sentence wins; null when none does.
-   *  (Core's Refused does not name the attribute yet: see the handoff.) */
-  fieldFor(reason) {
-    const said = String(reason || '').toLowerCase();
-    let best = null;
-    let length = 0;
-    for (const widget of this.widgets) {
-      if (widget.element.type !== 'entry' || !widget.control) continue;
-      const caption = captionText(widget.element).toLowerCase();
-      if (caption && said.indexOf(caption + ' ') === 0 && caption.length > length) {
-        best = widget;
-        length = caption.length;
-      }
-    }
-    return best;
+  /** O21: the entry a refusal is about, named by the refusal itself
+   *  (`result.attr`, the model attribute); null when it names none. */
+  fieldFor(attr) {
+    if (!attr) return null;
+    return this.widgets.find((w) => w.element.type === 'entry' && w.control
+      && w.element.model_attr === attr) || null;
   }
 
   /** Copy a chosen file to the station; the path it was saved at, or null
@@ -3586,14 +3575,14 @@ class PanelCard {
    *  O10 (WDG8-4, A11Y-7): when the sentence names an entry, it goes under
    *  THAT entry instead - its well opened if it was shut - and the entry is
    *  marked aria-invalid, described by the sentence, and focused. */
-  showRefused(reason, element) {
+  showRefused(reason, element, attr) {
     this.markInvalid(null);
     if (!reason) {
       if (!this.status.hidden) this.status.hidden = true;
       putText(this.status, '');
       return;
     }
-    const field = this.reveal(this.fieldFor(reason)
+    const field = this.reveal(this.fieldFor(attr)
       || (element && element.type === 'entry' ? this.widgetFor(element) : null));
     const anchor = field ? field.node : this.anchorFor(element);
     if (anchor && anchor.nextSibling !== this.status) {

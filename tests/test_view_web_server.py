@@ -393,6 +393,15 @@ def test_static_files_are_served_and_traversal_is_not(station):
 # --------------------------------------------------------------------------
 # run
 # --------------------------------------------------------------------------
+def test_a_refused_entry_travels_with_its_attribute(station):
+    """O21: the answer names the offending field, so the page need not match captions."""
+    view, _, _ = station
+    status, data = _post(view, "/api/run", {
+        "name": "Fake Probe", "command": "home",
+        "inputs": {"x_step": "banana"}, "args": []})
+    assert status == 200 and data["status"] == "refused" and data["attr"] == "x_step"
+
+
 def test_a_command_carries_every_entry_value_with_it(station):
     view, _, probe = station
     status, data = _post(view, "/api/run", {

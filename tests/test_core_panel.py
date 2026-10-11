@@ -192,6 +192,14 @@ def test_the_refusal_names_the_field_that_failed():
     assert "Steps" in result.reason and "banana" in result.reason
 
 
+def test_a_refusal_carries_the_offending_attribute():
+    """O21: the view places a refusal by `result.attr`, not by its words."""
+    result = FakePanel().run("go", inputs={"steps": "banana"})
+    assert result.attr == "steps" and result.to_dict()["attr"] == "steps"
+    assert FakePanel().run("go", inputs={"speed": "9000"}).attr == "speed"
+    assert "attr" not in FakePanel().run("nonsense").to_dict()
+
+
 def test_an_out_of_range_input_is_refused_rather_than_clamped():
     panel = FakePanel()
     result = panel.run("go", inputs={"speed": "9000"})
