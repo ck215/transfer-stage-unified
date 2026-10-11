@@ -562,10 +562,17 @@ bench-only", `CHECKPOINT.md`) are not repeated.
 - **DONE 2026-10-10: the Web finalizer** (`b8fb9f8`, `a60ab57`, merge `1e9abe1`): Finalize Data on the Transfer Map page, hosted model `src/model/finalizer.py`. In-page video playback landed after, on `rb-video` (see "Landed 2026-10-10").
 - **ENG: per-user layout, `default_fields`, `sample_base`.** Reserved
   settings keys only (`53abaee`); nothing reads them.
-- **ENG: a design and accessibility pass with the primary skills**
-  (`impeccable`, `web-design-guidelines`), owed since 2026-10-08 (not
-  installed on the lab PC; the night's passes used design-critique,
-  accessibility-review and ux-copy).
+- **DONE 2026-10-11 on `rb-web-a11y` (not merged): OI-6, the design and
+  accessibility pass with the primary skills** (`impeccable`,
+  `web-design-guidelines`; static read only, nothing rendered). No S1 or S2;
+  four S3 and five S4 in `docs/reviews/web-a11y-pass-2026-10-11.md`, three
+  fixed (the color-scheme meta, the region canvas's `role="img"`, and the
+  bench scale below), the rest left for the owner: Windows forced-colors
+  styling, the page title and history, 24 px checkboxes. Also built there:
+  UX audit 2026-10-07 proposal 6, Setup > Display > Bench scale (the base
+  size one step up and the sheet keys at 44 px; remembered per user, a
+  Guest's in the station file; built on the existing `--font-size`).
+  Open: a look at it on a real display, and the owner's calls in the review.
 - **DONE 2026-10-10 (`rb-ux` merge `5053762`, `rb-fixes` merges `e317ae5` and `1e9abe1`):**
   - Hard reset is refused during a scan, and a scan during a reset (`0dd4a57`, architecture audit #13b).
   - The Update row no longer names an env var in dev/SIM (`571d95d`, `d2a1fb5`; UX 10-08 #14).
