@@ -159,6 +159,16 @@ How this file is kept:
 
 ### Changed
 
+- **The figure is not re-sent while it has not changed.** The page asks
+  for each figure with the tag of the one on screen, and the station answers
+  "unchanged" instead of the same picture every second (I11).
+
+- **A refusal, a held control and a fault say the station's own words.** The
+  field a refusal is about is named by the station, not guessed from the
+  sentence; the "Tick ... first" and fault sentences and the list of
+  commands that are never held back come from the station too; and the mode
+  toggles on the probes read "(press to power down)" (O20-O23).
+
 - **Step sizes can be edited while a probe is in Manual,** like Manual Speed,
   and the next jog frame carries the new size; they stay locked during an
   autonomous run, and a Stepper's target distance keeps its length (BUGFIX

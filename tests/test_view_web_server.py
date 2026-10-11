@@ -393,6 +393,15 @@ def test_static_files_are_served_and_traversal_is_not(station):
 # --------------------------------------------------------------------------
 # run
 # --------------------------------------------------------------------------
+def test_a_refused_entry_travels_with_its_attribute(station):
+    """O21: the answer names the offending field, so the page need not match captions."""
+    view, _, _ = station
+    status, data = _post(view, "/api/run", {
+        "name": "Fake Probe", "command": "home",
+        "inputs": {"x_step": "banana"}, "args": []})
+    assert status == 200 and data["status"] == "refused" and data["attr"] == "x_step"
+
+
 def test_a_command_carries_every_entry_value_with_it(station):
     view, _, probe = station
     status, data = _post(view, "/api/run", {
@@ -570,6 +579,19 @@ def test_a_plot_series_is_json_and_a_figure_is_a_png(station):
     status, headers, body = _request(view, "/api/data?name=Fake+Probe&command=figure")
     assert status == 200 and headers["Content-Type"] == "image/png"
     assert body.startswith(b"\x89PNG")
+
+
+def test_a_figure_carries_an_etag_and_a_matching_if_none_match_gets_a_304(station):
+    """I11: the figure is polled every second; an unchanged one is not re-sent."""
+    view, _, _ = station
+    path = "/api/data?name=Fake+Probe&command=figure"
+    status, headers, body = _request(view, path)
+    etag = headers["ETag"]
+    assert status == 200 and etag.startswith('"') and etag.endswith('"') and body
+    status, headers, body = _request(view, path, headers={"If-None-Match": etag})
+    assert status == 304 and body == b"" and headers["ETag"] == etag
+    status, _, body = _request(view, path, headers={"If-None-Match": '"stale"'})
+    assert status == 200 and body.startswith(b"\x89PNG")
 
 
 def test_a_log_stream_comes_back_as_lines(station):
@@ -3261,6 +3283,16 @@ def test_theme_json_serves_the_gate_words_and_the_watchdog_seconds(station):
     assert body["watchdog"] == {"warn_seconds": 5.0, "stop_seconds": 15.0}
 
 
+def test_theme_json_serves_the_enabled_by_words_and_the_ungated_commands(station):
+    """O20, O23: the tick-box phrase and the stop list come from core."""
+    from panel import Panel
+    from views.base import ENABLED_BY_WORDS
+    view, _, _ = station
+    _, body = _get(view, "/api/theme.json")
+    assert body["enabled_by_words"] == ENABLED_BY_WORDS
+    assert body["ungated_commands"] == sorted(Panel.UNGATED_COMMANDS)
+
+
 # ==========================================================================
 # Tier N + O (2026-09-26): the idle countdown, the close-tab warning, the
 # energized and faulted marks, the Quit end state, live regions, busy
@@ -3362,6 +3394,10 @@ class ModeProbe(Panel):
                          "stop_confirmed": self.stop_confirmed if self.is_estopped else None,
                          "is_active": self.is_active, "is_faulted": self.is_faulted,
                          "fault": self.fault, "devices": {},
+                         # What core's Model.state serves (O23).
+                         "fault_line": ("Disable failed. Treat as live."
+                                        if self.mode == "fault"
+                                        else "Faulted. Treat as live."),
                          "idle_remaining": self.idle_remaining,
                          "idle_warn_seconds": self.idle_warn_seconds})
         return snapshot
