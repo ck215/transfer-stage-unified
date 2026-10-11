@@ -496,6 +496,7 @@ class RgbAnalysis(Model):
         self.region = None
         self.output_root = self._default_output_root()
         self.baseline_red = 0.0
+        self._idle_slug = None
 
         #: REDPERCENT-5: one attribute holding the pair, swapped in one
         #: assignment, so every poller sees the old pair or the new one and
@@ -601,7 +602,16 @@ class RgbAnalysis(Model):
         needs a name."""
         if self._run is not None:
             return self._run.run_id
-        return (self.run_name or "").strip() or time.strftime("run_%Y%m%d_%H%M%S")
+        name = (self.run_name or "").strip()
+        if name:
+            self._idle_slug = None      # a name ends the idle period's slug
+            return name
+        # One slug per idle period (BUGFIX M2): minted at the first read and
+        # kept until a run starts or a name is typed, so the readout does not
+        # tick every second.
+        if self._idle_slug is None:
+            self._idle_slug = time.strftime("run_%Y%m%d_%H%M%S")
+        return self._idle_slug
 
     @property
     def run_dir(self):
@@ -1125,6 +1135,7 @@ class RgbAnalysis(Model):
             red_threshold=self.red_threshold,
         )
         self._run = run
+        self._idle_slug = None
         self._saved_rows = 0
         self._red_state = (0.0, 0.0)
         self._rgb_state = None

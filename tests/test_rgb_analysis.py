@@ -2430,3 +2430,22 @@ def test_load_run_without_a_path_says_so_and_changes_nothing(monitor, path):
     with pytest.raises(Refused) as refusal:
         monitor.load_run(path)
     assert refusal.value.reason == "Choose a saved run to load."
+
+
+def test_an_idle_run_id_is_one_slug_until_a_name_is_typed(monitor, monkeypatch):
+    """BUGFIX M2: the readout must not tick every second while idle."""
+    import model.rgb_analysis as module
+    monitor.run_name = ""
+    stamps = iter(["run_20261011_100000", "run_20261011_100001",
+                   "run_20261011_100002"])
+    monkeypatch.setattr(module.time, "strftime", lambda fmt, *a: next(stamps))
+
+    first = monitor.run_id
+    assert first == "run_20261011_100000"
+    assert monitor.run_id == first and monitor.run_dir.name == first
+
+    monitor.run_name = "C777"
+    assert monitor.run_id == "C777"
+    monitor.run_name = ""
+    assert monitor.run_id == "run_20261011_100001", "a name ends the idle slug"
+    assert monitor.run_id == "run_20261011_100001"
