@@ -94,6 +94,17 @@
   --highlight: color-mix(in srgb, var(--cap) 85%, transparent);
 }
 
+/* The bench scale (Setup > Display, UX audit 2026-10-07 proposal 6): the
+   base size one step up the theme's type scale (theme.size(1), served as
+   --font-size-bench), which every rem follows, and the sheet's keys at no
+   less than 44 px, for gloves and for reading across the bench. Set from
+   Setup's `bench_scale` by the client (Dashboard.applyBenchScale). The launch
+   flag --font-size sets the base this steps up from. */
+html[data-bench] {
+  --font-size: var(--font-size-bench);
+  --hit-panel: max(44px, 2.25rem);
+}
+
 * { box-sizing: border-box; }
 
 html {

@@ -32,6 +32,7 @@ import csv
 import io
 
 import palette
+from events import events
 import json
 import re
 from pathlib import Path
@@ -158,8 +159,10 @@ def load_run(csv_path):
     if sidecar.exists():
         try:
             result["metadata"] = json.loads(sidecar.read_text())
-        except (ValueError, OSError):
-            pass
+        except (ValueError, OSError) as exc:
+            # The samples still plot; the operator is told the metadata is gone.
+            events.warn("Run Metadata Unreadable", str(sidecar),
+                        source="PlotData", exception=exc)
     return result
 
 

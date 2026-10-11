@@ -286,10 +286,32 @@ GATE_WORDS = {
 }
 
 
-def gate_reason(element, mode_name):
+#: The `enabled_by` direction (O20): a control live only while a tick box is
+#: ticked. `named` takes the box's caption ("Tick Launch first"); `unnamed`
+#: stands when no caption is known. An element's own `enabled_by_reason`
+#: outranks both. Served in /api/theme.json, so no view keeps its own phrase.
+ENABLED_BY_WORDS = {"named": "Tick {name} first", "unnamed": "Not available yet"}
+
+
+def enabled_by_reason(element, caption_of=None):
+    """The sentence for a control whose `enabled_by` value is off."""
+    if element.get("enabled_by_reason"):
+        return str(element["enabled_by_reason"])
+    name = caption_of(element["enabled_by"]) if caption_of else ""
+    if name:
+        return ENABLED_BY_WORDS["named"].format(name=name)
+    return ENABLED_BY_WORDS["unnamed"]
+
+
+def gate_reason(element, mode_name, values=None, caption_of=None):
     """The sentence a view puts on a disabled control, or "" when `element`
     is not gated by `mode_name`. Reads the element's own gate lists, so the
-    direction is never guessed from the word alone."""
+    direction is never guessed from the word alone. With `values` (the
+    panel's `state["values"]`), an `enabled_by` tick that is off is the
+    first reason (`caption_of(attr)` names the box)."""
+    by = element.get("enabled_by")
+    if by and values is not None and not values.get(by):
+        return enabled_by_reason(element, caption_of)
     mode = str(mode_name or "")
     disabled_when = list(element.get("disabled_when") or ())
     enabled_when = list(element.get("enabled_when") or ())

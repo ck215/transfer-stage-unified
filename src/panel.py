@@ -135,7 +135,8 @@ class Panel:
             return Result(Result.OK, value=value)
         except Refused as refusal:
             events.info("Refused", refusal.reason, source=source)
-            return Result(Result.REFUSED, reason=refusal.reason)
+            return Result(Result.REFUSED, reason=refusal.reason,
+                          attr=refusal.attr)
         except NeedsConfirm as ask:
             return Result(Result.CONFIRM, reason=ask.prompt, command=ask.command,
                           inputs=ask.inputs, args=ask.rerun_args)
@@ -269,13 +270,13 @@ class Panel:
                 raise Refused(f"{name} is not an editable field of {self.NAME}")
             ok, value = param.parse(raw)
             if not ok:
-                raise Refused(value)
+                raise Refused(value, attr=name)
             if not self._is_enabled(writable[name]):
                 if self._same_value(getattr(self, name, None), value):
                     continue  # unchanged value of a gated field: not an edit
                 raise Refused(f"{param.label or name} cannot be changed in "
                               f"{self.mode_name} mode. Leave {self.mode_name} "
-                              "mode to edit it.")
+                              "mode to edit it.", attr=name)
             parsed[name] = value
         for name, value in parsed.items():
             setattr(self, name, value)

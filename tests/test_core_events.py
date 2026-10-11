@@ -644,3 +644,39 @@ def test_flush_file_writes_what_is_buffered_and_keeps_the_file_open(tmp_path):
     log.close_file()
     assert "still open" in open(path, encoding="utf-8").read()
     log.flush_file()        # closed: nothing to flush, never an error
+
+
+# --- BUGFIX_PLAN A7: a run log that cannot be written says so, once ---------
+
+def test_an_unwritable_log_path_is_one_stderr_line_and_a_flag_not_a_crash(
+        tmp_path, capsys):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x")
+    log = _log()
+    assert log.logging_failed is False
+
+    log.open_file(str(blocker / "logs"))           # makedirs fails: ENOTDIR
+    log.debug("T", "later diagnostics are no-ops, not crashes")
+
+    assert log.logging_failed is True
+    err = capsys.readouterr().err
+    assert err.count("run log can no longer be written") == 1
+
+
+def test_a_failed_log_write_is_noted_once_on_stderr(tmp_path, capsys):
+    log = _log()
+    log.open_file(str(tmp_path))
+
+    class Dead:
+        def write(self, line):
+            raise OSError(28, "No space left on device")
+
+        def close(self):
+            pass
+
+    log._file = Dead()
+    log.debug("T", "one")
+    log.debug("T", "two")                          # no raise, no second note
+
+    assert log.logging_failed is True
+    assert capsys.readouterr().err.count("run log can no longer be written") == 1

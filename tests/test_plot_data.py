@@ -154,6 +154,21 @@ def test_a_corrupt_sidecar_never_makes_the_samples_unreadable(tmp_path):
     assert result["red_percents"] == [10.5, 11.5, 12.5]
 
 
+def test_a_corrupt_sidecar_is_reported_not_dropped(tmp_path):
+    from events import events
+    events.clear()
+    (tmp_path / "C001_position.csv").write_text(NEW_CSV)
+    (tmp_path / "C001_station_meta.json").write_text('{"probe_name": "tip')  # truncated
+
+    result = plot_data.load_run(tmp_path / "C001_position.csv")
+
+    assert result["red_percents"] == [10.5, 11.5, 12.5]
+    assert not result.get("metadata")
+    warned = [e for e in events.since(0) if e.title == "Run Metadata Unreadable"]
+    assert warned and warned[0].severity == "warning"
+    assert "C001_station_meta.json" in warned[0].message
+
+
 # --- what gets plotted ----------------------------------------------------
 
 def test_0d_plots_red_against_time_when_the_run_has_one():
