@@ -1933,6 +1933,10 @@ class RgbAnalysis(Model):
         This lived in a PySide-only `PlotDialog`, so Tk and the Web client had
         no way to look at a finished run at all (REDPERCENT-17, PYSIDE-18).
         """
+        if path is None or not str(path).strip():
+            # `Path("")` is the current directory: say what is missing instead
+            # of "Could not read ." (BUGFIX E8).
+            raise Refused("Choose a saved run to load.")
         try:
             loaded = plot_data.load_run(path)
         except OSError as exc:

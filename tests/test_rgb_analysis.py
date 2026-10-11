@@ -2422,3 +2422,11 @@ def test_a_source_whose_position_age_raises_is_logged_not_hidden(monitor, monkey
     monitor._source = NoAttribute()
     assert monitor.position_age is None
     assert logged == [], "a missing attribute is 'no sample yet', not a fault"
+
+
+@pytest.mark.parametrize("path", ["", "   ", None])
+def test_load_run_without_a_path_says_so_and_changes_nothing(monitor, path):
+    """BUGFIX E8: an empty path is a sentence, not 'Could not read .'"""
+    with pytest.raises(Refused) as refusal:
+        monitor.load_run(path)
+    assert refusal.value.reason == "Choose a saved run to load."
