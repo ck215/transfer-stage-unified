@@ -883,7 +883,13 @@ class RgbAnalysis(Model):
             return None
         try:
             age = source.position_age
-        except Exception:
+        except AttributeError:
+            return None         # a source with no such attribute: no sample yet
+        except Exception as exc:
+            # A broken probe is not "no sample yet": velocity going missing
+            # must leave a trace (BUGFIX A3).
+            events.debug("Position Age Failed", f"{type(exc).__name__}: {exc}",
+                         source="RgbAnalysis", exception=exc, every=5.0)
             return None
         return None if age is None else float(age)
 

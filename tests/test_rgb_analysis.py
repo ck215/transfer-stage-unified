@@ -2396,3 +2396,29 @@ def test_the_custom_crop_entries_apply_on_change():
     assert bank.custom is None
     assert not model.set_value("custom_left", -3).is_ok  # a Param bound
     assert (model.custom_left, model.custom_width) == (2, 0)
+
+
+def test_a_source_whose_position_age_raises_is_logged_not_hidden(monitor, monkeypatch):
+    """BUGFIX A3: a broken probe is not the same as "no sample yet"."""
+    from events import events as event_log
+    logged = []
+    monkeypatch.setattr(event_log, "debug",
+                        lambda title, message, **kw: logged.append((title, message)))
+
+    class Broken:
+        @property
+        def position_age(self):
+            raise RuntimeError("probe link exploded")
+
+    monitor._source = Broken()
+    assert monitor.position_age is None
+    assert logged and logged[0][0] == "Position Age Failed"
+    assert "RuntimeError" in logged[0][1]
+
+    class NoAttribute:
+        pass
+
+    logged.clear()
+    monitor._source = NoAttribute()
+    assert monitor.position_age is None
+    assert logged == [], "a missing attribute is 'no sample yet', not a fault"
