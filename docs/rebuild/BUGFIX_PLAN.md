@@ -522,35 +522,35 @@ Tier B's "never delegated", for this item only. The firmware's PID
 tier; the gains, ramp and offset are tuned over the wire. A firmware change
 (e.g. anti-windup on the unbounded `sum`) is proposed, not flashed.
 
-| # | Sev | Where | Item | Fix | Route |
-|---|---|---|---|---|---|
-| P1 | S2 | heater (core) + a plot tool | The temperature graph is only visible inside whichever view is running; an agent, or a second person, cannot watch a run. | Every reading (time, temperature, setpoint, endpoint, gains) appended live to a per-session CSV under `~/transfer-stage-runs/`; a CLI that renders it (PNG snapshot, `--follow` to redraw). | agent (worktree) |
-| P2 | S2 | bench | Overshoot from idle to 30 °C with the defaults (Kp 2.0, Ki 0.5, Kd 0.1, ramp 10 s/°C). | Iterate at the bench: step to 30 °C, wait out passive cooling to ambient between trials, fit rise/overshoot/settling, retune. Result: proposed defaults for `src/model/heater.py` (owner approves), with the plotted trials. | agent (bench, owner-delegated) |
+| # | Sev | Where | Item | Fix | Route | Status |
+|---|---|---|---|---|---|---|
+| P1 | S2 | heater (core) + a plot tool | The temperature graph is only visible inside whichever view is running; an agent, or a second person, cannot watch a run. | Every reading (time, temperature, setpoint, endpoint, gains) appended live to a per-session CSV under `~/transfer-stage-runs/`; a CLI that renders it (PNG snapshot, `--follow` to redraw). | agent (worktree) | DONE 32153fe |
+| P2 | S2 | bench | Overshoot from idle to 30 °C with the defaults (Kp 2.0, Ki 0.5, Kd 0.1, ramp 10 s/°C). | Iterate at the bench: step to 30 °C, wait out passive cooling to ambient between trials, fit rise/overshoot/settling, retune. Result: proposed defaults for `src/model/heater.py` (owner approves), with the plotted trials. | agent (bench, owner-delegated) | BENCH (owner) |
 
 ## Tier Q — owner follow-ups (2026-09-26, evening)
 
-| # | Sev | Where | Item | Fix | Route |
-|---|---|---|---|---|---|
-| Q1 | S2 | core (architecture audit) | Probe speeds share one arbitrary ceiling, `MAX_SPEED = 3200` steps/s (`src/model/probe.py`, owner ruling 2026-09-26), and one slider range. Not every board's steppers behave the same. | Per-device speed limits, then adapted to each device's steppers (bench-measured). Part of the architectural audit, not a quick fix. | audit, then owner (bench values) |
-| Q2 | S3 | tests | `test_core_model.py::test_the_stop_thread_is_a_daemon_so_a_wedged_board_cannot_hold_the_exit` flaked once in a full run (passes alone): it finds the worker by `estop-` name, and a leftover thread of that name from an earlier test is already in `before`. | Identify the worker by the thread object (or the model's own handle), not by name. | direct |
-| Q3 | S2 | launchers / flash tool | `main` is stable and never modified, so its Mega sketches (int packet, `t` toggle) differ from mvc-refactor's (float packet, `e`/`d`): every swap between the desktop shortcuts ("Transfer Stage Launcher" = `run_swap.sh new`, "Transfer Stage Classic" = `run_swap.sh main`) reflashes the stepper and chuck. The Teensy always keeps mvc-refactor's sketch (same protocol; main's does not build against the bench PC's libraries). A board never plugged in here (the DC Probe) has no stamp, so each launch scans the ports; stamps cannot see a flash made from the IDE or the MacBook (`--force-flash`). | Owner to bench-test the first flash and `teensy_loader_cli -s`. | owner (bench) |
+| # | Sev | Where | Item | Fix | Route | Status |
+|---|---|---|---|---|---|---|
+| Q1 | S2 | core (architecture audit) | Probe speeds share one arbitrary ceiling, `MAX_SPEED = 3200` steps/s (`src/model/probe.py`, owner ruling 2026-09-26), and one slider range. Not every board's steppers behave the same. | Per-device speed limits, then adapted to each device's steppers (bench-measured). Part of the architectural audit, not a quick fix. | audit, then owner (bench values) | BENCH (owner) |
+| Q2 | S3 | tests | `test_core_model.py::test_the_stop_thread_is_a_daemon_so_a_wedged_board_cannot_hold_the_exit` flaked once in a full run (passes alone): it finds the worker by `estop-` name, and a leftover thread of that name from an earlier test is already in `before`. | Identify the worker by the thread object (or the model's own handle), not by name. | direct | OPEN tests/test_core_model.py:96 (the stop worker is still found by the `estop-` name) |
+| Q3 | S2 | launchers / flash tool | `main` is stable and never modified, so its Mega sketches (int packet, `t` toggle) differ from mvc-refactor's (float packet, `e`/`d`): every swap between the desktop shortcuts ("Transfer Stage Launcher" = `run_swap.sh new`, "Transfer Stage Classic" = `run_swap.sh main`) reflashes the stepper and chuck. The Teensy always keeps mvc-refactor's sketch (same protocol; main's does not build against the bench PC's libraries). A board never plugged in here (the DC Probe) has no stamp, so each launch scans the ports; stamps cannot see a flash made from the IDE or the MacBook (`--force-flash`). | Owner to bench-test the first flash and `teensy_loader_cli -s`. | owner (bench) | BENCH (owner) |
 
 ## Model contract (audit 2026-09-26, `handoff/audit-model-contract-2026-09-26.md`)
 
 A `PiezoStage` model written from `MODEL_CONTRACT.md` alone was driven through all three views unedited. `tests/test_model_contract.py` (160 cases over every registered class plus a minimal one) pins the contract.
 
-| # | Sev | Views | Item | Fix | Route |
-|---|---|---|---|---|---|
-| CON-1 | S1 | web | A button's own `args` were dropped, so two buttons sharing one command differed only by their press: the Rotator's "Move -" moved +. | **Done** (rb-o-web): a button's own args travel before the press's; the Rotator move test pins the sign. | done |
-| CON-2 | S2 | web | The gate words were a local copy. | **Done** with O3. | done |
-| CON-3 | S2 | core | The window-focus gate reached only a `gamepad` attribute. | **Done**: `set_input_focus` walks `model.devices` calling `set_gate`. | done |
-| CON-4 | S2 | core | Stop-class commands were a hand list in the views. | **Done**: schema `button(stop=True)`; `Panel.UNGATED_COMMANDS`. | done |
-| CON-5 | S2 | web | Downloads assumed the probe's output path. | **Done** (rb-o-web): reads `output_root` where models publish it. | done |
-| CON-6 | S3 | web, tk | The simulation line counts only `SerialPort` and `SMC100` as hardware. | A `Device.is_hardware` flag; the views count it. | direct (core) → `router` per view |
-| CON-7 | S3 | setup | No registration call: `MODEL_TYPES` is a tuple, the SMC100 handshake is hard-coded, a model added at runtime cannot be reopened after its entry closes. | `Setup.register(cls)`; handshake from the class; reopen from the registry. | direct (core) |
-| CON-9 | S2 | core | A fault gated only in the probe. | **Done**: `Model.gate_mode` returns "fault" from `is_faulted`. | done |
-| CON-11 | S3 | core | The idle clock is probe code. | Lift `idle_remaining` / `extend_idle` into a mixin on `Model`. | direct (core) |
-| CON-13 | S2 | rotator (SIM) | A simulated Rotator's stop never confirms: every SIM FULL STOP reads "Rotator did not confirm". `test_model_contract` carries it as an expected failure. | Owner call: does the SIM stage answer its stop, or is the unconfirmed reading the intended rehearsal of the real SMC100? | owner |
+| # | Sev | Views | Item | Fix | Route | Status |
+|---|---|---|---|---|---|---|
+| CON-1 | S1 | web | A button's own `args` were dropped, so two buttons sharing one command differed only by their press: the Rotator's "Move -" moved +. | **Done** (rb-o-web): a button's own args travel before the press's; the Rotator move test pins the sign. | done | DONE 6573c86 |
+| CON-2 | S2 | web | The gate words were a local copy. | **Done** with O3. | done | DONE 612397c |
+| CON-3 | S2 | core | The window-focus gate reached only a `gamepad` attribute. | **Done**: `set_input_focus` walks `model.devices` calling `set_gate`. | done | DONE 6657057 |
+| CON-4 | S2 | core | Stop-class commands were a hand list in the views. | **Done**: schema `button(stop=True)`; `Panel.UNGATED_COMMANDS`. | done | DONE 6657057 |
+| CON-5 | S2 | web | Downloads assumed the probe's output path. | **Done** (rb-o-web): reads `output_root` where models publish it. | done | DONE 6573c86 |
+| CON-6 | S3 | web, tk | The simulation line counts only `SerialPort` and `SMC100` as hardware. | A `Device.is_hardware` flag; the views count it. | direct (core) → `router` per view | DONE 04d9805 |
+| CON-7 | S3 | setup | No registration call: `MODEL_TYPES` is a tuple, the SMC100 handshake is hard-coded, a model added at runtime cannot be reopened after its entry closes. | `Setup.register(cls)`; handshake from the class; reopen from the registry. | direct (core) | DONE 6b7c7d2 |
+| CON-9 | S2 | core | A fault gated only in the probe. | **Done**: `Model.gate_mode` returns "fault" from `is_faulted`. | done | DONE 6657057 |
+| CON-11 | S3 | core | The idle clock is probe code. | Lift `idle_remaining` / `extend_idle` into a mixin on `Model`. | direct (core) | DONE ad733c3 |
+| CON-13 | S2 | rotator (SIM) | A simulated Rotator's stop never confirms: every SIM FULL STOP reads "Rotator did not confirm". `test_model_contract` carries it as an expected failure. | Owner call: does the SIM stage answer its stop, or is the unconfirmed reading the intended rehearsal of the real SMC100? | owner | BENCH (owner) |
 
 ## Tier R — modularity (architecture audit 2026-09-26, `handoff/audit-modularity-2026-09-26.md`)
 
@@ -567,14 +567,14 @@ declared `inputs` plus every edited box, no longer every box (MOD-6), so a
 value typed into an unrelated field and left uncommitted still travels, a
 clean one does not.
 
-| # | Sev | Where | Item | Fix | Route | Status |
-|---|---|---|---|---|---|---|
-| MOD-1 | S2 | core (probe, gamepad) | The gamepad has no contract: the device publishes probe-shaped keys and the probe owns bind, gate, lost-pad, pump and the dropdown/log commands (~200 lines). A second gamepad-driven device copies all of it. | `model/gamepad_input.py` mixin owns the plumbing; the device speaks generic channel names; the model writes `_on_gamepad(levels, edges)`. Wire bytes unchanged (golden gate). | agent (rb-mod-input) | done `47fe706` (`tests/test_gamepad_input.py`, 14; the contract file runs on a fake `JoystickStage`) |
-| MOD-2 | S3 | core (all models) | Loop scaffolding written four times, four join timeouts; the probe's interlock thread starts outside `_start_threads`. | `Model._spawn(name, target)` + one base `_stop_threads` that joins every spawned loop. | agent (rb-mod-input) | done `0500aba` (`THREAD_JOIN_TIMEOUT = 2.0`; Red Percent keeps an override to end the in-flight run, then calls the base) |
-| MOD-3 | S3 | core | Idle interlock is probe code (= CON-11). | `IdleInterlock` mixin: `_touch_activity`, `idle_remaining`, `idle_warn_seconds`, `extend_idle`, `_on_idle_expired()` hook. | agent (rb-mod-input) | done `ad733c3` (`model/idle.py`, `tests/test_idle.py`) |
-| MOD-4 | S3 | setup | Registry is a tuple, the SMC100 handshake is hard-coded, the constructor signature is fixed, a runtime-added model cannot reopen (= CON-7). | `Setup.register(cls)`; resources declared by the class; `identify_port` classmethod hook; reopen from the registry. | agent (rb-mod-setup); SMC100 relocation by the lead | done `6b7c7d2` + lead (`tests/test_setup_registry.py`, 26; `Rotator.identify_port` carries the pinned bytes) |
-| MOD-5 | S3 | devices, views | `Device` base duck-types `set_gate`, `is_hardware`, lost (CON-6). | Defaults on `Device`; `Model.state["hardware_devices"]`; views count that instead of class names. | agent (rb-mod-views) + rb-mod-input (state key) | done `04d9805` + `dbc6dc5` (`views.base.hardware_links`; a state without the key falls back to the old class names) |
-| MOD-6 | S3 | views | Schema `inputs` is declared and not read (= CON-8). | Views send the button's declared `inputs` plus every dirty writable entry. | agent (rb-mod-views) | done `5a6d988` (Tk keeps a refused value in its box, and that box counts as edited, so the CON-8 case persists there until the box is fixed) |
+| # | Sev | Where | Item | Fix | Route | Status | Status 2026-10-11 |
+|---|---|---|---|---|---|---|---|
+| MOD-1 | S2 | core (probe, gamepad) | The gamepad has no contract: the device publishes probe-shaped keys and the probe owns bind, gate, lost-pad, pump and the dropdown/log commands (~200 lines). A second gamepad-driven device copies all of it. | `model/gamepad_input.py` mixin owns the plumbing; the device speaks generic channel names; the model writes `_on_gamepad(levels, edges)`. Wire bytes unchanged (golden gate). | agent (rb-mod-input) | done `47fe706` (`tests/test_gamepad_input.py`, 14; the contract file runs on a fake `JoystickStage`) | DONE 47fe706 |
+| MOD-2 | S3 | core (all models) | Loop scaffolding written four times, four join timeouts; the probe's interlock thread starts outside `_start_threads`. | `Model._spawn(name, target)` + one base `_stop_threads` that joins every spawned loop. | agent (rb-mod-input) | done `0500aba` (`THREAD_JOIN_TIMEOUT = 2.0`; Red Percent keeps an override to end the in-flight run, then calls the base) | DONE 0500aba |
+| MOD-3 | S3 | core | Idle interlock is probe code (= CON-11). | `IdleInterlock` mixin: `_touch_activity`, `idle_remaining`, `idle_warn_seconds`, `extend_idle`, `_on_idle_expired()` hook. | agent (rb-mod-input) | done `ad733c3` (`model/idle.py`, `tests/test_idle.py`) | DONE ad733c3 |
+| MOD-4 | S3 | setup | Registry is a tuple, the SMC100 handshake is hard-coded, the constructor signature is fixed, a runtime-added model cannot reopen (= CON-7). | `Setup.register(cls)`; resources declared by the class; `identify_port` classmethod hook; reopen from the registry. | agent (rb-mod-setup); SMC100 relocation by the lead | done `6b7c7d2` + lead (`tests/test_setup_registry.py`, 26; `Rotator.identify_port` carries the pinned bytes) | DONE 6b7c7d2 |
+| MOD-5 | S3 | devices, views | `Device` base duck-types `set_gate`, `is_hardware`, lost (CON-6). | Defaults on `Device`; `Model.state["hardware_devices"]`; views count that instead of class names. | agent (rb-mod-views) + rb-mod-input (state key) | done `04d9805` + `dbc6dc5` (`views.base.hardware_links`; a state without the key falls back to the old class names) | DONE 04d9805 |
+| MOD-6 | S3 | views | Schema `inputs` is declared and not read (= CON-8). | Views send the button's declared `inputs` plus every dirty writable entry. | agent (rb-mod-views) | done `5a6d988` (Tk keeps a refused value in its box, and that box counts as edited, so the CON-8 case persists there until the box is fixed) | DONE 5a6d988 |
 
 ## Tier S — the Transfer Map (owner's end goal, ruled 2026-09-27)
 
@@ -589,15 +589,15 @@ per trial by its own min and max; several definitions are kept and cross
 compared; both a detector and an operator Mark key. Brief:
 `handoff/brief-transfer-map.md`. A model-only job by the Tier R contract.
 
-| # | Sev | Where | Item | Fix | Route | Status |
-|---|---|---|---|---|---|---|
-| MAP-1 | feature | model (new) | `TransferMap` model, registered; SQLite store (`trials`, raw `profile` samples); CSV export/import. | as the brief, §1–2 | agent (rb-map) | **done `dfe437f` (`transfer_map_analysis.py`, 23 tests; the GP is in, ~60 lines numpy)** |
-| MAP-2 | feature | model (red_monitor, rotator, additive) | Live sources: Red Percent `subscribe`/`grab_frame`, Rotator `position_deg`, probe speed, duck-typed. | brief §3 | agent (rb-map) | **done `b18c361`+`9498b70` (Red Percent `subscribe`/`grab_frame`, `Rotator.position_deg`; estop path proven unchanged)** |
-| MAP-3 | feature | model (new) | The guided trial: arm (before frame), Mark force, finish (after frame, detector), abort, broke, attach AFM. | brief §4 | agent (rb-map) | **done `fb44af7`+`2205e83` (38 tests incl. the stop path; no default tilt without a rotator)** |
-| MAP-4 | feature | model (analysis) | Force definitions as pure functions over the stored profile, an open registry; the extrema detector. | brief §5 | agent (rb-map) | **done `dfe437f` (registry `FORCE_DEFINITIONS`: shadow_vs_baseline, shadow_vs_peak, at_operator_mark, dip_area, fall_slope, z_past_peak)** |
-| MAP-5 | feature | plot_data | Figures: `map3d`, `slice`, `compare` (one panel per definition), `profile`. | brief §6 | agent (rb-map) | **done `2fc7f82` + lead registration (`setup.py`; seven rows in tests and smokes)** |
-| MAP-6 | feature, phase 2 | plot_data | numpy Gaussian process for the slice: mean, variance, confidence contour, gradient variance. | brief §6 phase 2 | agent (rb-map), after MAP-1..5 are green | **done with MAP-1/3 (`slice` draws the GP mean with sigma contours)** |
-| MAP-7 | docs | docs | STATUS, MODEL_CONTRACT (a worked non-hardware model), an operator page "Recording a trial". | from the handoff | lead | **done: `RECORDING_A_TRIAL.md`, STATUS, contract note; UNVERIFIED then: the profile path on real footage (SIM never changes the screen; the bench's 40 trials later showed the glitch rows, CAP-1), Tk/Qt rendering of the new schema (moot: retired)** |
+| # | Sev | Where | Item | Fix | Route | Status | Status 2026-10-11 |
+|---|---|---|---|---|---|---|---|
+| MAP-1 | feature | model (new) | `TransferMap` model, registered; SQLite store (`trials`, raw `profile` samples); CSV export/import. | as the brief, §1–2 | agent (rb-map) | **done `dfe437f` (`transfer_map_analysis.py`, 23 tests; the GP is in, ~60 lines numpy)** | DONE fb44af7 (model, store, export; analysis in dfe437f) |
+| MAP-2 | feature | model (red_monitor, rotator, additive) | Live sources: Red Percent `subscribe`/`grab_frame`, Rotator `position_deg`, probe speed, duck-typed. | brief §3 | agent (rb-map) | **done `b18c361`+`9498b70` (Red Percent `subscribe`/`grab_frame`, `Rotator.position_deg`; estop path proven unchanged)** | DONE b18c361 (Rotator.position_deg 9498b70) |
+| MAP-3 | feature | model (new) | The guided trial: arm (before frame), Mark force, finish (after frame, detector), abort, broke, attach AFM. | brief §4 | agent (rb-map) | **done `fb44af7`+`2205e83` (38 tests incl. the stop path; no default tilt without a rotator)** | DONE fb44af7 |
+| MAP-4 | feature | model (analysis) | Force definitions as pure functions over the stored profile, an open registry; the extrema detector. | brief §5 | agent (rb-map) | **done `dfe437f` (registry `FORCE_DEFINITIONS`: shadow_vs_baseline, shadow_vs_peak, at_operator_mark, dip_area, fall_slope, z_past_peak)** | DONE dfe437f |
+| MAP-5 | feature | plot_data | Figures: `map3d`, `slice`, `compare` (one panel per definition), `profile`. | brief §6 | agent (rb-map) | **done `2fc7f82` + lead registration (`setup.py`; seven rows in tests and smokes)** | DONE 2fc7f82 |
+| MAP-6 | feature, phase 2 | plot_data | numpy Gaussian process for the slice: mean, variance, confidence contour, gradient variance. | brief §6 phase 2 | agent (rb-map), after MAP-1..5 are green | **done with MAP-1/3 (`slice` draws the GP mean with sigma contours)** | DONE dfe437f |
+| MAP-7 | docs | docs | STATUS, MODEL_CONTRACT (a worked non-hardware model), an operator page "Recording a trial". | from the handoff | lead | **done: `RECORDING_A_TRIAL.md`, STATUS, contract note; UNVERIFIED then: the profile path on real footage (SIM never changes the screen; the bench's 40 trials later showed the glitch rows, CAP-1), Tk/Qt rendering of the new schema (moot: retired)** | DONE 54bb213 (the profile path on real footage was UNVERIFIED when recorded; CAP-1 later addressed the glitch rows) |
 
 ## Out of scope here
 
