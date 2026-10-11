@@ -1044,6 +1044,26 @@ function renderReadonly(panel, element) {
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
   };
+  // A playable readout (schema `video_attr`, the finalizer's trial video):
+  // the words above stay as the fallback; the player
+  // exists only while the model serves a source, and its `src` is written
+  // only when it changes (the page polls; a rewrite would restart playback).
+  if (element.video_attr) {
+    const player = make('video', 'trial-video');
+    player.controls = true;
+    player.preload = 'metadata';
+    player.playsInline = true;
+    player.hidden = true;
+    player.setAttribute('aria-label', sentence(element.text || 'video'));
+    node.appendChild(player);
+    widget.setVideo = (src) => {
+      const next = src ? String(src) : '';
+      if ((player.getAttribute('src') || '') === next) return;
+      if (next) player.setAttribute('src', next);
+      else { player.pause(); player.removeAttribute('src'); player.load(); }
+      player.hidden = !next;
+    };
+  }
   return widget;
 }
 
@@ -3019,6 +3039,7 @@ class PanelCard {
         widget.setText(link.counters || '');
       } else if ((kind === 'readonly' || kind === 'region_select' || kind === 'dropdown') && attr) {
         widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
+        if (element.video_attr && widget.setVideo) widget.setVideo(this.values[element.video_attr]);
       } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
         widget.setOn(Boolean(this.values[attr]));
       } else if (kind === 'image' && attr) {

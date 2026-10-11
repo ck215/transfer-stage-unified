@@ -2410,6 +2410,11 @@ span.lamp { background: none; }
 /* -- data: plots, figures, logs ------------------------------------------ */
 .row.wide { flex: 1 0 100%; }
 
+/* The finalizer's trial video (schema `video_attr`): under its words, no
+   wider than the column. */
+.trial-video { display: block; width: 100%; max-width: 640px; margin-top: 8px; }
+.trial-video[hidden] { display: none; }
+
 .plot-frame { position: relative; }
 
 .plot {

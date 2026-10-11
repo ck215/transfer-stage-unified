@@ -311,6 +311,10 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         if route == "/api/screen":
             return self._send_screen(self._one(query, "name"))
 
+        if route == "/api/video":
+            return self._send_video(self._one(query, "name"),
+                                    self._one(query, "path"))
+
         if route.startswith("/api/"):
             return self._send_json(404, {"status": "error",
                                          "reason": f"no route {route}"})
@@ -688,6 +692,109 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         with open(full, "rb") as handle:
             payload = handle.read()
         return self._send_bytes(200, self.IMAGE_TYPES[extension], payload)
+
+    #: What `/api/video` will serve, and the chunk it streams in.
+    VIDEO_TYPES = {"mp4": "video/mp4"}
+    VIDEO_CHUNK = 256 * 1024
+
+    def _send_video(self, name, relative):
+        """A trial's recorded video under the model's output root, by
+        RELATIVE path, with HTTP Range so a `<video>` can play and seek it
+        (the Web finalizer, C-11). Gated like `/api/image`: loopback and
+        Host only, the model must be open, nothing is run. The path must
+        name an `.mp4` that is a direct child of a numbered trial folder
+        (`<store>/<trial id>/screen.mp4`) inside the output root, after
+        symlinks are resolved: no `..`, no absolute path, no other file."""
+        if name not in self.controller.model_names:
+            return self._send_json(404, {"status": "error",
+                                         "reason": f"{name} is not open."})
+        root = self._output_root(name)
+        if not root:
+            return self._send_json(409, {
+                "status": "error",
+                "reason": f"{name} does not declare an output root, so a "
+                          f"video cannot be checked against one"})
+        relative = str(relative or "")
+        normal = relative.replace("\\", "/")
+        if (not relative or os.path.isabs(relative) or normal.startswith("/")
+                or ".." in normal.split("/")):
+            return self._send_json(403, {"status": "refused",
+                                         "reason": "a video is named relative to the output root"})
+        extension = relative.rsplit(".", 1)[-1].lower() if "." in relative else ""
+        if extension not in self.VIDEO_TYPES:
+            return self._send_json(403, {"status": "refused",
+                                         "reason": "that is not a video type the page plays"})
+        root = os.path.realpath(root)
+        full = os.path.realpath(os.path.join(root, relative))
+        if (not self._inside(full, root)
+                or not os.path.basename(os.path.dirname(full)).isdigit()):
+            events.warn("Video Refused", f"{relative} is not a trial video inside "
+                        f"{name}'s output root", source=SOURCE)
+            return self._send_json(403, {
+                "status": "refused",
+                "reason": "the video is not in a trial folder of the model's output root"})
+        try:
+            size = os.path.getsize(full) if os.path.isfile(full) else None
+        except OSError:
+            size = None
+        if size is None:
+            return self._send_json(404, {"status": "error", "reason": "the video is not there"})
+        first, last, partial = 0, size - 1, False
+        header = self.headers.get("Range")
+        if header is not None:
+            span = self._byte_range(header, size)
+            if span is None:
+                return self._send_bytes(416, "application/json", json.dumps({
+                    "status": "error", "reason": "that byte range cannot be served"}).encode("utf-8"),
+                    {"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"})
+            first, last = span
+            partial = True
+        length = last - first + 1 if size else 0
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", self.VIDEO_TYPES[extension])
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        if partial:
+            self.send_header("Content-Range", f"bytes {first}-{last}/{size}")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        sent = 0
+        if self.command != "HEAD" and length:
+            try:
+                with open(full, "rb") as handle:
+                    handle.seek(first)
+                    while sent < length:
+                        chunk = handle.read(min(self.VIDEO_CHUNK, length - sent))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        sent += len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass            # a player that seeks drops its earlier request
+        self._log_request(206 if partial else 200, sent)
+
+    @staticmethod
+    def _byte_range(header, size):
+        """(first, last) of a single `bytes=` range inside a file of `size`
+        bytes, or None when it is malformed, multiple or unsatisfiable."""
+        unit, _, spec = str(header).strip().partition("=")
+        if unit.strip().lower() != "bytes" or "," in spec:
+            return None
+        start, dash, end = spec.strip().partition("-")
+        start, end = start.strip(), end.strip()
+        if not dash or not (start or end) or not (start + end).isdigit():
+            return None
+        if not start:                            # suffix: the last `end` bytes
+            count = int(end)
+            return None if count == 0 or size == 0 else (max(size - count, 0), size - 1)
+        first = int(start)
+        last = int(end) if end else size - 1
+        if first >= size or last < first:
+            return None
+        return first, min(last, size - 1)
 
     def _receive_upload(self, body):
         """A file chosen in the browser, for a `file_open` command (F13).

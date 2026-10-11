@@ -14,10 +14,15 @@ It finds the Transfer Map the way the other models do, through
 `on_model_added` (duck-typed on the finalize commands), and is launched with
 it (`HOST`). It owns no device: its stop is nothing to halt.
 
-Not ported: the in-page video player. The trial's video is named (a file or
-a folder of JPEG frames, and where it is) so it can be opened in the lab's
-player; the stills and the mark frame are shown.
+The trial's video plays in the page when it is one MP4 file under the map's
+output root (`video_src`, served with Range by the Web server's `/api/video`);
+a folder of JPEG frames, or a file outside the root, is only named, with its
+place, to be opened in the lab's player. The stills and the mark frame are
+shown either way.
 """
+from pathlib import PurePath
+from urllib.parse import quote
+
 import schema as sch
 from events import events
 from param import Param
@@ -73,6 +78,7 @@ class Finalizer(Model):
     def __init__(self, sim=False):
         super().__init__()
         self._map = None
+        self._map_name = ""
         self._only_missing = True
         self._queue = []
         self._index = -1
@@ -86,7 +92,7 @@ class Finalizer(Model):
     # -- the Transfer Map ----------------------------------------------------
     def on_model_added(self, name, model):
         if model is not self and callable(getattr(model, "finalize_queue", None)):
-            self._map = model
+            self._map, self._map_name = model, name
             self._reload()
 
     def on_model_removed(self, name, model=None):
@@ -309,6 +315,28 @@ class Finalizer(Model):
         return "This trial has no video."
 
     @property
+    def video_src(self):
+        """The server route that plays this trial's MP4, or "" when it has
+        none the page can play (no file, a folder of frames, a file outside
+        the map's output root). The path is relative to that root; the
+        server checks it again."""
+        media, mapping = self._media, self._map
+        root = getattr(mapping, "output_root", None)
+        if not media or media["video_kind"] != "file" or root is None:
+            return ""
+        try:
+            relative = PurePath(media["video_path"]).relative_to(root).as_posix()
+        except ValueError:
+            return ""
+        return f"/api/video?name={quote(self._map_name)}&path={quote(relative)}"
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["values"]["video_src"] = self.video_src
+        return snapshot
+
+    @property
     def status_text(self):
         return self._status
 
@@ -401,7 +429,7 @@ class Finalizer(Model):
                 *(sch.image(label, f"{name}_png", model_attr="still_key",
                             empty="No picture was taken.")
                   for name, label in STILLS),
-                sch.readonly("Video", "video_text"),
+                sch.video(sch.readonly("Video", "video_text"), "video_src"),
                 tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
