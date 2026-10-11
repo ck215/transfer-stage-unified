@@ -90,11 +90,31 @@ def test_the_stop_still_reaches_the_hardware_after_the_caller_gives_up():
 def test_the_stop_thread_is_a_daemon_so_a_wedged_board_cannot_hold_the_exit():
     model = FakeModel(halt_blocks=True)
     try:
-        before = {t.name for t in threading.enumerate()}
+        # By the thread object, never by its name: a leftover "estop-<name>"
+        # thread from an earlier test shares the name and is not this one
+        # (BUGFIX Q2).
+        before = set(threading.enumerate())
         model.estop()
         workers = [t for t in threading.enumerate()
-                   if t.name not in before and t.name.startswith("estop-")]
+                   if t not in before and t.name.startswith("estop-")]
         assert workers and all(t.daemon for t in workers)
+    finally:
+        model.release()
+
+
+def test_a_leftover_stop_thread_of_the_same_name_does_not_hide_the_new_worker():
+    """BUGFIX Q2: the worker is found by object, so an older thread that
+    carries the same `estop-` name cannot make the check vacuous."""
+    stale = threading.Thread(target=time.sleep, args=(5,), daemon=True,
+                             name=f"estop-{FakeModel.NAME}")
+    stale.start()
+    model = FakeModel(halt_blocks=True)
+    try:
+        before = set(threading.enumerate())
+        model.estop()
+        fresh = [t for t in threading.enumerate() if t not in before
+                 and t.name == f"estop-{model.NAME}"]
+        assert len(fresh) == 1 and fresh[0] is not stale and fresh[0].daemon
     finally:
         model.release()
 
