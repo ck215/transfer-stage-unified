@@ -373,8 +373,11 @@ def plot(text, data_command, *, x_label="", y_label="", role="neutral",
     }
 
 
-def log_stream(text, source_command, *, role="neutral", detached=False):
-    """A scrolling text feed.
+def log_stream(text, source_command, *, role="neutral", detached=False,
+               empty=None):
+    """A scrolling text feed. `empty` (BUGFIX E2) is the one sentence a view
+    draws while the feed has no lines, as on `plot` and `image`; left out, the
+    element carries no key and a view uses its own default for the command.
 
     `detached` (G4): the feed is not drawn in the panel. The renderer draws
     a button in its place that opens ONE non-modal window holding the feed;
@@ -382,10 +385,13 @@ def log_stream(text, source_command, *, role="neutral", detached=False):
     and the feed's source command is polled only while it is open
     (`PanelView._wants_data`).
     """
-    return {
+    element = {
         "type": "log_stream", "text": text, "source_command": source_command,
         "writable": False, "role": role, "detached": bool(detached),
     }
+    if empty is not None:
+        element["empty"] = str(empty)
+    return element
 
 
 def _gate(element, enabled_when, disabled_when, enabled_by=None):
