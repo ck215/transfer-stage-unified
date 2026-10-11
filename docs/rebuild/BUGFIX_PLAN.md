@@ -177,19 +177,19 @@ then D6/D7 together (one write set: `setup.py`), then the rest.
 
 ## Tier E — UI follow-ups from round 2 (2026-09-24), small
 
-| # | Where | Item | Route |
-|---|---|---|---|
-| E1 | `src/model/red_monitor.py` `figure()` | Return no image when no run is loaded so every view shows its "No run loaded" empty state instead of matplotlib's 6 px caption; confirm all three views render a missing image as the empty state first. | `agy` |
-| E2 | `src/schema.py` | Accept `empty=` text on `plot`, `image` and `log_stream`; the Web view already prefers it. | `router patch-plan` → direct |
-| E3 | `src/views/theme.py` | A severity → text-colour map for event logs (Tk and Qt each hard-wire one now; `ROLES["info"]` as a text colour was the unreadable-log bug in both). | direct |
-| E4 | `src/views/theme.py` `FONT_FAMILY` | The brief names IBM Plex Sans; Tk/Qt can use it only if installed on the station PC. Owner: install it there, or accept Helvetica for the desktop views. | owner |
-| E5 | `src/controller/setup.py` `stop_system` | Owner call: confirm before tearing every model down? | owner |
-| E6 | Tk after-shots | Capture the three states at 1400×900 and 900×900 when the Mac is free (`handoff/tk3.md`, UNVERIFIED). | direct |
-| E7 | `src/devices/serial_port.py` ~730 | "Connection Lost" is published with the port as source; views want the owning model's name so the tray line reads "Stepper Probe lost its serial port". | `router` |
-| E8 | `src/model/red_monitor.py` `load_run` | Refuse with a sentence when called without a path (the Web view now always sends one; Tk/Qt dialogs cancel → no call). | `router` |
-| E9 | `src/views/base.py` | One shared list of at-rest ("muted") words and one `_show_refused(element, …)` signature so all three views place refusals the same way; a failed command clears the previous refusal in `PanelView._run`. | direct |
-| E10 | Web / Qt | The alert queue has no cap; the Web type scale ignores `theme.size()`; Safari keeps ⌘. so only Ctrl+. reaches the page there. | `router` |
-| E11 | Tk, Qt on screen | Tk after-shots (rounds 2 and 3) and the ⌘. chord on a real Aqua display are unseen: run the capture commands in `handoff/fix-tk.md` when the Mac is free. | direct |
+| # | Where | Item | Route | Status |
+|---|---|---|---|---|
+| E1 | `src/model/red_monitor.py` `figure()` | Return no image when no run is loaded so every view shows its "No run loaded" empty state instead of matplotlib's 6 px caption; confirm all three views render a missing image as the empty state first. | `agy` | DONE 9aa9840 (\`figure()\` returns b"" with nothing loaded, src/model/rgb_analysis.py:2031-2035; the schema \`empty\` sentence is drawn) |
+| E2 | `src/schema.py` | Accept `empty=` text on `plot`, `image` and `log_stream`; the Web view already prefers it. | `router patch-plan` → direct | OPEN src/schema.py:376 (\`log_stream\` takes no \`empty=\`; \`plot\` :364 and \`image\` :333 do) |
+| E3 | `src/views/theme.py` | A severity → text-colour map for event logs (Tk and Qt each hard-wire one now; `ROLES["info"]` as a text colour was the unreadable-log bug in both). | direct | DONE 77ac52d (\`SEVERITY_INK\`, src/views/theme.py:101) |
+| E4 | `src/views/theme.py` `FONT_FAMILY` | The brief names IBM Plex Sans; Tk/Qt can use it only if installed on the station PC. Owner: install it there, or accept Helvetica for the desktop views. | owner | BENCH (owner) |
+| E5 | `src/controller/setup.py` `stop_system` | Owner call: confirm before tearing every model down? | owner | BENCH (owner) |
+| E6 | Tk after-shots | Capture the three states at 1400×900 and 900×900 when the Mac is free (`handoff/tk3.md`, UNVERIFIED). | direct | SUPERSEDED Tk retired by the Web-only ruling (79ae0bd) |
+| E7 | `src/devices/serial_port.py` ~730 | "Connection Lost" is published with the port as source; views want the owning model's name so the tray line reads "Stepper Probe lost its serial port". | `router` | DONE 9c0bd4d (\`LINK_LOST\` names the owner, src/devices/serial_port.py:948) |
+| E8 | `src/model/red_monitor.py` `load_run` | Refuse with a sentence when called without a path (the Web view now always sends one; Tk/Qt dialogs cancel → no call). | `router` | OPEN src/model/rgb_analysis.py:1924-1936 (\`load_run\` has no empty-path guard; only OSError is caught) |
+| E9 | `src/views/base.py` | One shared list of at-rest ("muted") words and one `_show_refused(element, …)` signature so all three views place refusals the same way; a failed command clears the previous refusal in `PanelView._run`. | direct | UNVERIFIED a failed command clears the refusal (src/views/base.py:431-433) but the shared at-rest word list was not located |
+| E10 | Web / Qt | The alert queue has no cap; the Web type scale ignores `theme.size()`; Safari keeps ⌘. so only Ctrl+. reaches the page there. | `router` | UNVERIFIED the ack queue joins repeats per title (src/views/web/static/app.js:464) but a cap and the type-scale fix were not located |
+| E11 | Tk, Qt on screen | Tk after-shots (rounds 2 and 3) and the ⌘. chord on a real Aqua display are unseen: run the capture commands in `handoff/fix-tk.md` when the Mac is free. | direct | SUPERSEDED Tk and Qt retired by the Web-only ruling (79ae0bd) |
 
 ## Tier F — UI audit round (2026-09-24): six skills, six read-only auditors, one ranked list
 
