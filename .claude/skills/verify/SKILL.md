@@ -22,6 +22,9 @@ frozen view); golden **77** captures (the re-capture test and the three live
 frame comparisons against the deleted legacy tree are retired). There is no
 legacy gate any more. A count that moved is a finding, not noise.
 
+The gate workflow sets `STATION_REQUIRE_NODE=1` (BUGFIX A9), so there a missing `node` fails the
+node-only Web client checks instead of skipping them; locally they skip when `node` is absent.
+
 Known flakes, not regressions (rerun the test alone before calling a red fast gate):
 
 - `test_view_web_tutorial.py`: the first-trial walk is re-anchored and passes
