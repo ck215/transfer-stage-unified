@@ -277,6 +277,7 @@ def toggle_colors(element, is_on):
 
 def css_variables():
     lines = [f"--font-family: {FONT_FAMILY}, {FONT_FALLBACK}, sans-serif;", f"--font-size: {FONT_SIZE}pt;",
+             f"--font-size-bench: {size(1)}pt;",
              f"--numeral-family: {NUMERAL_FAMILY}, {FONT_FAMILY}, sans-serif;",
              f"--numeral-stretch: {NUMERAL_STRETCH}%;", f"--numeral-weight: {NUMERAL_WEIGHT};",
              f"--bg: {BACKGROUND};", f"--surface: {SURFACE};", f"--text: {TEXT};",

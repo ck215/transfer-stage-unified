@@ -4843,7 +4843,21 @@ class Dashboard {
         || (setupState && setupState.is_launched)) this.revealStop();
     // After the launch edge, so leaving the sign-in screen knows whether
     // the station is running (then its sheet, else Setup).
+    this.applyBenchScale(setupState);
     this.applyAccount(setupState);
+  }
+
+  /** The bench scale (Setup > Display): `data-bench` on the root switches the
+   *  stylesheet to one step up in text and 44 px sheet keys. The tray's and
+   *  the rail's size follow the text, so what the fixed layers keep clear of
+   *  is measured again when the choice changes. */
+  applyBenchScale(setupState) {
+    const values = setupState && setupState.values;
+    if (!values || typeof values.bench_scale !== 'boolean') return;
+    const root = document.documentElement;
+    if (root.hasAttribute('data-bench') === values.bench_scale) return;
+    root.toggleAttribute('data-bench', values.bench_scale);
+    this.reserveLogSpace();
   }
 
   /** An empty rack says what to do next, and the drawer that does it is

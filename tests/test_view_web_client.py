@@ -984,7 +984,7 @@ def test_every_font_size_is_on_the_scale():
     sizes = re.findall(r"font-size:\s*([^;]+);", STYLES)
     off = [size for size in sizes
            if not re.fullmatch(r"var\(--(t-[a-z-]+|reading-(focal|primary|compact|secondary)"
-                               r"|caption-size|axis-letter-size|statistic-size|font-size)\)",
+                               r"|caption-size|axis-letter-size|statistic-size|font-size|font-size-bench)\)",
                                size.strip())]
     assert not off, f"font sizes off the type scale: {off}"
 
