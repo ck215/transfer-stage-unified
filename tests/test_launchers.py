@@ -550,7 +550,7 @@ def test_a_headless_web_launch_prints_only_its_address(tmp_path):
     # Devices first, upkeep after Launch, then the defaults (accounts on by
     # default, 2026-10-07; order from the UX audit 2026-10-08).
     assert titles[0] == "Devices"
-    assert titles[-3:] == ["Update", "Firmware", "Station defaults"]
+    assert titles[-4:] == ["Update", "Firmware", "Display", "Station defaults"]   # Display: bench scale, 2026-10-11
     assert setup["state"]["values"]["web_address"] == f"http://127.0.0.1:{port}"
 
 
