@@ -175,7 +175,7 @@ def test_model_types_is_the_only_list_of_models(panel, fake_types):
     # The drawer's job first, then upkeep, then the defaults (UX audit
     # 2026-10-08).
     assert titles == ["Devices", *fake_types, "Launch", "Update", "Firmware",
-                      Setup.ACCOUNT_SECTION]
+                      "Display", Setup.ACCOUNT_SECTION]
 
 
 # -- the table (Addendum 2) ------------------------------------------------
@@ -2678,8 +2678,9 @@ def test_a_bundle_with_stable_beside_it_offers_the_switch(fake_types, stable):
     # Upkeep after Launch, the station's defaults last (UX audit
     # 2026-10-08; the account section led the schema before, user-system
     # section 2.4).
-    assert titles[-4:] == ["Update", "Firmware", "Stable", Setup.ACCOUNT_SECTION]
-    [button] = [e for e in panel.schema["sections"][-2]["elements"]
+    assert titles[-5:] == ["Update", "Firmware", "Stable", "Display",
+                           Setup.ACCOUNT_SECTION]
+    [button] = [e for e in panel.schema["sections"][-3]["elements"]
                 if e["type"] == "button"]
     assert button["command"] == "switch_to_stable"
     assert button["confirm"] == STABLE_CONFIRM

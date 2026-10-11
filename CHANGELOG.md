@@ -21,6 +21,12 @@ How this file is kept:
 
 ### Added
 
+- **Bench scale.** Setup has a Display section with a Bench scale box: the
+  text one step larger and the keys on the sheet 44 px tall, for gloves and
+  for reading across the bench. It is remembered for the user who is signed
+  in (a Guest's for the station) and builds on the `--font-size` launch flag,
+  which still sets the size it steps up from.
+
 - **The finalizer plays the trial's video.** Finalize Data on the Transfer Map's
   page shows the recorded video in the page, with its frame count, and you can
   scrub through it; a trial with no playable file keeps the words that say
