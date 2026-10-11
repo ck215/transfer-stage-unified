@@ -152,7 +152,7 @@ def test_all_three_boards_are_placed_by_tag_and_the_row_launches(panel):
     panel.auto_assign()
     assert (panel.tri_stage_port, panel.tri_stage_port_y, panel.tri_stage_port_z) \
         == (Z_PORT, Y_PORT, X_PORT)
-    assert _status(panel) == ("detected: Tri Stage (X, Y, Z)", True)
+    assert _status(panel) == ("Detected: Tri Stage (X, Y, Z)", True)
     config = next(c for c in panel.configs if c["model"] == "Tri Stage")
     assert (config["port_x"], config["port_y"], config["port_z"]) == (Z_PORT, Y_PORT, X_PORT)
 
@@ -163,7 +163,7 @@ def test_a_missing_axis_is_a_fault_and_never_a_partial_launch(panel, warnings):
     assert (panel.tri_stage_port, panel.tri_stage_port_y, panel.tri_stage_port_z) \
         == (NOT_CONNECTED, NOT_CONNECTED, NOT_CONNECTED)
     status, enabled = _status(panel)
-    assert (status, enabled) == ("fault: Z missing", False)
+    assert (status, enabled) == ("Fault: Z missing", False)
     assert any("Z missing" in str(e) for e in warnings)
 
 
@@ -173,7 +173,7 @@ def test_two_boards_with_one_tag_are_a_fault(panel):
     panel.auto_assign()
     status, enabled = _status(panel)
     assert not enabled
-    assert status.startswith("fault: two boards answered as X")
+    assert status.startswith("Fault: two boards answered as X")
 
 
 def test_an_untagged_board_is_a_fault(panel):
@@ -188,7 +188,7 @@ def test_an_untagged_board_is_a_fault(panel):
 def test_nothing_answering_is_not_connected_not_a_fault(panel):
     _found(panel, {})
     panel.auto_assign()
-    assert _status(panel) == ("not connected", False)
+    assert _status(panel) == ("Not connected", False)
 
 
 def test_a_partial_set_is_refused_at_start(panel):
@@ -218,7 +218,7 @@ def test_a_vanished_axis_port_is_not_connected_again_not_sim(panel):
 
 def test_a_simulated_row_launches_all_three_simulated(panel):
     assert panel.run("set_tri_stage_port", args=(SIM,)).is_ok
-    assert _status(panel) == ("simulated", True)
+    assert _status(panel) == ("Simulated", True)
     config = next(c for c in panel.configs if c["model"] == "Tri Stage")
     model = panel.model_from_config(config)
     assert model.ports == (SIM, SIM, SIM) and model.sim is True
