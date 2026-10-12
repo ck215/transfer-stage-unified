@@ -1810,9 +1810,6 @@ function renderImage(panel, element) {
   };
 }
 
-/** A lamp is lit or it is not: a dot and a word. Lit is ink, off is a
- *  hollow ring, and a lamp whose ACTIVE role is danger (a fault, a lost
- *  stage) is the signal colour - never the trace, which is for numbers. */
 /** A short list of words, all in view (the unit a speed is shown in): a
  *  segmented control. A radio group: one tab stop (the chosen segment),
  *  Left/Right (and Up/Down) move and commit. The choice goes through the
@@ -1891,6 +1888,9 @@ function renderChoice(panel, element) {
   };
 }
 
+/** A lamp is lit or it is not: a dot and a word. Lit is ink, off is a
+ *  hollow ring, and a lamp whose ACTIVE role is danger (a fault, a lost
+ *  stage) is the signal colour - never the trace, which is for numbers. */
 function renderIndicator(panel, element) {
   const node = row(element, 'lamp-row');
   const lamp = make('span', 'lamp');
