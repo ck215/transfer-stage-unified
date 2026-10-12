@@ -255,6 +255,12 @@ class Probe(GamepadInput, IdleInterlock, Model):
               decimals=1, label="Autonomous Speed", unit="%"),
         Param("man_full_speed_pct", "float", default=12.5, minimum=0, maximum=100,
               decimals=1, label="Manual Speed", unit="%"),
+        # The unit each speed entry is shown in (owner, 2026-10-12): a
+        # display choice, a per-account preference, never a second speed.
+        Param("full_speed_unit", "text", default="%",
+              label="Autonomous Speed unit"),
+        Param("man_full_speed_unit", "text", default="%",
+              label="Manual Speed unit"),
         Param("slow_speed", "int", default=0, label="Brake Speed (Slow)"),
         Param("brake_distance", "int", default=0,
               label="Brake Distance (steps)"),
@@ -1949,14 +1955,13 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 *[sch.entry(P[name].label + ":", name, P[name],
                             disabled_when=_MOTION_GATE)
                   for name in self.TARGET_PARAMS],
-                # A slider beside the entry, never instead of it: the entry
-                # keeps the precision. The slider's travel is a display range;
-                # the Param still validates what is typed.
-                sch.entry(P["full_speed_pct"].label + ":", "full_speed_pct",
-                          P["full_speed_pct"], disabled_when=_MOTION_GATE,
-                          slider=self.SPEED_SLIDER),
-                sch.readonly("steps/s", "full_speed", secondary=True,
-                             unit="steps/s"),
+                # The speed in the unit the operator chose (a choice, then
+                # one entry per unit, only the chosen one drawn), with the
+                # other units on the small line under it. A slider beside the
+                # entry, never instead of it: the entry keeps the precision.
+                # The slider's travel is a display range; the Param still
+                # validates what is typed.
+                *self._speed_elements("full_speed", _MOTION_GATE),
                 # Per-device "System Power" and "Full Stop" toggles stay
                 # removed: enable/disable is reachable through the mode
                 # toggles, and the dashboard's global FULL STOP already
@@ -1980,7 +1985,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 # (DC-6, review finding 5). `is_moving` is what refuses.
                 # L8 (SF-1): greyed in fault as well; `_set_mode` refuses it.
                 sch.button("Step", "step",
-                           inputs=("x_dist", "y_dist", "z_dist", "full_speed_pct"),
+                           inputs=("x_dist", "y_dist", "z_dist",
+                                   *self._speed_names("full_speed")),
                            role="go", disabled_when=("manual", "latched",
                                                      "fault")),
                 layout="group",
@@ -1988,11 +1994,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
             sch.section(
                 "Manual",
                 gamepad_choice,
-                sch.entry(P["man_full_speed_pct"].label + ":", "man_full_speed_pct",
-                          P["man_full_speed_pct"], disabled_when=_MANUAL_SPEED_GATE,
-                          slider=self.SPEED_SLIDER),
-                sch.readonly("steps/s", "man_full_speed", secondary=True,
-                             unit="steps/s"),
+                *self._speed_elements("man_full_speed", _MANUAL_SPEED_GATE),
                 sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
                            "Manual mode (press to power down)", "Enter Manual Mode",
                            on_args=[ProbeMode.MANUAL.value],
@@ -2030,12 +2032,48 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: DCProbe adds two. The two speeds (with a slider) and the Step's
     #: targets are tier 1, in their control system's group; the rest are the
     #: tier-2 Configuration.
-    ENTRY_PARAMS = ("x_step", "y_step", "z_step", "x_dist", "y_dist", "z_dist",
-                    "full_speed_pct", "man_full_speed_pct")
-    SPEED_PARAMS = ("full_speed_pct", "man_full_speed_pct")
+    #: Every representation of both speeds is an entry (only the chosen
+    #: unit's is drawn); `SPEED_PARAMS` lists them all.
+    SPEED_PARAMS = ("full_speed_pct", "full_speed", "man_full_speed_pct",
+                    "man_full_speed")
+    ENTRY_PARAMS = ("x_step", "y_step", "z_step", "x_dist", "y_dist", "z_dist"
+                    ) + SPEED_PARAMS
     TARGET_PARAMS = ("x_dist", "y_dist", "z_dist")
     #: The slider's travel: the whole dial, percent.
     SPEED_SLIDER = (0, 100)
+    #: The units a speed entry may be shown in, in the order they are
+    #: offered. Each maps to the attribute that holds that representation
+    #: (`speed_attr`). The Stepper Probe adds um/s.
+    SPEED_UNITS = ("%", "steps/s")
+
+    def speed_slider(self, unit):
+        """The slider's travel for a speed entry in `unit`."""
+        return {"%": (0, 100), "steps/s": (1, self.MAX_SPEED),
+                "µm/s": self.SPEED_SLIDER}[unit]
+
+    def _speed_names(self, base):
+        """Every attribute that holds speed `base`, one per unit offered."""
+        return tuple(self.speed_attr(base, unit) for unit in self.SPEED_UNITS)
+
+    def _speed_elements(self, base, gate):
+        """One speed's schema elements: the unit choice, then an entry per
+        unit each followed by the line naming the other units, both
+        `shown_when` the choice names that unit (the line nests in its
+        entry's row and goes with it). Every gate is the speed's own."""
+        P = self.PARAMS
+        unit_attr = base + "_unit"
+        elements = [sch.choice("Unit:", unit_attr, P[unit_attr], self.SPEED_UNITS)]
+        for unit in self.SPEED_UNITS:
+            attr = self.speed_attr(base, unit)
+            elements.append(sch.shown_when(
+                sch.entry(P[attr].label + ":", attr, P[attr], disabled_when=gate,
+                          slider=self.speed_slider(unit)),
+                unit_attr, unit))
+            elements.append(sch.shown_when(
+                sch.readonly("other units", base + "_alt_text", secondary=True,
+                             dashboard=True),
+                unit_attr, unit))
+        return elements
 
     # -- the two representations of a speed --------------------------------
     @classmethod
@@ -2051,6 +2089,37 @@ class Probe(GamepadInput, IdleInterlock, Model):
         tenths = round(float(steps) / cls.MAX_SPEED * 1000.0, 9)
         return math.floor(tenths + 0.5) / 10.0
 
+    @staticmethod
+    def speed_attr(base, unit):
+        """The attribute holding speed `base` ("full_speed" or
+        "man_full_speed") in `unit`: the percent dial, the stored steps/s,
+        or (Stepper Probe) the um/s view."""
+        return {"%": base + "_pct", "steps/s": base, "µm/s": base + "_um_s"}[unit]
+
+    def _speed_in(self, base, unit):
+        """Speed `base` as the line under an entry words it in `unit`."""
+        value = getattr(self, self.speed_attr(base, unit))
+        if unit == "%":
+            return f"{self.PARAMS[base + '_pct'].format(value)} %"
+        if unit == "steps/s":
+            return f"{int(value)} steps/s"
+        return f"{_trimmed(value)} {unit}"
+
+    def _speed_alt_text(self, base):
+        """The units NOT chosen for speed `base`, e.g. "400 steps/s · 250 µm/s"
+        while % is the unit of the entry."""
+        chosen = getattr(self, base + "_unit")
+        return " · ".join(self._speed_in(base, unit)
+                          for unit in self.SPEED_UNITS if unit != chosen)
+
+    @property
+    def full_speed_alt_text(self):
+        return self._speed_alt_text("full_speed")
+
+    @property
+    def man_full_speed_alt_text(self):
+        return self._speed_alt_text("man_full_speed")
+
     def _defaults(self):
         seeded = super()._defaults()
         for pct in _PCT_OF.values():
@@ -2060,7 +2129,17 @@ class Probe(GamepadInput, IdleInterlock, Model):
     def _apply_inputs(self, inputs):
         """The stored steps/s stay writable by name (profiles, tests, older
         callers) though only the percent dials are drawn: a steps/s input is
-        validated by its own Param and goes through the dial's gate."""
+        validated by its own Param and goes through the dial's gate.
+
+        One speed named in more than one unit in the same set is refused
+        (2026-10-12): which one wins would depend on the order of the set."""
+        if inputs:
+            for base in _PCT_OF:
+                named = [self.speed_attr(base, unit) for unit in self.SPEED_UNITS
+                         if self.speed_attr(base, unit) in inputs]
+                if len(named) > 1:
+                    raise Refused(f"{self.PARAMS[base].label} was given in more "
+                                  f"than one unit ({', '.join(named)}); give it in one.")
         if inputs and any(n in _PCT_OF for n in inputs):
             inputs = dict(inputs)
             for name in [n for n in inputs if n in _PCT_OF]:
@@ -2141,8 +2220,29 @@ def _pct_property(steps_name, pct_name):
     return property(getter, setter)
 
 
+def _unit_property(name):
+    """The unit a speed entry is shown in: a display choice, so it is not
+    mode-gated (the speed entry keeps its own gate), but a unit this class
+    does not offer is refused in the operator's words."""
+
+    def getter(self):
+        return self._param_store.get(name, self.PARAMS[name].default)
+
+    def setter(self, value):
+        unit = "" if value is None else str(value).strip()
+        if unit not in self.SPEED_UNITS:
+            self._refuse(f"{self.PARAMS[name].label} must be one of "
+                         f"{', '.join(self.SPEED_UNITS)} on the {self.NAME}.")
+        self._param_store[name] = unit
+
+    return property(getter, setter)
+
+
+_UNIT_PARAMS = ("full_speed_unit", "man_full_speed_unit")
 for _name in Probe.PARAMS:
-    if _name not in _PCT_OF.values():
+    if _name in _UNIT_PARAMS:
+        setattr(Probe, _name, _unit_property(_name))
+    elif _name not in _PCT_OF.values():
         setattr(Probe, _name, Probe._gated_param(_name))
 for _steps, _pct in _PCT_OF.items():
     setattr(Probe, _pct, _pct_property(_steps, _pct))
@@ -2172,6 +2272,11 @@ def um_to_counts(um, um_per_unit=STEPPER_UM_PER_COUNT):
 def counts_to_um(counts):
     """A count's length in um (exact to 6 places: 0.625 = 5/8)."""
     return round(float(counts) * STEPPER_UM_PER_COUNT, 6)
+
+
+def _trimmed(number):
+    """A number without trailing zeros: 250.0 is "250", 0.625 stays."""
+    return f"{float(number):.6f}".rstrip("0").rstrip(".")
 
 
 def _um_property(counts_name, view_name):
@@ -2322,10 +2427,12 @@ class StepperProbe(Probe):
                "full_speed": "full_speed_um_s",
                "man_full_speed": "man_full_speed_um_s"}
 
+    SPEED_UNITS = ("%", "steps/s", "µm/s")
+
+    SPEED_PARAMS = ("full_speed_pct", "full_speed", "full_speed_um_s",
+                    "man_full_speed_pct", "man_full_speed", "man_full_speed_um_s")
     ENTRY_PARAMS = ("x_step_um", "y_step_um", "z_step_um",
-                    "x_dist_um", "y_dist_um", "z_dist_um",
-                    "full_speed_um_s", "man_full_speed_um_s")
-    SPEED_PARAMS = ("full_speed_um_s", "man_full_speed_um_s")
+                    "x_dist_um", "y_dist_um", "z_dist_um") + SPEED_PARAMS
     TARGET_PARAMS = ("x_dist_um", "y_dist_um", "z_dist_um")
     #: The slider travel, um/s: one count/s up to the ceiling (a slider may
     #: not start below its Param's minimum).
@@ -2380,8 +2487,7 @@ class StepperProbe(Probe):
                 "Autonomous",
                 *[e for a in "xyz" for e in physical(
                     f"{a}_dist_um", f"{a}_move_steps", _MOTION_GATE)],
-                *physical("full_speed_um_s", "full_speed", _MOTION_GATE,
-                          "steps/s", "steps/s", slider=self.SPEED_SLIDER),
+                *self._speed_elements("full_speed", _MOTION_GATE),
                 sch.toggle("Autonomous:", "is_auto", "set_mode",
                            "Autonomous mode (press to power down)",
                            "Enter Autonomous Mode",
@@ -2390,7 +2496,7 @@ class StepperProbe(Probe):
                            disabled_when=("latched", "fault")),
                 sch.button("Step", "step",
                            inputs=("x_dist_um", "y_dist_um", "z_dist_um",
-                                   "full_speed_um_s"),
+                                   *self._speed_names("full_speed")),
                            role="go", disabled_when=("manual", "latched",
                                                      "fault")),
                 layout="group",
@@ -2398,9 +2504,7 @@ class StepperProbe(Probe):
             sch.section(
                 "Manual",
                 gamepad_choice,
-                *physical("man_full_speed_um_s", "man_full_speed",
-                          _MANUAL_SPEED_GATE, "steps/s", "steps/s",
-                          slider=self.SPEED_SLIDER),
+                *self._speed_elements("man_full_speed", _MANUAL_SPEED_GATE),
                 sch.toggle("Manual / Gamepad:", "is_manual", "set_mode",
                            "Manual mode (press to power down)", "Enter Manual Mode",
                            on_args=[ProbeMode.MANUAL.value],

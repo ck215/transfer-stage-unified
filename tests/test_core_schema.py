@@ -28,6 +28,8 @@ BUILT = {
     "image": sch.image("Frame", "frame_data"),
     "indicator": sch.indicator("Fault", "is_faulted"),
     "log_stream": sch.log_stream("Log", "log_lines"),
+    "choice": sch.choice("Unit", "speed_unit", Param("speed_unit", "text", default="%"),
+                         ("%", "steps/s")),
 }
 
 
@@ -51,10 +53,12 @@ def test_every_element_declares_writability_explicitly(name, element):
 
 
 @pytest.mark.parametrize("name,element", sorted(BUILT.items()))
-def test_only_an_entry_is_writable(name, element):
+def test_only_an_entry_or_a_choice_is_writable(name, element):
     """STEPPER-11 / DC-11: `/api/set_attr` accepted a write to anything the
-    schema mentioned, mode flags included. Writability has to be asked for."""
-    assert element["writable"] is (name == "entry")
+    schema mentioned, mode flags included. Writability has to be asked for.
+    A choice (2026-10-12) is the one other writable: the same commit path as
+    an entry, over a short list of words."""
+    assert element["writable"] is (name in ("entry", "choice"))
 
 
 @pytest.mark.parametrize("name,element", sorted(BUILT.items()))
@@ -134,6 +138,37 @@ def test_an_entry_inherits_its_params_declaration():
                         Param("speed", "float", minimum=1.0, maximum=2.0, decimals=1))
     assert element["value_type"] == "float"
     assert (element["min"], element["max"], element["decimals"]) == (1.0, 2.0, 1)
+
+
+def test_a_choice_is_a_writable_set_of_words_through_the_commit_path():
+    param = Param("full_speed_unit", "text", default="%", label="Autonomous Speed unit")
+    element = sch.choice("Unit:", "full_speed_unit", param, ["%", "steps/s", "µm/s"],
+                         disabled_when=("latched",))
+    assert element["type"] == "choice" and element["writable"] is True
+    assert element["options"] == ["%", "steps/s", "µm/s"]
+    assert element["label"] == "Autonomous Speed unit"
+    assert element["value_type"] == "text" and element["disabled_when"] == ["latched"]
+    assert "command" not in element, "a choice has no command of its own"
+    with pytest.raises(ValueError, match="at least two"):
+        sch.choice("Unit:", "u", param, ["%"])
+
+
+def test_shown_when_names_the_value_and_the_words_that_draw_an_element():
+    entry = sch.entry("Speed", "speed", Param("speed", "float"))
+    assert sch.shown_when(entry, "speed_unit", "%", "steps/s") is entry
+    assert entry["shown_when"] == {"attr": "speed_unit", "values": ["%", "steps/s"]}
+    with pytest.raises(ValueError):
+        sch.shown_when(sch.button("Go", "go"), "speed_unit")
+    with pytest.raises(ValueError):
+        sch.shown_when(sch.button("Go", "go"), "", "a")
+
+
+def test_a_secondary_readout_may_ask_to_stay_on_the_dashboard():
+    line = sch.readonly("other units", "alt", secondary=True, dashboard=True)
+    assert line["dashboard"] is True
+    assert "dashboard" not in sch.readonly("steps/s", "steps", secondary=True)
+    with pytest.raises(ValueError, match="secondary"):
+        sch.readonly("Position:", "position", dashboard=True)
 
 
 def test_a_readonly_may_borrow_a_params_formatting():

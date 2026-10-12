@@ -176,6 +176,7 @@ def test_the_schema_leaves_manual_speed_live_in_manual_only(cls):
     probe, _port, _pad = make_probe(cls)
     # 2026-10-07: the dials are percent entries; steps/s sit under them as secondaries.
     # 2026-10-09: the Stepper's entries are um/s (same gates, same slider ceiling).
+    # 2026-10-12: every unit's entry is there (only the chosen one is drawn).
     suffix = "_um_s" if cls is StepperProbe else "_pct"
     man = _entry(probe, "man_full_speed" + suffix)
     auto = _entry(probe, "full_speed" + suffix)
@@ -275,12 +276,20 @@ def test_the_tk_entry_is_live_in_manual_and_commits(monkeypatch):
     monkeypatch.setattr(tkmod, "messagebox", dialogs, raising=False)
     monkeypatch.setattr(tkmod, "_LOG_POSITIONS", {}, raising=False)
 
+    # The frozen Tk view has no unit choice (2026-10-12: the Web view is the
+    # only frontend); a stand-in renderer lets it build, and it keeps the um/s
+    # entries it drew before (found by attribute: every unit has an entry).
+    monkeypatch.setattr(tkmod.TkPanelView, "_make_choice",
+                        lambda self, container, element: None, raising=False)
     probe, port, _pad = make_probe(StepperProbe, levels=LEVELS)
     view = tkmod.TkPanelView(FakeWidget(), FakeController(
         **{"Stepper Probe": probe}), "Stepper Probe")
     try:
-        man = element_of(view, "entry", "Manual Speed:")
-        auto = element_of(view, "entry", "Autonomous Speed:")
+        def by_attr(attr):
+            return next(e for e in view._elements if e.get("model_attr") == attr)
+
+        man = by_attr("man_full_speed_um_s")
+        auto = by_attr("full_speed_um_s")
         probe.set_mode("manual")
         view._refresh()
         assert view._widgets[id(man)]["is_enabled"] is True

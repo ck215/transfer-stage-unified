@@ -74,7 +74,8 @@ def test_lists_replace_and_null_is_not_a_value():
 
 def test_the_q4_lists():
     assert {"x_step", "y_step", "z_step", "x_dist", "y_dist", "z_dist",
-            "full_speed", "man_full_speed", "step_deg"} == set(pf.USER_PARAMS)
+            "full_speed", "man_full_speed", "step_deg",
+            "full_speed_unit", "man_full_speed_unit"} == set(pf.USER_PARAMS)
     assert {"p_term", "i_term", "d_term", "offset", "red_min",
             "um_per_count"} == set(pf.STATION_PARAMS)
     assert {"slow_speed", "brake_distance"} == set(pf.NEVER_PARAMS)

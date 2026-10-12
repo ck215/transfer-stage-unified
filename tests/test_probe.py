@@ -1224,7 +1224,8 @@ def test_motion_entries_are_gated_while_a_run_is_engaged(probe):
         # The Stepper speaks um and um/s (owner 2026-10-09): its Manual Speed
         # entry is man_full_speed_um_s; the DC and Chuck dial is the percent.
         expected = (["autonomous"] if element["model_attr"]
-                    in ("man_full_speed_pct", "man_full_speed_um_s",
+                    in ("man_full_speed_pct", "man_full_speed",
+                        "man_full_speed_um_s",
                         "x_step", "y_step", "z_step",
                         "x_step_um", "y_step_um", "z_step_um")
                     else ["autonomous", "manual"])
@@ -1801,9 +1802,11 @@ def test_the_wire_carries_the_steps_per_second_the_dial_set():
 
 @pytest.mark.schema
 @pytest.mark.parametrize("cls", [DCProbe, ChuckPositioner])
-def test_each_speed_is_a_percent_dial_with_a_steps_readout_in_its_group(cls):
-    """The two speeds (2026-10-07): each is a percent dial with its steps/s
-    readout under it, now in its own control system's group."""
+def test_each_speed_is_a_unit_choice_over_a_percent_and_a_steps_entry(cls):
+    """The two speeds (2026-10-07; units 2026-10-12): each is a unit choice,
+    then one entry per unit (percent at 0.1 %, steps/s), each with the line
+    naming the other units under it, in its own control system's group. Was a
+    single percent dial with a steps/s readout."""
     p, _, _ = make_probe(cls)
     groups = {s["title"]: s for s in p.schema["sections"]}
     for title, attr, label in (("Autonomous", "full_speed", "Autonomous Speed:"),
@@ -1811,24 +1814,37 @@ def test_each_speed_is_a_percent_dial_with_a_steps_readout_in_its_group(cls):
         elements = groups[title]["elements"]
         kinds = [(e["type"], e.get("model_attr"), e.get("secondary", False))
                  for e in elements]
-        at = kinds.index(("entry", attr + "_pct", False))
-        assert kinds[at + 1] == ("readonly", attr, True)
-        dial, readout = elements[at], elements[at + 1]
-        assert dial["text"] == label
+        at = kinds.index(("choice", attr + "_unit", False))
+        assert kinds[at + 1:at + 5] == [
+            ("entry", attr + "_pct", False), ("readonly", attr + "_alt_text", True),
+            ("entry", attr, False), ("readonly", attr + "_alt_text", True)]
+        choice = elements[at]
+        assert choice["options"] == ["%", "steps/s"] and choice["writable"] is True
+        dial, steps = elements[at + 1], elements[at + 3]
+        assert dial["text"] == steps["text"] == label
         assert dial["unit"] == "%" and (dial["min"], dial["max"]) == (0, 100)
-        assert dial["slider"] == [0, 100]
-        assert readout["unit"] == "steps/s" and readout["text"] == "steps/s"
+        assert dial["decimals"] == 1 and dial["slider"] == [0, 100]
+        assert steps["unit"] == "steps/s" and steps["value_type"] == "int"
+        assert steps["slider"] == [1, cls.MAX_SPEED]
+        assert dial["shown_when"] == {"attr": attr + "_unit", "values": ["%"]}
+        assert steps["shown_when"] == {"attr": attr + "_unit", "values": ["steps/s"]}
+        for line, unit in ((elements[at + 2], "%"), (elements[at + 4], "steps/s")):
+            assert line["shown_when"] == {"attr": attr + "_unit", "values": [unit]}
+            assert line["dashboard"] is True
         # Not a rail reading, not a second Position-style key number.
         assert not any(e.get("rail") for e in elements)
     state = p.state["values"]
-    assert state["full_speed_pct"] == str(p.full_speed_pct)
+    assert state["full_speed_pct"] == f"{p.full_speed_pct:.1f}"
     assert state["full_speed"] == str(p.full_speed)
+    assert state["full_speed_unit"] == "%"
+    assert state["full_speed_alt_text"] == f"{p.full_speed} steps/s"
 
 
 @pytest.mark.schema
-def test_each_stepper_speed_is_a_um_s_entry_with_a_steps_readout_in_its_group():
-    """Owner 2026-10-09: the Stepper's speeds are um/s entries (no percent
-    dial), each with its steps/s line directly beneath, in its own group."""
+def test_each_stepper_speed_is_a_unit_choice_over_percent_steps_and_um_s():
+    """Owner 2026-10-09: the Stepper's speeds are um/s entries with a steps/s
+    line; 2026-10-12: a unit choice (%, steps/s, um/s) offers all three, each
+    entry with the other units under it, in its own group."""
     p, _, _ = make_probe(StepperProbe)
     groups = {s["title"]: s for s in p.schema["sections"]}
     for title, attr, label in (("Autonomous", "full_speed", "Autonomous Speed:"),
@@ -1836,18 +1852,22 @@ def test_each_stepper_speed_is_a_um_s_entry_with_a_steps_readout_in_its_group():
         elements = groups[title]["elements"]
         kinds = [(e["type"], e.get("model_attr"), e.get("secondary", False))
                  for e in elements]
-        at = kinds.index(("entry", attr + "_um_s", False))
-        assert kinds[at + 1] == ("readonly", attr, True)
-        entry, readout = elements[at], elements[at + 1]
-        assert entry["text"] == label
-        assert entry["unit"] == "µm/s"
-        assert list(entry["slider"]) == [0.625, 2000]
-        assert readout["unit"] == "steps/s" and readout["text"] == "steps/s"
+        at = kinds.index(("choice", attr + "_unit", False))
+        assert kinds[at + 1:at + 7] == [
+            ("entry", attr + "_pct", False), ("readonly", attr + "_alt_text", True),
+            ("entry", attr, False), ("readonly", attr + "_alt_text", True),
+            ("entry", attr + "_um_s", False), ("readonly", attr + "_alt_text", True)]
+        assert elements[at]["options"] == ["%", "steps/s", "µm/s"]
+        um = elements[at + 5]
+        assert um["text"] == label and um["unit"] == "µm/s"
+        assert list(um["slider"]) == [0.625, 2000]
+        assert um["shown_when"] == {"attr": attr + "_unit", "values": ["µm/s"]}
         assert not any(e.get("rail") for e in elements)
-        assert not any(e.get("model_attr") == attr + "_pct" for e in elements)
     state = p.state["values"]
     assert float(state["full_speed_um_s"]) == p.full_speed_um_s == 250
     assert state["full_speed"] == str(p.full_speed)
+    assert state["full_speed_pct"] == "12.5"
+    assert state["full_speed_alt_text"] == "400 steps/s · 250 µm/s"
 
 
 @pytest.mark.schema
@@ -1865,13 +1885,23 @@ def test_the_stepper_summary_divides_autonomous_from_manual_in_um():
         return [e.get("model_attr") or e.get("command") for e in section["elements"]
                 if e["type"] not in ("internal",) and not e.get("secondary")]
 
-    assert drawn(auto) == ["x_dist_um", "y_dist_um", "z_dist_um",
-                           "full_speed_um_s", "is_auto", "step"]
-    assert drawn(manual) == ["gamepad_name", "man_full_speed_um_s", "is_manual"]
+    assert drawn(auto) == ["x_dist_um", "y_dist_um", "z_dist_um", "full_speed_unit",
+                           "full_speed_pct", "full_speed", "full_speed_um_s",
+                           "is_auto", "step"]
+    assert drawn(manual) == ["gamepad_name", "man_full_speed_unit",
+                             "man_full_speed_pct", "man_full_speed",
+                             "man_full_speed_um_s", "is_manual"]
     gates = {e.get("model_attr") or e.get("command"): tuple(e.get("disabled_when", ()))
              for s in (auto, manual) for e in s["elements"]}
-    assert gates["x_dist_um"] == gates["full_speed_um_s"] == ("autonomous", "manual")
-    assert gates["man_full_speed_um_s"] == ("autonomous",)
+    for unit_attr in ("full_speed_pct", "full_speed", "full_speed_um_s"):
+        assert gates[unit_attr] == gates["x_dist_um"] == ("autonomous", "manual")
+    for unit_attr in ("man_full_speed_pct", "man_full_speed", "man_full_speed_um_s"):
+        assert gates[unit_attr] == ("autonomous",)
+    # the unit is a display choice: no mode gate (the speed entries keep theirs)
+    assert gates["full_speed_unit"] == gates["man_full_speed_unit"] == ()
+    step = next(e for e in auto["elements"] if e.get("command") == "step")
+    assert step["inputs"] == ["x_dist_um", "y_dist_um", "z_dist_um", "full_speed_pct",
+                              "full_speed", "full_speed_um_s"]
     assert gates["step"] == ("manual", "latched", "fault")
     assert gates["is_auto"] == gates["is_manual"] == ("latched", "fault")
     config = next(s for s in p.schema["sections"] if s["title"] == "Configuration")
@@ -1903,12 +1933,18 @@ def test_the_summary_divides_autonomous_from_manual(cls):
         return [e.get("model_attr") or e.get("command") for e in section["elements"]
                 if e["type"] not in ("internal",) and not e.get("secondary")]
 
-    assert drawn(auto) == ["x_dist", "y_dist", "z_dist", "full_speed_pct", "is_auto", "step"]
-    assert drawn(manual) == ["gamepad_name", "man_full_speed_pct", "is_manual"]
+    assert drawn(auto) == ["x_dist", "y_dist", "z_dist", "full_speed_unit",
+                           "full_speed_pct", "full_speed", "is_auto", "step"]
+    assert drawn(manual) == ["gamepad_name", "man_full_speed_unit",
+                             "man_full_speed_pct", "man_full_speed", "is_manual"]
     gates = {e.get("model_attr") or e.get("command"): tuple(e.get("disabled_when", ()))
              for s in (auto, manual) for e in s["elements"]}
-    assert gates["x_dist"] == gates["full_speed_pct"] == ("autonomous", "manual")
-    assert gates["man_full_speed_pct"] == ("autonomous",)
+    assert gates["x_dist"] == gates["full_speed_pct"] == gates["full_speed"] == (
+        "autonomous", "manual")
+    assert gates["man_full_speed_pct"] == gates["man_full_speed"] == ("autonomous",)
+    assert gates["full_speed_unit"] == gates["man_full_speed_unit"] == ()
+    step = next(e for e in auto["elements"] if e.get("command") == "step")
+    assert step["inputs"] == ["x_dist", "y_dist", "z_dist", "full_speed_pct", "full_speed"]
     assert gates["step"] == ("manual", "latched", "fault")
     assert gates["is_auto"] == gates["is_manual"] == ("latched", "fault")
     config = next(s for s in p.schema["sections"] if s["title"] == "Configuration")
