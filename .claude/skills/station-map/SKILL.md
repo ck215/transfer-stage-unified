@@ -109,8 +109,10 @@ and read the exit code unpiped; a pipeline's exit code is `tail`'s.
   the source rate (2026-10-07 amends "fastest sampling": black, stale and
   unsettled grabs are rejected and counted); red threshold only; Stage X/Y annotations dropped; velocity only between
   distinct 10 Hz position samples.
-- Probe distances/speeds/brake fields are ints to the operator (floats on
-  the wire, unchanged).
+- Probe distances and brake fields are ints to the operator (floats on
+  the wire, unchanged). Speeds (owner 2026-10-12): each speed entry has a unit
+  toggle, % of max (0.1 % steps) / steps/s (whole) / µm/s (Stepper Probe only);
+  the stored value stays whole steps/s; the unit is a per-account preference.
 - Setup: auto-scan at boot + Refresh; a Launch checkbox and one Port dropdown per row
   (SIM / port; an unticked row is off), no Mode column; one table, one row per model;
   minimises on launch, reopenable.
@@ -130,7 +132,8 @@ and read the exit code unpiped; a pipeline's exit code is `tail`'s.
 - **The Sample DB is a sample > chip > flake store with photos at every level** (only a flake requires one)
   (flake-coordinate homing is dormant); the map figures are speed x force class, tilt collected never drawn.
 - Transfer Map store: v8 (the lab's, adopted); Sample DB store v4. A store v9 is no longer planned.
-- Speed dials are percent over per-device ceilings (stepper 3200, chuck 600 steps/s).
+- Speed percent is over per-device ceilings (stepper 3200, chuck 600 steps/s); the
+  units not chosen are the small line under the entry, shown on the Dashboard too (2026-10-12).
 - Accounts: Guest = the station defaults; `STATION_PROFILES=0` hides Setup's Account section.
 - Wire protocol untouched (firmware guards added 2026-10-07/08 send no new bytes); every byte on the wire identical to the old app's, pinned by `tests/golden/`.
 - D-7 (DC board has no coil kill) is open, bench-only, owner-only.

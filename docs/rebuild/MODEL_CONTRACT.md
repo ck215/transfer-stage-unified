@@ -205,9 +205,25 @@ in at least one step, and a model without a procedure hides nothing.
   `hosted_tier=2` (behind its details on the trial page) and its Estimators
   section `hosted_tier=1`. A section without it follows its own tier on the
   host's page.
-- **Speed dials** are percent in the schema (`Param(unit="%")`, 0-100) over a
+- **Speeds in a unit the operator picks** (owner, 2026-10-12; replaces the
+  percent-only dial). Each speed is a `sch.choice` of units
+  (`full_speed_unit`, `man_full_speed_unit`; `Probe.SPEED_UNITS`: % and steps/s,
+  the Stepper Probe adds µm/s), then one entry per unit, each
+  `sch.shown_when(entry, "<speed>_unit", unit)`, each followed by its own
+  `readonly(..., secondary=True, dashboard=True)` line naming the other units
+  (`<speed>_alt_text`). Percent is 0.1 % (`Param("float", decimals=1)`) of the
   per-class ceiling (`MAX_SPEED`: chuck 600 steps/s); the stored value stays
-  steps/s and the wire is unchanged. The DC Probe and the Chuck keep them.
+  whole steps/s and the wire is unchanged. The Step declares every
+  representation; the Web client sends only the drawn one, and
+  `Probe._apply_inputs` refuses one speed given in two units. The unit is a
+  `USER_PARAMS` preference; its setter refuses a unit the class does not offer
+  and is not mode-gated (the entry keeps the speed's gate).
+- `sch.choice(text, attr, param, options)`: a segmented control written
+  through the ordinary commit path (no command). `sch.shown_when(element,
+  attr, *values)`: drawn only while `state.values[attr]` is one of `values`
+  (a renderer rule like `phased`; `Panel._allows` is unchanged, so a hidden
+  entry still commits). `readonly(..., dashboard=True)`: a secondary line the
+  Dashboard tile keeps.
 - **Physical units over counts** (Stepper Probe, owner ruling 2026-10-09). The
   editable entries are µm and µm/s: `x/y/z_dist_um`, `x/y/z_step_um`,
   `full_speed_um_s` and `man_full_speed_um_s`.

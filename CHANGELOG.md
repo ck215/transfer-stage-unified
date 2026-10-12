@@ -159,6 +159,13 @@ How this file is kept:
 
 ### Changed
 
+- **Probe speeds in the unit you pick.** Each Autonomous and Manual Speed has
+  a unit switch beside it: % of max or steps/s, and µm/s on the Stepper Probe.
+  The box, its slider and its limits follow the unit, the other units show on
+  the small line under it (now on the Dashboard too), and the choice is
+  remembered for the signed-in user. Percent takes tenths (12.5 %); the
+  default speed now reads 12.5 % instead of 13 %. What the board receives is
+  unchanged.
 - **The figure is not re-sent while it has not changed.** The page asks
   for each figure with the tag of the one on screen, and the station answers
   "unchanged" instead of the same picture every second (I11).
@@ -250,6 +257,11 @@ How this file is kept:
 
 ### Fixed
 
+- Backspace, Delete, Enter, Escape, Home, End and the left arrow work again in
+  every whole-number box (the probes' speed percent, step sizes and targets);
+  they were swallowed, so a box could not be cleared or edited.
+- A cleared or unreadable probe speed box is refused with a sentence and the
+  speed stays as it was (it raised an error before).
 - **Failures that used to vanish now leave a trace** (BUGFIX A2-A5, A7, C3). A
   Web watchdog check that cannot run raises a warning; a request body that
   fails for a reason other than bad JSON is logged instead of called "invalid

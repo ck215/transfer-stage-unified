@@ -87,8 +87,10 @@ wire is pinned by `tests/golden/`.
 - Red Percent: ONE mode, a row when red % changes (the 2026-09-21/22 "fastest sampling" part is AMENDED 2026-10-07: settled frames at the source rate, see "Round 2026-10-07"); red
   threshold only (green/blue caps fixed at 100 internally); Stage X/Y
   annotations dropped; velocity only between distinct 10 Hz position samples.
-- Probe distances/speeds/brake fields are ints to the operator (floats on
-  the wire, unchanged).
+- Probe distances and brake fields are ints to the operator (floats on
+  the wire, unchanged). Speeds (owner 2026-10-12): each speed entry has a unit
+  toggle, % of max (0.1 % steps) / steps/s (whole) / µm/s (Stepper Probe only);
+  the stored value stays whole steps/s; the unit is a per-account preference.
 - Manual Speed is live in manual mode (2026-09-26): adjusting it on the fly
   while jogging is a feature; the next 50 Hz jog frame carries the new value.
   Its entry is `disabled_when=("autonomous",)`; Autonomous Speed, step sizes,
@@ -257,7 +259,9 @@ what landed. The row-by-row closures are in `BUGFIX_PLAN.md`
   a sample and a chip do not; a chip itself is always required for a flake. It is ON by default
   again (`STATION_SAMPLE_MAP=0` turns it off).
 - **Speed dials are percent** over per-device ceilings (stepper 3200, chuck 600
-  steps/s), steps/s as a secondary readout.
+  steps/s), steps/s as a secondary readout. AMENDED 2026-10-12 (owner): every
+  speed entry has a unit toggle, % (0.1 % steps) / steps/s / µm/s (Stepper only),
+  per account; the other units are the small line, on the Dashboard too.
 - **User accounts**: `model/user_store.py` (scrypt passwords, `users.sqlite`),
   `model/user.py` (the User owns a config the Controller loads; Guest = the
   station defaults; since 2026-10-08 a `Panel`, not a device `Model`, drawn as the
