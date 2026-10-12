@@ -660,6 +660,17 @@ function rejectsIntInput(data) {
   return typeof data === 'string' && /[.,eE]/.test(data);
 }
 
+/** The keydown half of the same refusal. `event.key` is a key NAME for the
+ *  keys that are not characters ("Backspace", "Delete", "Enter", "Home"), and
+ *  the pattern above matches inside those names (the "e" of "Delete"), which
+ *  left an int box that could not be edited. Only a single typed character,
+ *  and not a Ctrl chord (no platform-only key is bound), is tested. */
+function rejectsIntKey(event) {
+  const key = event && event.key;
+  return typeof key === 'string' && key.length === 1
+    && !event.ctrlKey && rejectsIntInput(key);
+}
+
 // ==========================================================================
 // row sections: `sch.section(..., layout="row")` is laid out horizontally by
 // every renderer (Addendum 2). The desktop views use a grid; so does this
@@ -1098,7 +1109,7 @@ function renderEntry(panel, element) {
       if (rejectsIntInput(event.data)) event.preventDefault();
     });
     input.addEventListener('keydown', (event) => {
-      if (rejectsIntInput(event.key)) event.preventDefault();
+      if (rejectsIntKey(event)) event.preventDefault();
     });
   } else if (numeric) {
     input.step = String(Math.pow(10, -(element.decimals === undefined ? 3 : element.decimals)));

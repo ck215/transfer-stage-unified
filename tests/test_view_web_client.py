@@ -477,7 +477,8 @@ def test_an_int_entry_steps_by_one_and_refuses_a_decimal():
     entry = _body(r"function renderEntry\(panel, element\) \{(.*?)\n\}")
     assert "element.value_type === 'int'" in entry
     assert "input.step = '1'" in entry
-    assert "rejectsIntInput(event.data)" in entry and "preventDefault()" in entry, (
+    assert ("rejectsIntInput(event.data)" in entry and "rejectsIntKey(event)" in entry
+            and "preventDefault()" in entry), (
         "step=1 only moves the browser's own stepper; typing 2.5 still "
         "reached the command")
     assert "isInt ? intText(text)" in entry, (
