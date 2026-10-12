@@ -249,10 +249,12 @@ class Probe(GamepadInput, IdleInterlock, Model):
         *_speed_params(400, MAX_SPEED),
         # The operator's dials: a view of the stored steps/s above, never a
         # second value (owner, 2026-10-07). Not seeded; see `_defaults`.
-        Param("full_speed_pct", "int", default=13, minimum=0, maximum=100,
-              label="Autonomous Speed", unit="%"),
-        Param("man_full_speed_pct", "int", default=13, minimum=0, maximum=100,
-              label="Manual Speed", unit="%"),
+        # Tenths of a percent (owner, 2026-10-12): 12.5 is the 400 steps/s
+        # default of a 3200 ceiling.
+        Param("full_speed_pct", "float", default=12.5, minimum=0, maximum=100,
+              decimals=1, label="Autonomous Speed", unit="%"),
+        Param("man_full_speed_pct", "float", default=12.5, minimum=0, maximum=100,
+              decimals=1, label="Manual Speed", unit="%"),
         Param("slow_speed", "int", default=0, label="Brake Speed (Slow)"),
         Param("brake_distance", "int", default=0,
               label="Brake Distance (steps)"),
@@ -2043,8 +2045,11 @@ class Probe(GamepadInput, IdleInterlock, Model):
 
     @classmethod
     def steps_to_pct(cls, steps):
-        """The nearest whole percent of the ceiling (halves round up)."""
-        return int(float(steps) / cls.MAX_SPEED * 100.0 + 0.5)
+        """The nearest tenth of a percent of the ceiling (halves round up).
+        The ratio is rounded to 9 places first, as `um_to_counts` does, so
+        float noise never decides a half."""
+        tenths = round(float(steps) / cls.MAX_SPEED * 1000.0, 9)
+        return math.floor(tenths + 0.5) / 10.0
 
     def _defaults(self):
         seeded = super()._defaults()
@@ -2113,19 +2118,23 @@ class Probe(GamepadInput, IdleInterlock, Model):
         raise Refused(reason)
 
 
-def _pct_property(steps_name):
+def _pct_property(steps_name, pct_name):
     """The percent dial over a stored steps/s speed: one value, two views.
 
     Writing the percent the stored speed already displays changes nothing, so
-    a Step that re-sends "13" leaves 400 steps/s at 400 instead of 416."""
+    a Step that re-sends "12.5" leaves 400 steps/s at 400 instead of 416.
+    The percent is parsed strictly by its own Param first: an empty or bad
+    box is refused with the Param's sentence, never a bare ValueError."""
 
     def getter(self):
         return self.steps_to_pct(self.PARAMS[steps_name].coerce(
             self._param_store.get(steps_name)))
 
     def setter(self, value):
-        pct = int(float(value))
-        if pct == getter(self):
+        ok, pct = self.PARAMS[pct_name].parse(value)
+        if not ok:
+            self._refuse(pct)
+        if abs(pct - getter(self)) < 1e-6:
             return
         setattr(self, steps_name, self.pct_to_steps(pct))
 
@@ -2136,7 +2145,7 @@ for _name in Probe.PARAMS:
     if _name not in _PCT_OF.values():
         setattr(Probe, _name, Probe._gated_param(_name))
 for _steps, _pct in _PCT_OF.items():
-    setattr(Probe, _pct, _pct_property(_steps))
+    setattr(Probe, _pct, _pct_property(_steps, _pct))
 for _axis in AXES:
     # The Home buttons' `enabled_by` (ext1 boards with HOME).
     setattr(Probe, f"{_axis.lower()}_home_ready",

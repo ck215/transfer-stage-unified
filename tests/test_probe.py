@@ -1402,7 +1402,7 @@ def test_every_motion_parameter_holds_its_declared_default_from_construction(cls
     for name, param in cls.PARAMS.items():
         if name.endswith("_pct"):
             # The dial is the stored steps/s read as a percent of the ceiling,
-            # never a second stored value (test_the_defaults_read_13_...).
+            # never a second stored value (test_the_defaults_read_12_5_...).
             steps = cls.PARAMS[name[:-4]].default
             assert getattr(probe, name) == cls.steps_to_pct(steps), name
             continue
@@ -1717,18 +1717,20 @@ def test_percent_to_steps_on_each_ceiling(cls, ceiling):
     # Zero percent is the slowest the firmware may be told, never 0.
     p.full_speed_pct = 0
     assert p.full_speed == 1
-    assert p.full_speed_pct == 0
+    # Tenths (2026-10-12): the one step/s it was floored to shows as such
+    # (0.0 on the stepper, 0.2 on the chuck) instead of rounding to "0".
+    assert p.full_speed_pct == cls.steps_to_pct(1)
     assert cls.pct_to_steps(0) == 1
 
 
-def test_the_defaults_read_13_on_the_stepper_and_67_on_the_chuck():
+def test_the_defaults_read_12_5_on_the_stepper_and_66_7_on_the_chuck():
     stepper, _, _ = make_probe(StepperProbe)
     chuck, _, _ = make_probe(ChuckPositioner)
     dc, _, _ = make_probe(DCProbe)
     assert stepper.full_speed == chuck.full_speed == 400   # the stored default
-    assert (stepper.full_speed_pct, stepper.man_full_speed_pct) == (13, 13)
-    assert (chuck.full_speed_pct, chuck.man_full_speed_pct) == (67, 67)
-    assert dc.full_speed == 120 and dc.full_speed_pct == 4
+    assert (stepper.full_speed_pct, stepper.man_full_speed_pct) == (12.5, 12.5)
+    assert (chuck.full_speed_pct, chuck.man_full_speed_pct) == (66.7, 66.7)
+    assert dc.full_speed == 120 and dc.full_speed_pct == 3.8
 
 
 def test_the_two_representations_are_one_value_both_ways():
@@ -1737,12 +1739,12 @@ def test_the_two_representations_are_one_value_both_ways():
     assert p.full_speed_pct == 50
     p.full_speed_pct = 25
     assert p.full_speed == 800
-    p.man_full_speed = 1000            # 31.25 % -> nearest percent
-    assert p.man_full_speed_pct == 31
+    p.man_full_speed = 1000            # 31.25 % -> nearest tenth, halves up
+    assert p.man_full_speed_pct == 31.3
     assert p.man_full_speed == 1000    # reading the dial never rewrites steps/s
     # Re-sending the percent the dial already shows (a Step does) is no edit.
     p.full_speed = 400
-    p.full_speed_pct = 13
+    p.full_speed_pct = 12.5
     assert p.full_speed == 400
 
 
