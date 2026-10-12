@@ -950,6 +950,9 @@ function gatherInputsFor(element, widgets) {
   for (const widget of widgets || []) {
     const entry = widget.element;
     if (!entry || entry.type !== 'entry' || !entry.writable || !widget.readValue) continue;
+    // An entry for a unit that is not the chosen one is not drawn, so it
+    // sends nothing (a speed travels in ONE unit; the model refuses two).
+    if (widget.unitOff) continue;
     const edited = widget.isEdited ? widget.isEdited()
       : Boolean(widget.isDirty && widget.isDirty());
     if (declared.indexOf(entry.model_attr) !== -1 || edited) {
@@ -995,6 +998,8 @@ function renderReadonly(panel, element) {
     ? make('div', 'row stat secondary')
     : row(element, 'stat');
   if (element.model_attr) node.dataset.attr = element.model_attr;
+  // `dashboard`: a secondary line the Dashboard's tile keeps (styles.css).
+  if (element.dashboard) node.classList.add('on-dashboard');
   // A secondary readout with a `lead` says it before its value ("Now:
   // 6.50 deg" under Tilt for this trial, UX audit 2026-10-08 #15).
   const lead = element.secondary && element.lead ? String(element.lead) : '';
@@ -1808,6 +1813,84 @@ function renderImage(panel, element) {
 /** A lamp is lit or it is not: a dot and a word. Lit is ink, off is a
  *  hollow ring, and a lamp whose ACTIVE role is danger (a fault, a lost
  *  stage) is the signal colour - never the trace, which is for numbers. */
+/** A short list of words, all in view (the unit a speed is shown in): a
+ *  segmented control. A radio group: one tab stop (the chosen segment),
+ *  Left/Right (and Up/Down) move and commit. The choice goes through the
+ *  ordinary commit (`panel.commit`), so the model validates it. */
+function renderChoice(panel, element) {
+  const node = row(element, 'choice-row');
+  const group = make('div', 'choice');
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', nameFor(sentence(element.label || captionText(element)),
+    ownerOf(panel)));
+  const options = (element.options || []).map(String);
+  const segments = options.map((option) => {
+    const seg = make('button', 'choice-seg', option);
+    seg.type = 'button';
+    seg.setAttribute('role', 'radio');
+    seg.setAttribute('aria-checked', 'false');
+    seg.tabIndex = -1;
+    seg.dataset.option = option;
+    group.appendChild(seg);
+    return seg;
+  });
+  node.appendChild(group);
+  const title = titler(group);
+  let served = '';
+  let pending = 0;
+  let answeredAt = 0;
+  const mark = (value) => {
+    const known = options.indexOf(value) !== -1;
+    segments.forEach((seg, at) => {
+      const on = seg.dataset.option === value;
+      if (seg.getAttribute('aria-checked') !== String(on)) seg.setAttribute('aria-checked', String(on));
+      seg.tabIndex = on || (!known && at === 0) ? 0 : -1;
+    });
+  };
+  const choose = (value) => {
+    if (group.classList.contains('disabled') || value === served) return;
+    panel.commit(element, value);
+  };
+  segments.forEach((seg, at) => {
+    seg.addEventListener('click', () => choose(seg.dataset.option));
+    seg.addEventListener('keydown', (event) => {
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (!step) return;
+      event.preventDefault();
+      const next = segments[(at + step + segments.length) % segments.length];
+      next.focus();
+      choose(next.dataset.option);
+    });
+  });
+  mark('');
+  return {
+    node,
+    control: group,
+    isDirty: () => pending > 0 || (panel.askedAt !== undefined && panel.askedAt < answeredAt),
+    hold: (on) => {
+      if (on) pending += 1;
+      else { pending = Math.max(0, pending - 1); answeredAt = Date.now(); }
+    },
+    accept: (value) => { served = String(value); mark(served); },
+    revert: () => mark(served),
+    setText: (text) => {
+      served = (text === null || text === undefined) ? '' : String(text);
+      mark(served);
+    },
+    /** Focus the chosen segment (a widget that held focus just hid). */
+    focus: () => {
+      const on = segments.find((seg) => seg.tabIndex === 0) || segments[0];
+      if (on) on.focus({ preventScroll: true });
+    },
+    setEnabled: (flag) => {
+      group.classList.toggle('disabled', !flag);
+      for (const seg of segments) if (seg.disabled === flag) seg.disabled = !flag;
+      node.classList.toggle('disabled', !flag);
+    },
+    setReason: (reason) => title.reason(reason),
+  };
+}
+
 function renderIndicator(panel, element) {
   const node = row(element, 'lamp-row');
   const lamp = make('span', 'lamp');
@@ -1994,6 +2077,7 @@ const ELEMENT_RENDERERS = {
   plot: renderPlot,
   image: renderImage,
   indicator: renderIndicator,
+  choice: renderChoice,
   log_stream: renderLogStream,
   internal: renderInternal,
 };
@@ -3045,7 +3129,10 @@ class PanelCard {
       const element = widget.element;
       const kind = element.type;
       const attr = element.model_attr;
-      if (kind === 'entry') {
+      if (element.shown_when) this.applyShownWhen(widget);
+      if (kind === 'choice') {
+        if (!widget.isDirty()) widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
+      } else if (kind === 'entry') {
         if (!widget.isDirty()) widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
       } else if (kind === 'readonly' && link && attr === link.attr) {
         // V2 on the Web: the Diagnostics row the server added (with_link_row).
@@ -3118,6 +3205,27 @@ class PanelCard {
     const reason = isFaulted ? String(state.fault || '') : '';
     putText(this.faultLine, reason);
     if (this.faultLine.hidden !== !reason) this.faultLine.hidden = !reason;
+  }
+
+  /** `shown_when` (2026-10-12): an element drawn only while the model's value
+   *  `attr` is one of `values`. A renderer rule like `phases`: the class
+   *  `is-unit-off` is toggled only when the answer changes, and focus inside a
+   *  widget that just hid moves to the choice that hid it. A value the state
+   *  does not carry yet hides nothing. */
+  applyShownWhen(widget) {
+    const rule = widget.element.shown_when;
+    const have = this.values[rule.attr];
+    const off = have !== undefined && rule.values.indexOf(String(have)) === -1;
+    if (Boolean(widget.unitOff) === off) return;
+    widget.unitOff = off;
+    const lost = off && widget.node && typeof document !== 'undefined'
+      && widget.node.contains(document.activeElement);
+    if (widget.node) widget.node.classList.toggle('is-unit-off', off);
+    if (lost) {
+      const chooser = this.widgets.find((w) => w.element.type === 'choice'
+        && w.element.model_attr === rule.attr);
+      if (chooser && chooser.focus) chooser.focus();
+    }
   }
 
   /** Draw the current procedure step (owner ruling 2026-10-07): a section

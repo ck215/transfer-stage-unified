@@ -167,6 +167,8 @@ button, select, input[type="range"] {
    whatever display a class gives. Hidden is not disabled: a disabled
    control is greyed where it stands. */
 .is-phase-off { display: none !important; }
+/* shown_when (2026-10-12): the entry of a unit that is not the chosen one. */
+.is-unit-off { display: none !important; }
 
 /* A readout that repeats the procedure strip's sentence (UX audit
    2026-10-08 #15): said once, in the strip. */
@@ -1777,6 +1779,9 @@ span.value.is-word,
 .row.secondary > .value { font-size: var(--statistic-size); font-weight: 500; color: var(--muted); line-height: 1.1; }
 .row.secondary > .unit { font-size: var(--caption-size); }
 .sheet.is-overview .row.secondary { display: none; }
+/* ...except the lines that ask to stay (schema `dashboard`: the other units
+   of a speed). */
+.sheet.is-overview .row.secondary.on-dashboard { display: grid; }
 /* A readout with a lead stands in for a reading in its step: the tile
    keeps it. */
 .sheet.is-overview .row.secondary.has-lead { display: grid; }
@@ -3525,6 +3530,40 @@ label.row-title[for] { cursor: pointer; }
    sheet wider than a phone. */
 .feed { overflow-wrap: anywhere; }
 .row.stat > .value.is-word { min-width: 0; max-width: 100%; }
+
+/* -- a choice: a short list of words, all in view (a speed's unit) ------------
+   A segmented key: the chosen segment is down like a latched key, the
+   others are caps; one outline, the existing key tokens, no new colour. */
+.row.choice-row { flex-direction: row; align-items: center; gap: var(--space-3); }
+.row.choice-row > .label { font-size: var(--t-sm); color: var(--muted); }
+.choice { display: inline-flex; border-radius: var(--radius-key); box-shadow: var(--rim); }
+.choice-seg {
+  min-height: var(--hit-panel);
+  padding: 0 var(--space-3);
+  border: 0 solid transparent;
+  border-bottom: var(--lip-key) solid var(--key-lip);
+  background: var(--cap);
+  background-clip: padding-box;
+  box-shadow: var(--key-top);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  text-shadow: var(--engrave);
+  cursor: pointer;
+}
+.choice-seg:first-child { border-top-left-radius: var(--radius-key); border-bottom-left-radius: var(--radius-key); }
+.choice-seg:last-child { border-top-right-radius: var(--radius-key); border-bottom-right-radius: var(--radius-key); }
+.choice-seg:hover:not(:disabled) { color: var(--text); }
+.choice-seg[aria-checked="true"] {
+  border-top-width: var(--key-drop);
+  border-bottom-width: var(--lip-pressed);
+  box-shadow: var(--key-down);
+  color: var(--text);
+}
+.choice-seg:disabled { cursor: default; }
+
 
 /* -- tutorial ------------------------------------------------------------ */
 /* The coach: a card beside the control a step is about, a ring on the
