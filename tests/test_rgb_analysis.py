@@ -618,6 +618,75 @@ def test_end_run_never_blocks_on_a_slow_grab(monitor):
     assert not monitor.is_running
 
 
+# ---------------------------------------------------------------------
+# The heartbeat: a healthy run is never "Stale" (bench 2026-10-12, trial 44)
+# ---------------------------------------------------------------------
+def test_a_running_run_keeps_its_heartbeat_fresh(monitor):
+    """`_expects_heartbeat` is `is_running`, so `state["age"]` is reported
+    for the whole run and the Web card calls anything over 1 s "Stale". The
+    run loop never touched the heartbeat: the last touch was `start_run`'s,
+    so every run read "Stale" a second in (trial 44: 1120 frames at 14.8 Hz,
+    0 rejections, Stale throughout)."""
+    _started(monitor)
+    try:
+        assert _wait_for(lambda: monitor.frames_captured >= 2)
+        monitor._updated_at = time.monotonic() - 5.0    # as if 5 s into the run
+        seen = monitor.frames_captured
+        assert _wait_for(lambda: monitor.frames_captured >= seen + 3)
+        assert monitor.is_running
+        age = monitor.state["age"]
+        assert age is not None and age < 1.0, f"a healthy run reads {age} s stale"
+    finally:
+        monitor.end_run()
+
+
+def test_a_change_mode_run_on_a_still_picture_is_not_stale(monitor):
+    """"change" sampling writes a row only when the picture moves, so a run
+    on a still picture appends nothing for seconds; its loop is still alive
+    and reading, and the heartbeat must say so."""
+    monitor.screen = fake_screen(frames=[red_frame(2)], delay=0.001, varying=False)
+    monitor.screen.open()
+    _started(monitor)
+    try:
+        assert _wait_for(lambda: monitor.rows_written >= 1)
+        monitor._updated_at = time.monotonic() - 5.0
+        reads = monitor._run.grabs
+        assert _wait_for(lambda: monitor._run.grabs >= reads + 6)
+        assert monitor.rows_written == 1, "a still picture wrote a second row"
+        age = monitor.state["age"]
+        assert age is not None and age < 1.0, f"a still-picture run reads {age} s stale"
+    finally:
+        monitor.end_run()
+
+
+def test_a_run_stuck_in_a_grab_does_go_stale(monitor):
+    """The heartbeat is the loop's, not a timer's: a grab that never returns
+    leaves the age growing, so "Stale" still means something."""
+    release = threading.Event()
+    entered = threading.Event()
+
+    class StuckCapture:
+        def grab(self, region):
+            entered.set()
+            release.wait(timeout=5.0)
+            return red_frame()
+
+        def close(self):
+            pass
+
+    monitor.screen = Screen(factory=StuckCapture)
+    monitor.screen.open()
+    _started(monitor)
+    try:
+        assert entered.wait(timeout=2.0)
+        monitor._updated_at = time.monotonic() - 5.0
+        time.sleep(0.05)
+        assert monitor.state["age"] >= 5.0
+    finally:
+        monitor.end_run()
+        release.set()
+
+
 def test_estop_stops_the_run_and_confirms(monitor):
     _started(monitor)
     assert monitor.estop() is True

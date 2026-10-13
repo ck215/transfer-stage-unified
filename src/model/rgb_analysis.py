@@ -1287,6 +1287,12 @@ class RgbAnalysis(Model):
                                                             stop)
                 if outcome == "stopped":
                     break
+                # The heartbeat (`state["age"]`, which the Web card reads as
+                # "Stale" past 1 s): the loop came back from a read, so it is
+                # alive, whatever the read held. Every tick, not every row:
+                # "change" sampling writes nothing while the picture is still.
+                # One float store, safe from this thread.
+                self._touch()
                 if outcome == "failed":
                     run.grab_failures += 1
                     events.debug("Grab Returned Nothing",
