@@ -3596,9 +3596,8 @@ def test_n3_the_close_tab_guard_is_armed_exactly_while_something_is_energized(
     `is_active`: a probe merely in a mode shows it, an active-but-not-
     energized station does not. It says so in ink under the chord's hint,
     with the watchdog's seconds as served (here 12, to prove they are not
-    the page's own 15). O6: an energized model carries a ring before its
-    name in the rail, after the stop marks, not red, titled and read
-    "energized".
+    the page's own 15). O6's ink ring before an energized model's name is
+    gone (owner 2026-10-12): the status dot alone shows it, blue in place.
 
     Updated (owner 2026-10-07, closing the last tab quits the station): the
     `beforeunload` guard itself is no longer keyed on energized - it asks on
@@ -3628,11 +3627,9 @@ def test_n3_the_close_tab_guard_is_armed_exactly_while_something_is_energized(
     assert on["line"] == ("Devices are energized. Disable them before closing this tab; "
                           "the station stops them 12 s after the tab goes."), on
     assert on["lineRed"] is False and out["hintAbove"], on
-    mark = on["marks"]["Stepper Probe"]
-    assert mark and mark["words"] == "energized" and mark["title"] == "Energized", on
-    assert mark["afterStopMark"] and mark["background"] != on["signal"], mark
-    assert mark["border"] not in ("0px", ""), "the energized mark is a ring"
-    assert on["marks"]["DC Probe"] is None, on
+    # Owner 2026-10-12: no ring beside the status dot - the dot turns blue
+    # in place (test_each_rail_entry_has_a_status_dot_enabled_disabled_or_error).
+    assert on["marks"] == {"Stepper Probe": None, "DC Probe": None}, on
     assert out["off"]["prevented"] is True and out["off"]["line"] == "", out["off"]
 
 

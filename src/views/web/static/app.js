@@ -4809,7 +4809,6 @@ class Dashboard {
     this.idleKey = null;
     this.dom.idleLines.hidden = true;
     this.renderEnergizedLine();
-    this.setEnergized([]);
     stop.removeAttribute('aria-keyshortcuts');
     stop.setAttribute('aria-disabled', 'true');
     stop.setAttribute('aria-label', 'Stop: the station has shut down');
@@ -4959,7 +4958,6 @@ class Dashboard {
     this.faulted = new Map(Object.keys(models).filter((n) => models[n] && models[n].is_faulted)
       .map((n) => [n, models[n].mode === 'fault']));
     this.setUnconfirmed(stop.latched || [], stop.unconfirmed || []);
-    this.setEnergized(this.energized);
     this.modelStates = models;
     this.setDots();
     this.renderEnergizedLine();
@@ -5566,16 +5564,11 @@ class Dashboard {
         const mark = make('span', 'nav-mark');
         mark.hidden = true;
         link.appendChild(mark);
-        // O6: energized - a probe in a mode, a heating heater, a recording
-        // run - is a small ink ring after the stop mark; never red.
-        // Its word is written only while it shows, so a live link's text is
-        // its name alone.
-        const ring = make('span', 'nav-energized');
-        ring.hidden = true;
-        link.appendChild(ring);
         // Owner 2026-10-07: the device's status dot (setDots). Its words are
         // its accessible name (role img), never its text, so the link's
-        // text stays the name alone.
+        // text stays the name alone. Owner 2026-10-12: it is the entry's one
+        // status icon - energized turns it blue in place, so the O6 ink ring
+        // that sat beside it is gone.
         const dot = make('span', 'nav-dot');
         dot.setAttribute('role', 'img');
         link.appendChild(dot);
@@ -5587,7 +5580,6 @@ class Dashboard {
         this.dom.nav.appendChild(link);
       }
       if (this.latched) this.setUnconfirmed(Array.from(this.latched), Array.from(this.unconfirmed));
-      this.setEnergized(this.energized);
       this.setDots();
     }
     this.setNavToggleWords();
@@ -5747,19 +5739,6 @@ class Dashboard {
       putAttr(dot, 'title', words);
     }
     this.setNavToggleWords();
-  }
-
-  /** O6: the ring before each energized model's name in the rail. */
-  setEnergized(names) {
-    const on = new Set(names || []);
-    for (const ring of this.dom.nav.querySelectorAll('.model-link[data-model] .nav-energized')) {
-      const name = ring.parentNode.dataset.model;
-      const group = [name].concat(this.guestsOf(name).map((c) => c.name));
-      const hide = this.isShutDown || !group.some((n) => on.has(n));
-      putText(ring, hide ? '' : 'energized');
-      putAttr(ring, 'title', hide ? '' : 'Energized');
-      if (ring.hidden !== hide) ring.hidden = hide;
-    }
   }
 
   /** N3: while anything is energized, the rail says what closing this tab

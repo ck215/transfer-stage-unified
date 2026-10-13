@@ -279,6 +279,24 @@ def test_each_rail_entry_has_a_status_dot_with_words_not_colour_alone():
     assert re.search(r"\.nav-dot\.is-error\s*\{[^}]*var\(--signal\)", STYLES)
 
 
+def test_a_rail_entry_draws_one_status_icon_whose_colour_changes_in_place():
+    """Owner 2026-10-12: "red error icon replaces the grey disabled, but blue
+    populates NEXT to grey rather than in place of." The status dot already
+    turned blue (is-on) in place, but an energized entry also drew the O6
+    ink ring (`.nav-energized`) beside it, so enabled showed two icons where
+    disabled and error show one. The dot is the one indicator: grey, blue or
+    red, its words its name and title."""
+    nav = _body(r"\n  renderNav\(models\) \{(.*?)\n  \}")
+    assert nav.count("make('span', 'nav-dot')") == 1, "one status dot per entry"
+    assert "nav-energized" not in nav, "a second (energized) icon beside the dot"
+    assert "nav-energized" not in APP_JS and "nav-energized" not in STYLES
+    assert "nav-energized" not in INDEX
+    # The states keep their meaning: the dot alone says Enabled.
+    dots = _body(r"\n  setDots\(\) \{(.*?)\n  \}")
+    assert "dot.classList.toggle('is-on', isOn)" in dots
+    assert "dot.classList.toggle('is-error', Boolean(error))" in dots
+
+
 def test_the_setup_panel_goes_through_the_same_renderer():
     setup = _body(r"async loadSetup\(\) \{(.*?)\n  \}")
     assert "new PanelCard(this, SETUP_NAME" in setup, (

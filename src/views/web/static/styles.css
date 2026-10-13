@@ -797,23 +797,6 @@ body.is-stop-arriving .stop-block { animation: stop-arrive 200ms ease-out both; 
 
 .nav-mark[hidden] { display: none; }
 
-/* O6: energized - a ring, in ink, after the lamp. Never red, never a lamp:
-   the lamp is the stop state's. */
-.nav-energized {
-  flex: 0 0 auto;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-left: calc(-1 * var(--space-2));
-  overflow: hidden;
-  border: 2px solid var(--text);
-  border-radius: 50%;
-  color: transparent;
-  font-size: var(--t-xs);
-  line-height: 1;
-}
-
-.nav-energized[hidden] { display: none; }
-
 /* Owner 2026-10-07: each device's status dot, before its name. The trace
    colour while it is enabled (energized: in a mode, heating, recording),
    muted grey while it is disabled, the signal red for any error state
