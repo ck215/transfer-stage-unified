@@ -159,6 +159,10 @@ How this file is kept:
 
 ### Changed
 
+- **Tutorials are marked Beta.** They are incomplete: the Tutorials panel and
+  every step's card say Beta, and the panel says a step may not match the
+  station as it is now; where a tutorial and the lab's procedure differ, the
+  procedure wins.
 - **Probe speeds in the unit you pick.** Each Autonomous and Manual Speed has
   a unit switch beside it: % of max or steps/s, and µm/s on the Stepper Probe.
   The box, its slider and its limits follow the unit, the other units show on
