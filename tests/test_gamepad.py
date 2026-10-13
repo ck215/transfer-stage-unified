@@ -581,7 +581,8 @@ def test_reading_levels_does_not_consume_edges(hub, fake_sdl):
 
     assert pad.levels["axis_x"] == 0.8
     assert pad.levels["axis_x"] == 0.8
-    assert pad.drain_edges().get("hat_x") == 1, "a level read ate the edge"
+    # An Xbox pad: D-pad right reads -1 (GAMEPAD-13, owner verified 2026-10-13).
+    assert pad.drain_edges().get("hat_x") == -1, "a level read ate the edge"
     pad.close()
 
 
@@ -1011,9 +1012,26 @@ _PRESSES = {                # name -> (kind, index-or-value, step fields)
     "bumper_right": ("bumper", 1, (0.0, 0.0, -1.0)),
 }
 
-# The golden scenario that pins the same packet on the wire.
-_GOLDEN_FOR = {"dpad_right": "jog.dpad_left_right", "dpad_down": "jog.dpad_up_down",
-               "bumper_left": "jog.bumper_left", "bumper_right": "jog.bumper_right"}
+# The golden scenario that pins the same packet on the wire, keyed by the
+# step fields the packet carries (which press produces them depends on the
+# pad: see `_HAT_SIGN`).
+_GOLDEN_FOR = {(1.0, 0.0, 0.0): "jog.dpad_left_right",
+               (0.0, -1.0, 0.0): "jog.dpad_up_down",
+               (0.0, 0.0, 1.0): "jog.bumper_left",
+               (0.0, 0.0, -1.0): "jog.bumper_right"}
+
+# GAMEPAD-13 (owner verified on the stage 2026-10-13): an Xbox pad's D-pad is
+# inverted on both axes, so its hat is negated; every other layout is as read.
+_HAT_SIGN = {"xbox": -1, "xbox_bluetooth": -1}
+
+
+def _expected_step(layout_id, press):
+    """The step fields one press puts on the wire for this layout."""
+    kind, _, fields = _PRESSES[press]
+    if kind != "hat":
+        return fields
+    sign = _HAT_SIGN.get(layout_id, 1)
+    return (fields[0] * sign or 0.0, fields[1] * sign or 0.0, fields[2])
 
 
 class _Rig:
@@ -1101,14 +1119,14 @@ def test_one_press_sends_exactly_one_step_packet_on_every_layout(rig, press):
     steps = rig.steps()
     assert len(steps) == 1, f"{press}: {len(steps)} step packets, wanted 1"
     step = steps[0]
-    assert step[_STEP] == _PRESSES[press][2]
+    assert step[_STEP] == _expected_step(rig.layout_id, press)
     assert step[5:8] == (4.0, 8.0, 16.0), "step sizes are the probe's own"
     assert step[2:5] == (0.0, 0.0, 0.0), "a step carries no continuous jog"
     assert len(rig.decoded()) == 10, "every other tick sent a zero-step packet"
-    if press in _GOLDEN_FOR:
+    if step[_STEP] in _GOLDEN_FOR:
         packet = next(p for p in rig.packets() if any(
             struct.unpack(PACKET_FORMAT, p)[_STEP]))
-        assert packet.hex() == _GOLDEN_HEX["stepper." + _GOLDEN_FOR[press]]
+        assert packet.hex() == _GOLDEN_HEX["stepper." + _GOLDEN_FOR[step[_STEP]]]
 
 
 def test_a_held_press_steps_once_and_a_second_press_steps_again(rig):
@@ -1199,7 +1217,8 @@ def test_the_chuck_steps_from_the_same_press():
     try:
         made.probe.set_mode("manual")
         made.port.writes.clear()
-        made.press("dpad_down")
+        # Xbox: D-pad up is dpad_UD = -1 on the wire (GAMEPAD-13).
+        made.press("dpad_up")
         made.tick(3)
         packet = next(p for p in made.packets()
                       if any(struct.unpack(PACKET_FORMAT, p)[_STEP]))

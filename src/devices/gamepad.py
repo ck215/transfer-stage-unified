@@ -328,9 +328,10 @@ hub = GamepadHub()
 # `_read_layout`. All four pads stay in service. Every index and every
 # platform branch below is today's value, moved and not touched.
 #
-# UNVERIFIED AT THE BENCH. Four findings are open questions about these
-# numbers. Each needs the physical pad in hand, so the rebuild ports what is
-# here today and marks it. This table is the single place to settle them.
+# UNVERIFIED AT THE BENCH. Three findings (11, 12, 14) are open questions
+# about these numbers; GAMEPAD-13 was settled on the stage 2026-10-13. Each
+# needs the physical pad in hand, so the rebuild ports what is here today and
+# marks it. This table is the single place to settle them.
 #
 #   GAMEPAD-11 -- name matching. main accepted an exact-name whitelist
 #     ("Xbox Series X Controller", "T.16000M", "Thrustmaster T.16000M",
@@ -351,11 +352,16 @@ hub = GamepadHub()
 #     has buttons 4 and 5). UNVERIFIED: which way the throttle buttons drive Z
 #     on the stage.
 #
-#   GAMEPAD-13 -- D-pad sign. main's `get_hat_edge` returned `(-out_x, -out_y)`
-#     and the firmware moves `x_axis.move(dpad_LR * x_step_size)`. The
-#     refactor passes the hat through unnegated, closed on a mock unit test
-#     rather than on the stage. UNVERIFIED: which way D-pad right moves the
-#     stage. If it must be negated, negate it once, here, in `_read_layout`.
+#   GAMEPAD-13 -- D-pad sign. SETTLED (owner, on the stage, 2026-10-13):
+#     with an Xbox pad both D-pad axes stepped the wrong way; the T.16000M
+#     stepped the right way. main's `get_hat_edge` returned `(-out_x, -out_y)`
+#     for every pad and the firmware moves `x_axis.move(dpad_LR * x_step_size)`;
+#     the refactor passed the hat through unnegated for every pad. The sign is
+#     now per bind table: `hat_sign` (default (1, 1)), applied once, in
+#     `_read_layout`, before edges are latched. The three Xbox tables carry
+#     (-1, -1); the F310 in XInput mode uses the Xbox tables and so follows
+#     them (UNVERIFIED at the bench: the F310 was not in hand); the T.16000M
+#     and the F310 in DirectInput mode are unchanged.
 #
 #   GAMEPAD-14 -- deadzone. main applied one deadzone of 0.1 in the poll loop
 #     (its T16000M-specific 0.03 was a function-local assignment that never
@@ -418,17 +424,24 @@ def to_channels(levels):
             for key, value in dict(levels or {}).items()}
 
 
+#: GAMEPAD-13 (owner verified 2026-10-13): an Xbox pad's D-pad is inverted
+#: on both axes relative to the stage. A table without `hat_sign` is (1, 1).
+_XBOX_HAT_SIGN = (-1, -1)
+
 _XBOX_LINUX = {
     "x": 0, "y": (4, 1), "z_left": 2, "z_right": 5,
     "hat": 0, "bumper_left": 4, "bumper_right": 5, "idle_axes": (2, 5),
+    "hat_sign": _XBOX_HAT_SIGN,
 }
 _XBOX_DEFAULT = {
     "x": 0, "y": (3, 1), "z_left": 4, "z_right": 5,
     "hat": 0, "bumper_left": 4, "bumper_right": 5, "idle_axes": (4, 5),
+    "hat_sign": _XBOX_HAT_SIGN,
 }
 _XBOX_BLUETOOTH_LINUX = {
     "x": 0, "y": 3, "z_left": 5, "z_right": 4,
     "hat": 0, "bumper_left": 6, "bumper_right": 7, "idle_axes": (2, 4, 5),
+    "hat_sign": _XBOX_HAT_SIGN,
 }
 _F310_DINPUT = {
     "x": 0, "y": (3, 1), "z_left": ("button", 6), "z_right": ("button", 7),
@@ -1106,14 +1119,16 @@ class Gamepad(Device):
         if self._override is not None:
             self._override(axes, buttons)
         hat = hats.get(spec["hat"], (0, 0))
+        sign_x, sign_y = spec.get("hat_sign", (1, 1))
         return {
             "axis_x": _source_value(axes, spec["x"], 0.0),
             "axis_y": _source_value(axes, spec["y"], 0.0),
             "trigger_left": self._trigger_value(spec["z_left"], axes, buttons),
             "trigger_right": self._trigger_value(spec["z_right"], axes, buttons),
-            # D-pad sign is passed through unnegated; see GAMEPAD-13 above.
-            "hat_x": hat[0],
-            "hat_y": hat[1],
+            # D-pad sign per bind table (`hat_sign`); see GAMEPAD-13 above.
+            # int() keeps a centred hat an int 0 for the neutral comparison.
+            "hat_x": int(hat[0]) * sign_x,
+            "hat_y": int(hat[1]) * sign_y,
             "bumper_left": _source_value(buttons, spec["bumper_left"], 0),
             "bumper_right": _source_value(buttons, spec["bumper_right"], 0),
         }

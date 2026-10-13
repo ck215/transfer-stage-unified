@@ -276,6 +276,13 @@ How this file is kept:
 
 ### Fixed
 
+- **The Xbox controller's D-pad steps the right way** (GAMEPAD-13, owner
+  verified on the stage 2026-10-13). On an Xbox pad, wired or Bluetooth, D-pad
+  right/left and up/down stepped the stage the opposite way on both axes; they
+  are reversed now, for every probe the pad drives. The Thrustmaster T.16000M
+  was already right and is unchanged. A Logitech F310 switched to XInput
+  (X) is read like an Xbox pad and is reversed too; check it at the bench if
+  one is used. One press is still one step.
 - Backspace, Delete, Enter, Escape, Home, End and the left arrow work again in
   every whole-number box (the probes' speed percent, step sizes and targets);
   they were swallowed, so a box could not be cleared or edited.
