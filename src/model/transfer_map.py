@@ -123,6 +123,7 @@ from model import store_choice
 from model import tip_shade
 from model import transfer_map_analysis as analysis
 from model.base import Model
+from model.probe import StepperProbe
 from model.sample_store import SampleStore
 from model.sample_store import PicturePreview, StoreRefused as _PreviewRefused
 from model.trial_telemetry import TrialTelemetry
@@ -359,6 +360,46 @@ HEALTH_WINDOW_S = 1.0
 #: ... and calls the analysis "unsettled" when more than this share of a
 #: window's reads were rejected (black, stale or unsettled; CAP-1).
 UNSETTLED_SHARE = 0.5
+
+#: The coupled probe's Manual Speed, forwarded to the trial sheet (owner,
+#: 2026-10-12: "a speed controller for now at those last two stages so I
+#: don't have to hop between tabs"): this page's name -> the probe's own
+#: attribute. The probe keeps the setting; the map reads it and writes it
+#: through the probe's commit path (`Panel.set_value`), so the probe's mode
+#: gate, Params and unit list decide, and the next jog frame carries it.
+_SPEED_BASE = "man_full_speed"
+SPEED_FORWARD = {"probe_" + StepperProbe.speed_attr(_SPEED_BASE, unit):
+                 StepperProbe.speed_attr(_SPEED_BASE, unit)
+                 for unit in StepperProbe.SPEED_UNITS}
+SPEED_FORWARD["probe_" + _SPEED_BASE + "_unit"] = _SPEED_BASE + "_unit"
+#: The steps it is drawn and settable in: lowering the tip, and the cut.
+SPEED_PHASES = ("live", "marked")
+
+
+def _forwarded_param(name, probe_attr):
+    """The Stepper Probe's own Param for `probe_attr` (the class offering
+    every unit), under this page's `name`: the schema's type, bounds and
+    label. The coupled probe's own Param still parses the write."""
+    p = StepperProbe.PARAMS[probe_attr]
+    return Param(name, p.type, default=p.default, minimum=p.minimum,
+                 maximum=p.maximum, decimals=p.decimals, unit=p.unit,
+                 label=p.label)
+
+
+def _forwarded_speed(name):
+    """One forwarded speed attribute: reads the coupled probe's value (None
+    without one, or when that probe has no such unit); writes go to
+    `_set_probe_speed`."""
+    probe_attr = SPEED_FORWARD[name]
+
+    def getter(self):
+        _probe_name, probe = self._probe()
+        return getattr(probe, probe_attr, None) if probe is not None else None
+
+    def setter(self, value):
+        self._set_probe_speed(name, value)
+
+    return property(getter, setter)
 
 
 class _HealthWatch:
@@ -984,6 +1025,14 @@ class TransferMap(store_choice.StorePrompt, Model):
         Param("store_dir", "text", default="", label="Folder"),
         Param("store_name", "text", default="transfer_map", label="Name"),
     )}
+    # The coupled probe's Manual Speed and its unit (`SPEED_FORWARD`): the
+    # probe's Params under this page's names. Never seeded (`_defaults`).
+    PARAMS.update({name: _forwarded_param(name, attr)
+                   for name, attr in SPEED_FORWARD.items()})
+    probe_man_full_speed_unit = _forwarded_speed("probe_man_full_speed_unit")
+    probe_man_full_speed_pct = _forwarded_speed("probe_man_full_speed_pct")
+    probe_man_full_speed = _forwarded_speed("probe_man_full_speed")
+    probe_man_full_speed_um_s = _forwarded_speed("probe_man_full_speed_um_s")
 
     #: Where the operator's store choice is remembered: an object with
     #: `read(key)` / `write(key, value)` (`controller.user_config`, set by
@@ -1596,6 +1645,83 @@ class TransferMap(store_choice.StorePrompt, Model):
     def speed_now(self):
         speed = self._read_speed()[0]
         return None if speed is None else int(round(speed))
+
+    # -- the coupled probe's Manual Speed, forwarded (owner 2026-10-12): the
+    # probe keeps it, this only reaches it. Read every poll in every step
+    # (nothing refused, nothing logged); written only in `SPEED_PHASES`.
+    def _defaults(self):
+        seeded = super()._defaults()
+        for name in SPEED_FORWARD:
+            seeded.pop(name, None)     # the probe's value, never this page's
+        return seeded
+
+    def run(self, command, inputs=None, args=()):
+        """The forwarded speed commits on its own (`_commit`, as an entry on
+        the probe's page does). Sent along with any other command (the Web
+        client sends every edited box with a press, MOD-6) it is dropped, so
+        a speed box never refuses Mark force or End recording, and those
+        never change the probe's speed."""
+        if command != "_commit" and inputs and any(n in SPEED_FORWARD for n in inputs):
+            inputs = {k: v for k, v in inputs.items() if k not in SPEED_FORWARD}
+        return super().run(command, inputs, args)
+
+    def _set_probe_speed(self, name, value):
+        """Write the coupled probe's Manual Speed (or its unit) through the
+        probe's own commit path: its mode gate (locked in autonomous), its
+        strict parse and its unit list decide, exactly as on its page. No
+        command reaches the board from here; the next jog frame carries the
+        stored speed."""
+        probe_name, probe = self._probe()
+        label = self.PARAMS[name].label
+        if probe is None:
+            raise Refused(f"No probe is coupled to the trial, so its {label} "
+                          "cannot be set here. Open the probe and enter "
+                          "Manual mode on its page first.", attr=name)
+        if self.phase not in SPEED_PHASES:
+            raise Refused(f"The {probe_name}'s {label} is set on the trial "
+                          "sheet only while recording (the live and marked "
+                          f"steps). Set it on the {probe_name} page now.",
+                          attr=name)
+        result = probe.set_value(SPEED_FORWARD[name], value)
+        if not result.is_ok:
+            raise Refused(result.reason, attr=name)
+
+    @property
+    def probe_man_full_speed_alt_text(self):
+        """The coupled probe's other units, as the line under its entry."""
+        _probe_name, probe = self._probe()
+        return getattr(probe, _SPEED_BASE + "_alt_text", "") if probe else ""
+
+    @property
+    def speed_probe_text(self):
+        """Whose speed the sheet's control sets, and that probe's mode."""
+        probe_name, probe = self._probe()
+        if probe is None:
+            return ("No probe is coupled. Open the probe and enter Manual "
+                    "mode to set its speed here.")
+        return f"{probe_name}, {getattr(probe, 'mode_name', '') or 'no'} mode"
+
+    def _probe_speed_elements(self):
+        """The probe page's own speed pattern (`Probe._speed_elements`) over
+        the forwarded names: the unit choice, then one entry per unit, each
+        with the other units' line, shown while its unit is chosen. The
+        units are the Stepper Probe's (every one any probe offers); a probe
+        that lacks one refuses it with its own sentence."""
+        P = self.PARAMS
+        unit_attr = "probe_" + _SPEED_BASE + "_unit"
+        elements = [sch.choice("Unit:", unit_attr, P[unit_attr],
+                               StepperProbe.SPEED_UNITS)]
+        for unit in StepperProbe.SPEED_UNITS:
+            attr = "probe_" + StepperProbe.speed_attr(_SPEED_BASE, unit)
+            elements.append(sch.shown_when(
+                sch.entry(P[attr].label + ":", attr, P[attr],
+                          slider=StepperProbe.speed_slider(unit)),
+                unit_attr, unit))
+            elements.append(sch.shown_when(
+                sch.readonly("other units", "probe_" + _SPEED_BASE + "_alt_text",
+                             secondary=True),
+                unit_attr, unit))
+        return elements
 
     # -- Red Percent's controls, forwarded (T1): the trial sheet is the one
     # page of a trial; Red Percent keeps them, this only reaches them.
@@ -4251,6 +4377,17 @@ class TransferMap(store_choice.StorePrompt, Model):
                 # every refresh slowed the bench's view (CAP-5); the trace
                 # is drawn once, for the review, in the finish step.
                 phases=("live", "marked"),
+            ),
+            # live and marked: the coupled probe's Manual Speed (owner
+            # 2026-10-12), slow for lowering the tip, the trial's speed for
+            # the cut, without leaving the sheet. The operator still moves
+            # the probe; nothing here moves it.
+            sch.section(
+                "Probe speed",
+                sch.readonly("Probe", "speed_probe_text", role="info"),
+                *self._probe_speed_elements(),
+                phases=SPEED_PHASES,
+                layout="group",
             ),
             # finish: review what was recorded, then keep it.
             sch.section(

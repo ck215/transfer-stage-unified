@@ -101,6 +101,12 @@ region step on, and the stop overrides everything.
    own live group sits behind its details on the page; its **Estimators** plot (below) is hosted at
    tier 1 on this page. The live red-percent plots are no longer drawn here; the profile is stored
    and drawn once at review. Lower the tip.
+   In live and marked the **Probe speed** group sets the coupled probe's Manual Speed (the probe
+   RGB Analysis follows, else the first probe in a mode) in the unit chosen on that probe's page,
+   so the slow approach and the cut's speed are set without leaving the sheet (owner 2026-10-12).
+   It is the probe's own setting, written through the probe's own commit path (locked in
+   autonomous, parsed by the probe's Params); the operator still moves the probe. With no probe
+   coupled, or in any other step, a write is refused in a sentence.
 5. **Mark force**, when the force is where you want it. The Mark's time, Z and
    speed are stamped at once; the video's next frame is flagged `marked` in `frames.csv`, and
    the display is kept as `mark_full.png`. The step becomes **marked**. The first shade frame at or
