@@ -124,6 +124,57 @@ def test_media_of_a_frames_folder_lists_its_jpegs_in_order(tm):
         "000000.jpg", "000001.jpg", "000002.jpg"]
 
 
+def test_media_brings_the_flake_search_pictures_from_the_sample_db(tmp_path):
+    """Owner 2026-10-13: validation shows the flake's 10x and 100x from the
+    flake search (the Sample DB's pictures), to find the flake again on the
+    chip; another magnification only when neither is there."""
+    from PIL import Image
+    (tmp_path / "images").mkdir()
+    for name, colour in (("f10", (0, 0, 200)), ("f100", (200, 0, 0)), ("f20", (0, 200, 0))):
+        Image.new("RGB", (80, 60), colour).save(tmp_path / "images" / f"{name}.png")
+    rows = {("S1", "1", "2"): [
+                {"id": 1, "magnification": 10, "captured_at": "2026-10-07", "path": "images/f10.png"},
+                {"id": 2, "magnification": 100, "captured_at": "2026-10-07", "path": "images/f100.png"}],
+            ("S1", "1", "3"): [
+                {"id": 3, "magnification": 20, "captured_at": "2026-10-07", "path": "images/f20.png"}]}
+
+    class Pictures:
+        directory = tmp_path
+
+        def images(self, sample, chip=None, flake=None, any=False):
+            return list(rows.get((sample, chip, flake), []))
+
+        def image_file(self, row):
+            return tmp_path / row["path"]
+
+    class SampleDb:
+        db_path = tmp_path / "s.sqlite"
+
+    model = TransferMap(db_path=tmp_path / "map.sqlite",
+                        sample_store_factory=lambda path: Pictures())
+    model.open()
+    try:
+        model.on_model_added("Sample DB", SampleDb())
+        base = {"started_at": "2026-10-06T10:00:00", "tip_id": "T1", "status": "recorded",
+                "origin": "recorded", "sample_id": "S1", "chip_id": "1", "cut_id": "1"}
+        both = model._store.insert({**base, "flake_id": "2"})
+        other = model._store.insert({**base, "flake_id": "3"})
+        none = model._store.insert({**base, "flake_id": "4"})
+        media = model.run("finalize_media", None, (both,)).value
+        assert media["flake_10x"].startswith(b"\x89PNG")
+        assert media["flake_100x"].startswith(b"\x89PNG")
+        assert media["flake_10x"] != media["flake_100x"]
+        assert media["flake_other"] == b""
+        media = model.run("finalize_media", None, (other,)).value
+        assert media["flake_10x"] == media["flake_100x"] == b""
+        assert media["flake_other"].startswith(b"\x89PNG")
+        assert media["flake_other_label"] == "20x"
+        media = model.run("finalize_media", None, (none,)).value
+        assert media["flake_10x"] == media["flake_100x"] == media["flake_other"] == b""
+    finally:
+        model.close()
+
+
 def test_media_of_a_trial_with_no_video_says_so(tm):
     t = tm.add()
     media = tm.run("finalize_media", None, (t,)).value

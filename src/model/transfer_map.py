@@ -129,6 +129,7 @@ from model.base import Model
 from model.probe import StepperProbe
 from model.sample_store import SampleStore
 from model.sample_store import PicturePreview, StoreRefused as _PreviewRefused
+from model.sample_store import preview_file, thumbnail_png
 from model.trial_telemetry import TrialTelemetry
 from param import Param
 from result import NeedsConfirm, Refused
@@ -3461,6 +3462,7 @@ class TransferMap(store_choice.StorePrompt, Model):
                  "video_path": "", "video_kind": "none", "frame_paths": [],
                  "frames": row.get("video_frames") or 0,
                  "row": dict(row)}
+        media.update(self._flake_search_pictures(row))
         stored = row.get("video_path")
         if stored:
             path = Path(stored)
@@ -3470,6 +3472,58 @@ class TransferMap(store_choice.StorePrompt, Model):
                 media["video_path"], media["video_kind"] = str(path), "frames"
                 media["frame_paths"] = sorted(str(p) for p in path.glob("*.jpg"))
         return media
+
+    #: The flake-search pictures' size in the finalizer: large enough to
+    #: find the flake again on the chip.
+    FLAKE_PICTURE_PX = 1200
+
+    def _flake_search_pictures(self, row):
+        """The trial's flake's own pictures from the Sample DB's store
+        (owner 2026-10-13: the flake search's 10x and 100x, to find the flake
+        again on the chip), the newest of each magnification as PNG bytes:
+        `flake_10x`, `flake_100x`, and `flake_other` (with its
+        `flake_other_label`, e.g. "20x") only when neither is there. b"" for
+        a picture there is none of, or no Sample DB open."""
+        out = {"flake_10x": b"", "flake_100x": b"", "flake_other": b"",
+               "flake_other_label": ""}
+        where = [str(row.get(k) or "").strip() for k in ("sample_id", "chip_id", "flake_id")]
+        if not all(where):
+            return out
+        store = self._samples_store()
+        if store is None:
+            return out
+        try:
+            rows = list(store.images(*where))
+        except Exception as exc:
+            events.debug("Flake Pictures Not Read", repr(exc), source=self.NAME, every=5.0)
+            return out
+        newest = {}
+        for picture in rows:
+            try:
+                mag = int(picture["magnification"])
+            except (TypeError, ValueError):
+                mag = 0
+            key = (str(picture["captured_at"] or ""), picture["id"] or 0)
+            if mag not in newest or key > newest[mag][0]:
+                newest[mag] = (key, picture)
+
+        def png(picture):
+            path = preview_file(store, picture)
+            if path is None:
+                return b""
+            try:
+                return thumbnail_png(path, self.FLAKE_PICTURE_PX)
+            except Exception:
+                return b""
+        for mag in (10, 100):
+            if mag in newest:
+                out[f"flake_{mag}x"] = png(newest[mag][1])
+        others = sorted(m for m in newest if m not in (10, 100))
+        if not (out["flake_10x"] or out["flake_100x"]) and others:
+            mag = others[-1]
+            out["flake_other"] = png(newest[mag][1])
+            out["flake_other_label"] = f"{mag}x" if mag else "unknown magnification"
+        return out
 
     def finalize_save(self, trial_id, fields):
         """Write the estimates typed for one trial: AFM, optical, both, or

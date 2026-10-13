@@ -60,6 +60,10 @@ _COLUMN["f_method"] = "width_optical_method"
 FORM = tuple(_COLUMN)
 STILLS = (("first_frame", "First frame"), ("mark_frame", "Mark frame"),
           ("before_full", "Whole screen"))
+#: The flake search's pictures from the Sample DB (owner 2026-10-13), to find
+#: the flake again on the chip: `finalize_media`'s keys and their labels.
+FLAKE_PICTURES = (("flake_10x", "Flake search 10x"), ("flake_100x", "Flake search 100x"),
+                  ("flake_other", "Flake search, other magnification"))
 
 
 def _text(value):
@@ -379,6 +383,33 @@ class Finalizer(Model):
         return self._still("before_full")
 
     @property
+    def flake_10x_png(self):
+        return self._still("flake_10x")
+
+    @property
+    def flake_100x_png(self):
+        return self._still("flake_100x")
+
+    @property
+    def flake_other_png(self):
+        return self._still("flake_other")
+
+    @property
+    def flake_search_text(self):
+        """What the Sample DB holds of this trial's flake."""
+        media = self._media
+        if media is None:
+            return ""
+        found = [label for key, label in (("flake_10x", "10x"), ("flake_100x", "100x"))
+                 if media.get(key)]
+        if found:
+            return "From the Sample DB: " + " and ".join(found) + "."
+        if media.get("flake_other"):
+            return f"From the Sample DB: only a {media['flake_other_label']} picture."
+        return ("No flake search picture of this flake in the Sample DB (is the "
+                "Sample DB open?).")
+
+    @property
     def outcome_key(self):
         mapping = self._map
         return "" if mapping is None else f"{self._revision}:{mapping.figure_type}"
@@ -450,6 +481,10 @@ class Finalizer(Model):
             ),
             sch.section(
                 "Pictures",
+                sch.readonly("Flake search", "flake_search_text"),
+                *(sch.image(label, f"{name}_png", model_attr="still_key",
+                            empty="No picture at this magnification.")
+                  for name, label in FLAKE_PICTURES),
                 *(sch.image(label, f"{name}_png", model_attr="still_key",
                             empty="No picture was taken.")
                   for name, label in STILLS),

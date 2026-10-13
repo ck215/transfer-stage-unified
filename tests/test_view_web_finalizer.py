@@ -138,7 +138,8 @@ def test_the_schema_is_a_form_with_one_save_that_declares_every_box(station):
     entries = [e["model_attr"] for e in elements if e["type"] == "entry"]
     assert sorted(save["inputs"]) == sorted(entries)
     images = [e["data_command"] for e in elements if e["type"] == "image"]
-    assert images == ["first_frame_png", "mark_frame_png", "before_full_png",
+    assert images == ["flake_10x_png", "flake_100x_png", "flake_other_png",
+                      "first_frame_png", "mark_frame_png", "before_full_png",
                       "outcome_figure"]
 
 
