@@ -96,3 +96,18 @@ def test_queue_entries_carry_readable_labels_for_what_is_missing():
     entry = fin.queue([row(1, width_um=1.0)])[0]
     assert entry["missing_labels"][0] == "Sample thickness"
     assert len(entry["missing_labels"]) == len(entry["missing"]) == 4
+
+
+def test_the_experiment_filter_keeps_only_the_7_degree_speed_by_force_series():
+    """Temporary (owner, Ian, 2026-10-13): the finalizer walks only the trials
+    of the 7° speed x force map; an import, another tilt or an off-plan speed
+    is left out."""
+    rows = [row(1, tilt_deg=7.0, speed_steps_s=100.0, origin="recorded"),
+            row(2, tilt_deg=7.0, speed_steps_s=300.0, origin="recorded"),
+            row(3, tilt_deg=6.0, speed_steps_s=250.0, origin="recorded"),
+            row(4, tilt_deg=7.0, speed_steps_s=20.0, origin="recorded"),
+            row(5, tilt_deg=7.0, speed_steps_s=200.0, origin="imported"),
+            row(6, tilt_deg=7.0, speed_steps_s=400.0, origin="recorded")]
+    assert [t["id"] for t in fin.queue(rows, experiment=fin.EXPERIMENT)] == [1, 2, 6]
+    assert [t["id"] for t in fin.queue(rows)] == [1, 2, 3, 4, 5, 6]     # no filter: as before
+    assert fin.EXPERIMENT["label"] == "Ian, 10/13/26"

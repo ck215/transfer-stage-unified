@@ -23,8 +23,8 @@ def station(tmp_path):
     ids = []
     for sample, flake in (("S1", "1"), ("S1", "2"), ("S2", "1")):
         ids.append(tm._store.insert({
-            "started_at": "2026-10-06T10:00:00", "tip_id": "T", "tilt_deg": 6.0,
-            "speed_steps_s": 250.0, "status": "recorded", "origin": "recorded",
+            "started_at": "2026-10-06T10:00:00", "tip_id": "T", "tilt_deg": 7.0,
+            "speed_steps_s": 200.0, "status": "recorded", "origin": "recorded",
             "sample_id": sample, "chip_id": "1", "flake_id": flake, "cut_id": "1"}))
     fin = Finalizer(sim=True)
     controller.add("Transfer Map", tm)
@@ -46,6 +46,19 @@ def shown(fin):
 def test_it_opens_on_the_first_trial_of_the_first_sample(station):
     assert shown(station) == station.ids[0]
     assert "Sample S1" in station.title_text and "1 of 2" in station.title_text
+
+
+def test_it_walks_only_the_experiment_trials_and_says_whose(station):
+    """Temporary (owner, Ian, 2026-10-13): a trial off the 7° series is not
+    walked, and the form's heading names the experiment."""
+    off = station.tm._store.insert({
+        "started_at": "2026-10-06T10:00:00", "tip_id": "T", "tilt_deg": 6.0,
+        "speed_steps_s": 250.0, "status": "recorded", "origin": "recorded",
+        "sample_id": "S0", "chip_id": "1", "flake_id": "1", "cut_id": "1"})
+    station.reload()
+    assert off not in [t["id"] for t in station._queue]
+    assert [t["id"] for t in station._queue] == station.ids
+    assert Finalizer.DISCLOSURE == "Finalize data (Ian, 10/13/26)"
 
 
 def test_it_is_hosted_on_the_transfer_map_and_refuses_without_one():

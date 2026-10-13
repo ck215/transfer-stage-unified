@@ -3425,10 +3425,12 @@ class TransferMap(store_choice.StorePrompt, Model):
         """The word a view with a finalizer window acts on."""
         return "open:finalizer"
 
-    def finalize_queue(self, only_missing=False):
-        """The trials to walk, in sample order (`finalize.queue`)."""
+    def finalize_queue(self, only_missing=False, experiment=None):
+        """The trials to walk, in sample order (`finalize.queue`); with
+        `experiment`, only that experiment's (`finalize.EXPERIMENT`)."""
         return finalize.queue(self._store.trials(),
-                              only_missing=bool(only_missing))
+                              only_missing=bool(only_missing),
+                              experiment=experiment)
 
     def finalize_media(self, trial_id):
         """What the window shows beside the form: the stills (PNG bytes, b""

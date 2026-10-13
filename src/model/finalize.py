@@ -68,17 +68,42 @@ def _order(row):
             _number_key(row.get("flake_id")), row["id"])
 
 
-def queue(rows, *, include_all=False, only_missing=False):
+#: Temporary (owner, Ian, 2026-10-13): the one experiment the finalizer
+#: walks for now, the 7° speed x force series of the transfer map (speeds
+#: 100/200/300 steps/s, plus the 400 supplemental): recorded trials only, so
+#: imports, other tilts and off-plan speeds stay out. `Finalizer.EXPERIMENT`
+#: passes it; None (every other caller) walks every valid trial, as before.
+EXPERIMENT = {"label": "Ian, 10/13/26", "origin": "recorded", "tilt_deg": 7.0,
+              "speeds": (100.0, 200.0, 300.0, 400.0)}
+
+
+def in_experiment(row, experiment):
+    """The row belongs to `experiment` (always, for None)."""
+    if experiment is None:
+        return True
+    try:
+        tilt = float(row.get("tilt_deg"))
+        speed = float(row.get("speed_steps_s"))
+    except (TypeError, ValueError):
+        return False
+    return ((row.get("origin") or "recorded") == experiment["origin"]
+            and abs(tilt - experiment["tilt_deg"]) < 1e-6
+            and any(abs(speed - s) < 1e-6 for s in experiment["speeds"]))
+
+
+def queue(rows, *, include_all=False, only_missing=False, experiment=None):
     """The trials to walk, one sample at a time.
 
     Ordered by sample, chip, flake, then trial number. Invalid and aborted
     trials are left out unless `include_all`; `only_missing` keeps just the
-    trials with an unfilled property. Each entry is the row's identity plus
+    trials with an unfilled property; `experiment` (see `EXPERIMENT`) keeps
+    just that experiment's trials. Each entry is the row's identity plus
     `missing` (columns), `missing_labels`, `sample_position` (1-based place among the sample's listed
     trials) and `sample_count`.
     """
     chosen = [r for r in rows if include_all
               or (not r.get("invalid") and r.get("status") != "aborted")]
+    chosen = [r for r in chosen if in_experiment(r, experiment)]
     if only_missing:
         chosen = [r for r in chosen if missing(r)]
     chosen.sort(key=_order)

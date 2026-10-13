@@ -28,6 +28,7 @@ from events import events
 from param import Param
 from result import Refused
 
+from model import finalize
 from model.base import Model
 
 #: form attribute -> trial column, in the order the form draws them.
@@ -64,8 +65,13 @@ class Finalizer(Model):
     NEEDS_PORT = False
     NEEDS_GAMEPAD = False
     STORE = "Transfer Map"
-    #: The one disclosure the whole form sits behind on the map's page.
-    DISCLOSURE = "Finalize data"
+    #: Temporary (owner, Ian, 2026-10-13): walk only this experiment's trials
+    #: (`finalize.EXPERIMENT`, the 7° speed x force series); None walks all.
+    EXPERIMENT = finalize.EXPERIMENT
+    #: The one disclosure the whole form sits behind on the map's page, named
+    #: for the experiment while one is set.
+    DISCLOSURE = (f"Finalize data ({EXPERIMENT['label']})" if EXPERIMENT
+                  else "Finalize data")
 
     PARAMS = {p.name: p for p in (
         *(Param(attr, "text", default="", label=label)
@@ -175,7 +181,8 @@ class Finalizer(Model):
             return
         shown = self._queue[self._index]["id"] if 0 <= self._index < len(self._queue) else None
         place = max(self._index, 0)
-        queue = self._map.finalize_queue(self._only_missing)
+        queue = self._map.finalize_queue(self._only_missing,
+                                         experiment=self.EXPERIMENT)
         self._queue = queue
         ids = [t["id"] for t in queue]
         if keep and shown in ids:
@@ -402,7 +409,7 @@ class Finalizer(Model):
                 grid.append(sch.entry(f"{label} uncertainty", sigma, P[sigma]))
         return sch.schema(
             sch.section(
-                "Finalize data",
+                self.DISCLOSURE,
                 sch.readonly("Trial", "title_text", role="info"),
                 sch.readonly("Summary", "summary_text"),
                 sch.checkbox("Only trials with something unfilled", "only_missing",
