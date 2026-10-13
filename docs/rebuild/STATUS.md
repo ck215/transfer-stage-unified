@@ -112,6 +112,15 @@ wire is pinned by `tests/golden/`.
   is neither corner A nor the stage origin); the Sample Map models it
   (`rb-rotator-frame`, 2026-10-05). The Transfer Map still calls the angle
   `tilt_deg`; renaming it is the owner's call.
+- 2026-10-12: **the force class is the probe's Z travel past the tip shade's
+  peak**, not the shade's position on it (`model/tip_shade.py`): Low under 10
+  steps, Medium under 17, High under 21, **Break risk** from 21 (drawn in the
+  danger role); the shade position is the fallback without Z and is still
+  stored. The baseline had moved (~145 -> ~120, same tips); trial 46 (Tip7)
+  broke at 23 steps past the peak reading 0.57 "Medium". Thresholds are bench
+  values, the owner's. Store v9 (`force_past_peak_steps`, `shade_peak_z`);
+  `dev/rebuild_force.py` recomputes stored trials (dry run by default). See
+  `RECORDING_A_TRIAL.md`, "The force".
 - SUPERSEDED 2026-10-07: "Web = candidate primary frontend; Tk/Qt persist as
   backups" (and the DEFAULT_VIEW qt ruling of 2026-09-28, and D-9 "Tk is the
   default on every OS" of 2026-09-25). Web is the ONLY frontend; Tk and Qt are
@@ -315,7 +324,8 @@ first installed release comes after v1.0.0.
 
 **Transfer Map store.** v8, the lab's, adopted; "Transfer Map part 2" is DONE by the lab
 merge, and the planned v9 (with a `.v8.bak` backup) is no longer needed. The Sample DB
-store is v4.
+store is v4. AMENDED 2026-10-12: the store is v9, a different v9 (by presence, no
+backup): `force_past_peak_steps` and `shade_peak_z`, the Z-travel force (owner rulings).
 
 **Gates**: fast **4194**, golden **77**, a launch; known flakes are listed in the
 `verify` skill (the first-trial tutorial walk is an xfail, `test_o15` under load, the Sample
@@ -616,7 +626,7 @@ or move `flashed.json` aside and start the Launcher (it flashes every board).
 
 ### Tip-shade force, held features, the finalizer (2026-10-06)
 
-- **The force is read from the tip's shade, not the red percent** (owner ruling). Median green of the right half of the recorded tip region; contact is the shade rising off its baseline, and the force is where the shade stands on its peak at the Mark (`model/tip_shade.py`, `docs/rebuild/RECORDING_A_TRIAL.md`). The sheet's **Force** field reads No contact, Contact, Low, Medium or High live; schema v8 stores `force_position`, `force_class`, `contact_lowered`, `shade_*`; the map's default definition is `shade_position`; the video index gains a `shade` column. Recording is unchanged (the whole tip region). The red-percent profile only logs when the rounded value changes by 0.1, so its force indices (`at_operator_mark` and the rest) are not to be trusted. `rebuild_force` recomputes the columns from footage; run on the bench database on 2026-10-06 for the four valid trials. The thresholds (contact line, 0.10, the thirds) are bench values, the owner's.
+- **The force is read from the tip's shade, not the red percent** (owner ruling). Median green of the right half of the recorded tip region; contact is the shade rising off its baseline, and the force is where the shade stands on its peak at the Mark (`model/tip_shade.py`, `docs/rebuild/RECORDING_A_TRIAL.md`). The sheet's **Force** field reads No contact, Contact, Low, Medium or High live; schema v8 stores `force_position`, `force_class`, `contact_lowered`, `shade_*`; the map's default definition is `shade_position`; the video index gains a `shade` column. Recording is unchanged (the whole tip region). The red-percent profile only logs when the rounded value changes by 0.1, so its force indices (`at_operator_mark` and the rest) are not to be trusted. `rebuild_force` recomputes the columns from footage; run on the bench database on 2026-10-06 for the four valid trials. The thresholds (contact line, 0.10, the thirds) are bench values, the owner's. AMENDED 2026-10-12 (owner): the class is the probe's Z travel past the shade's peak (10 / 17 / 21 steps, Break risk from 21); the position is the fallback without Z; store v9.
 - **The map has two axes, speed and force** (owner, 2026-10-06; tilt is fixed at 7° and recorded but no longer plotted). The figure dropdown is Map (speed × force, coloured by width; `plot_data` kind `map`, `map_limits`), Heatmap (the Gaussian process over speed × force; replaces the tilt × speed slice) , Compare, Profile. The Force band dropdown is gone; `width_gradient` reads um per step/s and um per unit force. Trials with no tilt are plotted. Bench database, 2026-10-06: trials 7 and 8 (400 steps/s, off the 100/200/300 plan) unflagged as supplemental points and their force rebuilt from footage (Medium, High); trials 6, 2 and 35 stay invalid (6 troublesome, 2 and 35 have no force).
 - **Sample Map and user profiles were off by default** (owner, 2026-10-06; SUPERSEDED 2026-10-07: the Sample Map is on again, `STATION_SAMPLE_MAP=0` turns it off, and accounts are on, `STATION_PROFILES=0` hides them; `controller/setup.py`). The code is also on branch `feature/sample-map-profiles`. History was not rewritten: every commit is on `origin/mvc-refactor`, and some are another developer's.
 - **Data finalizer** (Qt only, temporary; frozen with the Qt view, a Web finalizer is open): the Transfer Map's "Finalize data..." button opens a window to walk the samples with video and stills and enter AFM and optical estimates (`model/finalize.py`, `views/qt_finalizer.py`).

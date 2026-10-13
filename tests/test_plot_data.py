@@ -618,3 +618,12 @@ def test_the_map_and_curves_render_with_and_without_classes():
                 kind, rows, "shadow_vs_peak", width_source="AFM, else optical",
                 size=(4.0, 3.0), dpi=50)
             assert png[:8] == b"\x89PNG\r\n\x1a\n", kind
+
+
+def test_a_break_risk_trial_is_drawn_in_the_high_band():
+    """Owner 2026-10-12: "Break risk" (21+ steps past the shade's peak) is
+    beyond High; the map's axis keeps its three bands, so it is drawn as
+    High, never Unclassed."""
+    assert plot_data.force_class({"force_class": "Break risk"}) == "High"
+    assert plot_data.force_class({"force_class": " break RISK "}) == "High"
+    assert plot_data.force_class({"force_class": "Contact"}) == plot_data.UNCLASSED

@@ -34,13 +34,15 @@ cloud drive (`~/QMDL_Drive`, or any FUSE or network mount) is never opened live 
 stability of db ops"): the station works on a local working copy and syncs it back to
 the drive; see "Backups" below. Pictures sit beside the
 file in `<folder>/<database name>/<trial id>/`, exports in `<folder>/exports/`.
-The store is at **version 8**, the lab's (adopted by the 2026-10-07 merge of the
+The store is at **version 9**: version 8 is the lab's (adopted by the 2026-10-07 merge of the
 bench's stage push, tag `bench-2026-10-07-stage`): trials carry `chip_id`, `flake_id`,
 `cut_id` and `invalid` (the lab's "vacuum was off, data is invalid" flag: the trial
 stays on record and in the export, off the map), and six tip-shade columns
 (`force_position`, `force_class`, `contact_lowered`, `shade_baseline`, `shade_peak`,
-`shade_mark`). An older file is upgraded the first time the station opens it, by
-column presence (a column the file has is skipped, so a cut-short upgrade finishes; no backup is written, so copy a store before first opening it with a new version). A v9 is no longer planned. Plan rows: Tier S
+`shade_mark`). **Version 9** (owner 2026-10-12) adds two: `force_past_peak_steps`
+(the steps the probe was lowered past the shade's peak at the Mark, what `force_class`
+is read from) and `shade_peak_z` (the probe's Z at that peak); see "The force". An older file is upgraded the first time the station opens it, by
+column presence (a column the file has is skipped, so a cut-short upgrade finishes; no backup is written, so copy a store before first opening it with a new version). Plan rows: Tier S
 in `BUGFIX_PLAN.md`. The Sample DB has its own store (v4, see `docs/rebuild/STATUS.md`).
 
 ## The procedure, for the owner
@@ -293,15 +295,29 @@ manifest still lists it is not copied again until then.
 The map's force is `shade_position` (owner 2026-10-06, confirmed primary 2026-10-07). The
 red percent counts pixels with R over 150, G under 100 and B under 100. The tip is orange (about 215, 153, 32), so only its darkest edge pixels pass, a few hundred of tens of thousands, and the count is dominated by one-frame flashes. The profile also logs a row only when the rounded red changes by 0.1 or more, so steady stretches have no rows. Neither says anything about force.
 
-What does: the **median green of the right half** of the recorded tip region (`model/tip_shade.py`). After the tip touches the sample the shade rises, peaks about 19 steps later (width near 10 steps) and falls back; where it stands on that peak at the Mark is the force. For each frame (taken at 15 a second on the picture thread, from the same frames the video records):
+What does: the **median green of the right half** of the recorded tip region (`model/tip_shade.py`). After the tip touches the sample the shade rises, peaks about 19 steps later (width near 10 steps) and falls back; how far the probe was lowered past that peak at the Mark is the force (owner 2026-10-12; before, where the shade stood on the peak). For each frame (taken at 15 a second on the picture thread, from the same frames the video records):
 
 - **baseline**: the median shade 0.3 to 1.3 s after Arm; its noise is the robust scatter over the same span.
 - **smoothed shade**: a median over the last second of frames.
 - **contact**: the smoothed shade stays above baseline by max(5 noise levels, 5% of baseline) for 0.5 s. `contact_lowered` is the steps lowered, from the first Z seen, where that rise began.
 - **position**: (highest smoothed shade since contact - smoothed shade now) / (highest - baseline); 0 at the peak, 1 back at baseline, held at 1.2.
-- **status** (the live row's **Force estimate**): No contact; Contact below 0.10; Low below 1/3; Medium below 2/3; High above. The 0.10, the thirds and the contact line are the owner's to tune (`tip_shade` constants).
+- **peak Z** (`shade_peak_z`): the probe's Z on the frame where the smoothed shade reached its highest since contact.
+- **steps past the peak** (`past_peak`, stored as `force_past_peak_steps`): peak Z - Z now. Lowering is Z decreasing on every trial, whether the absolute Z is positive or negative; raising the probe back above the peak reads below zero.
+- **status** (the live row's **Force estimate**), **from the steps past the peak whenever Z is known** (owner 2026-10-12): No contact; Contact below 2 (the peak not yet passed: while the shade still climbs the peak's Z follows the probe down, and 2 forgives a step of jitter); Low below 10; Medium below 17; High below 21; **Break risk** from 21. The readout names the steps ("Medium force · 12 steps past peak") and "Break risk · 23 steps past peak" is drawn in the danger role (a signal mark beside the words, `force_role`). These are bench values, the owner's to tune (`tip_shade.PAST_PEAK_*`).
+- **status without Z** (a probe that is not wired, a trial rebuilt from a record with no Z): the shade position as before: Contact below 0.10; Low below 1/3; Medium below 2/3; High above ("Medium force · 0.43"). The 0.10, the thirds and the contact line are the owner's to tune (`tip_shade` constants). The position is computed and stored either way, for history.
 
-The first frame at or after the Mark fixes the trial's columns: `force_position`, `force_class`, `contact_lowered`, `shade_baseline`, `shade_peak`, `shade_mark`. No contact before the Mark, or no video, leaves them empty. The video index gains a `shade` column. Recording is unchanged (the whole tip region is selected); `rebuild_force` recomputes the columns of recorded trials from their footage, or from the index's shade column, with the same tracker (`model/shade_offline.py`; `model/finalize.py` walks the samples for AFM and optical estimates, a Qt-only finalizer, frozen with the Qt view; a Web finalizer is open).
+**Why Z (owner ruling 2026-10-12).** That night the shade's baseline dropped from about 145 to about 120 on the same tips, which stretched the shade scale: trial 46's tip (Tip7) broke reading 0.57, "Medium". Replaying the tracker over the saved shade and Z: the steps from contact to the smoothed shade's peak were 17 to 26 on every clean trial (34: 20, 37: 21, 40: 17, 44: 25, 45: 22, 46: 21, 49: 26), and the steps past the peak at the Mark separated the outcomes: 44: 7 and 45: 8 (Low), 37: 14 and 40: 14 (Medium), 34: 20 (High, fine), 49: 23 (survived, Tip5), 46: **broke at 23 past the peak** (about 44 past contact). Trials 42 and 43 read 48 and 96 past the peak with an anomalous 80 to 96 steps from contact to the peak; they are outliers, unexplained, and the thresholds are not fitted to them. The shade position correlated poorly that night; the Z travel did not. The map keeps its three bands: a Break-risk trial is drawn as High (`plot_data.FORCE_CLASS_ALIASES`).
+
+The first frame at or after the Mark fixes the trial's columns: `force_position`, `force_class`, `contact_lowered`, `shade_baseline`, `shade_peak`, `shade_mark`, `force_past_peak_steps`, `shade_peak_z`. No contact before the Mark, or no video, leaves them empty (and the last two are empty without Z). The video index gains a `shade` column. Recording is unchanged (the whole tip region is selected); `rebuild_force` recomputes the columns of recorded trials from their footage, or from the shade they stored per frame (`telemetry.csv`'s `transfer_map.shade`, else the profile's), with the same tracker and the probe's Z (the region video's index `z` column, else `telemetry.csv`'s `stepper_probe.z`, else the profile's Z) (`model/shade_offline.py`; `model/finalize.py` walks the samples for AFM and optical estimates, a Qt-only finalizer, frozen with the Qt view; a Web finalizer is open).
+
+**Rebuilding a stored trial from a script** (`dev/rebuild_force.py`, `TransferMap.rebuild_force` with `dry_run`): a dry run by default, printing each trial's stored class and the rebuilt one and writing nothing (it does not even upgrade a v8 file):
+
+```
+.venv/bin/python dev/rebuild_force.py ~/transfer-stage-runs/stores/<email>/transfer_map.sqlite --trial 46
+.venv/bin/python dev/rebuild_force.py ~/transfer-stage-runs/stores/<email>/transfer_map.sqlite --trial 46 --apply
+```
+
+`--trial` repeats; with none, every valid recorded trial. `--apply` first copies the store to `<store>.pre-rebuild-force-<stamp>` (SQLite's backup API), then writes. Run it from a checkout whose `src/` has this change (the script puts its own `src/` first on the path).
 
 ### The red-trace definitions, a secondary analysis
 

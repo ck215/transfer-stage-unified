@@ -165,6 +165,15 @@ How this file is kept:
 
 ### Changed
 
+- **The force estimate reads the probe's travel past the shade's peak.**
+  The Transfer Map's Force estimate now classifies by how many steps the
+  probe was lowered after the tip's shade peaked: Low under 10, Medium
+  under 17, High under 21, and **Break risk**, flagged with the danger mark, from 21 (the one tip
+  that broke, trial 46, was 23 steps past the peak). It names the steps:
+  "Medium force · 12 steps past peak". The shade's own scale moved from
+  night to night; the travel did not. Without the probe's Z it reads the
+  shade as before. Each trial also stores the steps past the peak, and the
+  store becomes version 9 the first time it is opened.
 - **Tutorials are marked Beta.** They are incomplete: the Tutorials panel and
   every step's card say Beta, and the panel says a step may not match the
   station as it is now; where a tutorial and the lab's procedure differ, the

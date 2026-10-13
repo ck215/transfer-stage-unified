@@ -224,6 +224,12 @@ in at least one step, and a model without a procedure hides nothing.
   (a renderer rule like `phased`; `Panel._allows` is unchanged, so a hidden
   entry still commits). `readonly(..., dashboard=True)`: a secondary line the
   Dashboard tile keeps.
+- `readonly(..., role_attr="<attr>")` (owner, 2026-10-12): a live role. The
+  model publishes `state.values[<attr>]` (its `state` adds it beside the
+  schema's values) naming one of `schema.ROLES`; the Web client swaps the
+  readout's role class while it says so, and anything else falls back to the
+  element's `role`. The Transfer Map's Force estimate turns `danger` at
+  "Break risk" (`TransferMap.force_role`).
 - **Physical units over counts** (Stepper Probe, owner ruling 2026-10-09). The
   editable entries are µm and µm/s: `x/y/z_dist_um`, `x/y/z_step_um`,
   `full_speed_um_s` and `man_full_speed_um_s`.
