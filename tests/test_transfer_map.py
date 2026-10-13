@@ -4348,6 +4348,10 @@ def test_the_force_estimate_reads_the_tip_shade(scripted):
 def test_the_force_estimate_walks_the_shade_and_finish_stores_it(scripted,
                                                                  private_db):
     model, red, clock = scripted
+    # Owner 2026-10-12: with the probe's Z the class is the Z travel past
+    # the peak (test_transfer_map_shade.py); this walk is the shade
+    # fallback, so the probe reports no position (the fake's Z never moves).
+    model._probe()[1].position = None
     trial = _arm(model)
     s = _frames_at(model, [150.0] * 30, 0.0)        # the baseline
     assert model.force_estimate == "No contact"
