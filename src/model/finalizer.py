@@ -43,7 +43,9 @@ AFM = (("f_width_um", "f_width_sigma_um", "AFM channel width", "um"),
        ("f_channel_height_nm", "f_channel_height_sigma_nm", "AFM channel height", "nm"),
        ("f_trench_depth_nm", "f_trench_depth_sigma_nm", "AFM trench depth", "nm"))
 OPTICAL = (("f_width_optical_um", "f_width_optical_sigma_um", "Optical channel width", "um"),)
-METHODS = ("estimate", "reticle", "capture_px", "vendor_tool")
+#: The optical width's one method (owner 2026-10-13): read off the capture,
+#: in pixels. AFM widths have their own boxes.
+METHODS = ("capture_px",)
 #: (min attr, max attr, label, unit): a channel that varies along the cut
 #: (owner 2026-10-13), drawn under its value's row.
 RANGES = (("f_width_min_um", "f_width_max_um", "Channel width (AFM)", "um"),
@@ -180,6 +182,9 @@ class Finalizer(Model):
                     else str(getattr(self, attr, "") or "")).strip()
             if text != self._loaded.get(attr, ""):
                 out[column] = text
+        # An optical width typed with no method is read off the capture.
+        if out.get("width_optical_um") and not (self._method or "").strip():
+            out["width_optical_method"] = METHODS[0]
         return out
 
     # -- the walk ------------------------------------------------------------

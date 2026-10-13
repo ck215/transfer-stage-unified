@@ -97,7 +97,7 @@ def test_save_and_next_writes_afm_and_optical_then_moves_on(station):
     row = station.tm._store.trial(station.ids[0])
     assert row["width_um"] == 1.8 and row["width_optical_um"] == 2.0
     assert row["status"] == "measured"
-    assert row["width_optical_method"] == "estimate"      # typed by eye
+    assert row["width_optical_method"] == "capture_px"    # the one method
     assert shown(station) == station.ids[1]
 
 
@@ -130,9 +130,9 @@ def test_the_unfilled_filter_can_be_turned_off(station):
 
 def test_an_estimate_method_is_checked_and_saved(station):
     assert station.run("set_method", None, ("by guess",)).is_refused
-    assert station.run("set_method", None, ("reticle",)).is_ok
+    assert station.run("set_method", None, ("capture_px",)).is_ok
     assert station.run("save", {"f_width_optical_um": "2"}).is_ok
-    assert station.tm._store.trial(station.ids[0])["width_optical_method"] == "reticle"
+    assert station.tm._store.trial(station.ids[0])["width_optical_method"] == "capture_px"
 
 
 def test_the_form_loads_the_trials_own_values(station):
