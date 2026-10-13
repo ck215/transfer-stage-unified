@@ -24,7 +24,7 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Autonomous speed"},
-      "say": "Autonomous speed is how fast a Step moves, typed in µm/s up to the board's ceiling; the steps/s figure beneath it is what is sent. It is locked while the probe is in a mode.",
+      "say": "Autonomous speed is how fast a Step moves, in the unit its Unit switch picks (% of the board's ceiling, steps/s or µm/s); the line beneath it gives the other units, and steps/s is what is sent. It is locked while the probe is in a mode.",
       "wait": null
     },
     {
@@ -66,7 +66,7 @@
     {
       "page": "Stepper Probe",
       "anchor": {"text": "Manual speed"},
-      "say": "Manual speed is the gamepad's jog speed, in µm/s like the autonomous speed. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
+      "say": "Manual speed is the gamepad's jog speed, with its own Unit switch, like the autonomous speed. It stays live in manual mode, so you can change it while jogging; it is locked during an autonomous run.",
       "wait": null
     },
     {

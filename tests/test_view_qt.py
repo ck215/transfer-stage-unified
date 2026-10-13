@@ -18,11 +18,15 @@ from views import qt, theme
 # The build contract
 # ---------------------------------------------------------------------------
 
+#: Drawn by the Web view only (2026-10-12); Qt is frozen.
+WEB_ONLY = frozenset({"choice"})
+
+
 def test_every_schema_element_type_has_a_renderer():
     """`PanelView.__init__` refuses to construct when one is missing, which is
     how feature parity is enforced rather than hoped for. Checking it here as
     well means a deleted `_make_` is a failing test, not a failing launch."""
-    missing = [name for name in sorted(sch.ELEMENT_TYPES)
+    missing = [name for name in sorted(sch.ELEMENT_TYPES - WEB_ONLY)
                if not callable(getattr(qt.QtPanelView, f"_make_{name}", None))]
     assert not missing, f"QtPanelView cannot render: {missing}"
 
@@ -32,7 +36,7 @@ def test_no_renderer_exists_for_a_type_the_schema_does_not_declare():
     has - the RC-7 drift schema v2 exists to stop."""
     made = {name[len("_make_"):] for name in dir(qt.QtPanelView)
             if name.startswith("_make_") and name != "_make_section"}
-    assert made == set(sch.ELEMENT_TYPES)
+    assert made == set(sch.ELEMENT_TYPES - WEB_ONLY)
 
 
 def test_both_section_layouts_offer_the_builders_one_api():

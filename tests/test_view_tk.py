@@ -28,6 +28,15 @@ from result import Refused, NeedsConfirm, Result
 from views import theme
 from views import tk as tkmod
 
+#: Element types only the Web view draws (2026-10-12: the Web view is the
+#: only frontend; Tk and Qt are frozen). The frozen Tk view gets a stand-in
+#: renderer so `PanelView.__init__` (which wants every type) still builds it.
+WEB_ONLY = frozenset({"choice"})
+for _kind in WEB_ONLY:
+    if not hasattr(tkmod.TkPanelView, f"_make_{_kind}"):
+        setattr(tkmod.TkPanelView, f"_make_{_kind}",
+                lambda self, container, element: None)
+
 pytestmark = pytest.mark.tk
 
 
@@ -869,7 +878,7 @@ def last_call(controller, command):
 def test_every_element_type_has_a_renderer():
     """`PanelView.__init__` refuses to build a view missing one; this says
     which one, instead of failing at the first schema that uses it."""
-    missing = [t for t in sorted(sch.ELEMENT_TYPES)
+    missing = [t for t in sorted(sch.ELEMENT_TYPES - WEB_ONLY)
                if not callable(getattr(tkmod.TkPanelView, f"_make_{t}", None))]
     assert not missing
 
@@ -885,7 +894,7 @@ def test_a_view_missing_a_renderer_cannot_be_built(controller):
 
 def test_every_element_type_builds(view, panel):
     kinds = {element["type"] for element in view._elements}
-    assert kinds == sch.ELEMENT_TYPES - {"internal"} | {"internal"}
+    assert kinds == sch.ELEMENT_TYPES - WEB_ONLY - {"internal"} | {"internal"}
     for element in view._elements:
         if element["type"] == "internal":
             assert id(element) not in view._widgets, "internal renders nothing"

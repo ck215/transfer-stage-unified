@@ -94,6 +94,17 @@
   --highlight: color-mix(in srgb, var(--cap) 85%, transparent);
 }
 
+/* The bench scale (Setup > Display, UX audit 2026-10-07 proposal 6): the
+   base size one step up the theme's type scale (theme.size(1), served as
+   --font-size-bench), which every rem follows, and the sheet's keys at no
+   less than 44 px, for gloves and for reading across the bench. Set from
+   Setup's `bench_scale` by the client (Dashboard.applyBenchScale). The launch
+   flag --font-size sets the base this steps up from. */
+html[data-bench] {
+  --font-size: var(--font-size-bench);
+  --hit-panel: max(44px, 2.25rem);
+}
+
 * { box-sizing: border-box; }
 
 html {
@@ -156,6 +167,8 @@ button, select, input[type="range"] {
    whatever display a class gives. Hidden is not disabled: a disabled
    control is greyed where it stands. */
 .is-phase-off { display: none !important; }
+/* shown_when (2026-10-12): the entry of a unit that is not the chosen one. */
+.is-unit-off { display: none !important; }
 
 /* A readout that repeats the procedure strip's sentence (UX audit
    2026-10-08 #15): said once, in the strip. */
@@ -1766,6 +1779,9 @@ span.value.is-word,
 .row.secondary > .value { font-size: var(--statistic-size); font-weight: 500; color: var(--muted); line-height: 1.1; }
 .row.secondary > .unit { font-size: var(--caption-size); }
 .sheet.is-overview .row.secondary { display: none; }
+/* ...except the lines that ask to stay (schema `dashboard`: the other units
+   of a speed). */
+.sheet.is-overview .row.secondary.on-dashboard { display: grid; }
 /* A readout with a lead stands in for a reading in its step: the tile
    keeps it. */
 .sheet.is-overview .row.secondary.has-lead { display: grid; }
@@ -3515,6 +3531,40 @@ label.row-title[for] { cursor: pointer; }
 .feed { overflow-wrap: anywhere; }
 .row.stat > .value.is-word { min-width: 0; max-width: 100%; }
 
+/* -- a choice: a short list of words, all in view (a speed's unit) ------------
+   A segmented key: the chosen segment is down like a latched key, the
+   others are caps; one outline, the existing key tokens, no new colour. */
+.row.choice-row { flex-direction: row; align-items: center; gap: var(--space-3); }
+.row.choice-row > .label { font-size: var(--t-sm); color: var(--muted); }
+.choice { display: inline-flex; border-radius: var(--radius-key); box-shadow: var(--rim); }
+.choice-seg {
+  min-height: var(--hit-panel);
+  padding: 0 var(--space-3);
+  border: 0 solid transparent;
+  border-bottom: var(--lip-key) solid var(--key-lip);
+  background: var(--cap);
+  background-clip: padding-box;
+  box-shadow: var(--key-top);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  text-shadow: var(--engrave);
+  cursor: pointer;
+}
+.choice-seg:first-child { border-top-left-radius: var(--radius-key); border-bottom-left-radius: var(--radius-key); }
+.choice-seg:last-child { border-top-right-radius: var(--radius-key); border-bottom-right-radius: var(--radius-key); }
+.choice-seg:hover:not(:disabled) { color: var(--text); }
+.choice-seg[aria-checked="true"] {
+  border-top-width: var(--key-drop);
+  border-bottom-width: var(--lip-pressed);
+  box-shadow: var(--key-down);
+  color: var(--text);
+}
+.choice-seg:disabled { cursor: default; }
+
+
 /* -- tutorial ------------------------------------------------------------ */
 /* The coach: a card beside the control a step is about, a ring on the
    control, and a panel that lists the tutorials. Beside the rail, above the
@@ -3542,6 +3592,24 @@ label.row-title[for] { cursor: pointer; }
 .tutorial-panel-head { display: flex; align-items: center; gap: var(--space-4); }
 .tutorial-panel-title { font-size: var(--t-headline); line-height: 1.1; margin-right: auto; }
 .tutorial-intro, .tutorial-row-meta, .tutorial-empty { font-size: var(--t-sm); color: var(--muted); }
+/* Beta (owner 2026-10-12): tag on the panel title and each step's card; notice above the list. */
+.tutorial-beta-tag {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  border: var(--line) solid var(--text);
+  border-radius: var(--radius-key);
+  color: var(--text);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  text-transform: uppercase;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.tutorial-card-top > .tutorial-beta-tag { margin-left: 0; }
+.tutorial-beta { font-size: var(--t-sm); font-weight: 500; padding: var(--space-3) var(--space-4); border: var(--line) solid var(--text); border-radius: var(--radius-key); }
 .tutorial-note { font-size: var(--t-md); font-weight: 600; padding: var(--space-4); border: 1px solid var(--text); border-radius: var(--radius-key); }
 .tutorial-list { display: flex; flex-direction: column; gap: var(--space-4); }
 

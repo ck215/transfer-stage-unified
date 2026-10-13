@@ -2396,3 +2396,56 @@ def test_the_custom_crop_entries_apply_on_change():
     assert bank.custom is None
     assert not model.set_value("custom_left", -3).is_ok  # a Param bound
     assert (model.custom_left, model.custom_width) == (2, 0)
+
+
+def test_a_source_whose_position_age_raises_is_logged_not_hidden(monitor, monkeypatch):
+    """BUGFIX A3: a broken probe is not the same as "no sample yet"."""
+    from events import events as event_log
+    logged = []
+    monkeypatch.setattr(event_log, "debug",
+                        lambda title, message, **kw: logged.append((title, message)))
+
+    class Broken:
+        @property
+        def position_age(self):
+            raise RuntimeError("probe link exploded")
+
+    monitor._source = Broken()
+    assert monitor.position_age is None
+    assert logged and logged[0][0] == "Position Age Failed"
+    assert "RuntimeError" in logged[0][1]
+
+    class NoAttribute:
+        pass
+
+    logged.clear()
+    monitor._source = NoAttribute()
+    assert monitor.position_age is None
+    assert logged == [], "a missing attribute is 'no sample yet', not a fault"
+
+
+@pytest.mark.parametrize("path", ["", "   ", None])
+def test_load_run_without_a_path_says_so_and_changes_nothing(monitor, path):
+    """BUGFIX E8: an empty path is a sentence, not 'Could not read .'"""
+    with pytest.raises(Refused) as refusal:
+        monitor.load_run(path)
+    assert refusal.value.reason == "Choose a saved run to load."
+
+
+def test_an_idle_run_id_is_one_slug_until_a_name_is_typed(monitor, monkeypatch):
+    """BUGFIX M2: the readout must not tick every second while idle."""
+    import model.rgb_analysis as module
+    monitor.run_name = ""
+    stamps = iter(["run_20261011_100000", "run_20261011_100001",
+                   "run_20261011_100002"])
+    monkeypatch.setattr(module.time, "strftime", lambda fmt, *a: next(stamps))
+
+    first = monitor.run_id
+    assert first == "run_20261011_100000"
+    assert monitor.run_id == first and monitor.run_dir.name == first
+
+    monitor.run_name = "C777"
+    assert monitor.run_id == "C777"
+    monitor.run_name = ""
+    assert monitor.run_id == "run_20261011_100001", "a name ends the idle slug"
+    assert monitor.run_id == "run_20261011_100001"

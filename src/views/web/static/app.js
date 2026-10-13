@@ -320,6 +320,9 @@ function titler(control) {
 //: and "Not in manual mode" can never be swapped again. One table, three
 //: views: none is kept here (the one this file had said the inverse).
 let GATE_WORDS = {};
+//: The `enabled_by` direction of the same table (O20): {named, unnamed},
+//: served as `enabled_by_words` (`views.base.ENABLED_BY_WORDS`).
+let ENABLED_BY_WORDS = {};
 
 /** One side of a gate word's pair, or '' when the table has none. */
 function gateWords(mode, direction) {
@@ -331,11 +334,13 @@ function gateWords(mode, direction) {
  *  the element's own gate lists in the same order as the Python - plus the
  *  one rule it does not cover, a Setup row's Launch tick (`enabled_by`).
  *  '' when the element is live. */
-function gateReason(element, mode, values) {
+function gateReason(element, mode, values, captionOf) {
   const by = element.enabled_by;
   if (by && values !== null && values !== undefined && !values[by]) {
     if (element.enabled_by_reason) return String(element.enabled_by_reason);
-    return /_enabled$/.test(by) ? 'Tick Launch on this row first' : 'Not available yet';
+    const name = captionOf ? captionOf(by) : '';
+    return name ? String(ENABLED_BY_WORDS.named || '').replace('{name}', name)
+      : String(ENABLED_BY_WORDS.unnamed || '');
   }
   const word = String(mode || '');
   const disabled = element.disabled_when || [];
@@ -349,22 +354,24 @@ function gateReason(element, mode, values) {
 }
 
 //: The commands that take hardware DOWN (`Panel.UNGATED_COMMANDS` in
-//: src/panel.py, plus `set_mode` to "disabled"): never held back by the
-//: busy guard (O10), because a stop must never wait for an earlier press.
-const STOP_COMMANDS = ['toggle_estop', 'estop', 'clear_estop', 'halt', 'stop_run', 'extend_idle'];
+//: src/panel.py, served as `ungated_commands` in /api/theme.json - O23 -
+//: plus `set_mode` to "disabled"): never held back by the busy guard (O10),
+//: because a stop must never wait for an earlier press.
+let STOP_COMMANDS = [];
 
 function isStopCommand(element, args) {
   const command = element && element.command;
+  // `element.stop` is the schema's own mark, so a stop is never held even
+  // before the served list has arrived.
+  if (element && element.stop) return true;
   if (STOP_COMMANDS.indexOf(command) !== -1) return true;
   return command === 'set_mode' && Array.isArray(args) && args[0] === 'disabled';
 }
 
-/** O4: what a faulted entry says at its head. A probe in FAULT is a
- *  disable that did not reach the board; any other fault is still a device
- *  in a state this page cannot vouch for. */
+/** O4: what a faulted entry says at its head - the model's own
+ *  `fault_line` (O23), which names what its fault means. */
 function faultWords(state) {
-  return state && state.mode === 'fault' ? 'Disable failed. Treat as live.'
-    : 'Faulted. Treat as live.';
+  return (state && state.fault_line) ? String(state.fault_line) : '';
 }
 
 /** Names as a sentence says them: "A", "A and B", "A, B and C". */
@@ -653,6 +660,17 @@ function rejectsIntInput(data) {
   return typeof data === 'string' && /[.,eE]/.test(data);
 }
 
+/** The keydown half of the same refusal. `event.key` is a key NAME for the
+ *  keys that are not characters ("Backspace", "Delete", "Enter", "Home"), and
+ *  the pattern above matches inside those names (the "e" of "Delete"), which
+ *  left an int box that could not be edited. Only a single typed character,
+ *  and not a Ctrl chord (no platform-only key is bound), is tested. */
+function rejectsIntKey(event) {
+  const key = event && event.key;
+  return typeof key === 'string' && key.length === 1
+    && !event.ctrlKey && rejectsIntInput(key);
+}
+
 // ==========================================================================
 // row sections: `sch.section(..., layout="row")` is laid out horizontally by
 // every renderer (Addendum 2). The desktop views use a grid; so does this
@@ -932,6 +950,9 @@ function gatherInputsFor(element, widgets) {
   for (const widget of widgets || []) {
     const entry = widget.element;
     if (!entry || entry.type !== 'entry' || !entry.writable || !widget.readValue) continue;
+    // An entry for a unit that is not the chosen one is not drawn, so it
+    // sends nothing (a speed travels in ONE unit; the model refuses two).
+    if (widget.unitOff) continue;
     const edited = widget.isEdited ? widget.isEdited()
       : Boolean(widget.isDirty && widget.isDirty());
     if (declared.indexOf(entry.model_attr) !== -1 || edited) {
@@ -977,6 +998,8 @@ function renderReadonly(panel, element) {
     ? make('div', 'row stat secondary')
     : row(element, 'stat');
   if (element.model_attr) node.dataset.attr = element.model_attr;
+  // `dashboard`: a secondary line the Dashboard's tile keeps (styles.css).
+  if (element.dashboard) node.classList.add('on-dashboard');
   // A secondary readout with a `lead` says it before its value ("Now:
   // 6.50 deg" under Tilt for this trial, UX audit 2026-10-08 #15).
   const lead = element.secondary && element.lead ? String(element.lead) : '';
@@ -1091,7 +1114,7 @@ function renderEntry(panel, element) {
       if (rejectsIntInput(event.data)) event.preventDefault();
     });
     input.addEventListener('keydown', (event) => {
-      if (rejectsIntInput(event.key)) event.preventDefault();
+      if (rejectsIntKey(event)) event.preventDefault();
     });
   } else if (numeric) {
     input.step = String(Math.pow(10, -(element.decimals === undefined ? 3 : element.decimals)));
@@ -1787,6 +1810,86 @@ function renderImage(panel, element) {
   };
 }
 
+/** A short list of words, all in view (the unit a speed is shown in): a
+ *  segmented control. A radio group: one tab stop (the chosen segment),
+ *  Left/Right (and Up/Down) move and commit. The choice goes through the
+ *  ordinary commit (`panel.commit`), so the model validates it. */
+function renderChoice(panel, element) {
+  const node = row(element, 'choice-row');
+  const group = make('div', 'choice');
+  group.setAttribute('role', 'radiogroup');
+  const groupName = nameFor(sentence(element.label || captionText(element)), ownerOf(panel));
+  group.setAttribute('aria-label', groupName);
+  const options = (element.options || []).map(String);
+  const segments = options.map((option) => {
+    const seg = make('button', 'choice-seg', option);
+    seg.type = 'button';
+    seg.setAttribute('role', 'radio');
+    seg.setAttribute('aria-checked', 'false');
+    // Its words, then whose: "%" alone is said by every speed on the page (L16).
+    seg.setAttribute('aria-label', option + ', ' + groupName);
+    seg.tabIndex = -1;
+    seg.dataset.option = option;
+    group.appendChild(seg);
+    return seg;
+  });
+  node.appendChild(group);
+  const title = titler(group);
+  let served = '';
+  let pending = 0;
+  let answeredAt = 0;
+  const mark = (value) => {
+    const known = options.indexOf(value) !== -1;
+    segments.forEach((seg, at) => {
+      const on = seg.dataset.option === value;
+      if (seg.getAttribute('aria-checked') !== String(on)) seg.setAttribute('aria-checked', String(on));
+      seg.tabIndex = on || (!known && at === 0) ? 0 : -1;
+    });
+  };
+  const choose = (value) => {
+    if (group.classList.contains('disabled') || value === served) return;
+    panel.commit(element, value);
+  };
+  segments.forEach((seg, at) => {
+    seg.addEventListener('click', () => choose(seg.dataset.option));
+    seg.addEventListener('keydown', (event) => {
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (!step) return;
+      event.preventDefault();
+      const next = segments[(at + step + segments.length) % segments.length];
+      next.focus();
+      choose(next.dataset.option);
+    });
+  });
+  mark('');
+  return {
+    node,
+    control: group,
+    isDirty: () => pending > 0 || (panel.askedAt !== undefined && panel.askedAt < answeredAt),
+    hold: (on) => {
+      if (on) pending += 1;
+      else { pending = Math.max(0, pending - 1); answeredAt = Date.now(); }
+    },
+    accept: (value) => { served = String(value); mark(served); },
+    revert: () => mark(served),
+    setText: (text) => {
+      served = (text === null || text === undefined) ? '' : String(text);
+      mark(served);
+    },
+    /** Focus the chosen segment (a widget that held focus just hid). */
+    focus: () => {
+      const on = segments.find((seg) => seg.tabIndex === 0) || segments[0];
+      if (on) on.focus({ preventScroll: true });
+    },
+    setEnabled: (flag) => {
+      group.classList.toggle('disabled', !flag);
+      for (const seg of segments) if (seg.disabled === flag) seg.disabled = !flag;
+      node.classList.toggle('disabled', !flag);
+    },
+    setReason: (reason) => title.reason(reason),
+  };
+}
+
 /** A lamp is lit or it is not: a dot and a word. Lit is ink, off is a
  *  hollow ring, and a lamp whose ACTIVE role is danger (a fault, a lost
  *  stage) is the signal colour - never the trace, which is for numbers. */
@@ -1976,6 +2079,7 @@ const ELEMENT_RENDERERS = {
   plot: renderPlot,
   image: renderImage,
   indicator: renderIndicator,
+  choice: renderChoice,
   log_stream: renderLogStream,
   internal: renderInternal,
 };
@@ -2810,7 +2914,7 @@ class PanelCard {
       // their boxes now, whatever the answer (2026-10-07).
       this.clearSecrets(element);
       if (result.status === 'ok') this.showRefused('');
-      else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element);
+      else if (result.status !== 'needs_confirm') this.showRefused(result.reason || '', element, result.attr);
       // R4: the station is going away on purpose; the page waits for the
       // new one instead of calling it "not answering".
       if (isRestartAnswer(this.name, element.command, result)) {
@@ -2854,10 +2958,16 @@ class PanelCard {
       this.showRefused('');
     } else {
       if (widget && widget.revert) widget.revert();
-      this.showRefused(result.reason || '', element);
+      this.showRefused(result.reason || '', element, result.attr);
     }
     await this.dashboard.refreshNow();
     return result;
+  }
+
+  /** The caption of the entry that holds `attr`, for "Tick Launch first". */
+  captionOfAttr(attr) {
+    const widget = this.widgets.find((w) => w.element.model_attr === attr);
+    return widget ? captionText(widget.element).replace(/\s*:\s*$/, '') : '';
   }
 
   widgetFor(element) {
@@ -2874,23 +2984,12 @@ class PanelCard {
     }
   }
 
-  /** O10 (WDG8-4): the entry a refusal is about, read from its words - the
-   *  refusal names the field ("X step size must be at least 1"). The
-   *  longest caption that starts the sentence wins; null when none does.
-   *  (Core's Refused does not name the attribute yet: see the handoff.) */
-  fieldFor(reason) {
-    const said = String(reason || '').toLowerCase();
-    let best = null;
-    let length = 0;
-    for (const widget of this.widgets) {
-      if (widget.element.type !== 'entry' || !widget.control) continue;
-      const caption = captionText(widget.element).toLowerCase();
-      if (caption && said.indexOf(caption + ' ') === 0 && caption.length > length) {
-        best = widget;
-        length = caption.length;
-      }
-    }
-    return best;
+  /** O21: the entry a refusal is about, named by the refusal itself
+   *  (`result.attr`, the model attribute); null when it names none. */
+  fieldFor(attr) {
+    if (!attr) return null;
+    return this.widgets.find((w) => w.element.type === 'entry' && w.control
+      && w.element.model_attr === attr) || null;
   }
 
   /** Copy a chosen file to the station; the path it was saved at, or null
@@ -3032,7 +3131,10 @@ class PanelCard {
       const element = widget.element;
       const kind = element.type;
       const attr = element.model_attr;
-      if (kind === 'entry') {
+      if (element.shown_when) this.applyShownWhen(widget);
+      if (kind === 'choice') {
+        if (!widget.isDirty()) widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
+      } else if (kind === 'entry') {
         if (!widget.isDirty()) widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
       } else if (kind === 'readonly' && link && attr === link.attr) {
         // V2 on the Web: the Diagnostics row the server added (with_link_row).
@@ -3062,7 +3164,7 @@ class PanelCard {
       widget.setEnabled(isEnabled(element, mode, this.values) && !held);
       // L3: a disabled control says why, from the same gate.
       if (widget.setReason) {
-        widget.setReason(held ? (link.reason || '') : gateReason(element, mode, this.values));
+        widget.setReason(held ? (link.reason || '') : gateReason(element, mode, this.values, (attr) => this.captionOfAttr(attr)));
       }
       if (widget.onlyWhileOn && widget.node) {
         const off = !isEnabled(element, mode, this.values);
@@ -3105,6 +3207,27 @@ class PanelCard {
     const reason = isFaulted ? String(state.fault || '') : '';
     putText(this.faultLine, reason);
     if (this.faultLine.hidden !== !reason) this.faultLine.hidden = !reason;
+  }
+
+  /** `shown_when` (2026-10-12): an element drawn only while the model's value
+   *  `attr` is one of `values`. A renderer rule like `phases`: the class
+   *  `is-unit-off` is toggled only when the answer changes, and focus inside a
+   *  widget that just hid moves to the choice that hid it. A value the state
+   *  does not carry yet hides nothing. */
+  applyShownWhen(widget) {
+    const rule = widget.element.shown_when;
+    const have = this.values[rule.attr];
+    const off = have !== undefined && rule.values.indexOf(String(have)) === -1;
+    if (Boolean(widget.unitOff) === off) return;
+    widget.unitOff = off;
+    const lost = off && widget.node && typeof document !== 'undefined'
+      && widget.node.contains(document.activeElement);
+    if (widget.node) widget.node.classList.toggle('is-unit-off', off);
+    if (lost) {
+      const chooser = this.widgets.find((w) => w.element.type === 'choice'
+        && w.element.model_attr === rule.attr);
+      if (chooser && chooser.focus) chooser.focus();
+    }
   }
 
   /** Draw the current procedure step (owner ruling 2026-10-07): a section
@@ -3536,11 +3659,29 @@ class PanelCard {
     const url = '/api/data?name=' + encodeURIComponent(this.name)
       + '&command=' + encodeURIComponent(widget.dataCommand);
     if (widget.isBinary) {
-      widget.setData(url + '&t=' + Date.now());
+      this.loadPicture(widget, url);
       return;
     }
     apiGet(url).then((data) => {
       if (data && data.status !== 'refused' && data.status !== 'failed') widget.setData(data);
+    }).catch(() => {});
+  }
+
+  /** I11: a figure is fetched with the ETag of the one on screen and left
+   *  alone on a 304; only a changed picture is turned into a new object
+   *  URL (the old one is released). */
+  loadPicture(widget, url) {
+    const headers = widget.etag ? { 'If-None-Match': widget.etag } : {};
+    api(url, { method: 'GET', headers }).then(async (response) => {
+      if (response.status === 304) return;
+      const type = response.headers.get('Content-Type') || '';
+      if (!response.ok || type.indexOf('image/') !== 0) return;
+      const blobUrl = URL.createObjectURL(await response.blob());
+      const old = widget.objectUrl;
+      widget.objectUrl = blobUrl;
+      widget.etag = response.headers.get('ETag') || '';
+      widget.setData(blobUrl);
+      if (old) URL.revokeObjectURL(old);
     }).catch(() => {});
   }
 
@@ -3568,14 +3709,14 @@ class PanelCard {
    *  O10 (WDG8-4, A11Y-7): when the sentence names an entry, it goes under
    *  THAT entry instead - its well opened if it was shut - and the entry is
    *  marked aria-invalid, described by the sentence, and focused. */
-  showRefused(reason, element) {
+  showRefused(reason, element, attr) {
     this.markInvalid(null);
     if (!reason) {
       if (!this.status.hidden) this.status.hidden = true;
       putText(this.status, '');
       return;
     }
-    const field = this.reveal(this.fieldFor(reason)
+    const field = this.reveal(this.fieldFor(attr)
       || (element && element.type === 'entry' ? this.widgetFor(element) : null));
     const anchor = field ? field.node : this.anchorFor(element);
     if (anchor && anchor.nextSibling !== this.status) {
@@ -4336,6 +4477,8 @@ class Dashboard {
       QUIET_VALUES = new Set((rules && rules.quiet_values) || []);
       if (rules && rules.tier_labels) TIER_LABELS = Object.assign({}, TIER_LABELS, rules.tier_labels);
       if (rules && rules.gate_words) GATE_WORDS = rules.gate_words;
+      if (rules && rules.enabled_by_words) ENABLED_BY_WORDS = rules.enabled_by_words;
+      if (rules && rules.ungated_commands) STOP_COMMANDS = rules.ungated_commands;
       if (rules && rules.watchdog) WATCHDOG = rules.watchdog;
       // The titles the page keys on, as core names them (events.py).
       const titles = (rules && rules.event_titles) || {};
@@ -4843,7 +4986,21 @@ class Dashboard {
         || (setupState && setupState.is_launched)) this.revealStop();
     // After the launch edge, so leaving the sign-in screen knows whether
     // the station is running (then its sheet, else Setup).
+    this.applyBenchScale(setupState);
     this.applyAccount(setupState);
+  }
+
+  /** The bench scale (Setup > Display): `data-bench` on the root switches the
+   *  stylesheet to one step up in text and 44 px sheet keys. The tray's and
+   *  the rail's size follow the text, so what the fixed layers keep clear of
+   *  is measured again when the choice changes. */
+  applyBenchScale(setupState) {
+    const values = setupState && setupState.values;
+    if (!values || typeof values.bench_scale !== 'boolean') return;
+    const root = document.documentElement;
+    if (root.hasAttribute('data-bench') === values.bench_scale) return;
+    root.toggleAttribute('data-bench', values.bench_scale);
+    this.reserveLogSpace();
   }
 
   /** An empty rack says what to do next, and the drawer that does it is

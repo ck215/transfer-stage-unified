@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- Filled from the theme's --bg by the client, so this file names no colour. -->
   <meta name="theme-color" content="">
+  <meta name="color-scheme" content="light">
   <title>Transfer stage</title>
   <!-- No icon file: an empty data icon stops the browser asking for
        /favicon.ico (a 404 on every load). -->
@@ -99,7 +100,7 @@
     </p>
     <div class="rail-foot">
       <button id="tutorials-link" type="button" class="ghost rail-control"
-              title="Step-by-step tutorials that point at the controls">Tutorials</button>
+              title="Beta, incomplete: step-by-step tutorials that point at the controls">Tutorials</button>
       <!-- "Setup" before the launch, "Settings" after it (the devices are
            fixed then); the client keeps the words in step (applySetupWords). -->
       <button id="setup-link" type="button" class="ghost rail-control"
@@ -228,7 +229,7 @@
   <div id="region-picker" class="overlay" hidden>
     <div class="dialog wide-dialog" role="dialog" aria-labelledby="region-help">
       <p id="region-help" class="dialog-text">Drag a rectangle over the part of the screen to watch.</p>
-      <canvas id="region-canvas" class="region-canvas" width="800" height="450"
+      <canvas id="region-canvas" class="region-canvas" width="800" height="450" role="img"
               aria-label="The station's screen. Drag to choose the capture region."></canvas>
       <div class="region-fields" role="group" aria-label="Capture region, in screen pixels">
         <label class="region-field"><span>X</span><input class="input" name="x" type="number" step="1" inputmode="numeric" autocomplete="off"></label>

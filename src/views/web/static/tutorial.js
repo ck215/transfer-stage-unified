@@ -492,9 +492,17 @@
     panel.dataset.sideWindow = '';
     panel.hidden = true;
     const head = make('header', 'tutorial-panel-head');
-    head.appendChild(make('h2', 'tutorial-panel-title', 'Tutorials'));
+    // Beta (owner 2026-10-12): the tutorials are incomplete, and the panel
+    // says so before anyone starts one, so no step is taken as the procedure.
+    const title = make('h2', 'tutorial-panel-title', 'Tutorials');
+    title.appendChild(make('span', 'tutorial-beta-tag', ' Beta'));
+    head.appendChild(title);
     head.appendChild(button('Close', 'ghost rail-control', closePanel));
     panel.appendChild(head);
+    panel.appendChild(make('p', 'tutorial-beta',
+      'Beta, and incomplete. The tutorials cover only some tasks, and a step '
+      + 'may not match the station as it is now. Where a tutorial and the lab\'s '
+      + 'procedure differ, follow the procedure.'));
     panel.appendChild(make('p', 'tutorial-intro',
       'A tutorial points at the controls and waits for you to press them. '
       + 'It never presses one for you. Escape ends it.'));
@@ -513,6 +521,7 @@
     card.setAttribute('aria-label', 'Tutorial step');
     card.hidden = true;
     const top = make('div', 'tutorial-card-top');
+    top.appendChild(make('span', 'tutorial-beta-tag', 'Beta'));
     top.appendChild(make('span', 'tutorial-count'));
     top.appendChild(make('span', 'tutorial-title'));
     card.appendChild(top);

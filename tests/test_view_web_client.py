@@ -12,6 +12,7 @@ disagreed on the name, and nothing failed until the bench.
 node is not a dependency of this project.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -130,7 +131,7 @@ def test_a_refusal_is_a_status_line_on_the_card_and_never_a_popup():
     assert "this.showRefused(" in run
     assert "alert(" not in run, "a refusal opened a modal"
     assert "putText(this.status, reason)" in _body(
-        r"showRefused\(reason, element\) \{(.*?)\n  \}")
+        r"showRefused\(reason, element, attr\) \{(.*?)\n  \}")
 
 
 def test_only_an_event_that_asks_to_be_acknowledged_opens_a_modal():
@@ -476,7 +477,8 @@ def test_an_int_entry_steps_by_one_and_refuses_a_decimal():
     entry = _body(r"function renderEntry\(panel, element\) \{(.*?)\n\}")
     assert "element.value_type === 'int'" in entry
     assert "input.step = '1'" in entry
-    assert "rejectsIntInput(event.data)" in entry and "preventDefault()" in entry, (
+    assert ("rejectsIntInput(event.data)" in entry and "rejectsIntKey(event)" in entry
+            and "preventDefault()" in entry), (
         "step=1 only moves the browser's own stepper; typing 2.5 still "
         "reached the command")
     assert "isInt ? intText(text)" in entry, (
@@ -984,7 +986,7 @@ def test_every_font_size_is_on_the_scale():
     sizes = re.findall(r"font-size:\s*([^;]+);", STYLES)
     off = [size for size in sizes
            if not re.fullmatch(r"var\(--(t-[a-z-]+|reading-(focal|primary|compact|secondary)"
-                               r"|caption-size|axis-letter-size|statistic-size|font-size)\)",
+                               r"|caption-size|axis-letter-size|statistic-size|font-size|font-size-bench)\)",
                                size.strip())]
     assert not off, f"font sizes off the type scale: {off}"
 
@@ -1206,8 +1208,23 @@ def test_a_disabled_command_says_the_gates_reason():
     got = _node_value(f"(() => {{ GATE_WORDS = {table}; return [{calls}]; }})()")
     assert got == [gate_reason(e, m) for e, m in cases], got
     assert got[1] == "In manual mode" and got[2] == "In autonomous mode", got
-    ticked = _node_value("gateReason({enabled_by: 'probe_enabled'}, 'ready', {probe_enabled: false})")
-    assert ticked == "Tick Launch on this row first"
+    # O20: the tick-box direction is `views.base`'s too, served as
+    # `enabled_by_words`; no phrase of its own is kept here.
+    from views.base import ENABLED_BY_WORDS
+    words = json.dumps(dict(ENABLED_BY_WORDS))
+    element = {"enabled_by": "probe_enabled"}
+    caption = lambda attr: "Launch"
+    ticked = _node_value(
+        f"(() => {{ ENABLED_BY_WORDS = {words}; return ["
+        f"gateReason({json.dumps(element)}, 'ready', {{probe_enabled: false}}, () => 'Launch'),"
+        f"gateReason({json.dumps(element)}, 'ready', {{probe_enabled: false}}),"
+        f"gateReason({json.dumps(dict(element, enabled_by_reason='Choose a sample first'))}, 'ready', {{probe_enabled: false}}),"
+        f"gateReason({json.dumps(element)}, 'ready', {{probe_enabled: true}})]; }})()")
+    assert ticked == [gate_reason(element, "ready", {"probe_enabled": False}, caption),
+                      gate_reason(element, "ready", {"probe_enabled": False}),
+                      "Choose a sample first", ""], ticked
+    assert ticked[0] == "Tick Launch first" and ticked[1] == "Not available yet"
+    assert "Tick Launch" not in CODE
     assert "MODE_REASONS" not in CODE and "Not in manual mode" not in CODE, (
         "app.js keeps its own gate table")
 
@@ -1737,3 +1754,36 @@ def test_the_page_names_its_icon_so_no_favicon_request_404s():
     """Every load asked for /favicon.ico and logged a 404 in the console
     (2026-10-09). An empty data icon asks nothing and names no colour."""
     assert '<link rel="icon" href="data:,">' in INDEX
+
+
+def test_node_is_present_where_the_run_requires_it():
+    """BUGFIX A9: every JS-client test above skips when node is absent, and a
+    run with nothing to say is green. `STATION_REQUIRE_NODE=1` (set it in CI)
+    turns that silence into this failure; `pytest -rs` lists the skips on any
+    other box."""
+    if os.environ.get("STATION_REQUIRE_NODE") != "1":
+        pytest.skip("STATION_REQUIRE_NODE is not set")
+    assert NODE is not None, (
+        "STATION_REQUIRE_NODE=1 but node is not on PATH: the Web client's "
+        "JS tests did not run")
+
+
+def test_a_refusal_is_placed_by_its_attribute_not_its_caption():
+    """O21: `fieldFor` takes `result.attr`; no caption matching remains."""
+    assert "fieldFor(attr)" in APP_JS and "w.element.model_attr === attr" in APP_JS
+    assert "said.indexOf(caption" not in APP_JS
+
+
+def test_the_page_keeps_no_copy_of_the_stop_list_or_the_fault_sentence():
+    """O23: STOP_COMMANDS is filled from /api/theme.json; the fault sentence
+    is the model's `state.fault_line`."""
+    assert "let STOP_COMMANDS = [];" in APP_JS and "rules.ungated_commands" in APP_JS
+    assert "Disable failed. Treat" not in APP_JS and "Faulted. Treat" not in APP_JS
+    assert "state.fault_line" in APP_JS
+
+
+def test_the_figure_fetch_sends_if_none_match_and_leaves_a_304_alone():
+    """I11: no `&t=` cache-buster; the client keeps the ETag and skips a 304."""
+    js = APP_JS
+    assert "'If-None-Match'" in js and "response.status === 304" in js
+    assert "widget.setData(url + '&t=' + Date.now())" not in js

@@ -181,7 +181,7 @@ def test_a_registered_class_gets_a_row_identifies_and_builds(
     panel = Setup(RecordingController())
     titles = [s["title"] for s in panel.schema["sections"]]
     assert titles == ["Devices", *BUILT_IN_ROWS, "Piezo Stage", "Launch",
-                      "Update", "Firmware", "Station defaults"]
+                      "Update", "Firmware", "Display", "Station defaults"]
     monkeypatch.setattr(station_setup, "SerialPort",
                         port_answering({500000: "DEV: p"}))
     assert panel.identify(PORT) == "Piezo Stage"

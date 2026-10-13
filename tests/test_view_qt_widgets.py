@@ -433,7 +433,7 @@ def cell_of(grid, widget):
 
 def test_a_panel_renders_every_element_type_in_its_schema(view):
     kinds = {e["type"] for e in view._elements}
-    assert kinds == sch.ELEMENT_TYPES - {"internal"} | {"button"}
+    assert kinds == sch.ELEMENT_TYPES - {"choice", "internal"} | {"button"}
     for element in view._elements:
         if element["type"] != "internal":
             assert view._widget_for(element) is not None

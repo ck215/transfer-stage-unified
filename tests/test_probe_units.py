@@ -117,9 +117,16 @@ def test_every_physical_entry_has_its_count_line_directly_under_it(stepper):
         "z_dist_um": ("z_move_steps", "µm", "steps"),
         "x_step_um": ("x_step", "µm", "steps"), "y_step_um": ("y_step", "µm", "steps"),
         "z_step_um": ("z_step", "µm", "steps"),
-        "full_speed_um_s": ("full_speed", "µm/s", "steps/s"),
-        "man_full_speed_um_s": ("man_full_speed", "µm/s", "steps/s"),
     }
+    # (the speeds moved to the unit choice, 2026-10-12: their lines name the
+    # OTHER units, test_probe.test_each_stepper_speed_is_a_unit_choice_...)
+    speeds = {"full_speed_um_s": "full_speed_alt_text",
+              "man_full_speed_um_s": "man_full_speed_alt_text"}
+    for attr, alt in speeds.items():
+        main, small = element(stepper, attr), after(stepper, attr)
+        assert main["type"] == "entry" and main["writable"] and main["unit"] == "µm/s"
+        assert small["type"] == "readonly" and small["secondary"]
+        assert small["model_attr"] == alt and small["shown_when"] == main["shown_when"]
     for attr, (counts, unit, small_unit) in pairs.items():
         main, small = element(stepper, attr), after(stepper, attr)
         assert main["type"] == "entry" and main["writable"] and main["unit"] == unit
@@ -128,11 +135,12 @@ def test_every_physical_entry_has_its_count_line_directly_under_it(stepper):
     state = stepper.state["values"]
     assert state["x_dist_um"] == "0.000" and state["x_move_steps"] == "0"
     assert state["full_speed_um_s"] == "250.000" and state["full_speed"] == "400"
-    # no count entry and no percent dial is drawn any more
+    # no count entry for a distance or step is drawn any more (the speeds
+    # offer percent and steps/s beside um/s, 2026-10-12)
     entries = {e["model_attr"] for e in sch.elements(stepper.schema)
                if e["type"] == "entry"}
     assert entries == set(pairs) | {e for e in entries if e not in pairs}
-    assert not entries & {"x_dist", "x_step", "full_speed_pct", "man_full_speed_pct"}
+    assert not entries & {"x_dist", "x_step"}
     assert sorted(entries - {"gamepad_name"}) == sorted(
         n for n in StepperProbe.ENTRY_PARAMS)
 
@@ -160,8 +168,10 @@ def test_the_other_probes_are_untouched():
 
 @pytest.mark.schema
 def test_gates_are_those_of_the_count_fields(stepper):
-    for attr in ("x_dist_um", "x_step_um", "full_speed_um_s"):
+    for attr in ("x_dist_um", "full_speed_um_s"):
         assert element(stepper, attr)["disabled_when"] == ["autonomous", "manual"]
+    # BUGFIX D14: the step size is live in manual, locked in autonomous.
+    assert element(stepper, "x_step_um")["disabled_when"] == ["autonomous"]
     assert element(stepper, "man_full_speed_um_s")["disabled_when"] == ["autonomous"]
     stepper.set_mode("autonomous")
     with pytest.raises(Refused):

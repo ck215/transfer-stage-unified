@@ -187,7 +187,7 @@ def test_a_guest_launch_has_no_transfer_map_or_sample_map(setup):
     assert not [c for c in setup.configs if c["model"] in (
         "Transfer Map", "Sample DB", "RGB Analysis")], setup.configs
     statuses = {row["name"]: row["status"] for row in setup.state["rows"]}
-    assert statuses["Transfer Map"] == statuses["Sample DB"] == "sign in to use"
+    assert statuses["Transfer Map"] == statuses["Sample DB"] == "Sign in to use"   # sentence case, BUGFIX M7
     rows = {row["name"]: row for row in setup.state["rows"]}
     for name in ("Transfer Map", "Sample DB"):
         # The state says it; a view never reads the Status words.

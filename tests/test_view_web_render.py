@@ -43,6 +43,11 @@ def test_a_numeric_entry_is_wide_enough_for_its_widest_value(sim_station, tmp_pa
       for (const w of [1400, 1280]) {
         await ready(w, 800);
         await open('Stepper Probe');
+        // 2026-10-12: a speed entry is drawn in the chosen unit (percent by
+        // default); this one measures the um/s box, so choose um/s for both.
+        await page.evaluate(() => document.querySelectorAll(
+          '.card.is-opened .choice-seg[data-option="\u00b5m/s"]').forEach((b) => b.click()));
+        await sleep(600);
         r[w] = await page.evaluate(() => {
           const rows = [];
           for (const input of document.querySelectorAll('.card.is-opened input[type="number"]')) {

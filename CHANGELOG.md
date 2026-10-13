@@ -21,6 +21,12 @@ How this file is kept:
 
 ### Added
 
+- **Bench scale.** Setup has a Display section with a Bench scale box: the
+  text one step larger and the keys on the sheet 44 px tall, for gloves and
+  for reading across the bench. It is remembered for the user who is signed
+  in (a Guest's for the station) and builds on the `--font-size` launch flag,
+  which still sets the size it steps up from.
+
 - **The finalizer plays the trial's video.** Finalize Data on the Transfer Map's
   page shows the recorded video in the page, with its frame count, and you can
   scrub through it; a trial with no playable file keeps the words that say
@@ -153,6 +159,34 @@ How this file is kept:
 
 ### Changed
 
+- **Tutorials are marked Beta.** They are incomplete: the Tutorials panel and
+  every step's card say Beta, and the panel says a step may not match the
+  station as it is now; where a tutorial and the lab's procedure differ, the
+  procedure wins.
+- **Probe speeds in the unit you pick.** Each Autonomous and Manual Speed has
+  a unit switch beside it: % of max or steps/s, and µm/s on the Stepper Probe.
+  The box, its slider and its limits follow the unit, the other units show on
+  the small line under it (now on the Dashboard too), and the choice is
+  remembered for the signed-in user. Percent takes tenths (12.5 %); the
+  default speed now reads 12.5 % instead of 13 %. What the board receives is
+  unchanged.
+- **The figure is not re-sent while it has not changed.** The page asks
+  for each figure with the tag of the one on screen, and the station answers
+  "unchanged" instead of the same picture every second (I11).
+
+- **A refusal, a held control and a fault say the station's own words.** The
+  field a refusal is about is named by the station, not guessed from the
+  sentence; the "Tick ... first" and fault sentences and the list of
+  commands that are never held back come from the station too; and the mode
+  toggles on the probes read "(press to power down)" (O20-O23).
+
+- **Step sizes can be edited while a probe is in Manual,** like Manual Speed,
+  and the next jog frame carries the new size; they stay locked during an
+  autonomous run, and a Stepper's target distance keeps its length (BUGFIX
+  D14).
+- **A log stream can carry its own empty-state sentence** (`empty=`), as plots
+  and images do (BUGFIX E2).
+
 - **A Guest's locked rows say so in the state,** not only in their Status
   words: the Transfer Map and Sample DB rows carry `locked` and `enabled`
   false, and the Web view disables their Run key from that.
@@ -226,6 +260,24 @@ How this file is kept:
   demanded.
 
 ### Fixed
+
+- Backspace, Delete, Enter, Escape, Home, End and the left arrow work again in
+  every whole-number box (the probes' speed percent, step sizes and targets);
+  they were swallowed, so a box could not be cleared or edited.
+- A cleared or unreadable probe speed box is refused with a sentence and the
+  speed stays as it was (it raised an error before).
+- **Failures that used to vanish now leave a trace** (BUGFIX A2-A5, A7, C3). A
+  Web watchdog check that cannot run raises a warning; a request body that
+  fails for a reason other than bad JSON is logged instead of called "invalid
+  JSON"; an unreadable run sidecar warns "Run Metadata Unreadable" and the
+  samples still plot; a broken probe position source and the gamepad's
+  swallowed SDL errors are written to the log; a run log that cannot be
+  written says so once on stderr and the station runs on.
+- **Loading a run with no file chosen says "Choose a saved run to load."**
+  and an idle RGB Analysis run name stays one slug until a run starts or you
+  type a name, instead of ticking every second (BUGFIX E8, M2).
+- **Setup's row status words start with a capital** ("Not connected",
+  "Detected: ...") as the model publishes them (BUGFIX M7).
 
 - A Quit waits for the store backup only after every device has closed, in
   one 15 s budget; closing a device while a Hard reset or Quit runs can no

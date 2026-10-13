@@ -36,6 +36,7 @@ Two things live here and nowhere else:
 """
 import base64
 import errno
+import hashlib
 import http.server
 import json
 import mimetypes
@@ -271,13 +272,19 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             # values are "normal" and so not drawn in tier 1 (status by
             # exception), and the default disclosure texts. Served rather
             # than copied into app.js, so the three views read one list.
-            from views.base import GATE_WORDS
+            from panel import Panel
+            from views.base import ENABLED_BY_WORDS, GATE_WORDS
             return self._send_json(200, {
                 "quiet_values": sorted(theme.QUIET_VALUES),
                 "tier_labels": {str(k): v for k, v in theme.TIER_LABELS.items()},
                 # Why a control is greyed, in both directions (views.base.GATE_WORDS):
                 # [when the mode is in disabled_when, when it is missing from enabled_when].
                 "gate_words": {k: list(v) for k, v in GATE_WORDS.items()},
+                # ... and for a control held by an off tick box (O20).
+                "enabled_by_words": dict(ENABLED_BY_WORDS),
+                # The commands that take hardware down: never held by the
+                # busy guard (O23, Panel.UNGATED_COMMANDS).
+                "ungated_commands": sorted(Panel.UNGATED_COMMANDS),
                 "watchdog": {"warn_seconds": WebView.WARN_SECONDS,
                              "stop_seconds": WebView.STOP_SECONDS},
                 # The event titles the page keys on (ARCH-4): served, so a
@@ -581,7 +588,7 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
             return self._send_json(200, self._result_dict(result))
         value = result.value
         if isinstance(value, (bytes, bytearray)):
-            return self._send_bytes(200, "image/png", bytes(value))
+            return self._send_picture(bytes(value))
         if isinstance(value, dict) and isinstance(value.get("image"), (bytes, bytearray)):
             # A picture with its geometry (a region picker's `screen_image`:
             # the PNG, and the area it was scaled from). The bytes stay
@@ -590,11 +597,25 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
                         for key in ("left", "top", "width", "height")
                         if isinstance(value.get(key), (int, float))
                         and not isinstance(value.get(key), bool)}
-            return self._send_bytes(200, "image/png", bytes(value["image"]),
-                                    geometry)
+            return self._send_picture(bytes(value["image"]), geometry)
         if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
             return self._send_json(200, {"status": "ok", "lines": list(value)})
         return self._send_json(200, {"status": "ok", "data": value})
+
+    def _send_picture(self, payload, headers=None):
+        """A PNG with a strong ETag over its bytes and geometry (I11): the
+        figure is polled every second and mostly unchanged, so a matching
+        If-None-Match is answered 304 with no body."""
+        digest = hashlib.sha256(payload)
+        for key, value in sorted((headers or {}).items()):
+            digest.update(f"{key}={value}".encode("ascii"))
+        etag = '"' + digest.hexdigest()[:32] + '"'
+        sent = dict(headers or {}, ETag=etag)
+        tags = [t.strip() for t in
+                (self.headers.get("If-None-Match") or "").split(",")]
+        if etag in tags:
+            return self._send_bytes(304, "image/png", b"", sent)
+        return self._send_bytes(200, "image/png", payload, sent)
 
     def _is_data_command(self, name, command):
         """True when `command` is a `data_command`/`source_command` of an
@@ -1073,8 +1094,16 @@ class ApiHandler(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length > 0 else b"{}"
         try:
             return True, json.loads(raw.decode("utf-8") or "{}")
-        except Exception:
+        except ValueError:
+            # json.JSONDecodeError and UnicodeDecodeError are both ValueErrors.
             self._send_json(400, {"status": "error", "reason": "invalid JSON"})
+            return False, None
+        except Exception as exc:
+            events.debug("Request Body Unreadable",
+                         f"{self.command} {self.path}: {type(exc).__name__}: {exc}",
+                         source=SOURCE, exception=exc, every=1.0)
+            self._send_json(400, {"status": "error",
+                                  "reason": "request body unreadable"})
             return False, None
 
     @staticmethod
@@ -1501,8 +1530,13 @@ class WebView:
             try:
                 self._check_heartbeat()
             except Exception as exc:
-                events.debug("Watchdog Check Failed", str(exc), source=SOURCE,
-                             exception=exc, every=1.0)
+                # The watchdog is what turns a dead browser into a full stop;
+                # a check that cannot run must be visible (BUGFIX A2). The
+                # event log folds a repeat of the same sentence into a count.
+                events.warn("Watchdog Check Failed",
+                            f"The browser-liveness check raised {type(exc).__name__}: "
+                            f"{exc}. A dead browser would not be stopped.",
+                            source=SOURCE, exception=exc)
 
     def _check_last_tab(self):
         """Quit when no page is left (owner 2026-10-07). Two rules, both

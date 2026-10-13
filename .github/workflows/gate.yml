@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 30
     env:
       STATION_NO_WINDOWS: "1"
+      STATION_REQUIRE_NODE: "1"   # BUGFIX A9: the node-only Web client checks may not skip silently on the gate
       QT_QPA_PLATFORM: offscreen
       STATION_NO_UPDATE_CHECK: "1"
       TRANSFER_STAGE_DATA_ROOT: ${{ github.workspace }}/gate-runs

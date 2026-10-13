@@ -99,6 +99,7 @@ REQUIRED = {
     "plot": ("text", "data_command"),
     "image": ("text", "data_command"),
     "indicator": ("text", "model_attr"),
+    "choice": ("text", "model_attr", "param", "value_type", "options"),
     "log_stream": ("text", "source_command"),
     "internal": ("command",),
 }
@@ -200,7 +201,8 @@ def test_every_model_attr_reads_without_raising(model):
 def test_every_writable_entry_has_a_param_that_matches_its_element(model):
     for e in _elements(model):
         if e.get("writable"):
-            assert e["type"] == "entry", f"only entries may be writable: {e}"
+            assert e["type"] in ("entry", "choice"), (
+                f"only entries and choices may be writable: {e}")
             param = model.PARAMS.get(e["model_attr"])
             assert isinstance(param, Param), f"{e['model_attr']} has no Param"
             for key, value in param.to_schema().items():

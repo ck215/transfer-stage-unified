@@ -694,6 +694,9 @@ class Setup(PortProbe, Panel):
         # scope, users.sqlite and the session, a Guest until someone signs in.
         self._init_accounts()
         self._init_backup()
+        #: Setup's Display choice (`set_bench_scale`): the Web view draws the
+        #: bench scale while it is True. Remembered like the store choice.
+        self.bench_scale = self._read_bench_scale()
         self._rows = self._build_rows()
         self._schema = self._build_schema()
         self._lock = threading.RLock()
@@ -2074,6 +2077,9 @@ class Setup(PortProbe, Panel):
             self._follow_store(previous)
             if PROFILES_ENABLED and previous.is_guest and not user.is_guest:
                 self._add_signed_in_only()
+            # The scale is the new session's own (a user's setting, or the
+            # station's for a Guest).
+            self.bench_scale = self._read_bench_scale()
             self._refresh_rows()
 
     # -- what a Guest does not get (owner 2026-10-07) -------------------------------
@@ -2229,6 +2235,31 @@ class Setup(PortProbe, Panel):
             if values:
                 out[name] = values
         return out
+
+    def _read_bench_scale(self):
+        """The remembered Display choice of this session: a signed-in user's
+        own, a Guest's the station's. Off when nothing is remembered."""
+        try:
+            return self._map_choices.read("bench_scale", False) is True
+        except Exception:
+            return False
+
+    def set_bench_scale(self, on):
+        """Setup's Display choice: the Web view's bench scale (one step up in
+        text, the sheet's keys at 44 px). Takes effect now; remembered for
+        this user (a Guest: for the station) so the next launch has it. A
+        choice that cannot be written still holds for this session, and
+        says so."""
+        on = bool(on)
+        self.bench_scale = on
+        try:
+            self._map_choices.write("bench_scale", on)
+        except OSError as exc:
+            events.warn("Bench Scale Not Remembered",
+                        "The choice holds until the station closes, but it "
+                        "could not be written down.",
+                        source=self.NAME, exception=exc)
+        return on
 
     def save_station_settings(self, confirmed=False):
         """The station's defaults: user and station-only parameters of the
@@ -3452,6 +3483,21 @@ class Setup(PortProbe, Panel):
             layout="row",
         ))
         sections += upkeep
+        # After the station's upkeep, before Station defaults (which stays
+        # last). A toggle, not a tick: Setup has no tick boxes (owner
+        # 2026-10-07, the Launch tick is gone).
+        sections.append(sch.section(
+            "Display",
+            # UX audit 2026-10-07 proposal 6: one step up in text and the
+            # sheet's keys at 44 px, for gloves and for reading across the
+            # bench. The Web view draws it; a desktop view ignores it.
+            sch.toggle("Bench scale", "bench_scale", "set_bench_scale",
+                       "On", "Off", on_args=(True,), off_args=(False,),
+                       on_role="go", off_role="neutral",
+                       tooltip="Bench scale: larger text and 44 px keys, "
+                               "for gloves and reading across the bench"),
+            layout="row",
+        ))
         if PROFILES_ENABLED:
             sections.append(self._account_section())
         return sch.schema(*sections)
@@ -3472,7 +3518,10 @@ class Setup(PortProbe, Panel):
             found = dict(self._found)
         for key, row in self._rows.items():
             setattr(self, f"{key}_enabled", self._will_launch(key, row, found))
-            setattr(self, f"{key}_status", self._row_status(key, row, found))
+            status = self._row_status(key, row, found)
+            # Sentence case, once, here (BUGFIX M7): a view no longer has to
+            # capitalise the word it was handed.
+            setattr(self, f"{key}_status", status[:1].upper() + status[1:])
         self._refresh_summary()
 
     def _row_locked(self, row):

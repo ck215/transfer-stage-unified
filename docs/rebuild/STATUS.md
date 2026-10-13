@@ -87,8 +87,10 @@ wire is pinned by `tests/golden/`.
 - Red Percent: ONE mode, a row when red % changes (the 2026-09-21/22 "fastest sampling" part is AMENDED 2026-10-07: settled frames at the source rate, see "Round 2026-10-07"); red
   threshold only (green/blue caps fixed at 100 internally); Stage X/Y
   annotations dropped; velocity only between distinct 10 Hz position samples.
-- Probe distances/speeds/brake fields are ints to the operator (floats on
-  the wire, unchanged).
+- Probe distances and brake fields are ints to the operator (floats on
+  the wire, unchanged). Speeds (owner 2026-10-12): each speed entry has a unit
+  toggle, % of max (0.1 % steps) / steps/s (whole) / µm/s (Stepper Probe only);
+  the stored value stays whole steps/s; the unit is a per-account preference.
 - Manual Speed is live in manual mode (2026-09-26): adjusting it on the fly
   while jogging is a feature; the next 50 Hz jog frame carries the new value.
   Its entry is `disabled_when=("autonomous",)`; Autonomous Speed, step sizes,
@@ -257,7 +259,9 @@ what landed. The row-by-row closures are in `BUGFIX_PLAN.md`
   a sample and a chip do not; a chip itself is always required for a flake. It is ON by default
   again (`STATION_SAMPLE_MAP=0` turns it off).
 - **Speed dials are percent** over per-device ceilings (stepper 3200, chuck 600
-  steps/s), steps/s as a secondary readout.
+  steps/s), steps/s as a secondary readout. AMENDED 2026-10-12 (owner): every
+  speed entry has a unit toggle, % (0.1 % steps) / steps/s / µm/s (Stepper only),
+  per account; the other units are the small line, on the Dashboard too.
 - **User accounts**: `model/user_store.py` (scrypt passwords, `users.sqlite`),
   `model/user.py` (the User owns a config the Controller loads; Guest = the
   station defaults; since 2026-10-08 a `Panel`, not a device `Model`, drawn as the
@@ -561,11 +565,19 @@ bench-only", `CHECKPOINT.md`) are not repeated.
   delete them.
 - **DONE 2026-10-10: the Web finalizer** (`b8fb9f8`, `a60ab57`, merge `1e9abe1`): Finalize Data on the Transfer Map page, hosted model `src/model/finalizer.py`. In-page video playback landed after, on `rb-video` (see "Landed 2026-10-10").
 - **ENG: per-user layout, `default_fields`, `sample_base`.** Reserved
-  settings keys only (`53abaee`); nothing reads them.
-- **ENG: a design and accessibility pass with the primary skills**
-  (`impeccable`, `web-design-guidelines`), owed since 2026-10-08 (not
-  installed on the lab PC; the night's passes used design-critique,
-  accessibility-review and ux-copy).
+  settings keys only (`53abaee`); nothing reads them. Proposal:
+  `PER-USER-SETTINGS-PROPOSAL.md` (C-12).
+- **DONE 2026-10-11 on `rb-web-a11y` (merged into `wave3-2026-10-11`): OI-6, the design and
+  accessibility pass with the primary skills** (`impeccable`,
+  `web-design-guidelines`; static read only, nothing rendered). No S1 or S2;
+  four S3 and five S4 in `docs/reviews/web-a11y-pass-2026-10-11.md`, three
+  fixed (the color-scheme meta, the region canvas's `role="img"`, and the
+  bench scale below), the rest left for the owner: Windows forced-colors
+  styling, the page title and history, 24 px checkboxes. Also built there:
+  UX audit 2026-10-07 proposal 6, Setup > Display > Bench scale (the base
+  size one step up and the sheet keys at 44 px; remembered per user, a
+  Guest's in the station file; built on the existing `--font-size`).
+  Open: a look at it on a real display, and the owner's calls in the review.
 - **DONE 2026-10-10 (`rb-ux` merge `5053762`, `rb-fixes` merges `e317ae5` and `1e9abe1`):**
   - Hard reset is refused during a scan, and a scan during a reset (`0dd4a57`, architecture audit #13b).
   - The Update row no longer names an env var in dev/SIM (`571d95d`, `d2a1fb5`; UX 10-08 #14).

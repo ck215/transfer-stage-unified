@@ -460,9 +460,9 @@ def test_a_completed_scan_assigns_what_it_identified_without_being_asked(
     _join(panel)
     assert panel.stepper_probe_port == "/dev/ttyUSB0"
     assert panel.temperature_controller_port == "/dev/ttyUSB1"
-    assert panel.stepper_probe_status == "detected: Stepper Probe"
+    assert panel.stepper_probe_status == "Detected: Stepper Probe"
     assert panel.smc100_rotator_enabled is False
-    assert panel.smc100_rotator_status == "not connected"
+    assert panel.smc100_rotator_status == "Not connected"
 
 
 def test_a_cancelled_scan_assigns_nothing(panel, monkeypatch):
@@ -500,7 +500,7 @@ def test_a_scan_leaves_a_row_the_operator_set_by_hand_alone(panel, monkeypatch):
     panel.scan()
     _join(panel)
     assert panel.stepper_probe_port == SIM
-    assert panel.stepper_probe_status == "simulated"
+    assert panel.stepper_probe_status == "Simulated"
     assert panel._found == {"/dev/ttyUSB0": "Stepper Probe"}
 
 

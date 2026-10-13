@@ -9,9 +9,10 @@ the floor and reported as success.
 class Refused(Exception):
     """A precondition said no. Nothing was attempted."""
 
-    def __init__(self, reason):
+    def __init__(self, reason, attr=None):
         super().__init__(reason)
         self.reason = reason
+        self.attr = attr    # the field the refusal is about (O21), if one
 
 
 class NeedsConfirm(Exception):
@@ -30,7 +31,7 @@ class Result:
     OK, REFUSED, FAILED, CONFIRM = "ok", "refused", "failed", "needs_confirm"
 
     def __init__(self, status, value=None, reason="", command="", inputs=None,
-                 exception=None, args=()):
+                 exception=None, args=(), attr=None):
         self.status = status
         self.value = value
         self.reason = reason          # operator-facing sentence; "" for ok
@@ -38,6 +39,7 @@ class Result:
         self.inputs = inputs or {}
         self.args = tuple(args)       # for needs_confirm: re-run with (*args, True)
         self.exception = exception
+        self.attr = attr              # the offending model attribute, if any
 
     @property
     def is_ok(self):
@@ -62,9 +64,12 @@ class Result:
         return f"<Result {self.status}{' ' + repr(self.reason) if self.reason else ''}>"
 
     def to_dict(self):
-        return {"status": self.status, "reason": self.reason,
+        data = {"status": self.status, "reason": self.reason,
                 "command": self.command, "value": _plain(self.value),
                 "inputs": dict(self.inputs), "args": list(self.args)}
+        if self.attr:
+            data["attr"] = self.attr
+        return data
 
 
 def _plain(value):

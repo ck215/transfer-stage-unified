@@ -43,7 +43,7 @@ render from.
 ELEMENT_TYPES = frozenset({
     "readonly", "entry", "button", "toggle", "checkbox", "dropdown",
     "region_select", "file_save", "file_open", "plot", "image", "indicator",
-    "log_stream", "internal",
+    "log_stream", "internal", "choice",
 })
 
 #: Semantic roles. Renderers map these to their own palettes.
@@ -118,7 +118,8 @@ def schema(*sections):
 
 
 def readonly(text, model_attr, *, param=None, format=None, role="neutral",
-             rail=False, unit=None, secondary=False, lead=None):
+             rail=False, unit=None, secondary=False, lead=None,
+             dashboard=False):
     """A value the operator reads and cannot write. `rail=True` marks one of
     the few numbers the operator watches constantly: the opened model's
     focal readings. `unit` is drawn small beside the number (a `param`
@@ -127,7 +128,10 @@ def readonly(text, model_attr, *, param=None, format=None, role="neutral",
     steps/s under a percent speed dial, owner ruling 2026-10-07). `lead` is
     a short word a secondary readout says before its value ("Now:", the
     reading under the entry that overrides it, UX audit 2026-10-08 #15); a
-    readout with a lead is shown even while it has nothing to report."""
+    readout with a lead is shown even while it has nothing to report.
+    `dashboard=True` (secondary lines only) keeps the line on the
+    Dashboard's tile, where a secondary line is otherwise left off (the other
+    units of a speed, 2026-10-12)."""
     element = {
         "type": "readonly", "text": text, "model_attr": model_attr,
         "writable": False, "role": role,
@@ -136,6 +140,10 @@ def readonly(text, model_attr, *, param=None, format=None, role="neutral",
         element["rail"] = True
     if secondary:
         element["secondary"] = True
+    if dashboard:
+        if not secondary:
+            raise ValueError(f"readonly {text!r}: dashboard belongs to a secondary readout")
+        element["dashboard"] = True
     if lead:
         if not secondary:
             raise ValueError(f"readonly {text!r}: a lead belongs to a secondary readout")
@@ -190,6 +198,39 @@ def button(text, command, *, inputs=(), args=(), role="neutral", confirm=None,
     if stop:
         element["stop"] = True
     return _gate(element, enabled_when, disabled_when)
+
+
+def choice(text, model_attr, param, options, *, enabled_when=None,
+           disabled_when=None):
+    """One of a few options, all in view: a segmented control (the unit a
+    speed is shown in, 2026-10-12). Written through the ordinary commit
+    path (`Panel.set_value`, `run("_commit")`), so it is `writable` and its
+    `param` parses and its model attribute validates; there is no command.
+    `options` are the words on the segments, in order; the model refuses any
+    other. `label` is the group's accessible name (the param's label)."""
+    options = [str(o) for o in options]
+    if len(options) < 2:
+        raise ValueError(f"choice {model_attr!r}: a choice needs at least two options")
+    element = {
+        "type": "choice", "text": text, "model_attr": model_attr,
+        "options": options, "writable": True, "role": "neutral",
+        "label": param.label,
+    }
+    element.update(param.to_schema())
+    return _gate(element, enabled_when, disabled_when)
+
+
+def shown_when(element, attr, *values):
+    """Mark one built element as DRAWN only while the model's value `attr`
+    (a `state["values"]` key) is one of `values`. A renderer rule, like
+    `phased` is for phases: the model's allow-list (`Panel._allows`) is
+    unchanged, so a hidden entry still commits (a profile may set it)."""
+    if not isinstance(attr, str) or not attr:
+        raise ValueError(f"element {element.get('text')!r}: shown_when needs a value name")
+    if not values:
+        raise ValueError(f"element {element.get('text')!r}: shown_when needs at least one value")
+    element["shown_when"] = {"attr": attr, "values": [str(v) for v in values]}
+    return element
 
 
 def toggle(text, model_attr, command, true_text, false_text, *,
@@ -373,8 +414,11 @@ def plot(text, data_command, *, x_label="", y_label="", role="neutral",
     }
 
 
-def log_stream(text, source_command, *, role="neutral", detached=False):
-    """A scrolling text feed.
+def log_stream(text, source_command, *, role="neutral", detached=False,
+               empty=None):
+    """A scrolling text feed. `empty` (BUGFIX E2) is the one sentence a view
+    draws while the feed has no lines, as on `plot` and `image`; left out, the
+    element carries no key and a view uses its own default for the command.
 
     `detached` (G4): the feed is not drawn in the panel. The renderer draws
     a button in its place that opens ONE non-modal window holding the feed;
@@ -382,10 +426,13 @@ def log_stream(text, source_command, *, role="neutral", detached=False):
     and the feed's source command is polled only while it is open
     (`PanelView._wants_data`).
     """
-    return {
+    element = {
         "type": "log_stream", "text": text, "source_command": source_command,
         "writable": False, "role": role, "detached": bool(detached),
     }
+    if empty is not None:
+        element["empty"] = str(empty)
+    return element
 
 
 def _gate(element, enabled_when, disabled_when, enabled_by=None):

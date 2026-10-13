@@ -23,7 +23,7 @@ Owner answers of 2026-10-04:
   salted scrypt hash in `users.sqlite`. The JSON files here still never
   hold a credential (`put_user_record` refuses one).
 - **Q4, what a user may keep**: `USER_PARAMS` (step sizes, manual and
-  autonomous speed, the rotator step); `STATION_PARAMS` are station-only
+  autonomous speed and the unit each is shown in, the rotator step); `STATION_PARAMS` are station-only
   (the heater's PID and offset, Red Percent's `red_min`, the Sample DB's
   um per count); `NEVER_PARAMS` (the brake fields) are never a preference.
   Anything else (a setpoint, a target) is the operator's live value, not a
@@ -52,7 +52,10 @@ AUTH_STATION, AUTH_OFFLINE, AUTH_VERIFIED = "station", "offline-unverified", "ve
 
 #: Q4 (owner 2026-10-04).
 USER_PARAMS = frozenset({"x_step", "y_step", "z_step", "x_dist", "y_dist", "z_dist",
-                         "full_speed", "man_full_speed", "step_deg"})
+                         "full_speed", "man_full_speed", "step_deg",
+                         # The unit each probe speed entry is shown in
+                         # (owner, 2026-10-12): a display preference.
+                         "full_speed_unit", "man_full_speed_unit"})
 STATION_PARAMS = frozenset({"p_term", "i_term", "d_term", "offset", "red_min",
                             "um_per_count"})
 NEVER_PARAMS = frozenset({"slow_speed", "brake_distance"})

@@ -30,7 +30,7 @@
     {
       "page": "Chuck Positioner",
       "anchor": {"text": "Autonomous speed"},
-      "say": "Autonomous speed is how fast a Step moves, as a percent of this board's 600 steps/s ceiling (lower than the probes'). The steps/s figure with it is what is sent. It is locked while the stage is in a mode.",
+      "say": "Autonomous speed is how fast a Step moves, as a percent of this board's 600 steps/s ceiling (lower than the probes') or in steps/s, as its Unit switch picks. Steps/s is what is sent. It is locked while the stage is in a mode.",
       "wait": null
     },
     {

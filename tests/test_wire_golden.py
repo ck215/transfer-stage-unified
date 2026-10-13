@@ -13,7 +13,8 @@ no longer re-captured.
 
 Every test below replays the captured scenarios against the new `src/`
 classes through a recording fake port and compares payload lists byte for
-byte.
+byte. The gate is strict: there is no xfail, no skip and no list of families
+still "awaiting" an implementation; a scenario whose bytes differ fails the run.
 
 `_build_probe`, `_build_heater` and `_build_smc` are the only places that
 touch the new construction API. If the implementing agent's constructor
@@ -32,16 +33,6 @@ from result import Refused
 from tests.golden import capture as golden_capture
 
 GOLDEN_DIR = os.path.dirname(os.path.abspath(golden_capture.__file__))
-
-#: Reasons, by the file whose implementation each family is waiting on. Used
-#: verbatim as the xfail reason so a run says which stub is still a stub.
-AWAITING = {
-    "probe": "awaiting src/model/probe.py implementation",
-    "heater": "awaiting src/model/heater.py implementation",
-    "smc100": "awaiting src/devices/smc100.py and "
-              "src/model/rotator.py implementation",
-}
-
 
 def _load(filename):
     with open(os.path.join(GOLDEN_DIR, filename), encoding="utf-8") as handle:
