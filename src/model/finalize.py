@@ -75,8 +75,12 @@ def _number_key(text):
 
 
 def _order(row):
+    """Sample, then chip, then flake, then cut (owner 2026-10-13: as little
+    sample swapping and searching as possible); the trial number only breaks
+    a tie between two cuts with the same number."""
     return (_number_key(row.get("sample_id")), _number_key(row.get("chip_id")),
-            _number_key(row.get("flake_id")), row["id"])
+            _number_key(row.get("flake_id")), _number_key(row.get("cut_id")),
+            row["id"])
 
 
 #: Temporary (owner, Ian, 2026-10-13): the one experiment the finalizer
@@ -105,7 +109,7 @@ def in_experiment(row, experiment):
 def queue(rows, *, include_all=False, only_missing=False, experiment=None):
     """The trials to walk, one sample at a time.
 
-    Ordered by sample, chip, flake, then trial number. Invalid and aborted
+    Ordered by sample, chip, flake, then cut (trial number breaks ties). Invalid and aborted
     trials are left out unless `include_all`; `only_missing` keeps just the
     trials with an unfilled property; `experiment` (see `EXPERIMENT`) keeps
     just that experiment's trials. Each entry is the row's identity plus

@@ -133,3 +133,15 @@ def test_widths_and_the_channel_height_take_a_min_and_a_max():
 def test_a_range_that_does_not_hold_together_is_refused(raw, current):
     with pytest.raises(ValueError):
         fin.parse_fields(raw, METHODS, current=current)
+
+
+def test_the_walk_goes_by_chip_then_flake_then_cut_never_by_trial_number():
+    """Owner 2026-10-13: walk the trials so the sample is swapped and searched
+    as little as possible: one sample, then each chip, then each flake on it,
+    and the cuts on a flake in cut order, whatever order they were recorded."""
+    rows = [row(10, chip_id="2", flake_id="1", cut_id="1"),
+            row(11, chip_id="1", flake_id="3", cut_id="2"),
+            row(12, chip_id="1", flake_id="3", cut_id="1"),
+            row(13, chip_id="1", flake_id="10", cut_id="1"),
+            row(14, chip_id="1", flake_id="3", cut_id="10")]
+    assert [t["id"] for t in fin.queue(rows)] == [12, 11, 14, 13, 10]
