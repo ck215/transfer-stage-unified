@@ -184,9 +184,15 @@ def parse_fields(raw, methods, current=None):
             out[name] = str(text).strip()
         else:
             raise ValueError(f"{name} is not something the finalizer sets.")
+    def known(column):
+        return out.get(column) is not None or current.get(column) is not None
     for value, sigma in SIGMA_OF.items():
-        if sigma in out and out.get(value) is None and current.get(value) is None:
-            raise ValueError(f"{sigma}: type the value this is the uncertainty of.")
+        # The value, or its min and max (owner 2026-10-13: a channel that
+        # varies along the cut has a range, no one value).
+        ranged = value in RANGE_OF and all(known(c) for c in RANGE_OF[value])
+        if sigma in out and not known(value) and not ranged:
+            raise ValueError(f"{sigma}: type the value (or its min and max) "
+                             "this is the uncertainty of.")
     for value, (low, high) in RANGE_OF.items():
         if not ({value, low, high} & set(out)):
             continue
