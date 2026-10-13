@@ -183,7 +183,8 @@ class Finalizer(Model):
             if text != self._loaded.get(attr, ""):
                 out[column] = text
         # An optical width typed with no method is read off the capture.
-        if out.get("width_optical_um") and not (self._method or "").strip():
+        optical = ("width_optical_um", "width_optical_min_um", "width_optical_max_um")
+        if any(out.get(c) for c in optical) and not (self._method or "").strip():
             out["width_optical_method"] = METHODS[0]
         return out
 
