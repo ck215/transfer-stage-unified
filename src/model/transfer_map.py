@@ -3462,10 +3462,17 @@ class TransferMap(store_choice.StorePrompt, Model):
                  "video_path": "", "video_kind": "none", "frame_paths": [],
                  "frames": row.get("video_frames") or 0,
                  "row": dict(row)}
-        media.update(self._flake_search_pictures(row))
         stored = row.get("video_path")
         if stored:
             path = Path(stored)
+            # A store restored on another computer keeps the recording
+            # computer's absolute path (owner 2026-10-13): the trial's own
+            # folder beside the store holds the same recording, and is what
+            # the page can play (`/api/video` serves only the output root).
+            name = str(stored).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            here = folder / name if name else None
+            if here is not None and (here.is_file() or here.is_dir()):
+                path = here
             if path.is_file():
                 media["video_path"], media["video_kind"] = str(path), "file"
             elif path.is_dir():
@@ -3476,6 +3483,19 @@ class TransferMap(store_choice.StorePrompt, Model):
     #: The flake-search pictures' size in the finalizer: large enough to
     #: find the flake again on the chip.
     FLAKE_PICTURE_PX = 1200
+
+    @property
+    def sample_db_path(self):
+        """The open Sample DB's store file, or None: what the finalizer keys
+        its flake pictures on (they appear once the Sample DB opens)."""
+        return self._sample_db
+
+    def finalize_flake_pictures(self, trial_id):
+        """The trial's flake's flake-search pictures (`_flake_search_pictures`)."""
+        row = self._store.trial(int(trial_id or 0))
+        if row is None:
+            raise Refused(f"No trial {trial_id} in the trial store.")
+        return self._flake_search_pictures(row)
 
     def _flake_search_pictures(self, row):
         """The trial's flake's own pictures from the Sample DB's store

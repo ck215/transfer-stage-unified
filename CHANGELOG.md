@@ -25,6 +25,10 @@ How this file is kept:
 - **Min/max for variable channels** (owner 2026-10-13, trial store v10): the AFM width, the optical width and the AFM channel (feature) height each take a min and a max in the finalizer, refused when min > max or the value lies outside them.
 - **Flake search pictures in the finalizer** (owner 2026-10-13): the finalizer's Pictures show the trial's flake's 10x and 100x from the Sample DB (the flake search), to find the flake again on the chip; another magnification only when neither exists. The Sample DB must be open.
 
+### Fixed
+
+- **The finalizer plays a restored store's videos** (owner 2026-10-13): a store copied from another computer kept that computer's video paths, so the page could not play a cut's video; the video is now found in the trial's own folder beside the store and plays (and seeks) in the page, to tell the cuts on one flake apart.
+
 - **Probe speed on the trial sheet.** While a trial is live or marked, the
   Transfer Map shows the coupled probe's Manual Speed, in the unit chosen on
   the probe's page, so the slow approach and the cut's speed are set without

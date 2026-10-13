@@ -111,6 +111,24 @@ def test_media_names_the_stills_and_the_video(tm, tmp_path):
     assert media["video_kind"] == "file" and media["frames"] == 10
 
 
+def test_media_finds_a_moved_stores_video_in_the_trials_own_folder(tm):
+    """Owner 2026-10-13: a store restored on another computer keeps the
+    recording computer's absolute video path; the video is still found in
+    the trial's folder beside the store, so the page can play it."""
+    t = tm.add()
+    folder = tm.pictures_root / str(t)
+    folder.mkdir(parents=True)
+    (folder / "screen.mp4").write_bytes(b"mp4")
+    tm._store.update(t, {"video_path": "/home/elsewhere/stores/x/transfer_map/9/screen.mp4",
+                         "video_frames": 10})
+    media = tm.run("finalize_media", None, (t,)).value
+    assert media["video_kind"] == "file"
+    assert media["video_path"] == str(folder / "screen.mp4")
+    gone = tm.add()
+    tm._store.update(gone, {"video_path": "/home/elsewhere/9/screen.mp4"})
+    assert tm.run("finalize_media", None, (gone,)).value["video_kind"] == "none"
+
+
 def test_media_of_a_frames_folder_lists_its_jpegs_in_order(tm):
     t = tm.add()
     folder = tm.pictures_root / str(t) / "frames"
@@ -150,26 +168,39 @@ def test_media_brings_the_flake_search_pictures_from_the_sample_db(tmp_path):
     class SampleDb:
         db_path = tmp_path / "s.sqlite"
 
+    from model.finalizer import Finalizer
     model = TransferMap(db_path=tmp_path / "map.sqlite",
                         sample_store_factory=lambda path: Pictures())
     model.open()
     try:
-        model.on_model_added("Sample DB", SampleDb())
         base = {"started_at": "2026-10-06T10:00:00", "tip_id": "T1", "status": "recorded",
                 "origin": "recorded", "sample_id": "S1", "chip_id": "1", "cut_id": "1"}
         both = model._store.insert({**base, "flake_id": "2"})
         other = model._store.insert({**base, "flake_id": "3"})
         none = model._store.insert({**base, "flake_id": "4"})
-        media = model.run("finalize_media", None, (both,)).value
+        # The finalizer shows its first trial before the Sample DB opens (the
+        # station's launch order); the pictures appear once it does.
+        finalizer = Finalizer()
+        finalizer.EXPERIMENT = None              # walk every trial, not the 7° series
+        finalizer.on_model_added("Transfer Map", model)
+        assert finalizer.flake_10x_png == b""
+        before = finalizer.flake_key
+        model.on_model_added("Sample DB", SampleDb())
+        assert finalizer.flake_key != before
+        assert finalizer.flake_10x_png.startswith(b"\x89PNG")
+        assert finalizer.flake_search_text == "From the Sample DB: 10x and 100x."
+        def pictures(trial):
+            return model.finalize_flake_pictures(trial)
+        media = pictures(both)
         assert media["flake_10x"].startswith(b"\x89PNG")
         assert media["flake_100x"].startswith(b"\x89PNG")
         assert media["flake_10x"] != media["flake_100x"]
         assert media["flake_other"] == b""
-        media = model.run("finalize_media", None, (other,)).value
+        media = pictures(other)
         assert media["flake_10x"] == media["flake_100x"] == b""
         assert media["flake_other"].startswith(b"\x89PNG")
         assert media["flake_other_label"] == "20x"
-        media = model.run("finalize_media", None, (none,)).value
+        media = pictures(none)
         assert media["flake_10x"] == media["flake_100x"] == media["flake_other"] == b""
     finally:
         model.close()

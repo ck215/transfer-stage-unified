@@ -108,6 +108,7 @@ class Finalizer(Model):
         self._method = ""
         self._status = ""
         self._revision = 0
+        self._flakes = (None, {})    # (flake_key, the flake search's pictures)
         self.sim = sim
 
     # -- the Transfer Map ----------------------------------------------------
@@ -383,23 +384,47 @@ class Finalizer(Model):
         return self._still("before_full")
 
     @property
+    def flake_key(self):
+        """The shown trial and the Sample DB's store: the flake pictures are
+        read again when either changes (the Sample DB may open after the
+        trial is first shown)."""
+        entry, mapping = self._entry, self._map
+        if entry is None or mapping is None:
+            return ""
+        return f"{entry['id']}:{getattr(mapping, 'sample_db_path', None) or ''}"
+
+    def _flake_pictures(self):
+        key = self.flake_key
+        if not key:
+            return {}
+        if self._flakes[0] != key:
+            try:
+                pictures = self._map.finalize_flake_pictures(self._entry["id"])
+            except Exception as exc:     # no pictures is not a broken form
+                events.debug("Finalizer Flake Pictures", repr(exc), source=self.NAME,
+                             exception=exc)
+                pictures = {}
+            self._flakes = (key, pictures)
+        return self._flakes[1]
+
+    @property
     def flake_10x_png(self):
-        return self._still("flake_10x")
+        return self._flake_pictures().get("flake_10x") or b""
 
     @property
     def flake_100x_png(self):
-        return self._still("flake_100x")
+        return self._flake_pictures().get("flake_100x") or b""
 
     @property
     def flake_other_png(self):
-        return self._still("flake_other")
+        return self._flake_pictures().get("flake_other") or b""
 
     @property
     def flake_search_text(self):
         """What the Sample DB holds of this trial's flake."""
-        media = self._media
-        if media is None:
+        if self._media is None:
             return ""
+        media = self._flake_pictures()
         found = [label for key, label in (("flake_10x", "10x"), ("flake_100x", "100x"))
                  if media.get(key)]
         if found:
@@ -482,7 +507,7 @@ class Finalizer(Model):
             sch.section(
                 "Pictures",
                 sch.readonly("Flake search", "flake_search_text"),
-                *(sch.image(label, f"{name}_png", model_attr="still_key",
+                *(sch.image(label, f"{name}_png", model_attr="flake_key",
                             empty="No picture at this magnification.")
                   for name, label in FLAKE_PICTURES),
                 *(sch.image(label, f"{name}_png", model_attr="still_key",
