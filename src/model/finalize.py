@@ -88,8 +88,10 @@ def _order(row):
 #: 100/200/300 steps/s, plus the 400 supplemental): recorded trials only, so
 #: imports, other tilts and off-plan speeds stay out. `Finalizer.EXPERIMENT`
 #: passes it; None (every other caller) walks every valid trial, as before.
+#: `needs_video` (owner 2026-10-13): a cut with no video the page plays is
+#: left out (`TransferMap.finalize_queue`), more cuts are made instead.
 EXPERIMENT = {"label": "Ian, 10/13/26", "origin": "recorded", "tilt_deg": 7.0,
-              "speeds": (100.0, 200.0, 300.0, 400.0)}
+              "speeds": (100.0, 200.0, 300.0, 400.0), "needs_video": True}
 
 
 def in_experiment(row, experiment):

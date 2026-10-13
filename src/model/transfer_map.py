@@ -3435,10 +3435,44 @@ class TransferMap(store_choice.StorePrompt, Model):
 
     def finalize_queue(self, only_missing=False, experiment=None):
         """The trials to walk, in sample order (`finalize.queue`); with
-        `experiment`, only that experiment's (`finalize.EXPERIMENT`)."""
-        return finalize.queue(self._store.trials(),
-                              only_missing=bool(only_missing),
+        `experiment`, only that experiment's (`finalize.EXPERIMENT`), and
+        when it `needs_video`, only the cuts with a video the page plays
+        (`finalize_left_out` names the others)."""
+        rows = self._store.trials()
+        if experiment and experiment.get("needs_video"):
+            rows = [r for r in rows if self._trial_video(r)[1] == "file"]
+        return finalize.queue(rows, only_missing=bool(only_missing),
                               experiment=experiment)
+
+    def finalize_left_out(self, experiment=None):
+        """The ids of `experiment`'s walkable trials left out for having no
+        video the page plays (owner 2026-10-13: such a cut cannot be told
+        apart from the others on its flake): [] unless it `needs_video`."""
+        if not (experiment and experiment.get("needs_video")):
+            return []
+        return [t["id"] for t in finalize.queue(self._store.trials(), experiment=experiment)
+                if self._trial_video(self._store.trial(t["id"]))[1] != "file"]
+
+    def _trial_video(self, row):
+        """(path, kind) of a trial's video: kind "file" (an MP4), "frames" (a
+        folder of JPEGs) or "none" (path None). A store restored on another
+        computer keeps the recording computer's absolute path (owner
+        2026-10-13): the trial's own folder beside the store holds the same
+        recording, and is what the page can play (`/api/video` serves only
+        the output root), so it is looked for there first, by name."""
+        stored = row.get("video_path")
+        if not stored:
+            return None, "none"
+        path = Path(stored)
+        name = str(stored).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        here = self.pictures_root / str(row["id"]) / name if name else None
+        if here is not None and (here.is_file() or here.is_dir()):
+            path = here
+        if path.is_file():
+            return path, "file"
+        if path.is_dir():
+            return path, "frames"
+        return None, "none"
 
     def finalize_media(self, trial_id):
         """What the window shows beside the form: the stills (PNG bytes, b""
@@ -3462,21 +3496,10 @@ class TransferMap(store_choice.StorePrompt, Model):
                  "video_path": "", "video_kind": "none", "frame_paths": [],
                  "frames": row.get("video_frames") or 0,
                  "row": dict(row)}
-        stored = row.get("video_path")
-        if stored:
-            path = Path(stored)
-            # A store restored on another computer keeps the recording
-            # computer's absolute path (owner 2026-10-13): the trial's own
-            # folder beside the store holds the same recording, and is what
-            # the page can play (`/api/video` serves only the output root).
-            name = str(stored).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-            here = folder / name if name else None
-            if here is not None and (here.is_file() or here.is_dir()):
-                path = here
-            if path.is_file():
-                media["video_path"], media["video_kind"] = str(path), "file"
-            elif path.is_dir():
-                media["video_path"], media["video_kind"] = str(path), "frames"
+        path, kind = self._trial_video(row)
+        if path is not None:
+            media["video_path"], media["video_kind"] = str(path), kind
+            if kind == "frames":
                 media["frame_paths"] = sorted(str(p) for p in path.glob("*.jpg"))
         return media
 

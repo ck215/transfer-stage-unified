@@ -111,6 +111,32 @@ def test_media_names_the_stills_and_the_video(tm, tmp_path):
     assert media["video_kind"] == "file" and media["frames"] == 10
 
 
+def test_an_experiment_that_needs_video_leaves_out_cuts_the_page_cannot_play(tm):
+    """Owner 2026-10-13: a cut with no video cannot be told apart from the
+    others on its flake, nor its colour re-read, so the experiment walk
+    leaves it out (a folder of JPEG frames is not a video the page plays)
+    and says which were left out; without the rule nothing changes."""
+    experiment = {"label": "x", "origin": "recorded", "tilt_deg": 7.0,
+                  "speeds": (200.0,), "needs_video": True}
+    with_video, frames, nothing = (tm.add(tilt_deg=7.0, speed_steps_s=200.0, cut_id=str(n))
+                                   for n in (1, 2, 3))
+    folder = tm.pictures_root / str(with_video)
+    folder.mkdir(parents=True)
+    (folder / "screen.mp4").write_bytes(b"mp4")
+    tm._store.update(with_video, {"video_path": "/elsewhere/9/screen.mp4"})
+    jpegs = tm.pictures_root / str(frames) / "frames"
+    jpegs.mkdir(parents=True)
+    (jpegs / "000000.jpg").write_bytes(b"j")
+    tm._store.update(frames, {"video_path": str(jpegs)})
+    queue = tm.finalize_queue(False, experiment=experiment)
+    assert [t["id"] for t in queue] == [with_video]
+    assert queue[0]["sample_count"] == 1
+    assert tm.finalize_left_out(experiment) == [frames, nothing]
+    loose = dict(experiment, needs_video=False)
+    assert len(tm.finalize_queue(False, experiment=loose)) == 3
+    assert tm.finalize_left_out(loose) == []
+
+
 def test_media_finds_a_moved_stores_video_in_the_trials_own_folder(tm):
     """Owner 2026-10-13: a store restored on another computer keeps the
     recording computer's absolute video path; the video is still found in

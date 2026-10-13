@@ -109,6 +109,7 @@ class Finalizer(Model):
         self._status = ""
         self._revision = 0
         self._flakes = (None, {})    # (flake_key, the flake search's pictures)
+        self._left_out = []          # trial ids with no video the page plays
         self.sim = sim
 
     # -- the Transfer Map ----------------------------------------------------
@@ -200,6 +201,8 @@ class Finalizer(Model):
         queue = self._map.finalize_queue(self._only_missing,
                                          experiment=self.EXPERIMENT)
         self._queue = queue
+        left_out = getattr(self._map, "finalize_left_out", None)
+        self._left_out = left_out(self.EXPERIMENT) if callable(left_out) else []
         ids = [t["id"] for t in queue]
         if keep and shown in ids:
             self._index = ids.index(shown)
@@ -364,6 +367,16 @@ class Finalizer(Model):
         return self._status
 
     @property
+    def left_out_text(self):
+        """The experiment's cuts left out of the walk for having no video
+        (owner 2026-10-13)."""
+        ids = self._left_out
+        if not ids:
+            return "None: every cut in this experiment has a video."
+        return (f"{len(ids)} cut{'s' if len(ids) != 1 else ''} with no playable video: "
+                "trial " + ", ".join(str(i) for i in ids) + ".")
+
+    @property
     def still_key(self):
         entry = self._entry
         return f"{entry['id']}:{self._revision}" if entry else ""
@@ -491,6 +504,7 @@ class Finalizer(Model):
                 sch.button("Next", "next"),
                 sch.button("Next sample", "next_sample"),
                 sch.readonly("Status", "status_text"),
+                sch.readonly("Left out (no video)", "left_out_text"),
                 tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
