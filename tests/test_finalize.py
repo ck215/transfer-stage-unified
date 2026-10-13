@@ -96,3 +96,52 @@ def test_queue_entries_carry_readable_labels_for_what_is_missing():
     entry = fin.queue([row(1, width_um=1.0)])[0]
     assert entry["missing_labels"][0] == "Sample thickness"
     assert len(entry["missing_labels"]) == len(entry["missing"]) == 4
+
+
+def test_the_experiment_filter_keeps_only_the_7_degree_speed_by_force_series():
+    """Temporary (owner, Ian, 2026-10-13): the finalizer walks only the trials
+    of the 7° speed x force map; an import, another tilt or an off-plan speed
+    is left out."""
+    rows = [row(1, tilt_deg=7.0, speed_steps_s=100.0, origin="recorded"),
+            row(2, tilt_deg=7.0, speed_steps_s=300.0, origin="recorded"),
+            row(3, tilt_deg=6.0, speed_steps_s=250.0, origin="recorded"),
+            row(4, tilt_deg=7.0, speed_steps_s=20.0, origin="recorded"),
+            row(5, tilt_deg=7.0, speed_steps_s=200.0, origin="imported"),
+            row(6, tilt_deg=7.0, speed_steps_s=400.0, origin="recorded")]
+    assert [t["id"] for t in fin.queue(rows, experiment=fin.EXPERIMENT)] == [1, 2, 6]
+    assert [t["id"] for t in fin.queue(rows)] == [1, 2, 3, 4, 5, 6]     # no filter: as before
+    assert fin.EXPERIMENT["label"] == "Ian, 10/13/26"
+
+
+def test_widths_and_the_channel_height_take_a_min_and_a_max():
+    """Owner 2026-10-13: a variable channel is recorded as a range."""
+    out = fin.parse_fields({"width_optical_um": "2.0", "width_optical_min_um": "1.5",
+                            "width_optical_max_um": "2.6", "width_min_um": "1.2",
+                            "width_max_um": "2.1", "channel_height_min_nm": "-1",
+                            "channel_height_max_nm": "4"}, METHODS)
+    assert out["width_optical_min_um"] == 1.5 and out["width_optical_max_um"] == 2.6
+    assert out["channel_height_min_nm"] == -1.0      # a height may read below the substrate
+
+
+@pytest.mark.parametrize("raw, current", [
+    ({"width_optical_min_um": "3", "width_optical_max_um": "2"}, {}),
+    ({"width_max_um": "1.0"}, {"width_min_um": 1.5}),
+    ({"width_optical_um": "5", "width_optical_max_um": "4"}, {}),
+    ({"channel_height_nm": "1"}, {"channel_height_min_nm": 2.0, "channel_height_max_nm": 3.0}),
+    ({"width_min_um": "0"}, {}),
+])
+def test_a_range_that_does_not_hold_together_is_refused(raw, current):
+    with pytest.raises(ValueError):
+        fin.parse_fields(raw, METHODS, current=current)
+
+
+def test_the_walk_goes_by_chip_then_flake_then_cut_never_by_trial_number():
+    """Owner 2026-10-13: walk the trials so the sample is swapped and searched
+    as little as possible: one sample, then each chip, then each flake on it,
+    and the cuts on a flake in cut order, whatever order they were recorded."""
+    rows = [row(10, chip_id="2", flake_id="1", cut_id="1"),
+            row(11, chip_id="1", flake_id="3", cut_id="2"),
+            row(12, chip_id="1", flake_id="3", cut_id="1"),
+            row(13, chip_id="1", flake_id="10", cut_id="1"),
+            row(14, chip_id="1", flake_id="3", cut_id="10")]
+    assert [t["id"] for t in fin.queue(rows)] == [12, 11, 14, 13, 10]

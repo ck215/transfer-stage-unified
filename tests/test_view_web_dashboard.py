@@ -688,7 +688,7 @@ def test_d_the_real_pair_in_sim_is_one_dashboard(map_station, tmp_path):
     assert out["nested"] and out["shown"], out
     # The map's own, then each hosted model's: RGB analysis, and the Web
     # finalizer (2026-10-10), whose whole form sits behind its one disclosure.
-    assert out["discs"][1:] == ["RGB analysis details", "Finalize data"], out
+    assert out["discs"][1:] == ["RGB analysis details", "Finalize data (Ian, 10/13/26)"], out
     assert len(out["discs"]) == 3, out
 
 

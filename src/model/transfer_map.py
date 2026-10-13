@@ -226,6 +226,12 @@ TRIAL_COLUMNS = (
     # peak. NULL = no Z, no contact before the Mark, or recorded before
     # (`rebuild_force` fills them from the saved shade and Z).
     ("force_past_peak_steps", "REAL"), ("shade_peak_z", "REAL"),
+    # 10 (owner 2026-10-13): a cut's channel can vary along its length, so
+    # the AFM width, the optical width and the AFM channel (feature) height
+    # each carry a min and a max beside their value. NULL = not measured.
+    ("width_min_um", "REAL"), ("width_max_um", "REAL"),
+    ("width_optical_min_um", "REAL"), ("width_optical_max_um", "REAL"),
+    ("channel_height_min_nm", "REAL"), ("channel_height_max_nm", "REAL"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 #: The colour channels Red Percent's rows carry beside `red` (its RGB
@@ -305,9 +311,10 @@ DEFAULT_TIP_MODEL = "TAP300"
 #: columns (`contact_lowered`, `force_position`, `force_class`,
 #: `shade_baseline`, `shade_peak`, `shade_mark`). 9 (owner 2026-10-12): the
 #: force from Z travel past the shade's peak (`force_past_peak_steps`,
-#: `shade_peak_z`). The version is never lowered; a file numbered ahead of
+#: `shade_peak_z`). 10 (owner 2026-10-13): min and max of the AFM and
+#: optical widths and the AFM channel height. The version is never lowered; a file numbered ahead of
 #: its columns is completed.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 #: How an optical width was measured (Q19, owner 2026-10-04: pixels on the
 #: capture-region picture at the Sample DB's um_per_px, the default).
 WIDTH_OPTICAL_METHODS = ("capture_px", "reticle", "vendor_tool", "estimate")
@@ -3425,10 +3432,12 @@ class TransferMap(store_choice.StorePrompt, Model):
         """The word a view with a finalizer window acts on."""
         return "open:finalizer"
 
-    def finalize_queue(self, only_missing=False):
-        """The trials to walk, in sample order (`finalize.queue`)."""
+    def finalize_queue(self, only_missing=False, experiment=None):
+        """The trials to walk, in sample order (`finalize.queue`); with
+        `experiment`, only that experiment's (`finalize.EXPERIMENT`)."""
         return finalize.queue(self._store.trials(),
-                              only_missing=bool(only_missing))
+                              only_missing=bool(only_missing),
+                              experiment=experiment)
 
     def finalize_media(self, trial_id):
         """What the window shows beside the form: the stills (PNG bytes, b""
