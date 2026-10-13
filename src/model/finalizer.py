@@ -36,11 +36,13 @@ IDENTITY_BOXES = (("f_sample_id", "sample_id", "Sample"), ("f_chip_id", "chip_id
             ("f_flake_id", "flake_id", "Flake"), ("f_cut_id", "cut_id", "Cut"),
             ("f_note", "note", "Note"))
 #: (value attr, uncertainty attr, label, unit, kind)
-AFM = (("f_width_um", "f_width_sigma_um", "Channel width", "um"),
-       ("f_thickness_nm", "f_thickness_sigma_nm", "Sample thickness", "nm"),
-       ("f_channel_height_nm", "f_channel_height_sigma_nm", "Channel height", "nm"),
-       ("f_trench_depth_nm", "f_trench_depth_sigma_nm", "Trench depth", "nm"))
-OPTICAL = (("f_width_optical_um", "f_width_optical_sigma_um", "Channel width", "um"),)
+#: Each label names its method (owner 2026-10-13: the AFM and the optical
+#: channel width must never read alike).
+AFM = (("f_width_um", "f_width_sigma_um", "AFM channel width", "um"),
+       ("f_thickness_nm", "f_thickness_sigma_nm", "AFM sample thickness", "nm"),
+       ("f_channel_height_nm", "f_channel_height_sigma_nm", "AFM channel height", "nm"),
+       ("f_trench_depth_nm", "f_trench_depth_sigma_nm", "AFM trench depth", "nm"))
+OPTICAL = (("f_width_optical_um", "f_width_optical_sigma_um", "Optical channel width", "um"),)
 METHODS = ("estimate", "reticle", "capture_px", "vendor_tool")
 #: (min attr, max attr, label, unit): a channel that varies along the cut
 #: (owner 2026-10-13), drawn under its value's row.
