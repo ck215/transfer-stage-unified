@@ -791,6 +791,9 @@ function readoutText(text) {
   return word;
 }
 
+//: The semantic roles (schema.ROLES): what a live `role_attr` may name.
+const ROLE_NAMES = new Set(['neutral', 'go', 'danger', 'warning', 'info']);
+
 function roleClass(role) {
   return 'role-' + (role || 'neutral');
 }
@@ -1066,6 +1069,18 @@ function renderReadonly(panel, element) {
       }
     },
     setEnabled: (flag) => { node.classList.toggle('disabled', !flag); },
+    /** A live role (schema `role_attr`): the state value names the role the
+     *  readout takes now ("danger" at the Transfer Map's Break risk, owner
+     *  2026-10-12); anything not a role falls back to the element's own.
+     *  Written only on the edge (F21). */
+    setRole: (role) => {
+      const next = roleClass(ROLE_NAMES.has(String(role)) ? String(role) : element.role);
+      if (value.classList.contains(next)) return;
+      for (const name of Array.from(value.classList)) {
+        if (name.startsWith('role-')) value.classList.remove(name);
+      }
+      value.classList.add(next);
+    },
   };
   // A playable readout (schema `video_attr`, the finalizer's trial video):
   // the words above stay as the fallback; the player
@@ -3142,6 +3157,7 @@ class PanelCard {
       } else if ((kind === 'readonly' || kind === 'region_select' || kind === 'dropdown') && attr) {
         widget.setText(this.values[attr] === undefined ? '' : this.values[attr]);
         if (element.video_attr && widget.setVideo) widget.setVideo(this.values[element.video_attr]);
+        if (element.role_attr && widget.setRole) widget.setRole(this.values[element.role_attr]);
       } else if (kind === 'toggle' || kind === 'indicator' || kind === 'checkbox') {
         widget.setOn(Boolean(this.values[attr]));
       } else if (kind === 'image' && attr) {

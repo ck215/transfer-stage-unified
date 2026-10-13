@@ -119,7 +119,7 @@ def schema(*sections):
 
 def readonly(text, model_attr, *, param=None, format=None, role="neutral",
              rail=False, unit=None, secondary=False, lead=None,
-             dashboard=False):
+             dashboard=False, role_attr=None):
     """A value the operator reads and cannot write. `rail=True` marks one of
     the few numbers the operator watches constantly: the opened model's
     focal readings. `unit` is drawn small beside the number (a `param`
@@ -131,11 +131,16 @@ def readonly(text, model_attr, *, param=None, format=None, role="neutral",
     readout with a lead is shown even while it has nothing to report.
     `dashboard=True` (secondary lines only) keeps the line on the
     Dashboard's tile, where a secondary line is otherwise left off (the other
-    units of a speed, 2026-10-12)."""
+    units of a speed, 2026-10-12). `role_attr` names a state value holding
+    the role the readout takes while it says so (one of ROLES; anything
+    else falls back to `role`): the Transfer Map's Force estimate turns
+    "danger" at Break risk (owner 2026-10-12)."""
     element = {
         "type": "readonly", "text": text, "model_attr": model_attr,
         "writable": False, "role": role,
     }
+    if role_attr:
+        element["role_attr"] = str(role_attr)
     if rail:
         element["rail"] = True
     if secondary:

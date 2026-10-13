@@ -119,7 +119,12 @@ def test_the_estimate_uses_the_shade_in_the_index_when_there_is_one(tmp_path, mo
     import shutil
     shutil.rmtree(path)                       # the footage is gone; the index suffices
     got = so.estimate_from_footage(path, index, 11.0)
-    assert got["force_class"] in ("Low", "Medium")
+    # Owner 2026-10-12: the index's Z (lowered 10 steps/s) classifies: ~35
+    # steps past the smoothed peak at an 11 s Mark is Break risk, while the
+    # shade position alone (kept beside it) says Low or Medium.
+    assert got["force_past_peak_steps"] == pytest.approx(35, abs=6)
+    assert got["force_class"] == ts.classify_past_peak(got["force_past_peak_steps"])
+    assert ts.classify(got["force_position"]) in ("Low", "Medium")
 
 
 def test_no_mark_means_no_force(tmp_path, monkeypatch):

@@ -165,3 +165,190 @@ def test_the_thresholds_are_named_constants():
     assert ts.classify(0.05) == "Contact" and ts.classify(0.2) == "Low"
     assert ts.classify(0.5) == "Medium" and ts.classify(0.9) == "High"
     assert ts.classify(None) == "No contact"
+
+
+# -- owner 2026-10-12: the force from Z travel past the shade's peak ----------
+# The shade's baseline moved tonight (~145 -> ~120 on the same tips), which
+# stretched the shade scale: trial 46's tip broke reading 0.57 "Medium". The
+# steps the probe was lowered past the smoothed shade's peak are consistent
+# across tips; they classify the force whenever Z is known, and the shade
+# position stays the fallback (and is still kept, for history).
+
+import csv
+import pathlib
+
+TRIAL_46 = pathlib.Path(__file__).parent / "fixtures" / "trial46_shade_z.csv"
+
+
+def lowered(t, contact_s=4.0, peak_at_s=7.0, z0=1000.0, rate=3.0, sign=-1.0):
+    """Z for a probe lowered `rate` steps a second from 1 s (lowering is Z
+    DECREASING, whatever the sign of the absolute value: `z0` may be
+    positive or negative)."""
+    return np.array([z0 - rate * max(0.0, tt - 1.0) for tt in t])
+
+
+def walk_to(past, z0=1000.0, rate=3.0):
+    """A trial lowered until `past` steps beyond the smoothed shade's peak,
+    then held: the tracker at the end, its states on the way."""
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=30.0, end_s=40.0)
+    z = lowered(t, z0=z0, rate=rate)
+    tr = ts.ShadeTracker()
+    states = []
+    for tt, ss, zz in zip(t, s, z):
+        tr.update(float(tt), float(ss), float(zz))
+        states.append(tr.status)
+        if tr.past_peak is not None and tr.past_peak >= past:
+            break
+    return tr, states
+
+
+def test_the_past_peak_thresholds_are_the_owners_named_constants():
+    assert ts.PAST_PEAK_LOW_MAX == 10
+    assert ts.PAST_PEAK_MEDIUM_MAX == 17
+    assert ts.PAST_PEAK_HIGH_MAX == 21
+    assert ts.PAST_PEAK_CONTACT_MAX == 2
+    c = ts.classify_past_peak
+    assert c(None) == "No contact"
+    assert c(-3) == "Contact" and c(0) == "Contact" and c(1) == "Contact"
+    assert c(2) == "Low" and c(9) == "Low"
+    assert c(10) == "Medium" and c(16) == "Medium"
+    assert c(17) == "High" and c(20) == "High"
+    assert c(21) == "Break risk" and c(23) == "Break risk" and c(96) == "Break risk"
+
+
+def test_break_risk_has_words_for_the_status_field():
+    assert ts.status_text("Break risk") == "Break risk"
+
+
+def test_past_peak_is_none_before_contact_and_without_z():
+    t, s = synth(contact_s=99)
+    tr, _ = run(t, s, lowered(t))
+    assert tr.past_peak is None and tr.peak_z is None
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=6.0, end_s=16.0)
+    tr, _ = run(t, s)                                   # no Z at all
+    assert tr.past_peak is None and tr.peak_z is None
+
+
+def test_the_peak_z_is_the_probes_z_where_the_smoothed_shade_peaked():
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=6.0, end_s=16.0)
+    z = lowered(t)
+    tr, _ = run(t, s, z)
+    smooth_peak_t = tr._t[tr._smooth.index(max(tr._smooth))]
+    assert tr.peak_z == pytest.approx(1000.0 - 3.0 * (smooth_peak_t - 1.0), abs=0.01)
+    assert tr.past_peak == pytest.approx(tr.peak_z - z[-1])
+
+
+@pytest.mark.parametrize("past, status", [(0, "Contact"), (5, "Low"),
+                                          (12, "Medium"), (19, "High"),
+                                          (23, "Break risk")])
+def test_each_class_is_read_from_the_steps_past_the_peak(past, status):
+    tr, _ = walk_to(past)
+    assert tr.past_peak == pytest.approx(past, abs=1.0)
+    assert tr.status == status
+
+
+@pytest.mark.parametrize("z0", [1000.0, 25.0, -17021.0])
+def test_lowering_is_z_decreasing_whatever_the_sign_of_z(z0):
+    tr, states = walk_to(23, z0=z0)
+    order = [w for i, w in enumerate(states) if i == 0 or w != states[i - 1]]
+    assert order == ["No contact", "Contact", "Low", "Medium", "High", "Break risk"]
+    assert tr.past_peak > 0
+
+
+def test_raising_the_probe_after_the_peak_is_not_force():
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=6.0, end_s=16.0)
+    z = np.array([1000.0 if tt < 7.5 else 1000.0 + 5 * (tt - 7.5) for tt in t])
+    tr, _ = run(t, s, z)
+    assert tr.past_peak < 0 and tr.status == "Contact"
+    assert tr.position > ts.MEDIUM_MAX                   # the shade alone said High
+
+
+def test_held_z_holds_the_class_while_the_shade_drifts():
+    """Z is the measure: with the probe held past the peak, the class stays
+    where the travel put it, whatever the shade does next."""
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=6.0, end_s=20.0)
+    z = np.array([1000.0 - 3.0 * min(max(0.0, tt - 1.0), 9.0) for tt in t])
+    tr, states = run(t, s, z)
+    assert tr.status == "Medium" and states[-60:] == ["Medium"] * 60
+    assert tr.position > ts.MEDIUM_MAX                   # the shade alone said High
+
+
+def test_without_z_the_shade_position_still_classifies():
+    """Fallback (a trial rebuilt with no Z, a probe that is not wired): the
+    shade position's thirds, exactly as before."""
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=6.0, end_s=16.0)
+    _, states = run(t, s)
+    order = [w for i, w in enumerate(states) if i == 0 or w != states[i - 1]]
+    assert order == ["No contact", "Contact", "Low", "Medium", "High"]
+
+
+def test_the_shade_position_is_still_computed_with_z():
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=4.0, end_s=14.0)
+    tr, _ = run(t, s, lowered(t))
+    assert tr.position == pytest.approx(1.0, abs=0.08)
+
+
+def test_the_snapshot_and_columns_carry_the_steps_past_the_peak():
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=30.0, end_s=40.0)
+    z = lowered(t)
+    tr = ts.ShadeTracker()
+    for tt, ss, zz in zip(t, s, z):
+        tr.update(float(tt), float(ss), float(zz))
+        if tr.past_peak is not None and tr.past_peak >= 12:
+            snap = tr.mark()
+            break
+    assert snap["status"] == "Medium" and snap["past_peak"] == pytest.approx(12, abs=1)
+    assert snap["peak_z"] == tr.peak_z
+    cols = ts.columns(tr)
+    assert cols["force_class"] == "Medium"
+    assert cols["force_past_peak_steps"] == snap["past_peak"]
+    assert cols["shade_peak_z"] == snap["peak_z"]
+    assert cols["force_position"] == snap["position"]   # kept, for history
+
+
+def test_columns_have_no_past_peak_without_z_or_contact():
+    t, s = synth(contact_s=3.0, rise_s=3.0, fall_s=6.0, end_s=16.0)
+    tr, _ = run(t, s)
+    tr.mark()
+    cols = ts.columns(tr)
+    assert cols["force_past_peak_steps"] is None and cols["shade_peak_z"] is None
+    assert cols["force_class"] == "High"                 # the shade fallback
+    tr = ts.ShadeTracker()
+    for i in range(30):
+        tr.update(i / 15, 150.0, 1000.0)
+    tr.mark()
+    cols = ts.columns(tr)
+    assert cols["force_past_peak_steps"] is None and cols["force_class"] is None
+
+
+def _trial_46():
+    with open(TRIAL_46, newline="") as handle:
+        return [(float(r["t_s"]), float(r["shade"]), float(r["z"]))
+                for r in csv.DictReader(handle)]
+
+
+def test_trial_46_reads_break_risk_where_the_shade_said_medium():
+    """The break (2026-10-12, Tip7): the real telemetry excerpt, `t_s` since
+    Arm, `transfer_map.shade` and `stepper_probe.z`. The smoothed shade
+    peaked at z=-17057; by z=-17080 (smoothed shade 168) the probe was 23
+    steps past it and the tip broke. The shade read 0.57, "Medium"."""
+    tr = ts.ShadeTracker()
+    for t, shade, z in _trial_46():
+        tr.update(t, shade, z)
+    assert tr.peak_z == -17057.0
+    assert tr.shade == 168.0 and tr._z[-1] == -17080.0
+    assert tr.past_peak == 23.0
+    assert tr.status == "Break risk"
+    # The old estimator, on the same frames: Medium.
+    assert ts.classify(tr.position) == "Medium"
+    assert tr.position == pytest.approx(0.57, abs=0.01)
+
+
+def test_trial_46_was_break_risk_from_21_steps_past_the_peak():
+    tr = ts.ShadeTracker()
+    first = None
+    for t, shade, z in _trial_46():
+        tr.update(t, shade, z)
+        if first is None and tr.status == "Break risk":
+            first = (z, tr.past_peak)
+    assert first == (-17078.0, 21.0)

@@ -2429,6 +2429,9 @@ PROFILE_ADDED = tm_module.PROFILE_ADDED
 REGION_COLUMNS = ("region_left", "region_top", "region_width", "region_height",
                   "display_left", "display_top", "display_width",
                   "display_height")
+#: Version 9 (owner 2026-10-12): the force from Z travel past the shade's
+#: peak, and the Z of that peak (`model.tip_shade`).
+V9_COLUMNS = ("force_past_peak_steps", "shade_peak_z")
 
 
 def _version(path):
@@ -2451,9 +2454,10 @@ def _version_one_file(path, drop=V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUM
     table before version 3, one measured trial on tip T7 with a profile,
     `user_version = version`."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # The region columns are 2026-10-07's: no earlier file has them.
+    # The region columns are 2026-10-07's, the v9 ones 2026-10-12's: no
+    # earlier file has them.
     columns = [(n, k) for n, k in tm_module.TRIAL_COLUMNS
-               if n not in drop and n not in REGION_COLUMNS]
+               if n not in drop and n not in REGION_COLUMNS + V9_COLUMNS]
     db = sqlite3.connect(path)
     db.execute("CREATE TABLE trials (" + ", ".join(f"{n} {k}" for n, k in columns)
                + ")")
@@ -2486,11 +2490,11 @@ def _tables(path):
 
 def test_a_fresh_database_is_version_three_with_the_picture_columns_and_tips(
         private_db):
-    assert tm_module.SCHEMA_VERSION == 8
+    assert tm_module.SCHEMA_VERSION == 9
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 8
+    assert _version(private_db) == 9
     assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
     assert "tips" in _tables(private_db)
 
@@ -2506,7 +2510,7 @@ def test_a_version_one_database_gains_the_columns_and_keeps_its_trial(
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 8
+        assert _version(private_db) == 9
         assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
@@ -2554,7 +2558,7 @@ def test_the_first_write_migrates_too(private_db):
     store.insert({"tip_id": "T8", "status": "recorded",
                   "before_full_path": "/x.png", "mark_path": "/m.png",
                   "video_path": "/v.mp4"})
-    assert _version(private_db) == 8
+    assert _version(private_db) == 9
     assert [r["tip_id"] for r in store.trials()] == ["T7", "T8"]
 
 
@@ -2565,7 +2569,7 @@ def test_a_half_done_upgrade_finishes(private_db):
                       + V5_COLUMNS + V6_COLUMNS[3:])
     assert _version(private_db) == 1
     assert tm_module.TrialStore(private_db).ensure() is False
-    assert _version(private_db) == 8
+    assert _version(private_db) == 9
     assert set(V2_COLUMNS + V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
 
 
@@ -2581,7 +2585,7 @@ def test_a_version_three_database_is_left_alone(private_db):
     with sqlite3.connect(private_db) as db:
         assert db.execute("SELECT sql FROM sqlite_master ORDER BY name"
                           ).fetchall() == schema
-    assert _version(private_db) == 8
+    assert _version(private_db) == 9
     assert not _titled("Database Upgraded", since)
 
 
@@ -2600,7 +2604,7 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 8
+        assert _version(private_db) == 9
         assert set(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
@@ -2617,8 +2621,8 @@ def test_a_version_two_database_gains_the_mark_columns_and_its_tips(private_db):
         assert len(upgraded) == 1
         # TR-5 (2026-10-07): the profile gains its colour channels too.
         assert (", ".join(V3_COLUMNS + V5_COLUMNS + V6_COLUMNS + V7_COLUMNS
-                          + V8_COLUMNS + REGION_COLUMNS + PROFILE_ADDED)
-                + ", tips (version 8)"
+                          + V8_COLUMNS + REGION_COLUMNS + V9_COLUMNS + PROFILE_ADDED)
+                + ", tips (version 9)"
                 in upgraded[0].message), upgraded[0].message
         model.tip_id = "T7"
         assert model.tip_status == "in use since trial 1"
@@ -3534,7 +3538,7 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
     _give_flake(model)
     _wire(model)
     try:
-        assert _version(private_db) == 8
+        assert _version(private_db) == 9
         assert set(V5_COLUMNS + V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
@@ -3548,8 +3552,8 @@ def test_a_version_four_database_gains_the_video_columns_and_keeps_its_trial(
         assert len(upgraded) == 1
         assert ("now has " + ", ".join(V5_COLUMNS + V6_COLUMNS + V7_COLUMNS
                                        + V8_COLUMNS + REGION_COLUMNS
-                                       + PROFILE_ADDED)
-                + ", tips.model (version 8)"
+                                       + V9_COLUMNS + PROFILE_ADDED)
+                + ", tips.model (version 9)"
                 in upgraded[0].message), \
             upgraded[0].message
         assert model.video_status == "No video for this trial."
@@ -3639,7 +3643,7 @@ def test_a_fresh_database_is_version_six_with_an_identity(private_db):
     model = TransferMap()
     model.open()
     model.close()
-    assert _version(private_db) == 8
+    assert _version(private_db) == 9
     assert set(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS) <= set(_columns(private_db))
     meta = dict(_rows_raw(private_db, "SELECT key, value FROM meta"))
     assert set(meta) == {"map_db_uuid", "created_at"}
@@ -3666,7 +3670,7 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
     model.tip_id = "T7"
     _give_flake(model)
     try:
-        assert _version(private_db) == 8
+        assert _version(private_db) == 9
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1
         assert {k: after[0][k] for k in before[0]} == before[0]    # untouched
@@ -3678,8 +3682,8 @@ def test_a_version_five_database_gains_the_v6_columns_and_an_identity(
         upgraded = _titled("Database Upgraded", since)
         assert len(upgraded) == 1
         assert ("now has " + ", ".join(V6_COLUMNS + V7_COLUMNS + V8_COLUMNS
-                                       + REGION_COLUMNS + PROFILE_ADDED)
-                + ", tips.model (version 8)"
+                                       + REGION_COLUMNS + V9_COLUMNS + PROFILE_ADDED)
+                + ", tips.model (version 9)"
                 in upgraded[0].message), upgraded[0].message
         trial = _record(model, red)
         row = _row(private_db, trial)
@@ -4131,10 +4135,10 @@ def test_set_trial_sample_backfills_an_old_trial(station, tmp_path, private_db):
     assert element["inputs"] == ["afm_trial_id"]
 
 
-def test_a_version_six_file_gains_the_flake_columns_and_is_version_eight(
+def test_a_version_six_file_gains_the_flake_columns_and_is_version_nine(
         private_db):
     """A repo v6 file gains the lab's v7/v8 columns by presence (chip_id,
-    flake_id, cut_id among them, cut_id TEXT) and is numbered 8."""
+    flake_id, cut_id among them, cut_id TEXT) and is numbered 9."""
     _version_one_file(private_db, drop=V7_COLUMNS + V8_COLUMNS, version=6)
     events.forget("Database Upgraded")
     since = events.latest_id
@@ -4143,14 +4147,47 @@ def test_a_version_six_file_gains_the_flake_columns_and_is_version_eight(
     model.close()
     columns = _columns(private_db)
     assert set(V7_COLUMNS + V8_COLUMNS) <= set(columns)
-    assert _version(private_db) == 8
+    assert _version(private_db) == 9
     assert "cut_id TEXT" in _schema_sql(private_db, "trials")
     upgraded = _titled("Database Upgraded", since)
     assert len(upgraded) == 1 and "chip_id, flake_id, cut_id, invalid" in upgraded[0].message
     assert len(_rows(private_db, "SELECT * FROM trials")) == 1
 
 
-def test_a_bench_v8_file_gains_nothing_it_has_and_keeps_version_eight(
+def test_a_bench_v8_file_gains_the_past_peak_columns_null_and_says_so(private_db):
+    """Owner 2026-10-12, store v9: the live bench store (v8, with trials)
+    gains `force_past_peak_steps` and `shade_peak_z` by presence, NULL for
+    every trial it holds (`rebuild_force` fills them from the saved shade
+    and Z), its rows untouched, and is numbered 9."""
+    _bench_v8_file(private_db)
+    before = _rows(private_db, "SELECT * FROM trials")
+    assert not set(V9_COLUMNS) & set(_columns(private_db))
+    events.forget("Database Upgraded")
+    since = events.latest_id
+    tm_module.TrialStore(private_db).ensure()
+    assert set(V9_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 9
+    after = _rows(private_db, "SELECT * FROM trials")
+    assert [{k: r[k] for k in before[0]} for r in after] == before
+    assert all(r[c] is None for r in after for c in V9_COLUMNS)
+    assert "REAL" in _schema_sql(private_db, "trials").split("force_past_peak_steps")[1][:6]
+    upgraded = _titled("Database Upgraded", since)
+    assert len(upgraded) == 1
+    assert "force_past_peak_steps, shade_peak_z" in upgraded[0].message
+    assert "(version 9)" in upgraded[0].message
+
+
+def test_a_file_numbered_nine_without_the_past_peak_columns_is_completed(private_db):
+    """By presence: an upgrade cut short (or a hand-made file) numbered 9
+    but lacking the v9 columns gains them and keeps its number."""
+    _version_one_file(private_db, drop=(), version=9)
+    assert not set(V9_COLUMNS) & set(_columns(private_db))
+    tm_module.TrialStore(private_db).ensure()
+    assert set(V9_COLUMNS) <= set(_columns(private_db))
+    assert _version(private_db) == 9
+
+
+def test_a_bench_v8_file_gains_only_what_it_lacks_and_is_version_nine(
         private_db, red):
     _bench_v8_file(private_db)
     trials_sql = _schema_sql(private_db, "trials")
@@ -4162,10 +4199,12 @@ def test_a_bench_v8_file_gains_nothing_it_has_and_keeps_version_eight(
     _give_flake(model, flake=("7/27/26", "2", "13"))
     try:
         # Every column it has keeps its declaration; it gains only the
-        # region columns it lacks (2026-10-07), at the end.
+        # region columns it lacks (2026-10-07) and the v9 force columns
+        # (2026-10-12), at the end.
         assert _schema_sql(private_db, "trials").startswith(trials_sql[:-1])
-        assert _columns(private_db)[-len(REGION_COLUMNS):] == list(REGION_COLUMNS)
-        assert _version(private_db) == 8
+        added = REGION_COLUMNS + V9_COLUMNS
+        assert _columns(private_db)[-len(added):] == list(added)
+        assert _version(private_db) == 9
         # TR-5: the profile gains the colour channels and the shade it lacks.
         with sqlite3.connect(private_db) as db:
             profile = [r[1] for r in db.execute("PRAGMA table_info(profile)")]
@@ -4178,7 +4217,7 @@ def test_a_bench_v8_file_gains_nothing_it_has_and_keeps_version_eight(
         assert (row["sample_id"], row["chip_id"], row["flake_id"],
                 row["cut_id"]) == ("7/27/26", "2", "13", "2")
         assert row["invalid"] == 0 and row["force_class"] is None
-        assert _version(private_db) == 8
+        assert _version(private_db) == 9
     finally:
         model.close()
 
@@ -4631,9 +4670,9 @@ def test_the_bench_files_six_tips_are_labelled_tap300_and_nothing_else_moves(
     assert _rows_raw(path, "SELECT trial_id, t_s, red, z, x, y FROM profile "
                            "ORDER BY rowid") == profile_before
     # Every column it had keeps its declaration; only the region columns
-    # (2026-10-07) are new.
+    # (2026-10-07) and the v9 force columns (2026-10-12) are new.
     assert _schema_sql(path, "trials").startswith(trials_sql[:-1])
-    assert _version(path) == 8
+    assert _version(path) == 9
     assert _rows(path, "SELECT name FROM tip_models") == [{"name": "TAP300"}]
     [labelled] = _titled("Tip Models", since)
     assert labelled.message == "Tip models: 6 tips labelled TAP300"
@@ -4808,7 +4847,7 @@ def test_a_version_seven_database_gains_the_invalid_flag_all_valid(private_db):
     model = TransferMap()
     model.open()
     try:
-        assert _version(private_db) == 8
+        assert _version(private_db) == 9
         after = _rows(private_db, "SELECT * FROM trials")
         assert len(after) == 1 and after[0]["invalid"] == 0
         assert [r["id"] for r in model._map_rows()] == [1]

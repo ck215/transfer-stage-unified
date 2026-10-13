@@ -430,6 +430,8 @@ TRANSFER_FIGURES = ("map3d", "slice", "compare", "profile")
 #: this list) is "Unclassed", a band drawn below them only when needed.
 FORCE_CLASSES = ("Low", "Medium", "High")
 UNCLASSED = "Unclassed"
+#: Stored classes drawn in another's band (lower case): the map keeps three.
+FORCE_CLASS_ALIASES = {"break risk": "high"}
 #: What the curve figure can be drawn for: every band, or one of them.
 FORCE_BANDS = ("All forces",) + FORCE_CLASSES + (UNCLASSED,)
 #: Grid resolution of the curves over speed.
@@ -523,8 +525,10 @@ def transfer_request(kind, trials, definition, *, band="All forces",
 def force_class(row):
     """A row's force class: "Low", "Medium" or "High" (any case), else
     "Unclassed". Rows without the key (the Transfer Map before it ports
-    `trials.force_class`) are Unclassed."""
+    `trials.force_class`) are Unclassed. "Break risk" (owner 2026-10-12:
+    21+ steps past the shade's peak, beyond High) is drawn as High."""
     text = str(row.get("force_class") or "").strip().lower()
+    text = FORCE_CLASS_ALIASES.get(text, text)
     for name in FORCE_CLASSES:
         if text == name.lower():
             return name

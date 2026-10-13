@@ -52,9 +52,12 @@ the trials already on it). The picks stay for the next trial.
 capture region (the analysis's `subscribe_frames`) is measured on the
 trial's shade worker (the median green of the region's right half) into a
 `ShadeTracker`; the sheet's **Force estimate** reads it ("Medium force ·
-0.43"), the Mark freezes it, and Finish stores its six columns
-(`force_position`, `force_class`, `contact_lowered`, `shade_baseline`,
-`shade_peak`, `shade_mark`); `shade_position` is the map's default force
+12 steps past peak": since owner 2026-10-12 the class is the probe's Z
+travel past the shade's peak, the shade position its fallback without Z;
+"Break risk" is drawn in the danger role), the Mark freezes it, and Finish
+stores its columns (`force_position`, `force_class`, `contact_lowered`,
+`shade_baseline`, `shade_peak`, `shade_mark`, `force_past_peak_steps`,
+`shade_peak_z`); `shade_position` is the map's default force
 definition, read from that column, and `rebuild_force` recomputes it from
 the footage (cropping the stored region out of the full display) or from
 the shade stored per frame. The red-percent extrema
@@ -215,6 +218,13 @@ TRIAL_COLUMNS = (
     ("region_width", "INTEGER"), ("region_height", "INTEGER"),
     ("display_left", "INTEGER"), ("display_top", "INTEGER"),
     ("display_width", "INTEGER"), ("display_height", "INTEGER"),
+    # 9 (owner 2026-10-12, `model/tip_shade.py`): the force from the probe's
+    # Z travel past the shade's peak. `force_past_peak_steps`: the steps
+    # lowered past the smoothed shade's peak at the Mark (what `force_class`
+    # is read from when Z was known); `shade_peak_z`: the probe's Z at that
+    # peak. NULL = no Z, no contact before the Mark, or recorded before
+    # (`rebuild_force` fills them from the saved shade and Z).
+    ("force_past_peak_steps", "REAL"), ("shade_peak_z", "REAL"),
 )
 _TRIAL_NAMES = frozenset(name for name, _kind in TRIAL_COLUMNS)
 #: The colour channels Red Percent's rows carry beside `red` (its RGB
@@ -292,9 +302,11 @@ DEFAULT_TIP_MODEL = "TAP300"
 #: is touched. 7 (the lab's): `chip_id`, `flake_id`, `cut_id`, `invalid`.
 #: 8 (the lab's, adopted with its merge 2026-10-07): the tip-shade force
 #: columns (`contact_lowered`, `force_position`, `force_class`,
-#: `shade_baseline`, `shade_peak`, `shade_mark`). The version is never
-#: lowered; a file numbered ahead of its columns is completed.
-SCHEMA_VERSION = 8
+#: `shade_baseline`, `shade_peak`, `shade_mark`). 9 (owner 2026-10-12): the
+#: force from Z travel past the shade's peak (`force_past_peak_steps`,
+#: `shade_peak_z`). The version is never lowered; a file numbered ahead of
+#: its columns is completed.
+SCHEMA_VERSION = 9
 #: How an optical width was measured (Q19, owner 2026-10-04: pixels on the
 #: capture-region picture at the Sample DB's um_per_px, the default).
 WIDTH_OPTICAL_METHODS = ("capture_px", "reticle", "vendor_tool", "estimate")
@@ -1707,6 +1719,9 @@ class TransferMap(store_choice.StorePrompt, Model):
         snapshot["values"]["has_sample_pick"] = self.has_sample_pick
         snapshot["values"]["has_chip_pick"] = self.has_chip_pick
         snapshot["values"]["preview_alt"] = self.preview_alt
+        # The Force estimate's live role (its element's `role_attr`, owner
+        # 2026-10-12): "danger" at Break risk.
+        snapshot["values"]["force_role"] = self.force_role
         return snapshot
 
     # -- the samples, on Red Percent's run thread ------------------------------
@@ -2536,8 +2551,12 @@ class TransferMap(store_choice.StorePrompt, Model):
         ruling 2026-10-07: the lab's estimator, `model.tip_shade`, is THE
         force model; the red extrema are an analysis factor, never shown as
         force): `tip_shade.status_text(status)` and, once known, the
-        position on the shade's peak (0 at the peak, 1 back at its
-        baseline): "No contact", "Contact · 0.04", "Medium force · 0.43".
+        steps the probe was lowered past the shade's peak (owner 2026-10-12:
+        what the class is read from when Z is known): "No contact",
+        "Contact · 0 steps past peak", "Medium force · 12 steps past peak",
+        "Break risk · 23 steps past peak" (drawn in the danger role,
+        `force_role`). Without Z, the position on the shade's peak (0 at the
+        peak, 1 back at its baseline) as before: "Medium force · 0.43".
         "" (blank) outside a recording; "Unsettled" while the analysis is
         rejecting frames (the settle gate's counters, `analysis_health`).
         Reads what the shade worker computed: no analysis on a poll."""
@@ -2548,8 +2567,23 @@ class TransferMap(store_choice.StorePrompt, Model):
             return "Unsettled"
         tracker = trial.shade
         words = tip_shade.status_text(tracker.status)
+        past = tracker.past_peak
+        if past is not None:
+            # A probe raised back above the peak reads 0, never negative.
+            steps = max(0, int(round(past)))
+            return f"{words} · {steps} step{'' if steps == 1 else 's'} past peak"
         position = tracker.position
         return words if position is None else f"{words} · {position:.2f}"
+
+    @property
+    def force_role(self):
+        """The Force estimate's role on the sheet (its element's
+        `role_attr`): "danger" while the armed trial reads a status in
+        `tip_shade.DANGER` ("Break risk"), else "neutral"."""
+        trial = self._trial
+        if trial is None or trial.ended:
+            return "neutral"
+        return "danger" if trial.shade.status in tip_shade.DANGER else "neutral"
 
     @staticmethod
     def _region_fields(region, bounds):
@@ -3070,7 +3104,7 @@ class TransferMap(store_choice.StorePrompt, Model):
             series = self._stored_shades(row)
         if not series:
             return None
-        z_at = self._z_lookup(row["id"])
+        z_at = self._z_lookup(row)
         with tempfile.TemporaryDirectory(prefix="shade-") as folder:
             path = Path(folder) / "shade_index.csv"
             with open(path, "w", newline="") as handle:
@@ -3170,13 +3204,35 @@ class TransferMap(store_choice.StorePrompt, Model):
                                 "t_s, rowid", (row["id"],))
         return [(r["t_s"], r["shade"]) for r in rows]
 
-    def _z_lookup(self, trial_id):
-        """t (s since Arm) -> the profile's Z at or before it (None without
-        one): the Z `contact_lowered` is read from."""
+    #: The probe's Z in `telemetry.csv` (`model.trial_telemetry`: written
+    #: each time it changes): what the live tracker was handed per frame.
+    PROBE_Z_STREAM = "stepper_probe.z"
+
+    def _telemetry_z(self, row):
+        """[(t since Arm, z)] of the probe's Z stream in the trial's
+        `telemetry.csv`, in time order; [] without one."""
+        folder = self.pictures_root / str(row["id"])
+        zero = self._armed_at(folder)
+        if zero is None:
+            return []
+        with open(folder / TELEMETRY_NAME, newline="") as handle:
+            pairs = [(_number(line["t"]) - zero, _number(line["value"]))
+                     for line in csv.DictReader(handle)
+                     if line.get("stream") == self.PROBE_Z_STREAM]
+        return sorted((t, z) for t, z in pairs if z is not None)
+
+    def _z_lookup(self, row):
+        """t (s since Arm) -> the probe's Z at or before it (None without
+        one): the Z `contact_lowered` and the steps past the shade's peak
+        (owner 2026-10-12) are read from. The telemetry's probe Z stream
+        when the trial has one (every change, as the live tracker saw it),
+        else the profile's Z."""
         import bisect
-        profile = self._store.profile(trial_id)
-        pairs = [(t, z) for t, z in zip(profile["t"], profile.get("z") or ())
-                 if z is not None]
+        pairs = self._telemetry_z(row)
+        if not pairs:
+            profile = self._store.profile(row["id"])
+            pairs = [(t, z) for t, z in zip(profile["t"], profile.get("z") or ())
+                     if z is not None]
         times = [t for t, _z in pairs]
 
         def z_at(t):
@@ -3184,15 +3240,19 @@ class TransferMap(store_choice.StorePrompt, Model):
             return pairs[i][1] if i >= 0 else (pairs[0][1] if pairs else None)
         return z_at
 
-    def rebuild_force(self, trial_id=0):
+    def rebuild_force(self, trial_id=0, dry_run=False):
         """Recompute the tip-shade force columns of recorded trials from
-        their footage or their stored shade (`_rebuilt_shade`). With no
-        trial, every valid recorded trial (not invalid, not aborted, not
-        imported); with one, that trial whatever its flags. Returns `{trial:
-        columns}` for what was rebuilt; a trial with nothing to read is
-        skipped and said so."""
+        their footage or their stored shade (`_rebuilt_shade`), with the
+        probe's Z (`_z_lookup`) for the steps past the shade's peak and the
+        class read from them (owner 2026-10-12). With no trial, every valid
+        recorded trial (not invalid, not aborted, not imported); with one,
+        that trial whatever its flags. Returns `{trial: columns}` for what
+        was rebuilt; a trial with nothing to read is skipped and said so.
+        `dry_run` computes and returns the same and writes nothing
+        (`dev/rebuild_force.py` runs it on a store from a script)."""
         self._need_store()
         trial_id = int(trial_id or 0)
+        dry_run = bool(dry_run) and str(dry_run).lower() not in ("false", "0")
         rows = self._store.trials()
         if trial_id:
             rows = [r for r in rows if r["id"] == trial_id]
@@ -3214,9 +3274,12 @@ class TransferMap(store_choice.StorePrompt, Model):
                             "or stored shade on disk; its force was not "
                             "rebuilt.", source=self.NAME)
                 continue
-            self._store.update(row["id"], fields)
-            self._indices.pop(row["id"], None)
+            if not dry_run:
+                self._store.update(row["id"], fields)
+                self._indices.pop(row["id"], None)
             rebuilt[row["id"]] = fields
+        if dry_run:
+            return rebuilt
         if rebuilt:
             self._changed()
         events.info("Force Rebuilt", f"{_count(len(rebuilt), 'trial')} rebuilt from "
@@ -4238,7 +4301,10 @@ class TransferMap(store_choice.StorePrompt, Model):
                 # Where the live Red was (approved proposal 2026-10-07):
                 # the force class and its shadow_vs_peak value, at the row
                 # rate; Red Percent's own readings are not on this page.
-                sch.readonly("Force estimate", "force_estimate", rail=True),
+                # Owner 2026-10-12: the class from Z travel past the shade's
+                # peak; "Break risk" turns it to the danger role.
+                sch.readonly("Force estimate", "force_estimate", rail=True,
+                             role_attr="force_role"),
                 sch.button("Mark force", "mark_force", enabled_when=("armed",)),
                 sch.phased(sch.button("End recording", "end_recording",
                                       role="go", enabled_when=("armed",)),

@@ -42,7 +42,7 @@ Models in `src/model/` (the registered ones have a Setup row; names are the oper
 Stepper Probe, DC Probe and Chuck Positioner (`probe.py`), Temperature Controller
 (`heater.py`), Rotator (`rotator.py`), RGB Analysis (`rgb_analysis.py`, class
 `RgbAnalysis`, formerly Red Percent; hosted on the Transfer Map's page, no Setup
-row of its own), Transfer Map (`transfer_map.py`, store v8; with
+row of its own), Transfer Map (`transfer_map.py`, store v9; with
 `transfer_map_analysis.py`, `tip_shade.py`, `trial_telemetry.py`, `finalize.py`,
 `shade_offline.py`), Sample DB (formerly Sample Map; `sample_map.py`, `sample_store.py`, store v4; on by default, `STATION_SAMPLE_MAP=0` turns it off),
 User (`user.py`, with `user_store.py`: scrypt-hashed accounts in `users.sqlite`;
@@ -131,7 +131,7 @@ and read the exit code unpiped; a pipeline's exit code is `tail`'s.
   analysis `factor=`. The estimator bank compares candidates; the model is chosen on footage.
 - **The Sample DB is a sample > chip > flake store with photos at every level** (only a flake requires one)
   (flake-coordinate homing is dormant); the map figures are speed x force class, tilt collected never drawn.
-- Transfer Map store: v8 (the lab's, adopted); Sample DB store v4. A store v9 is no longer planned.
+- Transfer Map store: v9 (v8 the lab's, adopted; v9 adds `force_past_peak_steps` and `shade_peak_z`, owner 2026-10-12); Sample DB store v4.
 - Speed percent is over per-device ceilings (stepper 3200, chuck 600 steps/s); the
   units not chosen are the small line under the entry, shown on the Dashboard too (2026-10-12).
 - Accounts: Guest = the station defaults; `STATION_PROFILES=0` hides Setup's Account section.
