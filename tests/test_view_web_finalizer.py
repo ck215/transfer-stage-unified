@@ -180,3 +180,17 @@ def test_the_transfer_map_page_walks_the_trials_in_the_browser(station, tmp_path
     assert out == {"present": True, "pressed": True}, out
     row = station.tm._store.trial(station.ids[0])
     assert row["width_um"] == 1.8 and row["status"] == "measured"
+
+
+def test_the_form_has_a_min_and_max_for_each_width_and_the_height(station):
+    from schema import elements
+    attrs = {e.get("model_attr") for e in elements(station.schema)}
+    for name in ("f_width_min_um", "f_width_max_um", "f_width_optical_min_um",
+                 "f_width_optical_max_um", "f_channel_height_min_nm",
+                 "f_channel_height_max_nm"):
+        assert name in attrs, name
+    type_in(station, f_width_optical_um="2.0", f_width_optical_min_um="1.4",
+            f_width_optical_max_um="2.5")
+    assert station.run("save").is_ok
+    row = station.tm._store.trial(shown(station))
+    assert (row["width_optical_min_um"], row["width_optical_max_um"]) == (1.4, 2.5)

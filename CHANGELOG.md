@@ -21,6 +21,9 @@ How this file is kept:
 
 ### Added
 
+- **Finalize data (Ian, 10/13/26)** (temporary, owner 2026-10-13): the Web finalizer walks only the 7° speed x force series (recorded trials at 100/200/300 steps/s, plus the 400 supplemental). `Finalizer.EXPERIMENT = None` undoes it.
+- **Min/max for variable channels** (owner 2026-10-13, trial store v10): the AFM width, the optical width and the AFM channel (feature) height each take a min and a max in the finalizer, refused when min > max or the value lies outside them.
+
 - **Probe speed on the trial sheet.** While a trial is live or marked, the
   Transfer Map shows the coupled probe's Manual Speed, in the unit chosen on
   the probe's page, so the slow approach and the cut's speed are set without

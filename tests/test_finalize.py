@@ -111,3 +111,25 @@ def test_the_experiment_filter_keeps_only_the_7_degree_speed_by_force_series():
     assert [t["id"] for t in fin.queue(rows, experiment=fin.EXPERIMENT)] == [1, 2, 6]
     assert [t["id"] for t in fin.queue(rows)] == [1, 2, 3, 4, 5, 6]     # no filter: as before
     assert fin.EXPERIMENT["label"] == "Ian, 10/13/26"
+
+
+def test_widths_and_the_channel_height_take_a_min_and_a_max():
+    """Owner 2026-10-13: a variable channel is recorded as a range."""
+    out = fin.parse_fields({"width_optical_um": "2.0", "width_optical_min_um": "1.5",
+                            "width_optical_max_um": "2.6", "width_min_um": "1.2",
+                            "width_max_um": "2.1", "channel_height_min_nm": "-1",
+                            "channel_height_max_nm": "4"}, METHODS)
+    assert out["width_optical_min_um"] == 1.5 and out["width_optical_max_um"] == 2.6
+    assert out["channel_height_min_nm"] == -1.0      # a height may read below the substrate
+
+
+@pytest.mark.parametrize("raw, current", [
+    ({"width_optical_min_um": "3", "width_optical_max_um": "2"}, {}),
+    ({"width_max_um": "1.0"}, {"width_min_um": 1.5}),
+    ({"width_optical_um": "5", "width_optical_max_um": "4"}, {}),
+    ({"channel_height_nm": "1"}, {"channel_height_min_nm": 2.0, "channel_height_max_nm": 3.0}),
+    ({"width_min_um": "0"}, {}),
+])
+def test_a_range_that_does_not_hold_together_is_refused(raw, current):
+    with pytest.raises(ValueError):
+        fin.parse_fields(raw, METHODS, current=current)

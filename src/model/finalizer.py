@@ -42,11 +42,19 @@ AFM = (("f_width_um", "f_width_sigma_um", "Channel width", "um"),
        ("f_trench_depth_nm", "f_trench_depth_sigma_nm", "Trench depth", "nm"))
 OPTICAL = (("f_width_optical_um", "f_width_optical_sigma_um", "Channel width", "um"),)
 METHODS = ("estimate", "reticle", "capture_px", "vendor_tool")
+#: (min attr, max attr, label, unit): a channel that varies along the cut
+#: (owner 2026-10-13), drawn under its value's row.
+RANGES = (("f_width_min_um", "f_width_max_um", "Channel width (AFM)", "um"),
+          ("f_channel_height_min_nm", "f_channel_height_max_nm", "Channel height (AFM)", "nm"),
+          ("f_width_optical_min_um", "f_width_optical_max_um", "Channel width (optical)", "um"))
 
 _COLUMN = {attr: column for attr, column, _label in IDENTITY_BOXES}
 for _value, _sigma, _label, _unit in AFM + OPTICAL:
     _COLUMN[_value] = _value[2:]
     _COLUMN[_sigma] = _sigma[2:]
+for _low, _high, _label, _unit in RANGES:
+    _COLUMN[_low] = _low[2:]
+    _COLUMN[_high] = _high[2:]
 _COLUMN["f_method"] = "width_optical_method"
 #: Every box of the form, in schema order: what Save declares as its inputs.
 FORM = tuple(_COLUMN)
@@ -79,6 +87,9 @@ class Finalizer(Model):
         *(Param(attr, "text", default="", label=f"{label} ({unit})" if i == 0 else "Uncertainty")
           for value, sigma, label, unit in AFM + OPTICAL
           for i, attr in enumerate((value, sigma))),
+        *(Param(attr, "text", default="", label=f"{label} {end} ({unit})")
+          for low, high, label, unit in RANGES
+          for end, attr in (("min", low), ("max", high))),
     )}
 
     def __init__(self, sim=False):
@@ -403,10 +414,16 @@ class Finalizer(Model):
         form = [a for a in FORM if a != "f_method"]
         entries = [sch.entry(label, attr, P[attr]) for attr, _c, label in IDENTITY_BOXES]
         grid = []
+        ranges = {low[:-3].replace("_min", "") + low[-3:]: (low, high, label, unit)
+                  for low, high, label, unit in RANGES}
         for rows in (AFM, OPTICAL):
             for value, sigma, label, unit in rows:
                 grid.append(sch.entry(f"{label} ({unit})", value, P[value]))
                 grid.append(sch.entry(f"{label} uncertainty", sigma, P[sigma]))
+                if value in ranges:
+                    low, high, _l, _u = ranges[value]
+                    grid.append(sch.entry(f"{label} min ({unit})", low, P[low]))
+                    grid.append(sch.entry(f"{label} max ({unit})", high, P[high]))
         return sch.schema(
             sch.section(
                 self.DISCLOSURE,

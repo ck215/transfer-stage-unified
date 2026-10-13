@@ -36,6 +36,14 @@ SIGMA_OF = {
     "width_optical_um": "width_optical_sigma_um",
 }
 
+#: Each value's range (owner 2026-10-13: a channel can vary along the cut):
+#: value -> (min column, max column).
+RANGE_OF = {
+    "width_um": ("width_min_um", "width_max_um"),
+    "width_optical_um": ("width_optical_min_um", "width_optical_max_um"),
+    "channel_height_nm": ("channel_height_min_nm", "channel_height_max_nm"),
+}
+
 #: Numeric columns a person may type, and the lowest each may be:
 #: ("positive") > 0, ("zero") >= 0, ("any") unbounded (a height can read
 #: below the substrate). Uncertainties are never negative.
@@ -44,6 +52,9 @@ NUMERIC = {
     "width_optical_um": "positive",
     "channel_height_nm": "any", "trench_depth_nm": "any",
     **{sigma: "zero" for sigma in SIGMA_OF.values()},
+    "width_min_um": "positive", "width_max_um": "positive",
+    "width_optical_min_um": "positive", "width_optical_max_um": "positive",
+    "channel_height_min_nm": "any", "channel_height_max_nm": "any",
 }
 
 #: Text columns a person may correct while finalizing.
@@ -170,6 +181,16 @@ def parse_fields(raw, methods, current=None):
     for value, sigma in SIGMA_OF.items():
         if sigma in out and out.get(value) is None and current.get(value) is None:
             raise ValueError(f"{sigma}: type the value this is the uncertainty of.")
+    for value, (low, high) in RANGE_OF.items():
+        if not ({value, low, high} & set(out)):
+            continue
+        v, lo, hi = (out.get(c, current.get(c)) for c in (value, low, high))
+        if lo is not None and hi is not None and lo > hi:
+            raise ValueError(f"{low}: the min ({lo:g}) is above the max ({hi:g}).")
+        if v is not None and lo is not None and v < lo:
+            raise ValueError(f"{value}: {v:g} is below its min ({lo:g}).")
+        if v is not None and hi is not None and v > hi:
+            raise ValueError(f"{value}: {v:g} is above its max ({hi:g}).")
     return out
 
 
