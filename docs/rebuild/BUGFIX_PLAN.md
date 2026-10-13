@@ -95,7 +95,7 @@ changed if the bench disagrees, so the fix is "measure, then edit the number".
 
 | # | Where | Question | Status |
 |---|---|---|---|
-| B1 | `src/devices/gamepad.py:322-361`, `tests/test_gamepad_layouts.py` | GAMEPAD-11 name match (a DualShock silently gets the Bluetooth-Xbox row); GAMEPAD-12 throttle → Z direction; GAMEPAD-13 D-pad right direction; GAMEPAD-14 deadzone 0.12 vs 0.1. | BENCH (owner) |
+| B1 | `src/devices/gamepad.py:322-361`, `tests/test_gamepad_layouts.py` | GAMEPAD-11 name match (a DualShock silently gets the Bluetooth-Xbox row); GAMEPAD-12 throttle → Z direction; GAMEPAD-13 D-pad right direction (**settled**, owner on the stage 2026-10-13: Xbox inverted on both axes, T.16000M right; the Xbox bind tables carry `hat_sign = (-1, -1)`, fix/dpad-xbox-sign-min-speed; the F310 in XInput mode follows the Xbox tables, unverified); GAMEPAD-14 deadzone 0.12 vs 0.1. | BENCH (owner); GAMEPAD-13 DONE |
 | B2 | `src/model/heater.py:54-57` | `max_setpoint` 300 °C ceiling, PID/ramp bounds, 31-char frame limit. All PROVISIONAL. | BENCH (owner) |
 | B3 | `src/views/web/server.py:562` | Heartbeat warn/stop at 5 s / 15 s (D-8a, WEB-19, WEB-23). | BENCH (owner) |
 | B4 | `src/model/probe.py:1081` | D-7: the DC board has no coil kill. Firmware v2 is the only fix; owner-only. | BENCH (owner) |

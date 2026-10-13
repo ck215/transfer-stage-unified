@@ -5,7 +5,8 @@ against five classes. The classes are gone; the numbers are not. Nothing here
 imports pygame or touches a device: a layout is read out of this object's own
 caches, which is exactly why it can be tested with no hardware.
 
-GAMEPAD-11..14 are open bench questions. These tests pin *today's* values so
+GAMEPAD-11, -12 and -14 are open bench questions; GAMEPAD-13 (the D-pad
+sign) was settled by the owner on the stage 2026-10-13. These tests pin *today's* values so
 the rebuild cannot drift while they are open; they are not evidence that the
 values are right. See the comment block above LAYOUTS.
 """
@@ -86,8 +87,8 @@ def test_xbox_layout_off_linux_reads_axes_zero_three_four_five():
     assert state["axis_y"] == -0.5      # axis 3 is present, so axis 3
     assert state["trigger_left"] == -0.5     # LT is axis 4 off Linux
     assert state["bumper_left"] == 1
-    assert state["hat_x"] == 1
-    assert state["hat_y"] == -1
+    assert state["hat_x"] == -1          # negated: GAMEPAD-13
+    assert state["hat_y"] == 1
 
 
 def test_xbox_layout_on_linux_moves_the_trigger_and_stick_axes():
@@ -130,8 +131,8 @@ def test_bluetooth_xbox_layout_on_linux_uses_the_generic_hid_mapping():
     assert state["trigger_left"] == 0.8      # LT is axis 5 on BT Linux
     assert state["trigger_right"] == -1.0     # RT is axis 4
     assert state["bumper_left"] == 1              # bumpers are buttons 6 and 7
-    assert state["hat_x"] == -1
-    assert state["hat_y"] == 1
+    assert state["hat_x"] == 1           # negated: GAMEPAD-13
+    assert state["hat_y"] == -1
 
 
 def test_bluetooth_xbox_layout_off_linux_is_the_wired_xbox_layout():
@@ -260,11 +261,92 @@ def test_an_unsupported_pad_is_refused_rather_than_given_an_xbox_layout():
 # GAMEPAD-13 / GAMEPAD-14, pinned
 # ----------------------------------------------------------------------
 
-def test_the_dpad_sign_is_passed_through_unnegated():
-    """GAMEPAD-13, pinned UNVERIFIED: main negated both hat axes."""
-    pad = bound("xbox", hats={0: (1, 1)})
+#: Every Xbox bind table: (layout row, mode, platform). GAMEPAD-13, owner
+#: verified on the stage 2026-10-13: with an Xbox pad both D-pad axes stepped
+#: the wrong way; the T.16000M stepped the right way.
+XBOX_TABLES = [
+    ("xbox", "default", "linux"),
+    ("xbox", "default", "darwin"),
+    ("xbox", "default", "win32"),
+    ("xbox_bluetooth", "default", "linux"),
+    ("xbox_bluetooth", "default", "darwin"),
+    ("xbox_bluetooth", "default", "win32"),
+]
+
+
+@pytest.mark.parametrize("layout_id,mode,platform", XBOX_TABLES,
+                         ids=["-".join(t) for t in XBOX_TABLES])
+@pytest.mark.parametrize("hat,expected", [
+    ((1, 0), (-1, 0)),      # D-pad right
+    ((-1, 0), (1, 0)),      # D-pad left
+    ((0, 1), (0, -1)),      # D-pad up
+    ((0, -1), (0, 1)),      # D-pad down
+    ((1, 1), (-1, -1)),
+])
+def test_an_xbox_dpad_is_negated_on_both_axes(layout_id, mode, platform, hat,
+                                              expected):
+    """GAMEPAD-13, owner verified 2026-10-13: Xbox X and Y are inverted."""
+    pad = bound(layout_id, mode=mode, platform=platform, hats={0: hat})
     state = pad._read_layout()
-    assert (state["hat_x"], state["hat_y"]) == (1, 1)
+    assert (state["hat_x"], state["hat_y"]) == expected
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+@pytest.mark.parametrize("hat", [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1)])
+def test_the_t16000m_dpad_is_passed_through_unchanged(platform, hat):
+    """GAMEPAD-13, owner verified 2026-10-13: the T.16000M was already right."""
+    pad = bound("t16000m", platform=platform, numaxes=11, numbuttons=16,
+                hats={0: hat})
+    state = pad._read_layout()
+    assert (state["hat_x"], state["hat_y"]) == hat
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_the_f310_in_xinput_mode_follows_the_xbox_tables(platform):
+    """The F310's XInput switch position is the Xbox layout (it uses the
+    Xbox tables), so its D-pad is negated too. UNVERIFIED at the bench: the
+    owner verified an Xbox pad, not an F310."""
+    pad = bound("logitech_f310", mode="xinput", platform=platform,
+                hats={0: (1, -1)})
+    state = pad._read_layout()
+    assert (state["hat_x"], state["hat_y"]) == (-1, 1)
+
+
+def test_the_f310_dinput_dpad_is_passed_through_unchanged():
+    """Not an Xbox table; not verified at the bench, so not touched."""
+    pad = bound("logitech_f310", mode="dinput", hats={0: (1, -1)})
+    state = pad._read_layout()
+    assert (state["hat_x"], state["hat_y"]) == (1, -1)
+
+
+@pytest.mark.parametrize("layout_id,mode,platform", XBOX_TABLES + [
+    ("t16000m", "default", "linux"), ("logitech_f310", "dinput", "linux")])
+def test_a_centred_dpad_reads_integer_zero(layout_id, mode, platform):
+    """Negating must not turn neutral into anything but int 0: the neutral
+    reference compares by equality and the jog packet casts it."""
+    pad = bound(layout_id, mode=mode, platform=platform, numaxes=11,
+                numbuttons=16, hats={0: (0, 0)})
+    state = pad._read_layout()
+    assert (state["hat_x"], state["hat_y"]) == (0, 0)
+    assert type(state["hat_x"]) is int and type(state["hat_y"]) is int
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_a_held_xbox_dpad_latches_one_negated_edge_per_press(platform):
+    """The sign flip happens before edge latching: one edge per press, with
+    the corrected sign, and none while the D-pad is held."""
+    pad = bound("xbox", platform=platform, hats={0: (1, 1)})
+    pad._capture_state()
+    assert pad.drain_edges() == {"hat_x": -1, "hat_y": -1}
+    for _ in range(10):                      # held: no stream of steps
+        pad._capture_state()
+    assert pad.drain_edges() == {}
+    assert pad.levels["hat_x"] == 0 and pad.levels["hat_y"] == 0
+    pad._hat_values[0] = (0, 0)              # released, pressed again
+    pad._capture_state()
+    pad._hat_values[0] = (1, 0)
+    pad._capture_state()
+    assert pad.drain_edges() == {"hat_x": -1}
 
 
 def test_the_deadzone_is_applied_exactly_once_on_the_way_out():
