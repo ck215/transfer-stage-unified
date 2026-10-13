@@ -21,6 +21,12 @@ How this file is kept:
 
 ### Added
 
+- **Probe speed on the trial sheet.** While a trial is live or marked, the
+  Transfer Map shows the coupled probe's Manual Speed, in the unit chosen on
+  the probe's page, so the slow approach and the cut's speed are set without
+  switching to the Stepper Probe tab. It is the same setting as the probe's:
+  a change on either page shows on the other. It never moves the probe.
+
 - **Bench scale.** Setup has a Display section with a Bench scale box: the
   text one step larger and the keys on the sheet 44 px tall, for gloves and
   for reading across the bench. It is remembered for the user who is signed

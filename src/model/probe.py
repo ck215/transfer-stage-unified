@@ -2046,10 +2046,12 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: (`speed_attr`). The Stepper Probe adds um/s.
     SPEED_UNITS = ("%", "steps/s")
 
-    def speed_slider(self, unit):
-        """The slider's travel for a speed entry in `unit`."""
-        return {"%": (0, 100), "steps/s": (1, self.MAX_SPEED),
-                "µm/s": self.SPEED_SLIDER}[unit]
+    @classmethod
+    def speed_slider(cls, unit):
+        """The slider's travel for a speed entry in `unit` (a class's: the
+        Transfer Map draws the probe's Manual Speed before a probe is open)."""
+        return {"%": (0, 100), "steps/s": (1, cls.MAX_SPEED),
+                "µm/s": cls.SPEED_SLIDER}[unit]
 
     def _speed_names(self, base):
         """Every attribute that holds speed `base`, one per unit offered."""

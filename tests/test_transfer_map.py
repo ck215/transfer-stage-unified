@@ -2092,6 +2092,9 @@ def test_the_sheet_reads_in_the_order_a_trial_is_run():
                         ("Start", ["setup"]), ("New tip", ["new_tip"]),
                         ("Capture region", ["region"]),
                         ("Recording", ["live", "marked"]),
+                        # The coupled probe's Manual Speed (owner
+                        # 2026-10-12; test_transfer_map_probe_speed.py).
+                        ("Probe speed", ["live", "marked"]),
                         ("Review", ["finish"]), ("This trial", None),
                         ("Map", ["setup"])]
     by_title = {s["title"]: s for s in sections}
