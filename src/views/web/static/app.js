@@ -1818,14 +1818,16 @@ function renderChoice(panel, element) {
   const node = row(element, 'choice-row');
   const group = make('div', 'choice');
   group.setAttribute('role', 'radiogroup');
-  group.setAttribute('aria-label', nameFor(sentence(element.label || captionText(element)),
-    ownerOf(panel)));
+  const groupName = nameFor(sentence(element.label || captionText(element)), ownerOf(panel));
+  group.setAttribute('aria-label', groupName);
   const options = (element.options || []).map(String);
   const segments = options.map((option) => {
     const seg = make('button', 'choice-seg', option);
     seg.type = 'button';
     seg.setAttribute('role', 'radio');
     seg.setAttribute('aria-checked', 'false');
+    // Its words, then whose: "%" alone is said by every speed on the page (L16).
+    seg.setAttribute('aria-label', option + ', ' + groupName);
     seg.tabIndex = -1;
     seg.dataset.option = option;
     group.appendChild(seg);
