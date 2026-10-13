@@ -24,8 +24,8 @@ def station(tmp_path):
     controller = Controller()
     tm = TransferMap(db_path=tmp_path / "map.sqlite")
     trial = tm._store.insert({
-        "started_at": "2026-10-06T10:00:00", "tip_id": "T", "tilt_deg": 6.0,
-        "speed_steps_s": 250.0, "status": "recorded", "origin": "recorded",
+        "started_at": "2026-10-06T10:00:00", "tip_id": "T", "tilt_deg": 7.0,
+        "speed_steps_s": 200.0, "status": "recorded", "origin": "recorded",
         "sample_id": "S1", "chip_id": "1", "flake_id": "1", "cut_id": "1"})
     folder = tm.pictures_root / str(trial)
     folder.mkdir(parents=True)
