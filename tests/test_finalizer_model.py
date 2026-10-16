@@ -111,6 +111,50 @@ def test_media_names_the_stills_and_the_video(tm, tmp_path):
     assert media["video_kind"] == "file" and media["frames"] == 10
 
 
+def test_an_experiment_that_needs_video_leaves_out_cuts_the_page_cannot_play(tm):
+    """Owner 2026-10-13: a cut with no video cannot be told apart from the
+    others on its flake, nor its colour re-read, so the experiment walk
+    leaves it out (a folder of JPEG frames is not a video the page plays)
+    and says which were left out; without the rule nothing changes."""
+    experiment = {"label": "x", "origin": "recorded", "tilt_deg": 7.0,
+                  "speeds": (200.0,), "needs_video": True}
+    with_video, frames, nothing = (tm.add(tilt_deg=7.0, speed_steps_s=200.0, cut_id=str(n))
+                                   for n in (1, 2, 3))
+    folder = tm.pictures_root / str(with_video)
+    folder.mkdir(parents=True)
+    (folder / "screen.mp4").write_bytes(b"mp4")
+    tm._store.update(with_video, {"video_path": "/elsewhere/9/screen.mp4"})
+    jpegs = tm.pictures_root / str(frames) / "frames"
+    jpegs.mkdir(parents=True)
+    (jpegs / "000000.jpg").write_bytes(b"j")
+    tm._store.update(frames, {"video_path": str(jpegs)})
+    queue = tm.finalize_queue(False, experiment=experiment)
+    assert [t["id"] for t in queue] == [with_video]
+    assert queue[0]["sample_count"] == 1
+    assert tm.finalize_left_out(experiment) == [frames, nothing]
+    loose = dict(experiment, needs_video=False)
+    assert len(tm.finalize_queue(False, experiment=loose)) == 3
+    assert tm.finalize_left_out(loose) == []
+
+
+def test_media_finds_a_moved_stores_video_in_the_trials_own_folder(tm):
+    """Owner 2026-10-13: a store restored on another computer keeps the
+    recording computer's absolute video path; the video is still found in
+    the trial's folder beside the store, so the page can play it."""
+    t = tm.add()
+    folder = tm.pictures_root / str(t)
+    folder.mkdir(parents=True)
+    (folder / "screen.mp4").write_bytes(b"mp4")
+    tm._store.update(t, {"video_path": "/home/elsewhere/stores/x/transfer_map/9/screen.mp4",
+                         "video_frames": 10})
+    media = tm.run("finalize_media", None, (t,)).value
+    assert media["video_kind"] == "file"
+    assert media["video_path"] == str(folder / "screen.mp4")
+    gone = tm.add()
+    tm._store.update(gone, {"video_path": "/home/elsewhere/9/screen.mp4"})
+    assert tm.run("finalize_media", None, (gone,)).value["video_kind"] == "none"
+
+
 def test_media_of_a_frames_folder_lists_its_jpegs_in_order(tm):
     t = tm.add()
     folder = tm.pictures_root / str(t) / "frames"
@@ -122,6 +166,70 @@ def test_media_of_a_frames_folder_lists_its_jpegs_in_order(tm):
     assert media["video_kind"] == "frames"
     assert [p.rsplit("/", 1)[1] for p in media["frame_paths"]] == [
         "000000.jpg", "000001.jpg", "000002.jpg"]
+
+
+def test_media_brings_the_flake_search_pictures_from_the_sample_db(tmp_path):
+    """Owner 2026-10-13: validation shows the flake's 10x and 100x from the
+    flake search (the Sample DB's pictures), to find the flake again on the
+    chip; another magnification only when neither is there."""
+    from PIL import Image
+    (tmp_path / "images").mkdir()
+    for name, colour in (("f10", (0, 0, 200)), ("f100", (200, 0, 0)), ("f20", (0, 200, 0))):
+        Image.new("RGB", (80, 60), colour).save(tmp_path / "images" / f"{name}.png")
+    rows = {("S1", "1", "2"): [
+                {"id": 1, "magnification": 10, "captured_at": "2026-10-07", "path": "images/f10.png"},
+                {"id": 2, "magnification": 100, "captured_at": "2026-10-07", "path": "images/f100.png"}],
+            ("S1", "1", "3"): [
+                {"id": 3, "magnification": 20, "captured_at": "2026-10-07", "path": "images/f20.png"}]}
+
+    class Pictures:
+        directory = tmp_path
+
+        def images(self, sample, chip=None, flake=None, any=False):
+            return list(rows.get((sample, chip, flake), []))
+
+        def image_file(self, row):
+            return tmp_path / row["path"]
+
+    class SampleDb:
+        db_path = tmp_path / "s.sqlite"
+
+    from model.finalizer import Finalizer
+    model = TransferMap(db_path=tmp_path / "map.sqlite",
+                        sample_store_factory=lambda path: Pictures())
+    model.open()
+    try:
+        base = {"started_at": "2026-10-06T10:00:00", "tip_id": "T1", "status": "recorded",
+                "origin": "recorded", "sample_id": "S1", "chip_id": "1", "cut_id": "1"}
+        both = model._store.insert({**base, "flake_id": "2"})
+        other = model._store.insert({**base, "flake_id": "3"})
+        none = model._store.insert({**base, "flake_id": "4"})
+        # The finalizer shows its first trial before the Sample DB opens (the
+        # station's launch order); the pictures appear once it does.
+        finalizer = Finalizer()
+        finalizer.EXPERIMENT = None              # walk every trial, not the 7° series
+        finalizer.on_model_added("Transfer Map", model)
+        assert finalizer.flake_10x_png == b""
+        before = finalizer.flake_key
+        model.on_model_added("Sample DB", SampleDb())
+        assert finalizer.flake_key != before
+        assert finalizer.flake_10x_png.startswith(b"\x89PNG")
+        assert finalizer.flake_search_text == "From the Sample DB: 10x and 100x."
+        def pictures(trial):
+            return model.finalize_flake_pictures(trial)
+        media = pictures(both)
+        assert media["flake_10x"].startswith(b"\x89PNG")
+        assert media["flake_100x"].startswith(b"\x89PNG")
+        assert media["flake_10x"] != media["flake_100x"]
+        assert media["flake_other"] == b""
+        media = pictures(other)
+        assert media["flake_10x"] == media["flake_100x"] == b""
+        assert media["flake_other"].startswith(b"\x89PNG")
+        assert media["flake_other_label"] == "20x"
+        media = pictures(none)
+        assert media["flake_10x"] == media["flake_100x"] == media["flake_other"] == b""
+    finally:
+        model.close()
 
 
 def test_media_of_a_trial_with_no_video_says_so(tm):

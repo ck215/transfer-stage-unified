@@ -158,6 +158,7 @@ def test_the_finalizer_points_its_video_at_the_route_and_it_plays(station):
 
 
 def test_no_video_leaves_the_fallback_words_and_no_source(station):
+    station.fin.EXPERIMENT = None           # the experiment walk leaves a no-video cut out
     station.tm._store.update(station.trial, {"video_path": ""})
     station.fin.reload()
     assert station.fin.video_src == ""
@@ -166,6 +167,7 @@ def test_no_video_leaves_the_fallback_words_and_no_source(station):
 
 
 def test_a_folder_of_frames_is_named_not_played(station):
+    station.fin.EXPERIMENT = None           # the experiment walk leaves a frames-only cut out
     frames = station.tm.pictures_root / str(station.trial) / "frames"
     frames.mkdir()
     (frames / "0001.jpg").write_bytes(b"\xff\xd8")

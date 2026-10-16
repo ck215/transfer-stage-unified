@@ -23,6 +23,12 @@ How this file is kept:
 
 - **Finalize data (Ian, 10/13/26)** (temporary, owner 2026-10-13): the Web finalizer walks only the 7° speed x force series (recorded trials at 100/200/300 steps/s, plus the 400 supplemental). `Finalizer.EXPERIMENT = None` undoes it.
 - **Min/max for variable channels** (owner 2026-10-13, trial store v10): the AFM width, the optical width and the AFM channel (feature) height each take a min and a max in the finalizer, refused when min > max or the value lies outside them.
+- **Flake search pictures in the finalizer** (owner 2026-10-13): the finalizer's Pictures show the trial's flake's 10x and 100x from the Sample DB (the flake search), to find the flake again on the chip; another magnification only when neither exists. The Sample DB must be open.
+- **Cuts with no video are left out of the finalizer** (owner 2026-10-13): the 7° series walks only cuts with a video the page plays (a folder of JPEG frames is not one), and the finalizer names those left out ("Left out (no video)"). `needs_video` in `finalize.EXPERIMENT` turns it off.
+
+### Fixed
+
+- **The finalizer plays a restored store's videos** (owner 2026-10-13): a store copied from another computer kept that computer's video paths, so the page could not play a cut's video; the video is now found in the trial's own folder beside the store and plays (and seeks) in the page, to tell the cuts on one flake apart.
 
 - **Probe speed on the trial sheet.** While a trial is live or marked, the
   Transfer Map shows the coupled probe's Manual Speed, in the unit chosen on

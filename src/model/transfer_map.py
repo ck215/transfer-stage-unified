@@ -129,6 +129,7 @@ from model.base import Model
 from model.probe import StepperProbe
 from model.sample_store import SampleStore
 from model.sample_store import PicturePreview, StoreRefused as _PreviewRefused
+from model.sample_store import preview_file, thumbnail_png
 from model.trial_telemetry import TrialTelemetry
 from param import Param
 from result import NeedsConfirm, Refused
@@ -3434,10 +3435,44 @@ class TransferMap(store_choice.StorePrompt, Model):
 
     def finalize_queue(self, only_missing=False, experiment=None):
         """The trials to walk, in sample order (`finalize.queue`); with
-        `experiment`, only that experiment's (`finalize.EXPERIMENT`)."""
-        return finalize.queue(self._store.trials(),
-                              only_missing=bool(only_missing),
+        `experiment`, only that experiment's (`finalize.EXPERIMENT`), and
+        when it `needs_video`, only the cuts with a video the page plays
+        (`finalize_left_out` names the others)."""
+        rows = self._store.trials()
+        if experiment and experiment.get("needs_video"):
+            rows = [r for r in rows if self._trial_video(r)[1] == "file"]
+        return finalize.queue(rows, only_missing=bool(only_missing),
                               experiment=experiment)
+
+    def finalize_left_out(self, experiment=None):
+        """The ids of `experiment`'s walkable trials left out for having no
+        video the page plays (owner 2026-10-13: such a cut cannot be told
+        apart from the others on its flake): [] unless it `needs_video`."""
+        if not (experiment and experiment.get("needs_video")):
+            return []
+        return [t["id"] for t in finalize.queue(self._store.trials(), experiment=experiment)
+                if self._trial_video(self._store.trial(t["id"]))[1] != "file"]
+
+    def _trial_video(self, row):
+        """(path, kind) of a trial's video: kind "file" (an MP4), "frames" (a
+        folder of JPEGs) or "none" (path None). A store restored on another
+        computer keeps the recording computer's absolute path (owner
+        2026-10-13): the trial's own folder beside the store holds the same
+        recording, and is what the page can play (`/api/video` serves only
+        the output root), so it is looked for there first, by name."""
+        stored = row.get("video_path")
+        if not stored:
+            return None, "none"
+        path = Path(stored)
+        name = str(stored).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        here = self.pictures_root / str(row["id"]) / name if name else None
+        if here is not None and (here.is_file() or here.is_dir()):
+            path = here
+        if path.is_file():
+            return path, "file"
+        if path.is_dir():
+            return path, "frames"
+        return None, "none"
 
     def finalize_media(self, trial_id):
         """What the window shows beside the form: the stills (PNG bytes, b""
@@ -3461,15 +3496,77 @@ class TransferMap(store_choice.StorePrompt, Model):
                  "video_path": "", "video_kind": "none", "frame_paths": [],
                  "frames": row.get("video_frames") or 0,
                  "row": dict(row)}
-        stored = row.get("video_path")
-        if stored:
-            path = Path(stored)
-            if path.is_file():
-                media["video_path"], media["video_kind"] = str(path), "file"
-            elif path.is_dir():
-                media["video_path"], media["video_kind"] = str(path), "frames"
+        path, kind = self._trial_video(row)
+        if path is not None:
+            media["video_path"], media["video_kind"] = str(path), kind
+            if kind == "frames":
                 media["frame_paths"] = sorted(str(p) for p in path.glob("*.jpg"))
         return media
+
+    #: The flake-search pictures' size in the finalizer: large enough to
+    #: find the flake again on the chip.
+    FLAKE_PICTURE_PX = 1200
+
+    @property
+    def sample_db_path(self):
+        """The open Sample DB's store file, or None: what the finalizer keys
+        its flake pictures on (they appear once the Sample DB opens)."""
+        return self._sample_db
+
+    def finalize_flake_pictures(self, trial_id):
+        """The trial's flake's flake-search pictures (`_flake_search_pictures`)."""
+        row = self._store.trial(int(trial_id or 0))
+        if row is None:
+            raise Refused(f"No trial {trial_id} in the trial store.")
+        return self._flake_search_pictures(row)
+
+    def _flake_search_pictures(self, row):
+        """The trial's flake's own pictures from the Sample DB's store
+        (owner 2026-10-13: the flake search's 10x and 100x, to find the flake
+        again on the chip), the newest of each magnification as PNG bytes:
+        `flake_10x`, `flake_100x`, and `flake_other` (with its
+        `flake_other_label`, e.g. "20x") only when neither is there. b"" for
+        a picture there is none of, or no Sample DB open."""
+        out = {"flake_10x": b"", "flake_100x": b"", "flake_other": b"",
+               "flake_other_label": ""}
+        where = [str(row.get(k) or "").strip() for k in ("sample_id", "chip_id", "flake_id")]
+        if not all(where):
+            return out
+        store = self._samples_store()
+        if store is None:
+            return out
+        try:
+            rows = list(store.images(*where))
+        except Exception as exc:
+            events.debug("Flake Pictures Not Read", repr(exc), source=self.NAME, every=5.0)
+            return out
+        newest = {}
+        for picture in rows:
+            try:
+                mag = int(picture["magnification"])
+            except (TypeError, ValueError):
+                mag = 0
+            key = (str(picture["captured_at"] or ""), picture["id"] or 0)
+            if mag not in newest or key > newest[mag][0]:
+                newest[mag] = (key, picture)
+
+        def png(picture):
+            path = preview_file(store, picture)
+            if path is None:
+                return b""
+            try:
+                return thumbnail_png(path, self.FLAKE_PICTURE_PX)
+            except Exception:
+                return b""
+        for mag in (10, 100):
+            if mag in newest:
+                out[f"flake_{mag}x"] = png(newest[mag][1])
+        others = sorted(m for m in newest if m not in (10, 100))
+        if not (out["flake_10x"] or out["flake_100x"]) and others:
+            mag = others[-1]
+            out["flake_other"] = png(newest[mag][1])
+            out["flake_other_label"] = f"{mag}x" if mag else "unknown magnification"
+        return out
 
     def finalize_save(self, trial_id, fields):
         """Write the estimates typed for one trial: AFM, optical, both, or

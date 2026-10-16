@@ -36,12 +36,16 @@ IDENTITY_BOXES = (("f_sample_id", "sample_id", "Sample"), ("f_chip_id", "chip_id
             ("f_flake_id", "flake_id", "Flake"), ("f_cut_id", "cut_id", "Cut"),
             ("f_note", "note", "Note"))
 #: (value attr, uncertainty attr, label, unit, kind)
-AFM = (("f_width_um", "f_width_sigma_um", "Channel width", "um"),
-       ("f_thickness_nm", "f_thickness_sigma_nm", "Sample thickness", "nm"),
-       ("f_channel_height_nm", "f_channel_height_sigma_nm", "Channel height", "nm"),
-       ("f_trench_depth_nm", "f_trench_depth_sigma_nm", "Trench depth", "nm"))
-OPTICAL = (("f_width_optical_um", "f_width_optical_sigma_um", "Channel width", "um"),)
-METHODS = ("estimate", "reticle", "capture_px", "vendor_tool")
+#: Each label names its method (owner 2026-10-13: the AFM and the optical
+#: channel width must never read alike).
+AFM = (("f_width_um", "f_width_sigma_um", "AFM channel width", "um"),
+       ("f_thickness_nm", "f_thickness_sigma_nm", "AFM sample thickness", "nm"),
+       ("f_channel_height_nm", "f_channel_height_sigma_nm", "AFM channel height", "nm"),
+       ("f_trench_depth_nm", "f_trench_depth_sigma_nm", "AFM trench depth", "nm"))
+OPTICAL = (("f_width_optical_um", "f_width_optical_sigma_um", "Optical channel width", "um"),)
+#: The optical width's one method (owner 2026-10-13): read off the capture,
+#: in pixels. AFM widths have their own boxes.
+METHODS = ("capture_px",)
 #: (min attr, max attr, label, unit): a channel that varies along the cut
 #: (owner 2026-10-13), drawn under its value's row.
 RANGES = (("f_width_min_um", "f_width_max_um", "Channel width (AFM)", "um"),
@@ -60,6 +64,10 @@ _COLUMN["f_method"] = "width_optical_method"
 FORM = tuple(_COLUMN)
 STILLS = (("first_frame", "First frame"), ("mark_frame", "Mark frame"),
           ("before_full", "Whole screen"))
+#: The flake search's pictures from the Sample DB (owner 2026-10-13), to find
+#: the flake again on the chip: `finalize_media`'s keys and their labels.
+FLAKE_PICTURES = (("flake_10x", "Flake search 10x"), ("flake_100x", "Flake search 100x"),
+                  ("flake_other", "Flake search, other magnification"))
 
 
 def _text(value):
@@ -104,6 +112,8 @@ class Finalizer(Model):
         self._method = ""
         self._status = ""
         self._revision = 0
+        self._flakes = (None, {})    # (flake_key, the flake search's pictures)
+        self._left_out = []          # trial ids with no video the page plays
         self.sim = sim
 
     # -- the Transfer Map ----------------------------------------------------
@@ -172,6 +182,10 @@ class Finalizer(Model):
                     else str(getattr(self, attr, "") or "")).strip()
             if text != self._loaded.get(attr, ""):
                 out[column] = text
+        # An optical width typed with no method is read off the capture.
+        optical = ("width_optical_um", "width_optical_min_um", "width_optical_max_um")
+        if any(out.get(c) for c in optical) and not (self._method or "").strip():
+            out["width_optical_method"] = METHODS[0]
         return out
 
     # -- the walk ------------------------------------------------------------
@@ -195,6 +209,8 @@ class Finalizer(Model):
         queue = self._map.finalize_queue(self._only_missing,
                                          experiment=self.EXPERIMENT)
         self._queue = queue
+        left_out = getattr(self._map, "finalize_left_out", None)
+        self._left_out = left_out(self.EXPERIMENT) if callable(left_out) else []
         ids = [t["id"] for t in queue]
         if keep and shown in ids:
             self._index = ids.index(shown)
@@ -359,6 +375,16 @@ class Finalizer(Model):
         return self._status
 
     @property
+    def left_out_text(self):
+        """The experiment's cuts left out of the walk for having no video
+        (owner 2026-10-13)."""
+        ids = self._left_out
+        if not ids:
+            return "None: every cut in this experiment has a video."
+        return (f"{len(ids)} cut{'s' if len(ids) != 1 else ''} with no playable video: "
+                "trial " + ", ".join(str(i) for i in ids) + ".")
+
+    @property
     def still_key(self):
         entry = self._entry
         return f"{entry['id']}:{self._revision}" if entry else ""
@@ -377,6 +403,57 @@ class Finalizer(Model):
     @property
     def before_full_png(self):
         return self._still("before_full")
+
+    @property
+    def flake_key(self):
+        """The shown trial and the Sample DB's store: the flake pictures are
+        read again when either changes (the Sample DB may open after the
+        trial is first shown)."""
+        entry, mapping = self._entry, self._map
+        if entry is None or mapping is None:
+            return ""
+        return f"{entry['id']}:{getattr(mapping, 'sample_db_path', None) or ''}"
+
+    def _flake_pictures(self):
+        key = self.flake_key
+        if not key:
+            return {}
+        if self._flakes[0] != key:
+            try:
+                pictures = self._map.finalize_flake_pictures(self._entry["id"])
+            except Exception as exc:     # no pictures is not a broken form
+                events.debug("Finalizer Flake Pictures", repr(exc), source=self.NAME,
+                             exception=exc)
+                pictures = {}
+            self._flakes = (key, pictures)
+        return self._flakes[1]
+
+    @property
+    def flake_10x_png(self):
+        return self._flake_pictures().get("flake_10x") or b""
+
+    @property
+    def flake_100x_png(self):
+        return self._flake_pictures().get("flake_100x") or b""
+
+    @property
+    def flake_other_png(self):
+        return self._flake_pictures().get("flake_other") or b""
+
+    @property
+    def flake_search_text(self):
+        """What the Sample DB holds of this trial's flake."""
+        if self._media is None:
+            return ""
+        media = self._flake_pictures()
+        found = [label for key, label in (("flake_10x", "10x"), ("flake_100x", "100x"))
+                 if media.get(key)]
+        if found:
+            return "From the Sample DB: " + " and ".join(found) + "."
+        if media.get("flake_other"):
+            return f"From the Sample DB: only a {media['flake_other_label']} picture."
+        return ("No flake search picture of this flake in the Sample DB (is the "
+                "Sample DB open?).")
 
     @property
     def outcome_key(self):
@@ -435,6 +512,7 @@ class Finalizer(Model):
                 sch.button("Next", "next"),
                 sch.button("Next sample", "next_sample"),
                 sch.readonly("Status", "status_text"),
+                sch.readonly("Left out (no video)", "left_out_text"),
                 tier=2, disclosure=self.DISCLOSURE,
             ),
             sch.section(
@@ -450,6 +528,10 @@ class Finalizer(Model):
             ),
             sch.section(
                 "Pictures",
+                sch.readonly("Flake search", "flake_search_text"),
+                *(sch.image(label, f"{name}_png", model_attr="flake_key",
+                            empty="No picture at this magnification.")
+                  for name, label in FLAKE_PICTURES),
                 *(sch.image(label, f"{name}_png", model_attr="still_key",
                             empty="No picture was taken.")
                   for name, label in STILLS),

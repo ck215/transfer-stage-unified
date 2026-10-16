@@ -26,6 +26,11 @@ def station(tmp_path):
             "started_at": "2026-10-06T10:00:00", "tip_id": "T", "tilt_deg": 7.0,
             "speed_steps_s": 200.0, "status": "recorded", "origin": "recorded",
             "sample_id": sample, "chip_id": "1", "flake_id": flake, "cut_id": "1"}))
+        # Each cut has its video: the experiment walks only those (owner 2026-10-13).
+        folder = tm.pictures_root / str(ids[-1])
+        folder.mkdir(parents=True)
+        (folder / "screen.mp4").write_bytes(b"mp4")
+        tm._store.update(ids[-1], {"video_path": str(folder / "screen.mp4")})
     fin = Finalizer(sim=True)
     controller.add("Transfer Map", tm)
     controller.add(Finalizer.NAME, fin)
@@ -59,6 +64,15 @@ def test_it_walks_only_the_experiment_trials_and_says_whose(station):
     assert off not in [t["id"] for t in station._queue]
     assert [t["id"] for t in station._queue] == station.ids
     assert Finalizer.DISCLOSURE == "Finalize data (Ian, 10/13/26)"
+    assert station.left_out_text.startswith("None")
+    # A 7° cut with no video is left out too, and named (owner 2026-10-13).
+    blind = station.tm._store.insert({
+        "started_at": "2026-10-06T10:00:00", "tip_id": "T", "tilt_deg": 7.0,
+        "speed_steps_s": 200.0, "status": "recorded", "origin": "recorded",
+        "sample_id": "S1", "chip_id": "1", "flake_id": "1", "cut_id": "2"})
+    station.reload()
+    assert [t["id"] for t in station._queue] == station.ids
+    assert station.left_out_text == f"1 cut with no playable video: trial {blind}."
 
 
 def test_it_is_hosted_on_the_transfer_map_and_refuses_without_one():
@@ -83,7 +97,7 @@ def test_save_and_next_writes_afm_and_optical_then_moves_on(station):
     row = station.tm._store.trial(station.ids[0])
     assert row["width_um"] == 1.8 and row["width_optical_um"] == 2.0
     assert row["status"] == "measured"
-    assert row["width_optical_method"] == "estimate"      # typed by eye
+    assert row["width_optical_method"] == "capture_px"    # the one method
     assert shown(station) == station.ids[1]
 
 
@@ -116,9 +130,9 @@ def test_the_unfilled_filter_can_be_turned_off(station):
 
 def test_an_estimate_method_is_checked_and_saved(station):
     assert station.run("set_method", None, ("by guess",)).is_refused
-    assert station.run("set_method", None, ("reticle",)).is_ok
+    assert station.run("set_method", None, ("capture_px",)).is_ok
     assert station.run("save", {"f_width_optical_um": "2"}).is_ok
-    assert station.tm._store.trial(station.ids[0])["width_optical_method"] == "reticle"
+    assert station.tm._store.trial(station.ids[0])["width_optical_method"] == "capture_px"
 
 
 def test_the_form_loads_the_trials_own_values(station):
@@ -138,7 +152,8 @@ def test_the_schema_is_a_form_with_one_save_that_declares_every_box(station):
     entries = [e["model_attr"] for e in elements if e["type"] == "entry"]
     assert sorted(save["inputs"]) == sorted(entries)
     images = [e["data_command"] for e in elements if e["type"] == "image"]
-    assert images == ["first_frame_png", "mark_frame_png", "before_full_png",
+    assert images == ["flake_10x_png", "flake_100x_png", "flake_other_png",
+                      "first_frame_png", "mark_frame_png", "before_full_png",
                       "outcome_figure"]
 
 
