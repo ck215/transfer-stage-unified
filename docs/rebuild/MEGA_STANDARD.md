@@ -61,7 +61,10 @@ DEV: <letter> caps=<token>[,<token>...]
     bad-arg-power-of-2-1..256`, `#ERR RES busy`, `#ERR RES
     driver-readback-mismatch`, `#ERR RES driver-revert-failed` (the board
     could not put the old value back on every driver: it has disabled its
-    drivers, and the station latches the stop). Spelled out in
+    drivers, and the station latches the stop). The `#OK RES` reply ends
+    with `suspect=0|1`: 1 after a failed revert until `e` has rewritten and
+    read back every driver; the station refuses to energize a suspect chuck
+    until it is hard-reset from Setup. Spelled out in
     `firmware/chuck_firmware/PROTOCOL.md`.
 - **What may be listed:** a token is listed only when the firmware has the
   feature. Whether the hardware for it is present is reported per axis by
