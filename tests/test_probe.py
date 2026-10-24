@@ -1667,8 +1667,16 @@ def test_a_probe_opens_its_port_at_the_firmwares_500000_baud(cls, monkeypatch):
 
     monkeypatch.setattr("model.probe.serial_device.SerialPort", _Port)
     cls(port="/dev/ttyACM0", gamepad=object())
-    cls(port=None, gamepad=object(), sim=True)
-    assert built == [("/dev/ttyACM0", 500000), ("SIM", 500000)]
+    simulated = cls(port=None, gamepad=object(), sim=True)
+    if cls is ChuckPositioner:
+        # The chuck's SIM is its simulated `res` board behind the real
+        # transport (2026-10-23), a MegaStandardPort, at the same speed.
+        from devices.mega_standard_sim import MegaStandardPort
+        assert built == [("/dev/ttyACM0", 500000)]
+        assert isinstance(simulated.port, MegaStandardPort)
+        assert simulated.port.baud_rate == 500000
+    else:
+        assert built == [("/dev/ttyACM0", 500000), ("SIM", 500000)]
 
 
 CEILINGS = [(StepperProbe, 3200), (DCProbe, 3200), (ChuckPositioner, 600)]
@@ -1925,8 +1933,11 @@ def test_the_summary_divides_autonomous_from_manual(cls):
     p, _, _ = make_probe(cls)
     tier1 = [s for s in p.schema["sections"] if s.get("tier", 1) == 1
              and s["title"] != "Safety"]
-    assert [s["title"] for s in tier1] == ["Position", "Autonomous", "Manual"]
-    auto, manual = tier1[1], tier1[2]
+    # The chuck's step-resolution lever (owner 2026-10-23) sits between
+    # Position and the two control systems; the division itself is unchanged.
+    lever = ["Step resolution"] if cls is ChuckPositioner else []
+    assert [s["title"] for s in tier1] == ["Position", *lever, "Autonomous", "Manual"]
+    auto, manual = tier1[-2], tier1[-1]
     assert auto["layout"] == manual["layout"] == "group"
 
     def drawn(section):
