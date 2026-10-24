@@ -282,13 +282,15 @@ def test_a_busy_board_refuses_and_the_resolution_stays(make):
     assert model.position_epoch == 1
 
 
-def test_a_silent_board_leaves_the_resolution_unchanged(make):
+def test_a_silent_board_leaves_the_resolution_unknown(make):
+    """R2-4 (second review): a set with no reply has an unknown outcome, so
+    the resolution is unknown (it was "unchanged" before)."""
     model, board = make()
     known(model)
     board.silent = True
     result = model.run("set_resolution", None, ("fine",))
     assert result.is_refused and "no reply" in result.reason, result
-    assert model.resolution == 2 and model.is_fine is False
+    assert model.resolution is None and model.is_fine is False
 
 
 def test_a_refusal_on_the_wire_is_worded_from_its_reason():
@@ -363,9 +365,9 @@ def test_the_resolution_is_unknown_until_the_requery_lands(make):
     assert wait_for(lambda: model.resolution == 2, 2.0), model.resolution   # ...the re-read is not
     assert model.is_fine is False and board.microsteps == 2
     assert model.run("set_resolution", None, ("fine",)).is_ok
-    board.silent = True                              # the re-query goes unanswered
     time.sleep(model.EXT_JUMP_GRACE + 0.1)
-    model.run("set_mode", None, ("manual",))
+    assert model.run("set_mode", None, ("manual",)).is_ok   # entered while it answers
+    board.silent = True                              # the re-query goes unanswered
     model._check_reset((0, 0, 0), (2000, 0, 0), time.monotonic() - 0.05,
                        time.monotonic())
     assert model.resolution is None
@@ -488,6 +490,8 @@ def test_a_resolution_change_on_an_ext1_board_does_not_run_its_link_up_again(mak
 # -- R-2: the jog stream pauses around a set --------------------------------------------
 
 def test_no_jog_packet_goes_out_while_a_set_is_in_flight(make):
+    """Proves the HOST's write timing (nothing is written in the window),
+    not the board's RX: the sim's `res_delay` holds only the reply line."""
     model, board = make()
     known(model)
     assert model.run("set_mode", None, ("manual",)).is_ok
@@ -505,6 +509,8 @@ def test_no_jog_packet_goes_out_while_a_set_is_in_flight(make):
 
 
 def test_a_stop_during_a_set_is_written_at_once_and_sent_again_after_the_reply(make):
+    """Proves the HOST's write timing (the stop at once, again after the
+    reply), not that the board's RX buffer keeps it: the sim does not block."""
     model, board = make()
     known(model)
     assert model.run("set_mode", None, ("manual",)).is_ok
@@ -568,14 +574,14 @@ def test_entering_a_mode_asks_the_resolution_before_the_enable(make):
     assert model.resolution == 2
 
 
-def test_a_mode_entry_the_board_does_not_answer_leaves_it_unknown_and_proceeds(make):
+def test_a_mode_entry_the_board_does_not_answer_proceeds_and_keeps_what_was_known(make):
+    """R2-5: the entry ask does not blank the known resolution first."""
     model, board = make()
     known(model)
     board.res_drop = 1
     assert model.run("set_mode", None, ("manual",)).is_ok
     assert model.mode is ProbeMode.MANUAL
-    assert model.resolution is None
-    assert wait_for(lambda: model.resolution == 2, 2.0)
+    assert model.resolution == 2
 
 
 def test_no_periodic_query_goes_out_while_a_set_is_in_flight(make):
@@ -689,6 +695,185 @@ def test_a_failed_revert_latches_the_stop_and_says_the_chuck_disabled_its_driver
     assert model.is_estopped
     errors = [e for e in seen.seen if e.severity == "error"]
     assert errors and "disabled its drivers" in errors[0].message, said(seen)
-    assert "person" in errors[0].message
+    assert "hard-reset the Chuck Positioner from Setup" in errors[0].message
     assert board.enabled is False and board.microsteps == 2
     assert model.resolution != 8
+
+
+# == second review (R2-*) =================================================================
+
+def test_a_poll_during_the_entry_ask_still_reads_fine(make):
+    """R2-5: entering a mode at Fine never shows Fast or unknown meanwhile."""
+    model, board = make()
+    known(model)
+    assert model.run("set_resolution", None, ("fine",)).is_ok
+    board.res_drop = 1                               # the entry ask waits its full timeout
+    seen = []
+    stop = threading.Event()
+
+    def poll():
+        while not stop.is_set():
+            values = model.state["values"]
+            seen.append((values["is_fine"], values["resolution_text"]))
+            time.sleep(0.01)
+    poller = threading.Thread(target=poll)
+    poller.start()
+    try:
+        assert model.run("set_mode", None, ("manual",)).is_ok
+    finally:
+        stop.set()
+        poller.join(2.0)
+    assert len(seen) > 10
+    assert all(fine and text.startswith("⅛") for fine, text in seen), set(seen)
+
+
+# -- R2-1: a suspect board ---------------------------------------------------------------
+
+def test_after_a_failed_revert_the_chuck_is_suspect_until_a_new_link(monkeypatch):
+    """The latch clears, but no energized mode may be entered until a hard
+    reset (a new link epoch), even though the board answers 2 again."""
+    monkeypatch.setattr(serial_device.SerialPort, "BOOTLOADER_WAIT", 0.0)
+    board = MegaStandardSim(letter="c", caps=("res",))
+    port = MegaStandardPort("/dev/cu.usbmodemCHUCK", simulator=board)
+    model = ChuckPositioner(port=port, gamepad=FakePad())
+    model.open()
+    try:
+        assert wait_for(lambda: port.status == "verified", 3.0)
+        known(model)
+        board.res_fail = "driver-revert-failed"
+        assert model.run("set_resolution", None, ("fine",)).is_refused
+        assert model.is_estopped
+        model.clear_estop(confirmed=True)
+        for target in ("manual", "auto"):
+            refused = model.run("set_mode", None, (target,))
+            assert refused.is_refused, refused
+            assert ("hard-reset the Chuck Positioner from Setup (its drivers may be "
+                    "mismatched), then try again") in refused.reason
+        assert model.mode is ProbeMode.DISABLED
+        assert b"e" not in list(board.writes)[-5:]
+        epoch = model.position_epoch
+        board.unplug()
+        assert wait_for(lambda: port.status != "verified", 3.0)
+        board.replug()                               # the hard reset: a new link epoch
+        assert wait_for(lambda: port.status == "verified" and model.position_epoch > epoch, 8.0)
+        known(model)
+        assert model.run("set_mode", None, ("manual",)).is_ok
+    finally:
+        model.close()
+
+
+def test_an_ok_res_with_suspect_1_makes_the_chuck_suspect(make):
+    model, board = make()
+    known(model)
+    board.res_suspect = True                         # the board says so on its own
+    model.RES_POLL_INTERVAL = 0.1
+    assert wait_for(lambda: model._res_suspect, 2.0)
+    refused = model.run("set_mode", None, ("manual",))
+    assert refused.is_refused and "hard-reset the Chuck Positioner from Setup" in refused.reason
+
+
+def test_an_ok_res_without_the_field_is_not_suspect(make):
+    model, board = make()
+    known(model)
+    assert model._res_suspect is False
+    assert model.run("set_mode", None, ("manual",)).is_ok
+
+
+# -- R2-3: a POS line read in the same pass before a rescaling reply ---------------------
+
+def test_a_pos_line_before_a_rescaling_reply_in_the_same_pass_is_dropped():
+    port = ScriptedPort("c caps=res", {})
+    model = ChuckPositioner(port=port, gamepad=None)
+    model._read_position()                           # the link comes up: its epoch
+    model._resolution = model._res_known = 2
+    epoch = model.position_epoch
+    port.replies.extend(["POS:100,0,0", "#OK RES microsteps=8 pos=400,0,0"])
+    assert model._read_position() is None            # the old-scale POS is not taken
+    assert model.position_epoch == epoch + 1
+    assert model.position == (400, 0, 0)
+    port.replies.extend(["POS:404,0,0"])
+    assert model._read_position() == (404, 0, 0)     # the next pass reads as ever
+
+
+# -- R2-4: a set whose reply is lost ------------------------------------------------------
+
+def test_a_set_with_no_reply_leaves_the_mode_and_says_the_outcome_is_unknown(make):
+    model, board = make()
+    known(model)
+    assert model.run("set_mode", None, ("manual",)).is_ok
+    board.res_drop = 1                               # the board applied 8; its reply is lost
+    with Collected() as seen:
+        result = model.run("set_resolution", None, ("fine",))
+    assert result.is_refused and "no reply" in result.reason, result
+    assert model.mode is ProbeMode.DISABLED
+    assert board.microsteps == 8
+    warned = [e for e in seen.seen if e.severity in ("warn", "warning")]
+    assert any("unknown" in e.message for e in warned), said(seen)
+    assert wait_for(lambda: model.resolution == 8, 2.5)   # the retry reads what it is
+
+
+# -- R2-6: a stale answer and no confirmation ---------------------------------------------
+
+class StaleOnlyPort(ScriptedPort):
+    """`#RES 8` is answered only by a pending query's reply (the old value)."""
+
+    def write(self, payload, *, priority=False, abort_if=None):
+        written = RecordingPort.write(self, payload, priority=priority, abort_if=abort_if)
+        text = bytes(payload).decode("ascii", "replace").strip() if written else ""
+        if text in ("#RES", "#RES 8"):
+            self.replies.append("#OK RES microsteps=2 pos=0,0,0")
+        return written
+
+
+def test_a_stale_answer_and_no_confirmation_refuses_with_did_not_confirm():
+    model = ChuckPositioner(port=StaleOnlyPort("c caps=res", {}), gamepad=None)
+    model.open()
+    try:
+        known(model)
+        result = model.run("set_resolution", None, ("fine",))
+        assert result.is_refused and "did not confirm the change" in result.reason, result
+        assert model.resolution == 2
+    finally:
+        model._stop_threads()
+        model.close()
+
+
+# -- R2-7: the operator's own change is never "Unasked" ----------------------------------
+
+def test_the_operators_own_change_is_never_logged_unasked(make):
+    """The race: the set's waiter sees `_resolution == n` and clears the
+    in-flight flag before `_take_res` has decided who asked. Reproduced
+    deterministically: the flag clears the instant the value lands."""
+    model, board = make()
+    known(model)
+
+    class Racing(type(model)):
+        @property
+        def _resolution(self):
+            return self.__dict__.get("_res_value")
+
+        @_resolution.setter
+        def _resolution(self, value):
+            self.__dict__["_res_value"] = value
+            if value == 8:
+                self._res_setting.clear()
+
+    model.__dict__["_res_value"] = model.__dict__.pop("_resolution", 2)
+    model.__class__ = Racing
+    with Collected() as seen:
+        assert model.run("set_resolution", None, ("fine",)).is_ok
+        assert wait_for(lambda: "Step Resolution Changed" in said(seen), 1.0), said(seen)
+    assert "Unasked" not in said(seen), said(seen)
+
+
+def test_count_scale_is_fast_over_the_resolution_and_none_while_unknown(make):
+    """R2-2: the Sample DB's typed um per count is per Fast count."""
+    model, board = make(board=MegaStandardSim(letter="c", caps=("res",)))
+    model._resolution = None
+    assert model.count_scale is None
+    known(model)
+    assert model.count_scale == 1.0
+    assert model.run("set_resolution", None, ("fine",)).is_ok
+    assert model.count_scale == 0.25
+    from model.probe import StepperProbe
+    assert not hasattr(StepperProbe, "count_scale")

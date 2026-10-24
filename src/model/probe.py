@@ -244,6 +244,10 @@ class Probe(GamepadInput, IdleInterlock, Model):
     #: reset while DISABLED boots at 2 with no new link epoch).
     RES_RETRY_INTERVAL = 1.0
     RES_POLL_INTERVAL = 2.0
+    #: CONTRACT R2-1's words for a board whose drivers may be mismatched.
+    SUSPECT_TEXT = ("The board reported that its drivers may be mismatched: "
+                    "hard-reset the Chuck Positioner from Setup (its drivers may be "
+                    "mismatched), then try again.")
     #: After the board's own ZERO or HOMED, a jump to 0 is not a reset (L6).
     EXT_JUMP_GRACE = 0.5
 
@@ -374,6 +378,11 @@ class Probe(GamepadInput, IdleInterlock, Model):
         #: Counts every stop written (`_halt_hardware`, `_deenergize`), so a
         #: set can tell that one landed while the board was blocked (R-2).
         self._stop_count = 0
+        #: CONTRACT R2-1: the board said its drivers may be mismatched
+        #: (`driver-revert-failed`, or `#OK RES ... suspect=1`). Cleared only
+        #: by a new link epoch (a hard reset from Setup reboots the board);
+        #: while set, no energized mode may be entered.
+        self._res_suspect = False
         self._homing = {axis: None for axis in AXES}   # None | starting | running
         self._home_phase = {axis: "" for axis in AXES}
         self._homed = {axis: False for axis in AXES}
@@ -580,6 +589,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 self._refuse(f"{self.NAME} is in fault: its last disable was "
                              "not confirmed. Stop it; a confirmed stop clears "
                              "the fault.")
+            if self._res_suspect:
+                self._refuse(self.SUSPECT_TEXT)
             if target is ProbeMode.MANUAL and not self._is_gamepad_bound:
                 # Before the enable, never after: checking afterwards can
                 # revert the Python flag, but the firmware has already been
@@ -1133,6 +1144,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
             # A new link: the board may have rebooted. Cleared here, before
             # this pass reads its lines, so an answer in them is kept.
             self._resolution = self._res_known = None
+            self._res_suspect = False     # a hard reset: setup() rewrote every driver
         self._link_up = up
 
     @property
@@ -1160,7 +1172,12 @@ class Probe(GamepadInput, IdleInterlock, Model):
             if not line or line.startswith("DEV:"):
                 continue   # the handshake's answer is not a dropped packet
             if line.startswith("#") and self._hash_on:
+                epoch = self._position_epoch
                 self._on_ext_line(line)
+                if self._position_epoch != epoch:
+                    # R2-3: a POS read earlier in this pass is in the old
+                    # count size; the reply's own counts were adopted.
+                    latest = None
                 continue
             if not line.startswith("POS:"):
                 if line.isascii() and line.isprintable():
@@ -1534,14 +1551,14 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """On every entry into an energized mode, a `res` board is asked its
         resolution and the answer is waited for before the enable byte (R-3):
         a reset while DISABLED leaves no other trace. A board that does not
-        answer leaves it unknown, and the entry goes on."""
+        answer leaves what was known (R2-5: never blanked first; the answer
+        overwrites it), and the entry goes on."""
         caps = self.caps
         if (not caps or RES not in caps or not self._link_up
                 or self._res_setting.is_set() or self._estop.is_set()):
             return
         if threading.current_thread() is self._thread("sample"):
             return                        # the sampler reads the reply: never wait on it
-        self._resolution = None
         self._res_asked_at = time.monotonic()
         reply = self._ext_request("RES", abort_if=self._estop.is_set)
         if not reply.ok:
@@ -1561,7 +1578,13 @@ class Probe(GamepadInput, IdleInterlock, Model):
             return
         if microsteps < 1:
             return
+        if fields.get("suspect") == "1" and not self._res_suspect:
+            self._res_suspect = True
+            events.warn("Chuck Drivers Suspect", self.SUSPECT_TEXT, source=self.NAME)
         with self._res_lock:
+            # R2-7: who asked is decided BEFORE the value lands; the set's
+            # waiter may see it and clear the in-flight flag at once.
+            asked = self._res_setting.is_set()
             before = self._res_known
             self._resolution = self._res_known = microsteps
             self._res_asked_at = time.monotonic()      # an answer restarts the poll clock
@@ -1582,7 +1605,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 f"{microsteps} microsteps per full step, so its counts changed "
                 "size: a Sample DB registration or rotation calibration made with "
                 "this chuck is ended. Mark the corners again.")
-        if self._res_setting.is_set():
+        if asked:
             events.info("Step Resolution Changed", text, source=self.NAME)
         else:
             events.warn("Step Resolution Changed", "Unasked: " + text,
@@ -2808,6 +2831,14 @@ class ChuckPositioner(Probe):
         return self._resolution is not None and self._resolution > self.RESOLUTIONS["fast"]
 
     @property
+    def count_scale(self):
+        """Fast counts per count now (R2-2): RESOLUTIONS["fast"] / resolution,
+        1 at Fast, 0.25 at Fine, None while unknown. The Sample DB multiplies
+        the typed um per (Fast) count by it."""
+        n = self._resolution
+        return None if n is None else self.RESOLUTIONS["fast"] / n
+
+    @property
     def resolution_ready(self):
         """The firmware listed `res`: it has the switch."""
         caps = self.caps
@@ -2877,6 +2908,7 @@ class ChuckPositioner(Probe):
         if self._res_setting.is_set():
             self._refuse("A step-resolution change is already in flight.")
         stops = self._stop_count
+        unconfirmed = False
         self._res_setting.set()
         self._jog_held.set()
         try:
@@ -2892,6 +2924,7 @@ class ChuckPositioner(Probe):
                         reply = latest
                         break
                     time.sleep(0.005)
+                unconfirmed = reply.ok and self._resolution != n
         finally:
             self._jog_held.clear()
             self._res_setting.clear()
@@ -2900,17 +2933,35 @@ class ChuckPositioner(Probe):
         if not reply.ok:
             if str(reply.reason or "").split()[:1] == ["driver-revert-failed"]:
                 self._resolution = None
+                self._res_suspect = True
                 text = (f"The {self.NAME} could not undo a failed step-resolution "
                         "change, so it disabled its drivers. The station latched "
-                        "the stop: a person must check the chuck before it moves "
-                        "again, then clear the stop.")
+                        "the stop: hard-reset the Chuck Positioner from Setup (its "
+                        "drivers may be mismatched), then try again.")
                 self._board_fault("driver-revert-failed", None, always=True,
                                   message=text)
                 self._refuse(text)
             if reply.aborted and not self._estop.is_set():
                 self._refuse("The chuck started moving. Wait for it to stop, "
                              "then change the step resolution.")
+            if reply.timed_out:
+                # R2-4: the board may have applied it, or failed and pulled
+                # its drivers off: the outcome is unknown, so nothing stays
+                # energized on a guess and the resolution is re-read.
+                self._resolution = None
+                if self._mode in _ARMED:
+                    self._set_mode(ProbeMode.DISABLED, "#RES reply lost")
+                text = (f"The {self.NAME} sent no reply to the step-resolution "
+                        "change, so its outcome is unknown: the motors were "
+                        "disabled and the resolution is being read again. Check "
+                        "it before you move.")
+                events.warn("Step Resolution Unknown", text, source=self.NAME)
+                self._refuse(f"The step resolution may not have changed (no reply). "
+                             f"{text}")
             self._refuse(f"The step resolution did not change ({reply.why}).")
+        if unconfirmed:
+            self._refuse(f"The {self.NAME} did not confirm the change: it still "
+                         f"reports {self.resolution_text}.")
         if self._resolution != n:
             self._refuse("The board answered with a different step resolution "
                          f"({self.resolution_text}).")

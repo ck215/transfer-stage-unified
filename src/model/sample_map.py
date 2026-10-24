@@ -688,7 +688,23 @@ class SampleMap(store_choice.StorePrompt, Model):
         typed = _number(self.um_per_count) if str(self.um_per_count).strip() else None
         kind = STAGE_KINDS.get(str(self._source), str(self._source))
         k = sf.um_per_count(kind, typed=typed)
+        # CONTRACT R2-2: a stage with a step-resolution lever (the chuck)
+        # counts in units of its current resolution; the um per count is
+        # typed per FAST count, a physical constant of the axes.
+        stage = self._stages.get(self._source)
+        if stage is not None and hasattr(stage, "count_scale"):
+            scale = stage.count_scale
+            if scale is None:
+                raise sf.BenchFactMissing("the chuck's step resolution is not known yet.")
+            k = k * scale
         return (k, k)
+
+    def _um_per_count_label(self):
+        """'um per count', and '(at Fast)' when the source has a resolution
+        lever (R2-2): the typed value is per Fast count."""
+        stage = self._stages.get(self._source) if self._source not in (None, TYPED) else None
+        return ("um per count (at Fast)" if stage is not None and hasattr(stage, "count_scale")
+                else "um per count")
 
     # -- the Rotator (owner 2026-10-04: it turns the chip) -----------------------------
     def _phi(self):
@@ -2508,7 +2524,7 @@ class SampleMap(store_choice.StorePrompt, Model):
             sch.section(
                 "Locating axes",
                 sch.dropdown("Locating axes", "source", "set_source", "source_options"),
-                sch.entry("um per count", "um_per_count", P["um_per_count"]),
+                sch.entry(self._um_per_count_label(), "um_per_count", P["um_per_count"]),
                 sch.button("Set um per count", "set_um_per_count",
                            inputs=("um_per_count",)),
                 sch.entry("X reading (mm)", "reading_x_mm", P["reading_x_mm"]),

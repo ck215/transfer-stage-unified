@@ -332,6 +332,10 @@ class MegaStandardSim:
         self.log_level = 1
         self.microsteps = RES_BOOT      # `res` boards: a reboot is back at 2
         self._res_held = None           # a reset loses a reply not yet printed
+        #: CONTRACT R2-1: set by a failed revert, cleared only at boot.
+        #: While set, `#OK RES` carries `suspect=1` and 'e' does not energize
+        #: (the sim's drivers stay mixed: its rewrite never reads back).
+        self.res_suspect = False
         self.rejected_packets = 0
         self._next_print = now + self.PRINT_INTERVAL
         for axis in self.axes.values():
@@ -597,7 +601,9 @@ class MegaStandardSim:
             elif head == ord("e"):
                 del self._rx[:1]
                 self.received.append((self.clock(), "e"))
-                if not self.enabled:
+                if self.res_suspect:
+                    self._dbg("enable refused: res suspect")
+                elif not self.enabled:
                     self.enabled = True
                     self._halt_axes()
                     self._settle_until = self.clock() + self.ENABLE_SETTLE
@@ -904,6 +910,7 @@ class MegaStandardSim:
                 self._lose_position("disabled")
                 self.enabled = False
                 self._halt_motion("disabled")
+                self.res_suspect = True
                 return self._res_reply(f"#ERR {command} {fail}", held=True)
             if fail:
                 return self._res_reply(f"#ERR {command} {fail}", held=True)
@@ -914,11 +921,13 @@ class MegaStandardSim:
                     scaled = (abs(counter) * n // old) * (1 if counter >= 0 else -1)
                     axis.origin = axis.phys - scaled
                 self.microsteps = n
-            pos = ",".join(str(self.axes[a].counter) for a in AXES)
-            return self._res_reply(f"#OK {command} microsteps={self.microsteps} pos={pos}",
-                                   held=True)
+            return self._res_reply(self._res_ok(command), held=True)
+        self._res_reply(self._res_ok(command))
+
+    def _res_ok(self, command):
         pos = ",".join(str(self.axes[a].counter) for a in AXES)
-        self._res_reply(f"#OK {command} microsteps={self.microsteps} pos={pos}")
+        suspect = " suspect=1" if self.res_suspect else ""
+        return f"#OK {command} microsteps={self.microsteps} pos={pos}{suspect}"
 
     def _res_reply(self, line, held=False):
         """One `#RES` reply: lost (`res_drop`), held while a set blocks the

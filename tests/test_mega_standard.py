@@ -761,7 +761,7 @@ def test_the_sim_res_revert_failed_hook_disables_the_drivers_and_keeps_the_old_v
     assert board.ask("#RES 8") == ["#ERR RES driver-revert-failed"]
     assert board.enabled is False and board.microsteps == 2 and not board.moving
     assert board.res_fail is None                     # one shot
-    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=0,0,0"]
+    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=0,0,0 suspect=1"]   # R2-1
 
 
 def test_the_sim_res_readback_mismatch_hook_changes_nothing():
@@ -788,3 +788,24 @@ def test_the_sim_res_delay_hook_holds_the_reply_and_drop_loses_it():
     assert board.ask("#RES") == []
     assert board.res_drop == 0
     assert board.ask("#RES") == ["#OK RES microsteps=8 pos=0,0,0"]
+
+
+def test_the_sim_after_a_failed_revert_is_suspect_and_e_does_not_energize_until_reboot():
+    """CONTRACT, second review R2-1: `#OK RES ... suspect=1` and no enable
+    until the board has rebooted (setup() rewrites every driver)."""
+    clock = Clock()
+    board = MegaStandardSim(letter="c", caps=("res",), clock=clock)
+    board.open()
+    board.res_fail = "driver-revert-failed"
+    assert board.ask("#RES 8") == ["#ERR RES driver-revert-failed"]
+    assert board.res_suspect is True
+    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=0,0,0 suspect=1"]
+    board.write(b"e")
+    clock.run(0.05, board)
+    assert board.enabled is False
+    board.reboot()
+    assert board.res_suspect is False
+    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=0,0,0"]
+    board.write(b"e")
+    clock.run(0.05, board)
+    assert board.enabled is True
