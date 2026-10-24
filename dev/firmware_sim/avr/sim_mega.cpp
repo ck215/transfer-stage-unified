@@ -53,11 +53,11 @@ static const char AXL[3] = { 'X', 'Y', 'Z' };
 
 // ------------------------------------------------------------------ the TMCStepper stand-in's driver side
 // include/TMCStepper.h: for a sketch that does not override write()/read() (stepper_firmware, chuck_firmware), the
-// CHOPCONF each driver instance holds (by construction order), the writes it took, and two faults (bit i = instance i):
-// a driver that ignores writes, one that never answers a read.
+// CHOPCONF each driver instance holds (by construction order), the writes it took, and three faults (bit i = instance
+// i): a driver that ignores writes, one that never answers a read, one that takes one more write and then ignores them.
 uint32_t g_simTmcChop[8];
 uint32_t g_simTmcChopWrites[8];
-uint8_t g_simTmcDropWrites = 0, g_simTmcNoReply = 0;
+uint8_t g_simTmcDropWrites = 0, g_simTmcNoReply = 0, g_simTmcTakeOne = 0;
 int g_simTmcCount = 0;
 
 // ------------------------------------------------------------------ TMC2209 bus model (Serial2)
@@ -1595,11 +1595,45 @@ static void s_res_readback() {
   waitIdle(5000);
   g_simTmcDropWrites = 0; g_simTmcNoReply = 2;               // Y's driver never answers a read
   r = res1("#RES 256", n);
-  expect(r == "#ERR RES driver-readback-mismatch", "Y's driver never answers: a failed read (it decodes as 256) confirms nothing", r);
-  expect(mresAll(7), "every driver restored to MRES 7", mresTxt());
+  // A silent driver cannot confirm the revert either (R-6): the board disables rather than trust it.
+  expect(r == "#ERR RES driver-revert-failed", "Y's driver never answers: a failed read (it decodes as 256) confirms nothing, "
+         "not even the revert: driver-revert-failed", r);
+  expect(mresAll(7), "every driver written back to MRES 7 (Y takes writes, it only cannot answer)", mresTxt());
+  expect(en(0) == 1 && en(1) == 1 && en(2) == 1, "and the board disabled its drivers (EN high)");
   g_simTmcNoReply = 0;
+  enable();
   r = res1("#RES 8", n);
   expect(r == resOk(8, "13200,800,1200") && mresAll(5), "the bus healthy again: #RES 8 is taken", r);
+}
+
+// R-6 (contract amendment, 2026-10-23 late): a revert that does not take leaves the drivers mixed. Z ignores every
+// write (the mismatch), X takes the new value and then ignores the revert: after the revert X reads back 8, Y and Z 2.
+// The board must not trust that: halt, EN high and TOFF 0 on all three (the 'd' path), keep 2, say so.
+static int chopToff(int i) { return (int)(g_simTmcChop[i] & 0xF); }
+static void s_res_revert_failed() {
+  boot();
+  enable();
+  sendLine(moveFrame(100, 200, 300, 1600)); waitIdle(3000);
+  expect(en(0) == 0 && en(1) == 0 && en(2) == 0 && chopToff(0) == 4 && chopToff(1) == 4 && chopToff(2) == 4,
+         "enabled: EN low, TOFF 4 on all three");
+  g_simTmcDropWrites = 4; g_simTmcTakeOne = 1;
+  size_t n = 0;
+  std::string r = res1("#RES 8", n);
+  expect(r == "#ERR RES driver-revert-failed" && n == 1, "Z ignores the write, X ignores the revert: #ERR RES driver-revert-failed", r);
+  char b[64]; snprintf(b, sizeof b, "MRES %d,%d,%d", chopMres(0), chopMres(1), chopMres(2));
+  expect(chopMres(0) == 5 && chopMres(1) == 7 && chopMres(2) == 7, "the drivers are mixed (X 8, Y and Z 2): the case this guards", b);
+  expect(en(0) == 1 && en(1) == 1 && en(2) == 1, "EN high on all three (the 'd' path): no axis can move");
+  expect(chopToff(1) == 0, "TOFF 0 reaches Y (X and Z now ignore writes: EN high is what holds them)",
+         std::to_string(chopToff(0)) + "," + std::to_string(chopToff(1)) + "," + std::to_string(chopToff(2)));
+  r = res1("#RES", n);
+  expect(r == resOk(2, "100,200,300"), "the board keeps the OLD value, 2, positions untouched", r);
+  g_simTmcDropWrites = 0;
+  long n0 = st[0].net; double x0 = st[0].x;
+  sendLine(moveFrame(160, 0, 0, 1600)); waitIdle(2000);
+  expect(fabs(st[0].x - x0) < 1e-9, "a frame afterwards moves no carriage until the host enables again",
+         fmt("%.4f mm", st[0].x - x0) + ", " + std::to_string(st[0].net - n0) + " pulses");
+  sendRaw("e"); runMs(100);
+  expect(en(0) == 0 && chopToff(0) == 4 && chopToff(1) == 4 && chopToff(2) == 4, "'e' enables again (a person looked first: the host's job)");
 }
 #endif
 
@@ -1640,6 +1674,7 @@ static const Scenario SCENARIOS[] = {
   { "res-busy", s_res_busy },
   { "res-speed-cap", s_res_speed_cap },
   { "res-readback-mismatch", s_res_readback },
+  { "res-revert-failed", s_res_revert_failed },
 #endif
 };
 // The chuck build lists what applies to chuck_firmware: the frame-protocol behaviour it shares with stepper_firmware

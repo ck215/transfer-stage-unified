@@ -144,6 +144,20 @@ void haltMotion() {
   holdPosition();
 }
 
+// The 'd' path (also #RES's failed revert, R-6). TOFF=0 is what actually disables a TMC2209 driver output stage (see
+// setup()'s toff(0) at boot for the same convention) -- toff(2) here previously left the driver enabled with a
+// different chopper off-time, never cutting coil current at all. Also run this unconditionally rather than gating on
+// our own system_enabled belief: a stale/desynced flag must never be able to block the one command that actually kills
+// power. EN high needs no UART, so it holds even for a driver that ignores the TOFF write.
+void disableDrivers() {
+  system_enabled = false;
+  haltMotion();
+  driversOutputsOff();
+  xUART.toff(0);
+  yUART.toff(0);
+  zUART.toff(0);
+}
+
 // ---- Step resolution as a run-time lever (CR-1, 2026-10-23: Andrew's request via the owner). Was a local in setup().
 // Boot default 2 (half steps: fast, coarse), today's value; `#RES <n>` changes it at standstill (PROTOCOL.md "#RES").
 // The presets are the host's choice (Fast = 2, Fine = 8, PROVISIONAL on the station side): this board takes any power
@@ -235,6 +249,14 @@ void parseExtLine() {
     setDriverMicrosteps(xUART, old);
     setDriverMicrosteps(yUART, old);
     setDriverMicrosteps(zUART, old);
+    // R-6: read the revert back too. A driver that is not at the old value now leaves the axes mixed, which this board
+    // cannot trust: disable everything (the 'd' path), keep microstepMode at the old value, and say so. The host
+    // latches a stop; a person looks before it moves again.
+    if (!driverHasMicrosteps(xUART, old) || !driverHasMicrosteps(yUART, old) || !driverHasMicrosteps(zUART, old)) {
+      disableDrivers();
+      Serial.println("#ERR RES driver-revert-failed");
+      return;
+    }
     Serial.println("#ERR RES driver-readback-mismatch");
     return;
   }
@@ -515,20 +537,7 @@ void parseHybridSerial() {
         // ---OPTION B: EXPLICIT DISABLE (idempotent — safe even if already disabled)
         else if (peekChar == 0x64) { // 'd'
             Serial.read();
-
-            // TOFF=0 is what actually disables a TMC2209 driver output stage
-            // (see setup()'s toff(0) at boot for the same convention) --
-            // toff(2) here previously left the driver enabled with a
-            // different chopper off-time, never cutting coil current at all.
-            // Also run this unconditionally rather than gating on our own
-            // system_enabled belief: a stale/desynced flag must never be
-            // able to block the one command that actually kills power.
-            system_enabled = false;
-            haltMotion();
-            driversOutputsOff();
-            xUART.toff(0);
-            yUART.toff(0);
-            zUART.toff(0);
+            disableDrivers();
         }
 
         // ---OPTION B2: EXPLICIT ENABLE (idempotent — safe even if already enabled)

@@ -102,7 +102,7 @@ that ignores writes and one that never answers (TMCStepper then returns 0 and se
 
 ```
 dev/firmware_sim/build.sh firmware/chuck_firmware/chuck_firmware.ino /tmp/sim-chuck chuck
-dev/firmware_sim/run.sh /tmp/sim-chuck /tmp/sim-logs-chuck     # 7 scenarios; "failed scenarios: 0"
+dev/firmware_sim/run.sh /tmp/sim-chuck /tmp/sim-logs-chuck     # 8 scenarios; "failed scenarios: 0"
 ```
 
 `expected-chuck.txt` is the passing run. `res-query-and-set` (query at boot, `#RES 8` scaling every position x4 with
@@ -110,8 +110,9 @@ the next POS line agreeing, back to 2 with truncation toward zero, the no-op, ba
 256, a set while disabled, `DEV: c caps=res`), `res-busy` (a frame, a D-pad step and a deflected jog each refused, each
 keeping its motion and its resolution; a jog that has ended, the station still streaming neutral packets, accepted), `res-speed-cap` (a 3200 counts/s frame steps at 1600 at 2 microsteps and at
 3200 after `#RES 8`; tolerance 1 % and 2 %, one 5 us loop tick in a step interval) and `res-readback-mismatch` (one
-driver ignoring the write, one never answering: the old value back on all three, positions and max speed untouched)
-are red on the sketch before `#RES` (no reply; its `#RES 8` digit stopped a frame in flight as a stop frame) and green
+driver ignoring the write, one never answering: the old value back on all three, positions and max speed untouched;
+a silent driver ends in `driver-revert-failed`) and `res-revert-failed` (R-6: a driver that ignores the revert too,
+so the board disables its drivers, EN high and TOFF 0, and keeps the old resolution) are red on the sketch before `#RES` (no reply; its `#RES 8` digit stopped a frame in flight as a stop frame) and green
 after. Kind `stepref` still builds the chuck on the stepper's pins with the base scenarios, as before.
 
 `avr/isr_cycles.py` and `avr/stack_depth.py` read `avr-objdump -d` of the
