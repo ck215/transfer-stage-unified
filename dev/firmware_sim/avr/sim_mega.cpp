@@ -1515,15 +1515,29 @@ static void s_res_busy() {
   v = rateIn(0, t, g_simUs);
   expect(fabs(v / 800 - 1) < 0.01, "the jog carries on at 800 counts/s", fmt("%.1f counts/s", v));
   expect(chopWrites() == w0 && mresAll(7), "nothing written", mresTxt());
-  host.pkt = Pkt(); host.pkt.speed = 800;                    // stick back to neutral, the stream goes on
+  // 4. The jog has ended (sticks centred, speed 0 reached) but the station still streams neutral packets: not moving,
+  // so not busy (contract amended 2026-10-23: runSpeed() leaves distanceToGo() behind, which is not motion).
+  host.pkt = Pkt(); host.pkt.speed = 800;
   runMs(300);
-  r = res1("#RES 8", n);
-  if (g_verbose) printf("           note: stick neutral, stream still on: %s (runSpeed() leaves distanceToGo() behind until a stop)\n", r.c_str());
-  host.stream = false;
-  runMs(400);                                                // the jog dead-man: holdPosition()
   long pos = st[0].net;
+  t = g_simUs;
+  runMs(100);
+  expect(st[0].net == pos && stepsIn(0, t, g_simUs) == 0 && host.stream, "the jog has ended: no step for 100 ms, neutral packets still streaming",
+         std::to_string(stepsIn(0, t, g_simUs)) + " steps");
   r = res1("#RES 8", n);
-  expect(r == resOk(8, std::to_string(pos * 4) + ",0,0") && mresAll(5), "once the stream stops and the dead-man holds: #RES 8 is taken", r);
+  expect(r == resOk(8, std::to_string(pos * 4) + ",0,0") && n == 1 && mresAll(5),
+         "jog ended, stream still on: #RES 8 is ACCEPTED, position x4", r + " " + mresTxt());
+  t = g_simUs; runMs(200);
+  expect(stepsIn(0, t, g_simUs) + stepsIn(1, t, g_simUs) + stepsIn(2, t, g_simUs) == 0, "and nothing moves after it (the stream goes on)");
+  // 5. And a jog after it is refused again mid-jog, at the new resolution.
+  host.pkt = stickOn(0, 1, 800);
+  runMs(200);
+  r = res1("#RES 2", n);
+  expect(r == RES_BUSY && mresAll(5), "mid-jog again: #RES 2 -> #ERR RES busy, still 8 microsteps", r + " " + mresTxt());
+  host.pkt = Pkt(); host.pkt.speed = 800;
+  runMs(300);
+  host.stream = false;
+  runMs(400);
 }
 
 static void s_res_speed_cap() {

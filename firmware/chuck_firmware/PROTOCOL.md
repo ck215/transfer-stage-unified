@@ -47,8 +47,9 @@ Board to host, exactly one line per command, never a `#` line unasked:
 | `#ERR <CMD> unknown` | any other `#<CMD>` line; nothing else happens |
 
 - `pos` is the three positions after the command, in the new counts: the numbers the next `POS:` line carries.
-- **Busy:** any axis with `speed() != 0` or `distanceToGo() != 0`, a D-pad step in progress, or an autonomous move not
-  yet done. A query answers while busy. Enabled or disabled does not matter (standstill does: the TMC2209 keeps its
+- **Busy means moving:** any axis with `speed() != 0`, a D-pad step in progress, or an autonomous move not yet done.
+  A jog that has ended (sticks centred, speed 0) is not busy, though the station still streams neutral packets and
+  `distanceToGo()` is left non-zero by the jog (contract amended 2026-10-23). A query answers while busy. Enabled or disabled does not matter (standstill does: the TMC2209 keeps its
   microstep counter across an MRES write, so the rotor does not move).
 - **A set** writes the new resolution to all three drivers over their UARTs, then reads each back over the same UART
   (a read that fails its CRC or gets no reply counts as a mismatch). On success each position becomes

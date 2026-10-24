@@ -165,10 +165,11 @@ bool driverHasMicrosteps(TMC2209Stepper &d, uint16_t ms) {
   return got == ms;
 }
 
-// Busy, as the contract defines it: anything moving or about to (a frame, a D-pad step, a jog, a move not yet done).
+// Busy means MOVING (contract, amended 2026-10-23): an axis with a speed, a D-pad step, or a frame not yet done.
+// distanceToGo() is not part of it: a jog runs on runSpeed(), which leaves the target behind, so it stayed non-zero
+// after every jog with the sticks centred and the drivers at rest. setCurrentPosition() below resets the target anyway.
 bool resBusy() {
   return x_axis.speed() != 0 || y_axis.speed() != 0 || z_axis.speed() != 0
-      || x_axis.distanceToGo() != 0 || y_axis.distanceToGo() != 0 || z_axis.distanceToGo() != 0
       || DPAD_STEP || (AUTONOMOUS_ON && !ALL_AXES_DONE);
 }
 

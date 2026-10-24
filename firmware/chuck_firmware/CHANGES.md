@@ -14,8 +14,9 @@ implemented. Only this sketch changed; `stepper_firmware` and the DC sketch are 
 - `parseHybridSerial()` gained a branch for a `#` peek (0x23 was unused: it was dropped a byte at a time). It reads the
   line with `Serial.readStringUntil('\n')` (the 2 ms timeout set in `setup()`) and answers `#RES`, `#RES <n>`, or
   `#ERR <CMD> unknown`. Everything else on the wire is byte for byte what it was.
-- A set: refused while busy (any axis `speed() != 0` or `distanceToGo() != 0`, `DPAD_STEP`, or `AUTONOMOUS_ON &&
-  !ALL_AXES_DONE`); a set to the current value answers `#OK` and writes nothing; otherwise `microsteps(n)` to xUART,
+- A set: refused while busy, which means moving (any axis `speed() != 0`, `DPAD_STEP`, or `AUTONOMOUS_ON &&
+  !ALL_AXES_DONE`; the contract's first draft also had `distanceToGo() != 0`, dropped the same day: a jog leaves it
+  non-zero, so `#RES` was refused after every jog while the station streamed neutral packets); a set to the current value answers `#OK` and writes nothing; otherwise `microsteps(n)` to xUART,
   yUART, zUART, each read back from the driver (the first time this sketch reads a driver register after boot), the
   old value restored on all three on any mismatch; then each position rescaled `(pos * n) / old` in `long` and
   `setMaxSpeed(1600L * n / 2)` per axis.
@@ -38,7 +39,7 @@ implemented. Only this sketch changed; `stepper_firmware` and the DC sketch are 
 in flight) and green after; `frame-dpad-past-int16`, `watchdog-deadman` and `host-timeout-unarmed` stay green.
 `expected-chuck.txt` is the passing run.
 
-**Build** (arduino-cli 1.5.1, `arduino:avr:mega:cpu=atmega2560`, `--warnings all`): flash 20676 -> 22522 bytes, RAM
+**Build** (arduino-cli 1.5.1, `arduino:avr:mega:cpu=atmega2560`, `--warnings all`): flash 20676 -> 22396 bytes, RAM
 1293 -> 1449 bytes (the reply strings are in RAM, as the sketch's other literals are); no warning from the sketch
 before or after (the four warnings are the AVR core's `new.cpp`).
 

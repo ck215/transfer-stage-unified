@@ -108,7 +108,7 @@ dev/firmware_sim/run.sh /tmp/sim-chuck /tmp/sim-logs-chuck     # 7 scenarios; "f
 `expected-chuck.txt` is the passing run. `res-query-and-set` (query at boot, `#RES 8` scaling every position x4 with
 the next POS line agreeing, back to 2 with truncation toward zero, the no-op, bad arguments, `#ERR FOO unknown`, 1 and
 256, a set while disabled, `DEV: c caps=res`), `res-busy` (a frame, a D-pad step and a deflected jog each refused, each
-keeping its motion and its resolution), `res-speed-cap` (a 3200 counts/s frame steps at 1600 at 2 microsteps and at
+keeping its motion and its resolution; a jog that has ended, the station still streaming neutral packets, accepted), `res-speed-cap` (a 3200 counts/s frame steps at 1600 at 2 microsteps and at
 3200 after `#RES 8`; tolerance 1 % and 2 %, one 5 us loop tick in a step interval) and `res-readback-mismatch` (one
 driver ignoring the write, one never answering: the old value back on all three, positions and max speed untouched)
 are red on the sketch before `#RES` (no reply; its `#RES 8` digit stopped a frame in flight as a stop frame) and green
