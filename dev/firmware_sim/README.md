@@ -90,12 +90,29 @@ on the host too (2026-10-10, X-19). `frame-dpad-past-int16` sends a frame of
 16 x 2100 = 33600 counts per axis and a D-pad step of size 40000: red on
 `stepper_firmware` and `chuck_firmware` before the fix (the move wrapped to
 -31936 and ran into the - hard stop; the D-pad's 40000 became -25536), green
-after; the xyz Mega always held both in 32 bits. The chuck is its own build:
+after; the xyz Mega always held both in 32 bits.
+
+The chuck is its own build, kind `chuck` (2026-10-23, CR-1): the `stepref` build plus `-DSIM_CHUCK`, on the chuck's
+own STEP/DIR/EN pins (X 42-44, Y 32-34, Z 22-24), listing only what applies to it: the frame-protocol scenarios it
+shares with `stepper_firmware` (`frame-dpad-past-int16`, `watchdog-deadman`, `host-timeout-unarmed`) and its `#RES`
+lane, `res-*`. The TMCStepper stand-in keeps a driver side for sketches that do not override `write()`/`read()`: the
+CHOPCONF each instance's driver holds (the chuck's xUART, yUART, zUART are instances 0-2), the writes it took,
+`microsteps()` read back from it with the library's spelling (a full step is 0), and two faults per instance, a driver
+that ignores writes and one that never answers (TMCStepper then returns 0 and sets `CRCerror`).
 
 ```
-dev/firmware_sim/build.sh firmware/chuck_firmware/chuck_firmware.ino /tmp/sim-chuck stepref
-/tmp/sim-chuck frame-dpad-past-int16                                  # PASS; its other scenarios are the base (red)
+dev/firmware_sim/build.sh firmware/chuck_firmware/chuck_firmware.ino /tmp/sim-chuck chuck
+dev/firmware_sim/run.sh /tmp/sim-chuck /tmp/sim-logs-chuck     # 7 scenarios; "failed scenarios: 0"
 ```
+
+`expected-chuck.txt` is the passing run. `res-query-and-set` (query at boot, `#RES 8` scaling every position x4 with
+the next POS line agreeing, back to 2 with truncation toward zero, the no-op, bad arguments, `#ERR FOO unknown`, 1 and
+256, a set while disabled, `DEV: c caps=res`), `res-busy` (a frame, a D-pad step and a deflected jog each refused, each
+keeping its motion and its resolution; a jog that has ended, the station still streaming neutral packets, accepted), `res-speed-cap` (a 3200 counts/s frame steps at 1600 at 2 microsteps and at
+3200 after `#RES 8`; tolerance 1 % and 2 %, one 5 us loop tick in a step interval) and `res-readback-mismatch` (one
+driver ignoring the write, one never answering: the old value back on all three, positions and max speed untouched)
+are red on the sketch before `#RES` (no reply; its `#RES 8` digit stopped a frame in flight as a stop frame) and green
+after. Kind `stepref` still builds the chuck on the stepper's pins with the base scenarios, as before.
 
 `avr/isr_cycles.py` and `avr/stack_depth.py` read `avr-objdump -d` of the
 compiled ELF: the step ISR's best and worst cycle counts (longest path
