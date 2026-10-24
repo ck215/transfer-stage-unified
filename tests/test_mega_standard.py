@@ -732,3 +732,59 @@ def test_the_sim_res_is_accepted_at_rest_in_manual_mode_and_busy_mid_jog():
     assert answer and answer[0].startswith("#OK RES microsteps=8 pos="), answer
     clock.run(0.2, board, beat=jog(1.0))                       # and it jogs again afterwards
     assert board.moving
+
+
+# == the res lane: argument strictness and the station-2 test hooks ===================
+
+@pytest.mark.parametrize("text", ["#RES +8", "#RES 1_6", "#RES 0000008", "#RES 8.0",
+                                  "#RES 0x8", "#RES  8x"])
+def test_the_sim_res_argument_is_as_strict_as_the_c(text):
+    """R-8: `^\\d{1,6}$` before the number is read, as the sketch's check;
+    Python's int() would take `+8`, `1_6` and `0000008`."""
+    board = MegaStandardSim(letter="c", caps=("res",))
+    board.open()
+    assert board.ask(text) == ["#ERR RES bad-arg-power-of-2-1..256"], text
+    assert board.microsteps == 2
+    assert board.ask("#RES 000008") == ["#OK RES microsteps=8 pos=0,0,0"]   # six digits
+
+
+def test_the_sim_res_revert_failed_hook_disables_the_drivers_and_keeps_the_old_value():
+    """CONTRACT amendment R-6: a revert that does not read back halts, pulls
+    the drivers off (the 'd' path) and keeps the old microstep value."""
+    clock = Clock()
+    board = MegaStandardSim(letter="c", caps=("res",), clock=clock)
+    board.open()
+    board.write(b"e")
+    clock.run(0.05, board)
+    assert board.enabled
+    board.res_fail = "driver-revert-failed"
+    assert board.ask("#RES 8") == ["#ERR RES driver-revert-failed"]
+    assert board.enabled is False and board.microsteps == 2 and not board.moving
+    assert board.res_fail is None                     # one shot
+    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=0,0,0"]
+
+
+def test_the_sim_res_readback_mismatch_hook_changes_nothing():
+    board = MegaStandardSim(letter="c", caps=("res",))
+    board.open()
+    board.write(b"e")
+    board.res_fail = "driver-readback-mismatch"
+    assert board.ask("#RES 8") == ["#ERR RES driver-readback-mismatch"]
+    assert board.enabled is True and board.microsteps == 2
+
+
+def test_the_sim_res_delay_hook_holds_the_reply_and_drop_loses_it():
+    clock = Clock()
+    board = MegaStandardSim(letter="c", caps=("res",), clock=clock)
+    board.open()
+    board.res_delay = 0.06
+    assert board.ask("#RES 8") == []                  # the loop is blocked in the set
+    assert board.microsteps == 8
+    clock.run(0.08, board)
+    assert board.drain_lines() == ["#OK RES microsteps=8 pos=0,0,0"]
+    assert board.res_replied_at == pytest.approx(clock.t, abs=0.03)
+    board.res_delay = 0.0
+    board.res_drop = 1
+    assert board.ask("#RES") == []
+    assert board.res_drop == 0
+    assert board.ask("#RES") == ["#OK RES microsteps=8 pos=0,0,0"]

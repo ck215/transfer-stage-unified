@@ -83,6 +83,9 @@ RES = "res"
 #: steps, the chuck sketch's `microstepMode`).
 RES_BOOT = 2
 RES_MAX = 256
+#: The sketch's check on `#RES <n>` before atol (R-8): one to six ASCII
+#: digits, nothing else (no sign, no underscore, no seventh digit).
+RES_ARG = re.compile(r"[0-9]{1,6}")
 #: `#SOFTLIMIT`'s ceiling (STD_SOFT_MAX: 100 mm), counts.
 SOFT_MAX = 160000
 #: The XYZ Mega's identity letter (section 2). Taken: s, d, c, t, x.
@@ -268,6 +271,19 @@ class MegaStandardSim:
         self.unplugged = False
         #: The next N writes raise OSError.
         self.fail_writes = 0
+        #: `res` test hooks (station 2). `res_fail`: the next `#RES <n>` set
+        #: fails with this reason, once ("driver-readback-mismatch" changes
+        #: nothing; "driver-revert-failed" also halts and pulls the drivers
+        #: off, the 'd' path, keeping the old value: CONTRACT R-6).
+        #: `res_delay`: seconds a set blocks the loop before its reply is
+        #: printed (the real set's UART traffic, ~20-70 ms); the time the
+        #: held reply went out is `res_replied_at`. `res_drop`: the next N
+        #: `#RES` replies are lost.
+        self.res_fail = None
+        self.res_delay = 0.0
+        self.res_replied_at = None
+        self.res_drop = 0
+        self._res_held = None           # (due clock time, reply line)
         self._lock = threading.RLock()
         self._out = bytearray()
         self._rx = bytearray()
@@ -315,6 +331,7 @@ class MegaStandardSim:
         self._timed_out_at = None
         self.log_level = 1
         self.microsteps = RES_BOOT      # `res` boards: a reboot is back at 2
+        self._res_held = None           # a reset loses a reply not yet printed
         self.rejected_packets = 0
         self._next_print = now + self.PRINT_INTERVAL
         for axis in self.axes.values():
@@ -874,14 +891,22 @@ class MegaStandardSim:
         if not self.has(RES):
             return self._err(command, "unknown-command")
         if args:
-            try:
+            n = 0
+            if len(args) == 1 and RES_ARG.fullmatch(args[0]):
                 n = int(args[0])
-            except ValueError:
-                n = 0
             if len(args) != 1 or not 1 <= n <= RES_MAX or n & (n - 1):
-                return self._err(command, "bad-arg-power-of-2-1..256")
+                return self._res_reply(f"#ERR {command} bad-arg-power-of-2-1..256")
             if self._busy() or self.dpad_step:
-                return self._err(command, "busy")
+                return self._res_reply(f"#ERR {command} busy")
+            fail, self.res_fail = self.res_fail, None
+            if fail == "driver-revert-failed":
+                # Mixed drivers: halt, the 'd' path, the old value kept.
+                self._lose_position("disabled")
+                self.enabled = False
+                self._halt_motion("disabled")
+                return self._res_reply(f"#ERR {command} {fail}", held=True)
+            if fail:
+                return self._res_reply(f"#ERR {command} {fail}", held=True)
             old = self.microsteps
             if n != old:
                 for axis in self.axes.values():
@@ -889,8 +914,22 @@ class MegaStandardSim:
                     scaled = (abs(counter) * n // old) * (1 if counter >= 0 else -1)
                     axis.origin = axis.phys - scaled
                 self.microsteps = n
+            pos = ",".join(str(self.axes[a].counter) for a in AXES)
+            return self._res_reply(f"#OK {command} microsteps={self.microsteps} pos={pos}",
+                                   held=True)
         pos = ",".join(str(self.axes[a].counter) for a in AXES)
-        self._ok(command, f"microsteps={self.microsteps} pos={pos}")
+        self._res_reply(f"#OK {command} microsteps={self.microsteps} pos={pos}")
+
+    def _res_reply(self, line, held=False):
+        """One `#RES` reply: lost (`res_drop`), held while a set blocks the
+        loop (`res_delay`, sets that reached the drivers only), or now."""
+        if self.res_drop > 0:
+            self.res_drop -= 1
+            return
+        if held and self.res_delay > 0:
+            self._res_held = (self.clock() + self.res_delay, line)
+            return
+        self._emit(line)
 
     def _x_stop(self, command, args):
         self._halt_motion("stop")
@@ -1025,6 +1064,11 @@ class MegaStandardSim:
         self._t = now
 
     def _tick(self, t, dt):
+        if self._res_held is not None and t >= self._res_held[0]:
+            _due, line = self._res_held
+            self._res_held = None
+            self.res_replied_at = t
+            self._emit(line)
         if not self.silent:
             self._loop_guards(t)
             if not self._settling(t):
