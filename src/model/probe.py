@@ -238,6 +238,12 @@ class Probe(GamepadInput, IdleInterlock, Model):
     EXT_HOST_TIMEOUT_MS = 1000
     EXT_HEARTBEAT_INTERVAL = 0.25
     EXT_REPLY_TIMEOUT = 0.5
+    #: `res` boards (CONTRACT amendment R-3/R-4): the `#RES` query is asked
+    #: again every RES_RETRY_INTERVAL while the resolution is unknown, and
+    #: every RES_POLL_INTERVAL while the link is up regardless (a watchdog
+    #: reset while DISABLED boots at 2 with no new link epoch).
+    RES_RETRY_INTERVAL = 1.0
+    RES_POLL_INTERVAL = 2.0
     #: After the board's own ZERO or HOMED, a jump to 0 is not a reset (L6).
     EXT_JUMP_GRACE = 0.5
 
@@ -357,6 +363,17 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._ext_warned = set()
         self._resolution = None           # `res` boards: microsteps, None = not answered
         self._res_epoch = None            # the link epoch `#RES` was asked in
+        self._res_known = None            # the last answer this link (never cleared to None
+                                          # by a re-ask): what a CHANGE is judged against
+        self._res_asked_at = 0.0          # monotonic: the last `#RES` out or answer in
+        self._res_lock = threading.Lock()
+        #: A `#RES <n>` set is in flight: no periodic query (R-5), and the
+        #: jog stream is held (R-2: the board's loop is blocked in the set).
+        self._res_setting = threading.Event()
+        self._jog_held = threading.Event()
+        #: Counts every stop written (`_halt_hardware`, `_deenergize`), so a
+        #: set can tell that one landed while the board was blocked (R-2).
+        self._stop_count = 0
         self._homing = {axis: None for axis in AXES}   # None | starting | running
         self._home_phase = {axis: "" for axis in AXES}
         self._homed = {axis: False for axis in AXES}
@@ -507,6 +524,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """`_set_mode_locked`, then publish what it raised with no lock held
         (L10, SF-4)."""
         depth = getattr(self._outbox, "depth", 0)
+        if depth == 0 and target in _ARMED and target is not self._mode:
+            # Outside `_mode_lock`: a stop must never queue behind this wait.
+            self._ask_resolution_before_entry(target)
         if depth == 0:
             self._outbox.pending = []
         self._outbox.depth = depth + 1
@@ -649,6 +669,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
     def _deenergize(self, reason):
         """Stop motion, then de-energize. Each step isolated from the last."""
         previous = self._mode
+        self._stop_count += 1
         self._moving_deadline = None
         self._clear_ext_motion()
         self._stop_interlock()
@@ -733,6 +754,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         silent_for = self._silent_for()
         trip, self._silent_trip = self._silent_trip, None
         self._halt_generation += 1
+        self._stop_count += 1
         self._moving_deadline = None
         self._clear_ext_motion()
         self._stop_interlock()
@@ -941,11 +963,25 @@ class Probe(GamepadInput, IdleInterlock, Model):
         """
         if self.port is None:
             return False
+        if self._jog_held.is_set():
+            # R-2: a `#RES <n>` set has the board's loop blocked; packets
+            # arriving now would overflow its RX buffer (and could take a
+            # stop's 'd' with them). The dead-man (250 ms) holds position.
+            events.debug("Jog Held", "a step-resolution set is in flight",
+                         source=self.NAME, every=1.0)
+            return False
         if self._is_off_neutral(levels):
             self._touch_activity()
         payload = self._jog_bytes(levels)
         try:
-            written = bool(self.port.write(payload, abort_if=self._estop.is_set))
+            # On a `res` board the hold is checked again inside the write
+            # lock, with the latch: a packet that passed the check above
+            # cannot follow `#RES <n>` onto the wire. Any other board: the
+            # latch alone, as every motion write.
+            caps = self.caps
+            abort_if = (self._jog_aborted if caps and RES in caps
+                        else self._estop.is_set)
+            written = bool(self.port.write(payload, abort_if=abort_if))
         except serial_device.TransportError as exc:
             if not self._is_link_down():
                 raise
@@ -958,6 +994,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         events.debug("Jog", f"50 Hz stream; last frame written={written}",
                      source=self.NAME, every=1.0)
         return written
+
+    def _jog_aborted(self):
+        return self._estop.is_set() or self._jog_held.is_set()
 
     def _jog_bytes(self, levels):
         # Triggers idle at -1; remap [-1, 1] -> [0, 1]. UP (L) is positive,
@@ -1091,6 +1130,9 @@ class Probe(GamepadInput, IdleInterlock, Model):
         up = getattr(self.port, "status", None) in self.LINK_UP
         if up and not self._link_up:
             self._position_epoch += 1
+            # A new link: the board may have rebooted. Cleared here, before
+            # this pass reads its lines, so an answer in them is kept.
+            self._resolution = self._res_known = None
         self._link_up = up
 
     @property
@@ -1466,34 +1508,85 @@ class Probe(GamepadInput, IdleInterlock, Model):
             self._ext_send("HB")
 
     def _service_res(self):
-        """A `res` board is asked its resolution once per link epoch (and
-        again after a suspected reset, which clears the marker): one `#RES`
-        query, answered by `#OK RES`. Until it lands the resolution is
-        unknown, never assumed."""
+        """The sampler's `#RES` query to a `res` board (CONTRACT amendment
+        R-3/R-4): once per link epoch (and after a suspected reset, which
+        clears the marker), again every RES_RETRY_INTERVAL while the answer
+        is missing, and every RES_POLL_INTERVAL while the link is up. Never
+        while a set is in flight (its reply would be ambiguous, R-5). Until
+        an answer lands the resolution is unknown, never assumed."""
         caps = self.caps
         if not caps or RES not in caps or not self._link_up:
             return
-        if self._res_epoch == self._position_epoch:
+        if self._res_setting.is_set():
             return
-        self._res_epoch = self._position_epoch
+        now = time.monotonic()
+        if self._res_epoch != self._position_epoch:
+            self._res_epoch = self._position_epoch
+        elif self._resolution is None:
+            if now - self._res_asked_at < self.RES_RETRY_INTERVAL:
+                return
+        elif now - self._res_asked_at < self.RES_POLL_INTERVAL:
+            return
+        self._res_asked_at = now
+        self._ext_send("RES")             # a failed write is retried in RES_RETRY_INTERVAL
+
+    def _ask_resolution_before_entry(self, target):
+        """On every entry into an energized mode, a `res` board is asked its
+        resolution and the answer is waited for before the enable byte (R-3):
+        a reset while DISABLED leaves no other trace. A board that does not
+        answer leaves it unknown, and the entry goes on."""
+        caps = self.caps
+        if (not caps or RES not in caps or not self._link_up
+                or self._res_setting.is_set() or self._estop.is_set()):
+            return
+        if threading.current_thread() is self._thread("sample"):
+            return                        # the sampler reads the reply: never wait on it
         self._resolution = None
-        if not self._ext_send("RES"):
-            self._res_epoch = None              # try again on the next pass
+        self._res_asked_at = time.monotonic()
+        reply = self._ext_request("RES", abort_if=self._estop.is_set)
+        if not reply.ok:
+            events.debug("Resolution Unknown", f"entering {target.value}: "
+                         f"#RES {reply.why}", source=self.NAME)
 
     def _take_res(self, fields):
         """A `#OK RES microsteps=<n> pos=x,y,z`: the board's resolution. A
-        scale that CHANGED under us carries the board's own positions, taken
-        at once (counts rescaled: no reset warning, no velocity spike)."""
+        scale that CHANGED from the last answer carries the board's own
+        positions, taken at once (counts rescaled: no reset warning, no
+        velocity spike), and starts a new `position_epoch` (R-1): anything
+        that stored this chuck's counts (a Sample DB registration, a
+        rotation-centre calibration) is in the old count size and ends."""
         try:
             microsteps = int(fields.get("microsteps", ""))
         except ValueError:
             return
         if microsteps < 1:
             return
-        changed = self._resolution is not None and self._resolution != microsteps
-        self._resolution = microsteps
-        if changed:
-            self._adopt_position(fields.get("pos"))
+        with self._res_lock:
+            before = self._res_known
+            self._resolution = self._res_known = microsteps
+            self._res_asked_at = time.monotonic()      # an answer restarts the poll clock
+            changed = before is not None and before != microsteps
+            if changed:
+                old = self._position_epoch
+                self._position_epoch += 1
+                # Not a new link: what was configured or asked in the old
+                # epoch stays done (no ext1 link-up again, no re-query).
+                if self._ext_epoch == old:
+                    self._ext_epoch = self._position_epoch
+                if self._res_epoch == old:
+                    self._res_epoch = self._position_epoch
+        if not changed:
+            return
+        self._adopt_position(fields.get("pos"))
+        text = (f"The {self.NAME}'s step resolution changed from {before} to "
+                f"{microsteps} microsteps per full step, so its counts changed "
+                "size: a Sample DB registration or rotation calibration made with "
+                "this chuck is ended. Mark the corners again.")
+        if self._res_setting.is_set():
+            events.info("Step Resolution Changed", text, source=self.NAME)
+        else:
+            events.warn("Step Resolution Changed", "Unasked: " + text,
+                        source=self.NAME)
 
     def _adopt_position(self, text):
         """The position a reply names, as the position now: the counts were
@@ -1708,10 +1801,21 @@ class Probe(GamepadInput, IdleInterlock, Model):
             events.warn("Move Refused", f"The {self.NAME} refused to move {where} "
                         f"({reason}), so nothing moved.", source=self.NAME)
 
-    def _board_fault(self, what, axis):
+    def _board_fault(self, what, axis, *, always=False, message=None):
         """A FAULT latches the stop, as on the XYZ Stage: a person looks
-        before anything moves again."""
+        before anything moves again. `always`: latch even while disabled or
+        already latched (the board disabled its own drivers: `#ERR RES
+        driver-revert-failed`), saying `message`."""
         where = f" on axis {axis}" if axis else ""
+        if always:
+            events.debug("Board Fault", f"{what}{where} in {self.mode_name}; "
+                         "stopping", source=self.NAME)
+            if not self._estop.is_set():
+                self.estop()
+            events.error("Board Fault", message or f"The {self.NAME} reported a "
+                         f"fault ({what}{where}), so the station stopped it.",
+                         source=self.NAME)
+            return
         if self._mode is ProbeMode.DISABLED or self._estop.is_set():
             events.warn("Board Fault", f"The {self.NAME} reported {what}{where} while "
                         "it was not running. Check it before you enable it.",
@@ -2709,12 +2813,17 @@ class ChuckPositioner(Probe):
         caps = self.caps
         return bool(caps) and RES in caps
 
+    @staticmethod
+    def _step_label(n):
+        """`n` microsteps per full step, as the operator reads one count."""
+        return {1: "full", 2: "½", 4: "¼", 8: "⅛"}.get(n, f"1/{n}")
+
     @property
     def resolution_text(self):
         n, fast = self._resolution, self.RESOLUTIONS["fast"]
         if n is None:
             return "unknown until the board answers"
-        step = {1: "full", 2: "½", 4: "¼", 8: "⅛", 16: "1/16", 32: "1/32"}.get(n, f"1/{n}")
+        step = self._step_label(n)
         if n == fast:
             return f"{step} step per count · fastest"
         if n > fast:
@@ -2734,7 +2843,15 @@ class ChuckPositioner(Probe):
     def set_resolution(self, which):
         """Step resolution: `fast` (2) or `fine` (8), `#RES <n>`. Only at
         standstill; the write itself is abandoned if a stop or a move lands
-        first. On `#OK` the reply's counts are the position at once."""
+        first. On `#OK` the reply's counts are the position at once.
+
+        The adversarial review's amendments (CONTRACT, 2026-10-23 late):
+        the old value must be known (asked now if it is not); a coarsening
+        set off the coarse grid is refused before any byte; the jog stream
+        is held while the board's loop is blocked in the set, and a stop
+        that lands in that window is sent again once it is over (R-2);
+        success is `_resolution == n` once the replies are in, not the first
+        reply (R-5); `driver-revert-failed` is a board fault (R-6)."""
         choice = str(which).strip().lower()
         if choice not in self.RESOLUTIONS:
             self._refuse(f"Step resolution must be one of "
@@ -2746,32 +2863,99 @@ class ChuckPositioner(Probe):
             self._refuse("The chuck is moving. Wait for it to stop, then change "
                          "the step resolution.")
         n = self.RESOLUTIONS[choice]
-        if self._resolution == n:
+        if self._resolution is None and not self._res_setting.is_set():
+            self._ext_request("RES", abort_if=self._estop.is_set)
+        old = self._resolution
+        if old is None:
+            self._refuse("The chuck has not reported its step resolution yet, so "
+                         "it cannot be changed safely. Check the connection, then "
+                         "try again.")
+        if old == n:
             return n
-        reply = self._ext_request(f"RES {n}", abort_if=lambda: (
-            self._estop.is_set() or self._resolution_blocked()))
+        if n < old:
+            self._refuse_off_grid(old // n, choice)
+        if self._res_setting.is_set():
+            self._refuse("A step-resolution change is already in flight.")
+        stops = self._stop_count
+        self._res_setting.set()
+        self._jog_held.set()
+        try:
+            reply = self._ext_request(f"RES {n}", abort_if=lambda: (
+                self._estop.is_set() or self._resolution_blocked()))
+            if reply.ok and self._resolution != n:
+                # The reply that woke us may be a pending query's (R-5): the
+                # set's own answer is still on its way, and the sampler takes it.
+                deadline = time.monotonic() + self.EXT_REPLY_TIMEOUT
+                while self._resolution != n and time.monotonic() < deadline:
+                    latest = self._ext_reply("RES")
+                    if latest is not None and not latest.ok:
+                        reply = latest
+                        break
+                    time.sleep(0.005)
+        finally:
+            self._jog_held.clear()
+            self._res_setting.clear()
+            if self._stop_count != stops:
+                self._resend_stop()
         if not reply.ok:
+            if str(reply.reason or "").split()[:1] == ["driver-revert-failed"]:
+                self._resolution = None
+                text = (f"The {self.NAME} could not undo a failed step-resolution "
+                        "change, so it disabled its drivers. The station latched "
+                        "the stop: a person must check the chuck before it moves "
+                        "again, then clear the stop.")
+                self._board_fault("driver-revert-failed", None, always=True,
+                                  message=text)
+                self._refuse(text)
             if reply.aborted and not self._estop.is_set():
                 self._refuse("The chuck started moving. Wait for it to stop, "
                              "then change the step resolution.")
             self._refuse(f"The step resolution did not change ({reply.why}).")
-        self._take_res(reply.fields)
         if self._resolution != n:
             self._refuse("The board answered with a different step resolution "
                          f"({self.resolution_text}).")
-        self._adopt_position(reply.fields.get("pos"))
+        latest = self._ext_reply("RES")
+        self._adopt_position((latest if latest is not None and latest.ok
+                              else reply).fields.get("pos"))
         events.info("Step Resolution", f"The {self.NAME} now takes {self.resolution_text}; "
                     f"its position reads {self._position[0]}, {self._position[1]}, "
                     f"{self._position[2]} in the new counts.", source=self.NAME)
         return n
 
+    def _refuse_off_grid(self, ratio, choice):
+        """Coarsening truncates a count that is not a whole coarse step (3
+        fine counts can vanish from the readout while the rotor stays): refused
+        before any byte, naming the axes."""
+        off = [axis for axis, count in zip(AXES, self._position) if count % ratio]
+        if not off:
+            return
+        names = off[0] if len(off) == 1 else f"{', '.join(off[:-1])} and {off[-1]}"
+        self._refuse(f"The chuck sits between {choice.capitalize()} steps on {names}; "
+                     "move it a whole step, then try again.")
+
+    def _resend_stop(self):
+        """R-2: a stop written while the board's loop was blocked in a set may
+        have been lost in its RX buffer. Once the reply (or the timeout) is
+        in, the stop goes out once more: the zero frame and 'd', priority."""
+        if self.port is None or (self._mode in _ARMED and not self._estop.is_set()):
+            return
+        try:
+            self._send_zero_frame("stop re-sent after #RES")
+            written = bool(self.port.write(b"d", priority=True))
+            events.debug("Frame", f"disable {b'd'.hex()} written={written} "
+                         "(stop re-sent after #RES)", source=self.NAME)
+        except Exception as exc:
+            events.debug("Stop Re-send Failed", repr(exc), source=self.NAME,
+                         exception=exc)
+
     @property
     def schema(self):
         built = super().schema
         sections = built["sections"]
+        fine, fast = (self._step_label(self.RESOLUTIONS[k]) for k in ("fine", "fast"))
         toggle = sch.toggle(
             "Step resolution:", "is_fine", "set_resolution",
-            "Fine · ⅛ step (press for Fast)", "Fast · ½ step (press for Fine)",
+            f"Fine · {fine} step (press for Fast)", f"Fast · {fast} step (press for Fine)",
             on_args=["fine"], off_args=["fast"], on_role="neutral",
             off_role="neutral", disabled_when=("latched", "fault"))
         toggle["enabled_by"] = "resolution_ready"

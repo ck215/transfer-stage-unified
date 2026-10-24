@@ -1991,3 +1991,31 @@ def test_the_state_carries_the_fault_line_the_page_shows(probe):
     state = probe.state
     assert state["is_faulted"] and state["mode"] == "fault"
     assert state["fault_line"] == "Disable failed. Treat as live."
+
+
+@pytest.mark.estop
+def test_a_res_boards_jog_checks_the_latch_and_the_set_hold_inside_the_write():
+    """R-2 (station 2): on a `res` board the jog's in-lock check is the latch
+    AND the step-resolution hold, so a packet that passed the outer check
+    while `#RES <n>` took the lock is still not written after it."""
+    from test_wire_golden import RecordingPort
+
+    class HoldRacePort(RecordingPort):
+        model = None
+
+        def write(self, payload, *, priority=False, abort_if=None):
+            if payload[:1] == b"\xaa" and self.model is not None:
+                self.model._jog_held.set()      # the set got the lock first
+            return super().write(payload, priority=priority, abort_if=abort_if)
+
+    port = HoldRacePort(identity="c caps=res")
+    model = ChuckPositioner(port=port, gamepad=None)
+    port.model = model
+    assert model._send_jog({}) is False
+    assert not [p for p in port.writes if p[:1] == b"\xaa"]
+    model._jog_held.clear()
+    port.model = None
+    assert model._send_jog({}) is True
+    model._estop.set()
+    assert model._send_jog({}) is False
+    assert len([p for p in port.writes if p[:1] == b"\xaa"]) == 1
