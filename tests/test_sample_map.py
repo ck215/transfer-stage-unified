@@ -1577,3 +1577,60 @@ def test_a_staged_photo_takes_the_dialog_values_too(unpicked, tmp_path):
     assert unpicked.run("stage_photo", None,
                         (str(_shot(tmp_path, "s.png", PNG + b"s")), "microscope", "100x")).is_ok
     assert unpicked.staged_text == "1 photo: s.png (100x)"
+
+
+# -- the chuck's typed um per count is per FAST count (second review R2-2) -------------
+
+def _chuck_map(count_scale):
+    chuck = FakeStage(name="Chuck Positioner")
+    chuck.count_scale = count_scale
+    model = FlakeMap()
+    model.open()
+    model.on_model_added(chuck.NAME, chuck)
+    model.run("save_sample", {"sample_id": "S1"})
+    assert model.run("set_um_per_count", {"um_per_count": "2.5"}).is_ok
+    return model, chuck
+
+
+@pytest.mark.parametrize("scale, k", [(1.0, 2.5), (0.25, 0.625)])
+def test_a_chuck_registration_scales_the_typed_um_per_count_by_its_resolution(scale, k):
+    """Typed at Fast (2.5 um per half step): at Fine a count is a quarter."""
+    model, chuck = _chuck_map(scale)
+    try:
+        for label, q in (("A", (0, 0)), ("B", (5000, 0))):
+            chuck.move_to(*_stage_of(q, k=k))
+            assert model.run("mark_corner", None, (label,)).is_ok
+        assert model.mode_name == "registered"
+        assert model.registration["k_x_um"] == pytest.approx(k)
+        assert model.registration["derived_width_um"] == pytest.approx(5000.0, abs=2.0)
+    finally:
+        model.close()
+
+
+def test_a_chuck_with_an_unknown_resolution_refuses_the_fit_in_its_words():
+    model, chuck = _chuck_map(None)
+    try:
+        for label, q in (("A", (0, 0)), ("B", (5000, 0))):
+            chuck.move_to(*_stage_of(q))
+            assert model.run("mark_corner", None, (label,)).is_ok   # corners kept
+        assert model.mode_name == "unregistered"
+        assert "the chuck's step resolution is not known yet" in model.registration_status
+    finally:
+        model.close()
+
+
+def test_the_chucks_um_per_count_label_says_at_fast_and_the_steppers_does_not(sample_map):
+    entry = lambda m: next(e for e in sch.elements(m.schema)
+                           if e.get("model_attr") == "um_per_count")
+    assert entry(sample_map)["text"] == "um per count"           # the Stepper Probe
+    model, _chuck = _chuck_map(1.0)
+    try:
+        assert entry(model)["text"] == "um per count (at Fast)"
+    finally:
+        model.close()
+
+
+def test_the_stepper_is_untouched_by_count_scale(sample_map, stage):
+    assert not hasattr(stage, "count_scale")
+    _register(sample_map, stage, corners="AB")
+    assert sample_map.registration["k_x_um"] == K

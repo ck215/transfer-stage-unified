@@ -1667,8 +1667,16 @@ def test_a_probe_opens_its_port_at_the_firmwares_500000_baud(cls, monkeypatch):
 
     monkeypatch.setattr("model.probe.serial_device.SerialPort", _Port)
     cls(port="/dev/ttyACM0", gamepad=object())
-    cls(port=None, gamepad=object(), sim=True)
-    assert built == [("/dev/ttyACM0", 500000), ("SIM", 500000)]
+    simulated = cls(port=None, gamepad=object(), sim=True)
+    if cls is ChuckPositioner:
+        # The chuck's SIM is its simulated `res` board behind the real
+        # transport (2026-10-23), a MegaStandardPort, at the same speed.
+        from devices.mega_standard_sim import MegaStandardPort
+        assert built == [("/dev/ttyACM0", 500000)]
+        assert isinstance(simulated.port, MegaStandardPort)
+        assert simulated.port.baud_rate == 500000
+    else:
+        assert built == [("/dev/ttyACM0", 500000), ("SIM", 500000)]
 
 
 CEILINGS = [(StepperProbe, 3200), (DCProbe, 3200), (ChuckPositioner, 600)]
@@ -1925,8 +1933,11 @@ def test_the_summary_divides_autonomous_from_manual(cls):
     p, _, _ = make_probe(cls)
     tier1 = [s for s in p.schema["sections"] if s.get("tier", 1) == 1
              and s["title"] != "Safety"]
-    assert [s["title"] for s in tier1] == ["Position", "Autonomous", "Manual"]
-    auto, manual = tier1[1], tier1[2]
+    # The chuck's step-resolution lever (owner 2026-10-23) sits between
+    # Position and the two control systems; the division itself is unchanged.
+    lever = ["Step resolution"] if cls is ChuckPositioner else []
+    assert [s["title"] for s in tier1] == ["Position", *lever, "Autonomous", "Manual"]
+    auto, manual = tier1[-2], tier1[-1]
     assert auto["layout"] == manual["layout"] == "group"
 
     def drawn(section):
@@ -1980,3 +1991,31 @@ def test_the_state_carries_the_fault_line_the_page_shows(probe):
     state = probe.state
     assert state["is_faulted"] and state["mode"] == "fault"
     assert state["fault_line"] == "Disable failed. Treat as live."
+
+
+@pytest.mark.estop
+def test_a_res_boards_jog_checks_the_latch_and_the_set_hold_inside_the_write():
+    """R-2 (station 2): on a `res` board the jog's in-lock check is the latch
+    AND the step-resolution hold, so a packet that passed the outer check
+    while `#RES <n>` took the lock is still not written after it."""
+    from test_wire_golden import RecordingPort
+
+    class HoldRacePort(RecordingPort):
+        model = None
+
+        def write(self, payload, *, priority=False, abort_if=None):
+            if payload[:1] == b"\xaa" and self.model is not None:
+                self.model._jog_held.set()      # the set got the lock first
+            return super().write(payload, priority=priority, abort_if=abort_if)
+
+    port = HoldRacePort(identity="c caps=res")
+    model = ChuckPositioner(port=port, gamepad=None)
+    port.model = model
+    assert model._send_jog({}) is False
+    assert not [p for p in port.writes if p[:1] == b"\xaa"]
+    model._jog_held.clear()
+    port.model = None
+    assert model._send_jog({}) is True
+    model._estop.set()
+    assert model._send_jog({}) is False
+    assert len([p for p in port.writes if p[:1] == b"\xaa"]) == 1

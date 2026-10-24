@@ -51,7 +51,21 @@ DEV: <letter> caps=<token>[,<token>...]
   - `home`: HOME and ZERO per axis;
   - `limits`: limit interlock and events;
   - `tmc`: driver UART status;
-  - `soft`: the soft travel limit, `#SOFTLIMIT` (added 2026-10-10, X-14; §4).
+  - `soft`: the soft travel limit, `#SOFTLIMIT` (added 2026-10-10, X-14; §4);
+  - `res`: the run-time step resolution, `#RES [n]` (added 2026-10-23 for
+    the chuck, Andrew's request). A board may list `res` WITHOUT `ext1`:
+    its `#` lane then carries `#RES` alone (no INFO, LOG, HOSTTIMEOUT, HB),
+    any other `#<CMD>` gets `#ERR <CMD> unknown`, and the station sends it
+    nothing else. Replies: `#OK RES microsteps=<n> pos=<x>,<y>,<z>` (the
+    positions rescaled to the new counts), `#ERR RES
+    bad-arg-power-of-2-1..256`, `#ERR RES busy`, `#ERR RES
+    driver-readback-mismatch`, `#ERR RES driver-revert-failed` (the board
+    could not put the old value back on every driver: it has disabled its
+    drivers, and the station latches the stop). The `#OK RES` reply ends
+    with `suspect=0|1`: 1 after a failed revert until `e` has rewritten and
+    read back every driver; the station refuses to energize a suspect chuck
+    until it is hard-reset from Setup. Spelled out in
+    `firmware/chuck_firmware/PROTOCOL.md`.
 - **What may be listed:** a token is listed only when the firmware has the
   feature. Whether the hardware for it is present is reported per axis by
   `#INFO`, not here.
@@ -198,6 +212,10 @@ from one constants block.
   - The layer is a byte-identical copy of the shared header in each sketch
     folder; a test pins the copies equal.
   - With no limit or home hardware configured, those features are inert.
+  - 2026-10-23: the Chuck got a first `#` lane ahead of that retrofit, the
+    `res` token alone (above). `Probe` parses `#` lines from a board whose
+    caps include `ext1` or `res`; everything ext1 (link-up, heartbeat,
+    the standard features) still keys on `ext1` only.
 
 ## 7. Bench checks (owner)
 

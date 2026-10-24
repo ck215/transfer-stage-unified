@@ -23,6 +23,11 @@ pyserial handle `SerialPort` drives (`write`, `read`, `in_waiting`, ...), as
   counts of travel), `#EVT REFUSED` for a frame it will not run, the host
   timeout and its 10 s disable, driver faults, absent hardware inert, and a
   switch seen once;
+* with the `res` capability (CR-2, the chuck): `#RES` and `#RES <n>` on a
+  board that may have no `ext1`. The `#` lane of such a board carries that
+  one command; any other `#<CMD>` line is `#ERR <CMD> unknown`. A set
+  rescales every position `(pos * n) // old` toward zero, as the C does, and
+  is refused (`busy`) while anything moves;
 * with the `soft` capability, the soft travel limit (section 4, X-14):
   `#SOFTLIMIT A [counts]` kept like the EEPROM block it is (it survives a
   reboot), the reference LS1 gives when it trips toward the end it guards,
@@ -70,6 +75,17 @@ AXES = ("X", "Y", "Z")
 CAPS = ("ext1", "log", "hostto", "home", "limits", "tmc")
 #: The soft travel limit's capability token (a sketch that has it adds it).
 SOFT = "soft"
+#: The step-resolution capability (CR-2): `#RES` and nothing else on the `#`
+#: lane, so a board may list it WITHOUT `ext1` (the chuck does). Not in
+#: `CAPS`: the XYZ Mega's default board does not have it.
+RES = "res"
+#: `#RES`'s range: a power of two, 1..256. A res board boots at 2 (half
+#: steps, the chuck sketch's `microstepMode`).
+RES_BOOT = 2
+RES_MAX = 256
+#: The sketch's check on `#RES <n>` before atol (R-8): one to six ASCII
+#: digits, nothing else (no sign, no underscore, no seventh digit).
+RES_ARG = re.compile(r"[0-9]{1,6}")
 #: `#SOFTLIMIT`'s ceiling (STD_SOFT_MAX: 100 mm), counts.
 SOFT_MAX = 160000
 #: The XYZ Mega's identity letter (section 2). Taken: s, d, c, t, x.
@@ -255,6 +271,19 @@ class MegaStandardSim:
         self.unplugged = False
         #: The next N writes raise OSError.
         self.fail_writes = 0
+        #: `res` test hooks (station 2). `res_fail`: the next `#RES <n>` set
+        #: fails with this reason, once ("driver-readback-mismatch" changes
+        #: nothing; "driver-revert-failed" also halts and pulls the drivers
+        #: off, the 'd' path, keeping the old value: CONTRACT R-6).
+        #: `res_delay`: seconds a set blocks the loop before its reply is
+        #: printed (the real set's UART traffic, ~20-70 ms); the time the
+        #: held reply went out is `res_replied_at`. `res_drop`: the next N
+        #: `#RES` replies are lost.
+        self.res_fail = None
+        self.res_delay = 0.0
+        self.res_replied_at = None
+        self.res_drop = 0
+        self._res_held = None           # (due clock time, reply line)
         self._lock = threading.RLock()
         self._out = bytearray()
         self._rx = bytearray()
@@ -264,6 +293,11 @@ class MegaStandardSim:
     @property
     def ext(self):
         return "ext1" in self.caps
+
+    @property
+    def hash_lane(self):
+        """The board parses `#` lines at all: ext1, or `res` alone."""
+        return self.ext or self.has(RES)
 
     def has(self, token):
         return token in self.caps
@@ -296,6 +330,12 @@ class MegaStandardSim:
         self._timed_out = False
         self._timed_out_at = None
         self.log_level = 1
+        self.microsteps = RES_BOOT      # `res` boards: a reboot is back at 2
+        self._res_held = None           # a reset loses a reply not yet printed
+        #: CONTRACT R2-1: set by a failed revert, cleared only at boot.
+        #: While set, `#OK RES` carries `suspect=1` and 'e' does not energize
+        #: (the sim's drivers stay mixed: its rewrite never reads back).
+        self.res_suspect = False
         self.rejected_packets = 0
         self._next_print = now + self.PRINT_INTERVAL
         for axis in self.axes.values():
@@ -561,7 +601,9 @@ class MegaStandardSim:
             elif head == ord("e"):
                 del self._rx[:1]
                 self.received.append((self.clock(), "e"))
-                if not self.enabled:
+                if self.res_suspect:
+                    self._dbg("enable refused: res suspect")
+                elif not self.enabled:
                     self.enabled = True
                     self._halt_axes()
                     self._settle_until = self.clock() + self.ENABLE_SETTLE
@@ -576,7 +618,7 @@ class MegaStandardSim:
                     return
                 self.received.append((self.clock(), line))
                 self._frame(line)
-            elif head == ord("#") and self.ext:
+            elif head == ord("#") and self.hash_lane:
                 line = self._take_line()
                 if line is None:
                     return
@@ -719,6 +761,13 @@ class MegaStandardSim:
             return
         command = words[0].upper()
         args = words[1:]
+        if not self.ext:
+            # A res-only board: the `#` lane is `#RES` and nothing else.
+            if command == "RES":
+                self._x_res(command, args)
+            else:
+                self._err(command, "unknown")
+            return
         if command != "HB":
             self._dbg(f"rx={text}")
         handler = getattr(self, "_x_" + command.lower(), None)
@@ -837,6 +886,59 @@ class MegaStandardSim:
 
     def _x_hb(self, command, args):
         self._ok(command)
+
+    def _x_res(self, command, args):
+        """`#RES` (query) and `#RES <n>` (set), the chuck's step resolution.
+        One reply, `#OK RES microsteps=<n> pos=x,y,z` (the positions in the
+        counts after the command), or an `#ERR`. Busy: any axis moving or a
+        D-pad step in flight. A set rescales each position `(pos * n) / old`
+        in C `long` arithmetic (toward zero) and leaves the carriage where it
+        stands. (Max-speed capping is not modelled here, as nowhere else.)"""
+        if not self.has(RES):
+            return self._err(command, "unknown-command")
+        if args:
+            n = 0
+            if len(args) == 1 and RES_ARG.fullmatch(args[0]):
+                n = int(args[0])
+            if len(args) != 1 or not 1 <= n <= RES_MAX or n & (n - 1):
+                return self._res_reply(f"#ERR {command} bad-arg-power-of-2-1..256")
+            if self._busy() or self.dpad_step:
+                return self._res_reply(f"#ERR {command} busy")
+            fail, self.res_fail = self.res_fail, None
+            if fail == "driver-revert-failed":
+                # Mixed drivers: halt, the 'd' path, the old value kept.
+                self._lose_position("disabled")
+                self.enabled = False
+                self._halt_motion("disabled")
+                self.res_suspect = True
+                return self._res_reply(f"#ERR {command} {fail}", held=True)
+            if fail:
+                return self._res_reply(f"#ERR {command} {fail}", held=True)
+            old = self.microsteps
+            if n != old:
+                for axis in self.axes.values():
+                    counter = axis.counter
+                    scaled = (abs(counter) * n // old) * (1 if counter >= 0 else -1)
+                    axis.origin = axis.phys - scaled
+                self.microsteps = n
+            return self._res_reply(self._res_ok(command), held=True)
+        self._res_reply(self._res_ok(command))
+
+    def _res_ok(self, command):
+        pos = ",".join(str(self.axes[a].counter) for a in AXES)
+        suspect = " suspect=1" if self.res_suspect else ""
+        return f"#OK {command} microsteps={self.microsteps} pos={pos}{suspect}"
+
+    def _res_reply(self, line, held=False):
+        """One `#RES` reply: lost (`res_drop`), held while a set blocks the
+        loop (`res_delay`, sets that reached the drivers only), or now."""
+        if self.res_drop > 0:
+            self.res_drop -= 1
+            return
+        if held and self.res_delay > 0:
+            self._res_held = (self.clock() + self.res_delay, line)
+            return
+        self._emit(line)
 
     def _x_stop(self, command, args):
         self._halt_motion("stop")
@@ -971,6 +1073,11 @@ class MegaStandardSim:
         self._t = now
 
     def _tick(self, t, dt):
+        if self._res_held is not None and t >= self._res_held[0]:
+            _due, line = self._res_held
+            self._res_held = None
+            self.res_replied_at = t
+            self._emit(line)
         if not self.silent:
             self._loop_guards(t)
             if not self._settling(t):

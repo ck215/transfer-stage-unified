@@ -1,0 +1,9 @@
+SCENARIO host-timeout-unarmed                 PASS  (2 checks, 0 failed)
+SCENARIO watchdog-deadman                     PASS  (5 checks, 0 failed)
+SCENARIO frame-dpad-past-int16                PASS  (4 checks, 0 failed)
+SCENARIO res-query-and-set                    PASS  (32 checks, 0 failed)
+SCENARIO res-busy                             PASS  (16 checks, 0 failed)
+SCENARIO res-speed-cap                        PASS  (7 checks, 0 failed)
+SCENARIO res-readback-mismatch                PASS  (9 checks, 0 failed)
+SCENARIO res-revert-failed                    PASS  (13 checks, 0 failed)
+failed scenarios: 0

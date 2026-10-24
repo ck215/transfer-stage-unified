@@ -78,6 +78,14 @@ wire is pinned by `tests/golden/`.
 - 2026-09-26: **no zeroing / homing function for now** (stall detection is
   StealthChop-only and unreliable at homing speeds; no switches; collision
   risk). The firmware's microstep count is truth: stepper 8, chuck 2.
+  AMENDED 2026-10-23 for the chuck (Andrew's request, owner-sanctioned): the
+  chuck still boots at 2, and the operator flips it between Fast (2) and
+  Fine (8, PROVISIONAL bench value) with the "Step resolution" toggle on its
+  tile; the board answers `DEV: c caps=res` and takes `#RES <n>`
+  (`MEGA_STANDARD.md` §2, `firmware/chuck_firmware/PROTOCOL.md`). A count
+  stays a count: at Fine the same steps/s is 4x slower and a D-pad step 4x
+  finer. The board must be reflashed for it (Setup's Firmware row); until
+  then the toggle is greyed with the reason.
 
 - Close a tab = destruct the model; reopen = construct again. No hide/show.
 - Autonomous mode stays; repeated Step works inside it. Distances are locked

@@ -144,6 +144,139 @@ void haltMotion() {
   holdPosition();
 }
 
+// The 'd' path (also #RES's failed revert, R-6). TOFF=0 is what actually disables a TMC2209 driver output stage (see
+// setup()'s toff(0) at boot for the same convention) -- toff(2) here previously left the driver enabled with a
+// different chopper off-time, never cutting coil current at all. Also run this unconditionally rather than gating on
+// our own system_enabled belief: a stale/desynced flag must never be able to block the one command that actually kills
+// power. EN high needs no UART, so it holds even for a driver that ignores the TOFF write.
+void disableDrivers() {
+  system_enabled = false;
+  haltMotion();
+  driversOutputsOff();
+  xUART.toff(0);
+  yUART.toff(0);
+  zUART.toff(0);
+}
+
+// ---- Step resolution as a run-time lever (CR-1, 2026-10-23: Andrew's request via the owner). Was a local in setup().
+// Boot default 2 (half steps: fast, coarse), today's value; `#RES <n>` changes it at standstill (PROTOCOL.md "#RES").
+// The presets are the host's choice (Fast = 2, Fine = 8, PROVISIONAL on the station side): this board takes any power
+// of two 1..256, so changing a preset never needs a reflash.
+uint16_t microstepMode = 2;
+// R2-1: set by `driver-revert-failed` (the drivers may disagree), cleared at boot or by an 'e' that finds all three
+// drivers reading back microstepMode after rewriting it. Every #OK RES reply carries it as suspect=0|1.
+bool res_suspect = false;
+
+// TMCStepper 0.7.3 spells a full step 0 both ways: microsteps(1) writes nothing and the getter answers 0 for MRES 8.
+// Map 1 <-> 0, as firmware/xyz_stage_axis does.
+void setDriverMicrosteps(TMC2209Stepper &d, uint16_t ms) {
+  d.microsteps(ms == 1 ? 0 : ms);
+}
+
+// The driver-UART truth: CHOPCONF read back from the driver over its own UART, not the library's shadow copy. A read
+// that fails (no reply, a CRC error) confirms nothing: the library returns 0 then, which would decode as 256.
+bool driverHasMicrosteps(TMC2209Stepper &d, uint16_t ms) {
+  uint16_t got = d.microsteps();
+  if (d.CRCerror) return false;
+  if (got == 0) got = 1;
+  return got == ms;
+}
+
+// Busy means MOVING (contract, amended 2026-10-23): an axis with a speed, a D-pad step, or a frame not yet done.
+// distanceToGo() is not part of it: a jog runs on runSpeed(), which leaves the target behind, so it stayed non-zero
+// after every jog with the sticks centred and the drivers at rest. setCurrentPosition() below resets the target anyway.
+bool resBusy() {
+  return x_axis.speed() != 0 || y_axis.speed() != 0 || z_axis.speed() != 0
+      || DPAD_STEP || (AUTONOMOUS_ON && !ALL_AXES_DONE);
+}
+
+void replyRes() {
+  Serial.print("#OK RES microsteps=");
+  Serial.print((long)microstepMode);
+  Serial.print(" pos=");
+  Serial.print(x_axis.currentPosition());
+  Serial.print(",");
+  Serial.print(y_axis.currentPosition());
+  Serial.print(",");
+  Serial.print(z_axis.currentPosition());
+  Serial.println(res_suspect ? " suspect=1" : " suspect=0");
+}
+
+// One '#' line (cap `res`: the lane carries #RES and nothing else). Exactly one reply line per command; nothing is
+// ever sent unasked. No interrupt is involved: this runs from loop() like every other command here.
+#define EXT_CMD_MAX 16
+void parseExtLine() {
+  String line = Serial.readStringUntil('\n');
+  line.trim();
+  const char *p = line.c_str() + 1;          // past the '#'
+  char cmd[EXT_CMD_MAX + 1];
+  uint8_t k = 0;
+  // The first word, upper-cased as received. A byte that is not printable ASCII (a '#' that was really part of a
+  // desynced jog packet) is sent back as '?', and a word is cut at EXT_CMD_MAX, so the reply stays one short line.
+  for (; *p && *p != ' '; p++) {
+    if (k >= EXT_CMD_MAX) continue;
+    char c = *p;
+    if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
+    else if (c <= ' ' || c > '~') c = '?';
+    cmd[k++] = c;
+  }
+  cmd[k] = '\0';
+  if (strcmp(cmd, "RES") != 0) {
+    Serial.print("#ERR ");
+    Serial.print(cmd);
+    Serial.println(" unknown");
+    return;
+  }
+  while (*p == ' ') p++;
+  if (*p == '\0') { replyRes(); return; }    // the query: changes nothing
+
+  // The argument: decimal digits only, a power of two 1..256, nothing after it.
+  long n = 0;
+  uint8_t digits = 0;
+  while (*p >= '0' && *p <= '9' && digits < 6) { n = n * 10 + (*p - '0'); p++; digits++; }
+  while (*p == ' ') p++;
+  if (digits == 0 || *p != '\0' || n < 1 || n > 256 || (n & (n - 1)) != 0) {
+    Serial.println("#ERR RES bad-arg-power-of-2-1..256");
+    return;
+  }
+  if (resBusy()) { Serial.println("#ERR RES busy"); return; }
+  uint16_t ms = (uint16_t)n;
+  uint16_t old = microstepMode;
+  if (ms == old) { replyRes(); return; }     // a no-op that still answers
+
+  // Standstill: the TMC2209 keeps its microstep counter across an MRES write, so the rotor does not move. Write all
+  // three, read each back; on any mismatch put the old value back on all three, and touch nothing else.
+  setDriverMicrosteps(xUART, ms);
+  setDriverMicrosteps(yUART, ms);
+  setDriverMicrosteps(zUART, ms);
+  if (!driverHasMicrosteps(xUART, ms) || !driverHasMicrosteps(yUART, ms) || !driverHasMicrosteps(zUART, ms)) {
+    setDriverMicrosteps(xUART, old);
+    setDriverMicrosteps(yUART, old);
+    setDriverMicrosteps(zUART, old);
+    // R-6: read the revert back too. A driver that is not at the old value now leaves the axes mixed, which this board
+    // cannot trust: disable everything (the 'd' path), keep microstepMode at the old value, and say so. The host
+    // latches a stop; a person looks before it moves again.
+    if (!driverHasMicrosteps(xUART, old) || !driverHasMicrosteps(yUART, old) || !driverHasMicrosteps(zUART, old)) {
+      disableDrivers();
+      res_suspect = true;   // R2-1: 'e' must re-establish agreement before anything is energized again
+      Serial.println("#ERR RES driver-revert-failed");
+      return;
+    }
+    Serial.println("#ERR RES driver-readback-mismatch");
+    return;
+  }
+  microstepMode = ms;
+  // The same physical place in the new counts (long arithmetic, C truncation toward zero, as the Teensy sketch's
+  // spRescale), and setup()'s max-speed formula. Step sizes and speeds from the host stay in counts: not rescaled.
+  x_axis.setCurrentPosition((x_axis.currentPosition() * (long)ms) / (long)old);
+  y_axis.setCurrentPosition((y_axis.currentPosition() * (long)ms) / (long)old);
+  z_axis.setCurrentPosition((z_axis.currentPosition() * (long)ms) / (long)old);
+  x_axis.setMaxSpeed(1600L * ms / 2);
+  y_axis.setMaxSpeed(1600L * ms / 2);
+  z_axis.setMaxSpeed(1600L * ms / 2);
+  replyRes();
+}
+
 // A jog packet is applied only if every field is plausible. A byte dropped
 // from the RX buffer shifts the next packet into the one after it, and the
 // shifted bytes decode as arbitrary floats (a huge speed, a NaN, a D-pad
@@ -409,27 +542,29 @@ void parseHybridSerial() {
         // ---OPTION B: EXPLICIT DISABLE (idempotent — safe even if already disabled)
         else if (peekChar == 0x64) { // 'd'
             Serial.read();
-
-            // TOFF=0 is what actually disables a TMC2209 driver output stage
-            // (see setup()'s toff(0) at boot for the same convention) --
-            // toff(2) here previously left the driver enabled with a
-            // different chopper off-time, never cutting coil current at all.
-            // Also run this unconditionally rather than gating on our own
-            // system_enabled belief: a stale/desynced flag must never be
-            // able to block the one command that actually kills power.
-            system_enabled = false;
-            haltMotion();
-            driversOutputsOff();
-            xUART.toff(0);
-            yUART.toff(0);
-            zUART.toff(0);
+            disableDrivers();
         }
 
         // ---OPTION B2: EXPLICIT ENABLE (idempotent — safe even if already enabled)
         else if (peekChar == 0x65) { // 'e'
             Serial.read();
 
-            if (!system_enabled) {
+            // R2-1: after a failed #RES revert the drivers may disagree. Rewrite microstepMode to all three and read
+            // each back first; only when all three agree does the flag clear and the enable go ahead. Otherwise stay
+            // disabled (EN high, TOFF 0, system_enabled false): no reply, the host reads suspect=1 from #RES.
+            if (!system_enabled && res_suspect) {
+                setDriverMicrosteps(xUART, microstepMode);
+                setDriverMicrosteps(yUART, microstepMode);
+                setDriverMicrosteps(zUART, microstepMode);
+                if (driverHasMicrosteps(xUART, microstepMode) && driverHasMicrosteps(yUART, microstepMode)
+                    && driverHasMicrosteps(zUART, microstepMode)) {
+                    res_suspect = false;
+                } else {
+                    disableDrivers();
+                }
+            }
+
+            if (!system_enabled && !res_suspect) {
                 system_enabled = true;
 
                 // Safety: Force speeds to 0 before power-up so they don't jump instantly
@@ -450,7 +585,12 @@ void parseHybridSerial() {
 
         else if (peekChar == 0x73) { // --- OPTION C: IDENTITY QUERY ---
             Serial.read();
-            Serial.println("DEV: c");
+            Serial.println("DEV: c caps=res");   // caps=res (2026-10-23): this board answers #RES
+        }
+
+        // --- OPTION C2: A '#' LINE (cap res: #RES, the step resolution) ---
+        else if (peekChar == '#') {
+            parseExtLine();
         }
         
         // --- OPTION D: AUTONOMOUS TEXT STRING ---
@@ -591,7 +731,8 @@ void setup() {
   Serial2.begin(115200);
   Serial3.begin(115200);
 
-  int microstepMode = 2; // default for step size considerations is 2 for 1/2 microsteps, which should be smallest unit of reliable distance
+  // microstepMode (file scope, above) boots at 2: default for step size considerations is 2 for 1/2 microsteps, which
+  // should be smallest unit of reliable distance. #RES changes it at run time.
 
   // configure drivers
 

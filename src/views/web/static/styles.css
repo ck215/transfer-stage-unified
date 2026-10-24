@@ -2253,6 +2253,12 @@ button.button.toggle.on:disabled .toggle-lamp { background: var(--disabled-fg); 
 /* The caption beside a toggle is drawn only when the face is a bare
    On/Off; a face that says the action is its own caption. */
 .row.toggle-row { flex-direction: row; align-items: center; gap: var(--space-3); }
+/* A secondary line under a toggle ("Now: ½ step per count" under the
+   chuck's Step resolution, 2026-10-23): its own full line beneath the
+   face, never a third flex item squeezed beside it (one character per
+   line on the Dashboard's tile). */
+.row.toggle-row { flex-wrap: wrap; }
+.row.toggle-row > .row.secondary { flex-basis: 100%; }
 
 .row.toggle-row:not(.bare-face) > .label {
   position: absolute;
