@@ -7,12 +7,13 @@
 // neither all zeros nor all ones). microsteps() both ways is the library's (TMCStepper.cpp): a full step is spelled 0,
 // any other value is ignored by the setter, and the getter decodes the CHOPCONF it reads from the driver.
 // Fault hooks for the simulation (bit i = instance i): g_simTmcDropWrites, a driver that ignores writes;
-// g_simTmcNoReply, a driver that never answers a read (the library then returns 0 and sets CRCerror).
+// g_simTmcNoReply, a driver that never answers a read (the library then returns 0 and sets CRCerror);
+// g_simTmcTakeOne, a driver that takes the next CHOPCONF write and ignores every one after it.
 #pragma once
 #include <Arduino.h>
 extern uint32_t g_simTmcChop[8];          // defined in sim_mega.cpp: the driver side of each instance
 extern uint32_t g_simTmcChopWrites[8];    // CHOPCONF writes each driver took
-extern uint8_t g_simTmcDropWrites, g_simTmcNoReply;
+extern uint8_t g_simTmcDropWrites, g_simTmcNoReply, g_simTmcTakeOne;
 extern int g_simTmcCount;
 
 class TMC2208Stepper {
@@ -69,7 +70,10 @@ class TMC2208Stepper {
   bool CRCerror = false;                           // the library's: the last read failed its CRC (or got no reply)
  protected:
   virtual void write(uint8_t reg, uint32_t v) {    // the driver model: it takes a CHOPCONF write unless it ignores writes
-    if (reg == 0x6C && !(g_simTmcDropWrites & (1u << simIdx))) { g_simTmcChop[simIdx] = v; g_simTmcChopWrites[simIdx]++; }
+    if (reg == 0x6C && !(g_simTmcDropWrites & (1u << simIdx))) {
+      g_simTmcChop[simIdx] = v; g_simTmcChopWrites[simIdx]++;
+      if (g_simTmcTakeOne & (1u << simIdx)) { g_simTmcTakeOne &= (uint8_t)~(1u << simIdx); g_simTmcDropWrites |= (uint8_t)(1u << simIdx); }
+    }
   }
   virtual uint32_t read(uint8_t reg) {
     CRCerror = false;

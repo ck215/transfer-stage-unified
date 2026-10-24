@@ -39,9 +39,18 @@ implemented. Only this sketch changed; `stepper_firmware` and the DC sketch are 
 in flight) and green after; `frame-dpad-past-int16`, `watchdog-deadman` and `host-timeout-unarmed` stay green.
 `expected-chuck.txt` is the passing run.
 
-**Build** (arduino-cli 1.5.1, `arduino:avr:mega:cpu=atmega2560`, `--warnings all`): flash 20676 -> 22396 bytes, RAM
-1293 -> 1449 bytes (the reply strings are in RAM, as the sketch's other literals are); no warning from the sketch
+**Build** (arduino-cli 1.5.1, `arduino:avr:mega:cpu=atmega2560`, `--warnings all`): flash 20676 -> 22486 bytes, RAM
+1293 -> 1479 bytes (the reply strings are in RAM, as the sketch's other literals are); no warning from the sketch
 before or after (the four warnings are the AVR core's `new.cpp`).
+
+**R-6, the same day (adversarial review): a failed revert is not silent.** After a readback mismatch the old value
+is written back to all three drivers and each is read back again. If any still disagrees (a driver that took the new
+value and then ignored the revert, or one that never answers a read), the axes are mixed and the board cannot trust
+them: it runs the `d` path (now `disableDrivers()`, shared with `d`: halt, EN high, TOFF 0 on all three), keeps
+`microstepMode` at the old value and answers `#ERR RES driver-revert-failed`. EN high needs no UART, so it holds a
+driver that ignores the TOFF write too. A silent driver now ends in `driver-revert-failed`, not
+`driver-readback-mismatch`: its revert cannot be confirmed either. Sim: `res-revert-failed` (new) and the silent-driver
+step of `res-readback-mismatch`, red on 3fde7c4, green after.
 
 **Not verified (bench, owner):** NOT FLASHED. That the chuck's driver UARTs read back at all (a boot `POS:` other
 than `0,0,0` means `test_connection()` failed, and then every set answers `driver-readback-mismatch`); that the rotor

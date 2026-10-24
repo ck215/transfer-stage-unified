@@ -43,7 +43,8 @@ Board to host, exactly one line per command, never a `#` line unasked:
 | `#OK RES microsteps=<n> pos=<x>,<y>,<z>` | a query; a set that took; a set to the current value (a no-op, nothing written) |
 | `#ERR RES bad-arg-power-of-2-1..256` | the argument is not decimal digits alone, or not a power of two in 1..256 |
 | `#ERR RES busy` | a set while anything moves (below); nothing changes |
-| `#ERR RES driver-readback-mismatch` | a driver did not read back the new value; the old one is written back to all three |
+| `#ERR RES driver-readback-mismatch` | a driver did not read back the new value; the old one is written back to all three and reads back |
+| `#ERR RES driver-revert-failed` | as above, but a driver did not read back the old value either: the board disables (the `d` path: halt, EN high, TOFF 0 on all three) and keeps the old resolution |
 | `#ERR <CMD> unknown` | any other `#<CMD>` line; nothing else happens |
 
 - `pos` is the three positions after the command, in the new counts: the numbers the next `POS:` line carries.
@@ -54,11 +55,17 @@ Board to host, exactly one line per command, never a `#` line unasked:
 - **A set** writes the new resolution to all three drivers over their UARTs, then reads each back over the same UART
   (a read that fails its CRC or gets no reply counts as a mismatch). On success each position becomes
   `(pos * n) / old` in `long` arithmetic (truncated toward zero: going coarser can drop a fraction of a count), and
-  each axis's max speed `1600 * n / 2`. On a mismatch, positions and max speeds are untouched.
+  each axis's max speed `1600 * n / 2`. On a mismatch, positions and max speeds are untouched, and the revert is read
+  back as well: if a driver still disagrees, the axes would be mixed, so the board disables its drivers and answers
+  `driver-revert-failed` (R-6). The host treats that as a board fault: the stop latches until a person has looked.
 - `n = 1` is a full step; TMCStepper spells it 0, and the sketch maps it both ways.
 - `<CMD>` is the first word after `#`, upper-cased, cut at 16 characters, a byte outside printable ASCII sent as `?`.
-- A set blocks `loop()` for the six UART transactions, about 20 ms when every driver answers and up to about 70 ms when
+- A set blocks `loop()` for its UART transactions, about 20 ms when every driver answers and up to about 70 ms when
   none does (TMCStepper's retries and timeouts); nothing moves meanwhile, as `e` and `d` also block for their writes.
+- That block is an RX-buffer hazard: the 50 Hz jog stream keeps arriving into the Mega's 64-byte USB receive buffer,
+  so two packets in one block can overflow it and drop bytes. The station therefore pauses its jog stream from just
+  before `#RES <n>` until the reply or its timeout (the 250 ms dead-man holds position meanwhile), and re-sends a stop
+  that landed in that window.
 
 ## For the host
 
