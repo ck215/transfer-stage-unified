@@ -19,7 +19,7 @@ what changed and why.
 | Bytes | Effect |
 |---|---|
 | `s` | `DEV: c caps=res` (was `DEV: c`; Setup reads the first letter, so an old host still names it Chuck Positioner) |
-| `e` | Enable: TOFF 4 on all three drivers, EN low, motion held 30 ms. Idempotent. |
+| `e` | Enable: TOFF 4 on all three drivers, EN low, motion held 30 ms. Idempotent. While suspect (below): first rewrites the current resolution to all three drivers and reads each back; only if all three agree does the flag clear and the enable go ahead, otherwise the board stays disabled (EN high, TOFF 0) and sends nothing. |
 | `d` | Disable: halt, EN high, TOFF 0 on all three. Idempotent. |
 | `0xAA` + 41 bytes | Jog packet `<BBffffffffff`. Mode 1 jogs, mode 0 stops; an implausible mode-1 packet is ignored. |
 | `xs,ys,zs,0,full,slow,brake,xd,yd,zd,manual,auto\n` | Frame: manual, autonomous move, or (neither flag) stop. |
@@ -40,7 +40,7 @@ Board to host, exactly one line per command, never a `#` line unasked:
 
 | Reply | When |
 |---|---|
-| `#OK RES microsteps=<n> pos=<x>,<y>,<z>` | a query; a set that took; a set to the current value (a no-op, nothing written) |
+| `#OK RES microsteps=<n> pos=<x>,<y>,<z> suspect=<0/1>` | a query; a set that took; a set to the current value (a no-op, nothing written). `suspect=1`: a revert failed since boot and no `e` has yet found the drivers agreeing |
 | `#ERR RES bad-arg-power-of-2-1..256` | the argument is not decimal digits alone, or not a power of two in 1..256 |
 | `#ERR RES busy` | a set while anything moves (below); nothing changes |
 | `#ERR RES driver-readback-mismatch` | a driver did not read back the new value; the old one is written back to all three and reads back |
@@ -58,6 +58,8 @@ Board to host, exactly one line per command, never a `#` line unasked:
   each axis's max speed `1600 * n / 2`. On a mismatch, positions and max speeds are untouched, and the revert is read
   back as well: if a driver still disagrees, the axes would be mixed, so the board disables its drivers and answers
   `driver-revert-failed` (R-6). The host treats that as a board fault: the stop latches until a person has looked.
+- **Suspect (R2-1):** `driver-revert-failed` sets a flag that every `#OK RES` reports as `suspect=1`. Only boot or an `e`
+  that rewrites the resolution and reads it back from all three drivers clears it; until then `e` does not enable.
 - `n = 1` is a full step; TMCStepper spells it 0, and the sketch maps it both ways.
 - `<CMD>` is the first word after `#`, upper-cased, cut at 16 characters, a byte outside printable ASCII sent as `?`.
 - A set blocks `loop()` for its UART transactions, about 20 ms when every driver answers and up to about 70 ms when

@@ -112,7 +112,8 @@ keeping its motion and its resolution; a jog that has ended, the station still s
 3200 after `#RES 8`; tolerance 1 % and 2 %, one 5 us loop tick in a step interval) and `res-readback-mismatch` (one
 driver ignoring the write, one never answering: the old value back on all three, positions and max speed untouched;
 a silent driver ends in `driver-revert-failed`) and `res-revert-failed` (R-6: a driver that ignores the revert too,
-so the board disables its drivers, EN high and TOFF 0, and keeps the old resolution) are red on the sketch before `#RES` (no reply; its `#RES 8` digit stopped a frame in flight as a stop frame) and green
+so the board disables its drivers, EN high and TOFF 0, keeps the old resolution and reports `suspect=1`; `e` enables
+only once all three drivers read the resolution back, R2-1) are red on the sketch before `#RES` (no reply; its `#RES 8` digit stopped a frame in flight as a stop frame) and green
 after. Kind `stepref` still builds the chuck on the stepper's pins with the base scenarios, as before.
 
 `avr/isr_cycles.py` and `avr/stack_depth.py` read `avr-objdump -d` of the

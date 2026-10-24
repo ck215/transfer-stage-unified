@@ -1398,7 +1398,9 @@ static std::string nextPos(size_t from) {
   for (size_t k = from; k < g_out.size(); k++) if (g_out[k].s.rfind("POS:", 0) == 0) return g_out[k].s.substr(4);
   return "(none)";
 }
-static std::string resOk(int ms, const std::string &pos) { return "#OK RES microsteps=" + std::to_string(ms) + " pos=" + pos; }
+static std::string resOk(int ms, const std::string &pos, int suspect = 0) {   // R2-1: every #OK RES ends suspect=0|1
+  return "#OK RES microsteps=" + std::to_string(ms) + " pos=" + pos + " suspect=" + std::to_string(suspect);
+}
 static const std::string RES_BAD = "#ERR RES bad-arg-power-of-2-1..256", RES_BUSY = "#ERR RES busy";
 static std::string res1(const std::string &cmd, size_t &n) {   // one '#' command; n = how many replies it drew
   size_t m = g_out.size();
@@ -1626,14 +1628,33 @@ static void s_res_revert_failed() {
   expect(chopToff(1) == 0, "TOFF 0 reaches Y (X and Z now ignore writes: EN high is what holds them)",
          std::to_string(chopToff(0)) + "," + std::to_string(chopToff(1)) + "," + std::to_string(chopToff(2)));
   r = res1("#RES", n);
-  expect(r == resOk(2, "100,200,300"), "the board keeps the OLD value, 2, positions untouched", r);
-  g_simTmcDropWrites = 0;
+  expect(r == resOk(2, "100,200,300", 1), "the board keeps the OLD value, 2, positions untouched, and says suspect=1 (R2-1)", r);
   long n0 = st[0].net; double x0 = st[0].x;
   sendLine(moveFrame(160, 0, 0, 1600)); waitIdle(2000);
-  expect(fabs(st[0].x - x0) < 1e-9, "a frame afterwards moves no carriage until the host enables again",
+  expect(fabs(st[0].x - x0) < 1e-9, "a frame afterwards moves no carriage",
          fmt("%.4f mm", st[0].x - x0) + ", " + std::to_string(st[0].net - n0) + " pulses");
+  // R2-1 (a): the drivers still mixed (X and Z ignore writes): 'e' rewrites 2 to all three, X reads back 8, so it stays
+  // disabled: EN high, TOFF 0, and a frame still moves nothing.
   sendRaw("e"); runMs(100);
-  expect(en(0) == 0 && chopToff(0) == 4 && chopToff(1) == 4 && chopToff(2) == 4, "'e' enables again (a person looked first: the host's job)");
+  snprintf(b, sizeof b, "MRES %d,%d,%d", chopMres(0), chopMres(1), chopMres(2));
+  expect(en(0) == 1 && en(1) == 1 && en(2) == 1 && chopToff(1) == 0, "suspect, drivers still mixed: 'e' does NOT enable (EN high, TOFF 0)",
+         std::string(b) + " EN " + std::to_string(en(0)) + std::to_string(en(1)) + std::to_string(en(2)));
+  x0 = st[0].x;
+  sendLine(moveFrame(160, 0, 0, 1600)); waitIdle(2000);
+  expect(fabs(st[0].x - x0) < 1e-9, "and a frame still moves no carriage", fmt("%.4f mm", st[0].x - x0));
+  r = res1("#RES", n);
+  expect(r.size() > 9 && r.compare(r.size() - 9, 9, "suspect=1") == 0 && r.rfind("#OK RES microsteps=2 ", 0) == 0,
+         "#RES still answers microsteps=2 ... suspect=1", r);
+  // R2-1 (b): the drivers take writes again: 'e' rewrites 2, all three read it back, the flag clears, it enables.
+  g_simTmcDropWrites = 0;
+  sendRaw("e"); runMs(100);
+  expect(en(0) == 0 && en(1) == 0 && en(2) == 0 && chopToff(0) == 4 && chopToff(1) == 4 && chopToff(2) == 4 && mresAll(7),
+         "drivers healthy: 'e' rewrites 2 to all three, they agree (MRES 7), EN low, TOFF 4", mresTxt());
+  r = res1("#RES", n);
+  expect(r.rfind("#OK RES microsteps=2 ", 0) == 0 && r.size() > 9 && r.compare(r.size() - 9, 9, "suspect=0") == 0, "#RES answers suspect=0", r);
+  x0 = st[0].x;
+  sendLine(moveFrame(160, 0, 0, 1600)); waitIdle(2000);
+  expect(fabs(st[0].x - x0 - 0.1) < 1e-6, "and frames move the carriage again", fmt("%.4f mm", st[0].x - x0));
 }
 #endif
 
