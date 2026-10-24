@@ -163,6 +163,9 @@ void disableDrivers() {
 // The presets are the host's choice (Fast = 2, Fine = 8, PROVISIONAL on the station side): this board takes any power
 // of two 1..256, so changing a preset never needs a reflash.
 uint16_t microstepMode = 2;
+// R2-1: set by `driver-revert-failed` (the drivers may disagree), cleared at boot or by an 'e' that finds all three
+// drivers reading back microstepMode after rewriting it. Every #OK RES reply carries it as suspect=0|1.
+bool res_suspect = false;
 
 // TMCStepper 0.7.3 spells a full step 0 both ways: microsteps(1) writes nothing and the getter answers 0 for MRES 8.
 // Map 1 <-> 0, as firmware/xyz_stage_axis does.
@@ -195,7 +198,8 @@ void replyRes() {
   Serial.print(",");
   Serial.print(y_axis.currentPosition());
   Serial.print(",");
-  Serial.println(z_axis.currentPosition());
+  Serial.print(z_axis.currentPosition());
+  Serial.println(res_suspect ? " suspect=1" : " suspect=0");
 }
 
 // One '#' line (cap `res`: the lane carries #RES and nothing else). Exactly one reply line per command; nothing is
@@ -254,6 +258,7 @@ void parseExtLine() {
     // latches a stop; a person looks before it moves again.
     if (!driverHasMicrosteps(xUART, old) || !driverHasMicrosteps(yUART, old) || !driverHasMicrosteps(zUART, old)) {
       disableDrivers();
+      res_suspect = true;   // R2-1: 'e' must re-establish agreement before anything is energized again
       Serial.println("#ERR RES driver-revert-failed");
       return;
     }
@@ -544,7 +549,22 @@ void parseHybridSerial() {
         else if (peekChar == 0x65) { // 'e'
             Serial.read();
 
-            if (!system_enabled) {
+            // R2-1: after a failed #RES revert the drivers may disagree. Rewrite microstepMode to all three and read
+            // each back first; only when all three agree does the flag clear and the enable go ahead. Otherwise stay
+            // disabled (EN high, TOFF 0, system_enabled false): no reply, the host reads suspect=1 from #RES.
+            if (!system_enabled && res_suspect) {
+                setDriverMicrosteps(xUART, microstepMode);
+                setDriverMicrosteps(yUART, microstepMode);
+                setDriverMicrosteps(zUART, microstepMode);
+                if (driverHasMicrosteps(xUART, microstepMode) && driverHasMicrosteps(yUART, microstepMode)
+                    && driverHasMicrosteps(zUART, microstepMode)) {
+                    res_suspect = false;
+                } else {
+                    disableDrivers();
+                }
+            }
+
+            if (!system_enabled && !res_suspect) {
                 system_enabled = true;
 
                 // Safety: Force speeds to 0 before power-up so they don't jump instantly

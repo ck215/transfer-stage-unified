@@ -39,8 +39,8 @@ implemented. Only this sketch changed; `stepper_firmware` and the DC sketch are 
 in flight) and green after; `frame-dpad-past-int16`, `watchdog-deadman` and `host-timeout-unarmed` stay green.
 `expected-chuck.txt` is the passing run.
 
-**Build** (arduino-cli 1.5.1, `arduino:avr:mega:cpu=atmega2560`, `--warnings all`): flash 20676 -> 22486 bytes, RAM
-1293 -> 1479 bytes (the reply strings are in RAM, as the sketch's other literals are); no warning from the sketch
+**Build** (arduino-cli 1.5.1, `arduino:avr:mega:cpu=atmega2560`, `--warnings all`): flash 20676 -> 22670 bytes, RAM
+1293 -> 1502 bytes (the reply strings are in RAM, as the sketch's other literals are); no warning from the sketch
 before or after (the four warnings are the AVR core's `new.cpp`).
 
 **R-6, the same day (adversarial review): a failed revert is not silent.** After a readback mismatch the old value
@@ -51,6 +51,14 @@ them: it runs the `d` path (now `disableDrivers()`, shared with `d`: halt, EN hi
 driver that ignores the TOFF write too. A silent driver now ends in `driver-revert-failed`, not
 `driver-readback-mismatch`: its revert cannot be confirmed either. Sim: `res-revert-failed` (new) and the silent-driver
 step of `res-readback-mismatch`, red on 3fde7c4, green after.
+
+**R2-1, 2026-10-24 (second review): a suspect board says so.** `driver-revert-failed` sets `res_suspect` (cleared at
+boot). Every `#OK RES` reply gains a trailing `suspect=0|1` (an old host ignores it). While suspect, `e` first rewrites
+`microstepMode` to all three drivers and reads each back; only when all three agree does the flag clear and the enable
+run as before; otherwise the board stays disabled through `disableDrivers()` (EN high, TOFF 0, `system_enabled` false),
+with no reply. Sim: `res-revert-failed` extended (mixed drivers: `e` does not enable and a frame moves nothing, `#RES`
+says suspect=1; drivers healthy again: `e` enables, MRES agree, suspect=0), red on 5143cc1, green after; every other
+`res-*` expectation gained `suspect=0`.
 
 **Not verified (bench, owner):** NOT FLASHED. That the chuck's driver UARTs read back at all (a boot `POS:` other
 than `0,0,0` means `test_connection()` failed, and then every set answers `driver-readback-mismatch`); that the rotor
