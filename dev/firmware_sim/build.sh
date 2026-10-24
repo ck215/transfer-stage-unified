@@ -1,11 +1,13 @@
 #!/bin/bash
-# build.sh <sketch.ino> <out-binary> station|validator|seek|mega|stepref
+# build.sh <sketch.ino> <out-binary> station|validator|seek|mega|stepref|chuck
 # station, validator: a Teensy sketch, copied with two host-only edits (the Teensy-3.5 _write shim is dropped and
 #   IrqGuard's `mrs primask` becomes m = 0), compiled with the real AccelStepper source and the stubs in include/.
 # seek: the bench diagnostic limit_seek, the same way, with seek_sim.cpp (no step ISR at 25 us: its own timer period).
 # mega: a Mega 2560 sketch (firmware/xyz_stage_mega) against the stub AVR core in avr/, plus <out-binary>-stepref,
 #   firmware/stepper_firmware built the same way: the frame-protocol reference its parity scenario runs, and the base
 #   its other scenarios are red on. stepref: that reference alone, from the sketch given.
+# chuck: firmware/chuck_firmware, the stepref build plus -DSIM_CHUCK (its own pins, and the scenarios that apply to it:
+#   the shared frame-protocol ones and #RES, `res-*`).
 set -e
 D=$(cd "$(dirname "$0")" && pwd)
 ACCEL="${ACCELSTEPPER_SRC:-$HOME/Documents/Arduino/libraries/AccelStepper/src}"   # the AccelStepper the sketches build with
@@ -53,6 +55,7 @@ if [ "$kind" = mega ]; then
   exit 0
 fi
 if [ "$kind" = stepref ]; then build_avr "$ino" "$out" "-DSIM_STEPREF" "-w" prototypes; exit 0; fi
+if [ "$kind" = chuck ]; then build_avr "$ino" "$out" "-DSIM_STEPREF -DSIM_CHUCK" "-w" prototypes; exit 0; fi
 if [ "$kind" = seek ]; then
   src="$D/obj/$(basename "$out").sketch.cpp"
   sed -e '/^extern "C" int _write/,/^}/d' "$ino" > "$src"

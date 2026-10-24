@@ -1,6 +1,8 @@
 // Host-side simulation of the XYZ stage on one Mega 2560: the whole sketch (firmware/xyz_stage_mega, or
 // firmware/stepper_firmware with -DSIM_STEPREF: the frame-protocol reference and the base the scenarios are red on)
-// built natively against the real AccelStepper source and the stub AVR core in include/.
+// built natively against the real AccelStepper source and the stub AVR core in include/. With -DSIM_STEPREF -DSIM_CHUCK
+// (build.sh kind `chuck`): firmware/chuck_firmware, on its own pins, with the scenarios that apply to it (the `res-*`
+// ones: #RES, the run-time step resolution, CR-1 2026-10-23).
 //
 // Fake clock in 5 us steps: Timer1's compare ISR at the period the sketch programs (50 us), loop() every 100 us
 // (stepper_firmware, which steps from loop(), every 5 us), a host model (jog packets every 20 ms like the station's
@@ -39,8 +41,24 @@ static const char *g_scenario = "";
 
 // ------------------------------------------------------------------ pins (MEGA_STANDARD §5)
 struct AxisPins { uint8_t step, dir, en, ls1, ls2, home; };
+#ifdef SIM_CHUCK
+// chuck_firmware's own STEP/DIR/EN (X 42-44, Y 32-34, Z 22-24); it reads no switch or flag, the inputs are unused.
+static const AxisPins PINS[3] = { {42, 43, 44, 2, 3, 62}, {32, 33, 34, 18, 19, 63}, {22, 23, 24, 20, 21, 64} };
+static const bool CHUCK = true;
+#else
 static const AxisPins PINS[3] = { {32, 33, 34, 2, 3, 62}, {22, 23, 24, 18, 19, 63}, {42, 43, 44, 20, 21, 64} };
+static const bool CHUCK = false;
+#endif
 static const char AXL[3] = { 'X', 'Y', 'Z' };
+
+// ------------------------------------------------------------------ the TMCStepper stand-in's driver side
+// include/TMCStepper.h: for a sketch that does not override write()/read() (stepper_firmware, chuck_firmware), the
+// CHOPCONF each driver instance holds (by construction order), the writes it took, and two faults (bit i = instance i):
+// a driver that ignores writes, one that never answers a read.
+uint32_t g_simTmcChop[8];
+uint32_t g_simTmcChopWrites[8];
+uint8_t g_simTmcDropWrites = 0, g_simTmcNoReply = 0;
+int g_simTmcCount = 0;
 
 // ------------------------------------------------------------------ TMC2209 bus model (Serial2)
 struct Drv {
@@ -1163,7 +1181,7 @@ static void s_watchdog_timer() {
 // past 32767 (the jog packet admits 1..100000). stepper_firmware and chuck_firmware held both in an `int`, 16 bits on
 // the ATmega2560 (build.sh compiles their copies with int16_t): the frame's move wrapped to -31936 and ran the other
 // way, into the - hard stop; the D-pad's 40000 became -25536. Every axis must travel the whole distance, forward.
-// The three axes move alike, so the chuck's own pin order (its X on 42-44) does not matter. The xyz Mega held both in
+// The three axes move alike, so the axis order does not matter (the chuck build maps its own pins). The xyz Mega held both in
 // 32 bits from the start: it passes as it is.
 static void s_past_int16() {
   boot(2, 2, 2);
@@ -1365,6 +1383,212 @@ static void s_soft_damaged() {
   expect(st[0].net == n0 + 1600, "frames move X again");
 }
 
+#ifdef SIM_CHUCK
+// ------------------------------------------------------------------ CR-1: the chuck's step resolution, #RES (2026-10-23)
+// The contract is the lead's (CONTRACT.md; firmware/chuck_firmware/PROTOCOL.md): `#RES` queries, `#RES <n>` sets a power
+// of two 1..256 at standstill, written to the three drivers and read back, positions rescaled to the new counts,
+// setMaxSpeed(1600 * n / 2). The drivers are the TMCStepper stand-in's (include/TMCStepper.h): xUART, yUART, zUART are
+// instances 0, 1, 2, and g_simTmcChop is what each driver holds (MRES: 7 = 2 microsteps, 5 = 8, 8 = full step, 0 = 256).
+static int chopMres(int i) { return (int)((g_simTmcChop[i] >> 24) & 0xF); }
+static bool mresAll(int m) { return chopMres(0) == m && chopMres(1) == m && chopMres(2) == m; }
+static std::string mresTxt() { char b[40]; snprintf(b, sizeof b, "MRES %d,%d,%d", chopMres(0), chopMres(1), chopMres(2)); return b; }
+static uint32_t chopWrites() { return g_simTmcChopWrites[0] + g_simTmcChopWrites[1] + g_simTmcChopWrites[2]; }
+static std::string netTxt() { char b[64]; snprintf(b, sizeof b, "%ld,%ld,%ld", st[0].net, st[1].net, st[2].net); return b; }
+static std::string nextPos(size_t from) {
+  for (size_t k = from; k < g_out.size(); k++) if (g_out[k].s.rfind("POS:", 0) == 0) return g_out[k].s.substr(4);
+  return "(none)";
+}
+static std::string resOk(int ms, const std::string &pos) { return "#OK RES microsteps=" + std::to_string(ms) + " pos=" + pos; }
+static const std::string RES_BAD = "#ERR RES bad-arg-power-of-2-1..256", RES_BUSY = "#ERR RES busy";
+static std::string res1(const std::string &cmd, size_t &n) {   // one '#' command; n = how many replies it drew
+  size_t m = g_out.size();
+  std::string r = ext(cmd);
+  n = countReplies(upperWord(cmd), m);
+  return r;
+}
+
+static void s_res_query_set() {
+  boot();
+  size_t m = g_out.size(), n = 0;
+  sendRaw("s"); runMs(5);
+  expect(lineAt(findLine("DEV:", m)) == "DEV: c caps=res", "'s' -> DEV: c caps=res", lineAt(findLine("DEV:", m)));
+  expect(mresAll(7), "boot: every driver at 2 microsteps (MRES 7)", mresTxt());
+  uint32_t w = chopWrites();
+  std::string r = res1("#RES", n);
+  expect(r == resOk(2, "0,0,0") && n == 1, "#RES at boot -> #OK RES microsteps=2 pos=0,0,0 (one reply)", r);
+  expect(chopWrites() == w, "a query writes no driver register");
+  enable();
+  sendLine(moveFrame(1000, -500, 250, 1600)); waitIdle(5000);
+  expect(netTxt() == "1000,-500,250", "a frame moves X +1000, Y -500, Z +250 counts", netTxt());
+  m = g_out.size(); runMs(150);
+  expect(nextPos(m) == "1000,-500,250", "POS agrees", nextPos(m));
+  m = g_out.size();
+  uint64_t t = g_simUs;
+  r = res1("#RES 8", n);
+  expect(r == resOk(8, "4000,-2000,1000") && n == 1, "#RES 8 -> microsteps=8, every position x4 in the new counts", r);
+  expect(mresAll(5), "every driver now at 8 microsteps (MRES 5)", mresTxt());
+  runMs(150);
+  expect(nextPos(m) == "4000,-2000,1000", "the next POS line carries the same numbers", nextPos(m));
+  expect(stepsIn(0, t, g_simUs) + stepsIn(1, t, g_simUs) + stepsIn(2, t, g_simUs) == 0, "the change itself moves nothing");
+  sendLine(moveFrame(3, -3, 0, 1600)); waitIdle(2000);   // 4003, -2003, 1000 at 8
+  r = res1("#RES 2", n);
+  expect(r == resOk(2, "1000,-500,250") && n == 1, "#RES 2 scales back: 4003 -> 1000, -2003 -> -500 (long, truncated toward zero)", r);
+  expect(mresAll(7), "every driver back at MRES 7", mresTxt());
+  m = g_out.size(); runMs(150);
+  expect(nextPos(m) == "1000,-500,250", "POS agrees", nextPos(m));
+  r = res1("#RES 8", n);
+  expect(r == resOk(8, "4000,-2000,1000"), "#RES 8", r);
+  w = chopWrites();
+  r = res1("#RES 8", n);
+  expect(r == resOk(8, "4000,-2000,1000") && n == 1 && chopWrites() == w, "#RES 8 again: a no-op that still answers #OK, no driver write", r);
+  for (const char *bad : { "#RES 3", "#RES 512", "#RES 0", "#RES -8", "#RES x", "#RES 8x", "#RES 8 8", "#RES 1024" }) {
+    w = chopWrites();
+    r = res1(bad, n);
+    expect(r == RES_BAD && n == 1 && chopWrites() == w, std::string(bad) + " -> " + RES_BAD + " (one reply, nothing written)", r);
+  }
+  r = res1("#RES", n);
+  expect(r == resOk(8, "4000,-2000,1000"), "after the refusals: still 8, positions unchanged", r);
+  for (const char *unk : { "#FOO", "#foo 1 2" }) {
+    m = g_out.size();
+    r = res1(unk, n);
+    expect(r == "#ERR FOO unknown" && n == 1 && countLines("#", m) == 1, std::string(unk) + " -> #ERR FOO unknown, one line", r);
+  }
+  r = res1("#RES 1", n);   // TMCStepper spells a full step 0: microsteps(1) alone would write nothing
+  expect(r == resOk(1, "500,-250,125") && mresAll(8), "#RES 1 -> a full step (MRES 8), positions /8", r + " " + mresTxt());
+  r = res1("#RES 256", n);
+  expect(r == resOk(256, "128000,-64000,32000") && mresAll(0), "#RES 256 -> MRES 0, positions x256", r + " " + mresTxt());
+  r = res1("#RES 2", n);
+  expect(r == resOk(2, "1000,-500,250") && mresAll(7), "#RES 2 -> back to MRES 7", r + " " + mresTxt());
+  sendRaw("d"); runMs(10);
+  r = res1("#RES 8", n);
+  expect(r == resOk(8, "4000,-2000,1000") && mresAll(5), "disabled: a set is allowed (standstill is what counts)", r);
+  enable();
+  long n0 = st[0].net;
+  sendLine(moveFrame(16, 0, 0, 1600)); waitIdle(2000);
+  m = g_out.size(); runMs(150);
+  expect(st[0].net - n0 == 16 && nextPos(m) == "4016,-2000,1000", "frames still move in counts, now the finer ones", nextPos(m));
+  m = g_out.size();
+  sendRaw("s"); runMs(5);
+  expect(lineAt(findLine("DEV:", m)) == "DEV: c caps=res", "identity unchanged");
+}
+
+static void s_res_busy() {
+  boot();
+  enable();
+  uint32_t w0 = chopWrites();
+  size_t n = 0;
+  // 1. A frame in flight.
+  long n0 = st[0].net;
+  sendLine(moveFrame(1600, 0, 0, 1600)); runMs(200);
+  std::string r = res1("#RES 8", n);
+  expect(r == RES_BUSY && n == 1, "a frame in flight: #RES 8 -> #ERR RES busy (one reply)", r);
+  r = res1("#RES", n);
+  expect(r.rfind("#OK RES microsteps=2 pos=", 0) == 0 && n == 1, "a query still answers while it moves: microsteps=2", r);
+  uint64_t t = g_simUs; runMs(300);
+  double v = rateIn(0, t, g_simUs);
+  expect(fabs(v / 1600 - 1) < 0.01, "the frame carries on at 1600 counts/s", fmt("%.1f counts/s", v));
+  waitIdle(3000);
+  expect(st[0].net - n0 == 1600, "and ends where it was sent: +1600", std::to_string(st[0].net - n0));
+  expect(chopWrites() == w0 && mresAll(7), "nothing written: the drivers are still at 2 microsteps", mresTxt());
+  // 2. A D-pad step in flight (the press, then the station's neutral stream).
+  n0 = st[0].net;
+  Pkt p; p.speed = 1600; p.xs = 1600; p.lr = 1;
+  host.pkt = p; host.stream = true; host.nextPkt = g_simUs;
+  runMs(20);
+  host.pkt.lr = 0;
+  runMs(200);
+  r = res1("#RES 8", n);
+  expect(r == RES_BUSY && n == 1, "a D-pad step in flight: #RES 8 -> #ERR RES busy", r);
+  t = g_simUs; runMs(300);
+  v = rateIn(0, t, g_simUs);
+  expect(fabs(v / 1600 - 1) < 0.01, "the D-pad step carries on at 1600 counts/s", fmt("%.1f counts/s", v));
+  runMs(1500);
+  expect(st[0].net - n0 == 1600, "and ends one step size on: +1600", std::to_string(st[0].net - n0));
+  expect(chopWrites() == w0 && mresAll(7), "nothing written", mresTxt());
+  // 3. A jog, the stick deflected.
+  n0 = st[0].net;
+  host.pkt = stickOn(0, 1, 800); host.nextPkt = g_simUs;
+  runMs(300);
+  r = res1("#RES 8", n);
+  expect(r == RES_BUSY && n == 1, "a jog with the stick deflected: #RES 8 -> #ERR RES busy", r);
+  t = g_simUs; runMs(300);
+  v = rateIn(0, t, g_simUs);
+  expect(fabs(v / 800 - 1) < 0.01, "the jog carries on at 800 counts/s", fmt("%.1f counts/s", v));
+  expect(chopWrites() == w0 && mresAll(7), "nothing written", mresTxt());
+  host.pkt = Pkt(); host.pkt.speed = 800;                    // stick back to neutral, the stream goes on
+  runMs(300);
+  r = res1("#RES 8", n);
+  if (g_verbose) printf("           note: stick neutral, stream still on: %s (runSpeed() leaves distanceToGo() behind until a stop)\n", r.c_str());
+  host.stream = false;
+  runMs(400);                                                // the jog dead-man: holdPosition()
+  long pos = st[0].net;
+  r = res1("#RES 8", n);
+  expect(r == resOk(8, std::to_string(pos * 4) + ",0,0") && mresAll(5), "once the stream stops and the dead-man holds: #RES 8 is taken", r);
+}
+
+static void s_res_speed_cap() {
+  // Tolerance: the sketch steps from loop(), which the simulation calls every 5 us, and AccelStepper steps at the first
+  // call at least one interval after the last step. 1600/s is 625 us, a whole number of ticks: exact (1 %, for safety).
+  // 3200/s is 312 us (AccelStepper truncates 312.5), taken at 315: 3174.6/s, -0.8 %; one tick in 312 is 1.6 %, so 2 %.
+  // The question is 1600 against 3200, a factor of two either way.
+  boot();
+  enable();
+  uint64_t t0 = g_simUs;
+  sendLine(moveFrame(3200, 0, 0, 3200));
+  runMs(1500);
+  double v = rateIn(0, t0 + 100000, t0 + 1400000);
+  expect(fabs(v / 1600 - 1) < 0.01, "at 2 microsteps a frame at 3200 counts/s steps at 1600 (setMaxSpeed(1600) caps it)", fmt("%.1f counts/s", v));
+  waitIdle(5000);
+  expect(st[0].net == 3200, "and arrives: +3200", std::to_string(st[0].net));
+  std::string r = ext("#RES 8");
+  expect(r == resOk(8, "12800,0,0"), "#RES 8 while idle", r);
+  t0 = g_simUs;
+  sendLine(moveFrame(6400, 0, 0, 3200));
+  runMs(1500);
+  v = rateIn(0, t0 + 100000, t0 + 1400000);
+  expect(fabs(v / 3200 - 1) < 0.02, "after #RES 8 the same frame steps at 3200 counts/s (setMaxSpeed(6400))", fmt("%.1f counts/s", v));
+  waitIdle(5000);
+  expect(st[0].net == 9600, "and arrives: +6400 more", std::to_string(st[0].net));
+  r = ext("#RES 2");
+  expect(r == resOk(2, "4800,0,0"), "#RES 2 while idle: 19200 -> 4800", r);
+  t0 = g_simUs;
+  sendLine(moveFrame(3200, 0, 0, 3200));
+  runMs(1500);
+  v = rateIn(0, t0 + 100000, t0 + 1400000);
+  expect(fabs(v / 1600 - 1) < 0.01, "back at 2: capped at 1600 again", fmt("%.1f counts/s", v));
+  waitIdle(5000);
+}
+
+static void s_res_readback() {
+  boot();
+  enable();
+  sendLine(moveFrame(100, 200, 300, 1600)); waitIdle(3000);
+  g_simTmcDropWrites = 4;                                    // Z's driver ignores writes
+  uint32_t wx = g_simTmcChopWrites[0];
+  size_t n = 0;
+  std::string r = res1("#RES 8", n);
+  expect(r == "#ERR RES driver-readback-mismatch" && n == 1, "Z's driver ignores the write: #ERR RES driver-readback-mismatch", r);
+  expect(mresAll(7), "X and Y restored to 2 microsteps, Z never left it", mresTxt());
+  expect(g_simTmcChopWrites[0] == wx + 2, "X's driver written twice: the new value, then the old",
+         std::to_string(g_simTmcChopWrites[0] - wx));
+  r = res1("#RES", n);
+  expect(r == resOk(2, "100,200,300"), "the board still says 2, positions untouched", r);
+  uint64_t t0 = g_simUs;
+  sendLine(moveFrame(3200, 0, 0, 3200));
+  runMs(1500);
+  double v = rateIn(0, t0 + 100000, t0 + 1400000);
+  expect(fabs(v / 1600 - 1) < 0.01, "max speed untouched: a frame at 3200 still steps at 1600", fmt("%.1f counts/s", v));
+  waitIdle(5000);
+  g_simTmcDropWrites = 0; g_simTmcNoReply = 2;               // Y's driver never answers a read
+  r = res1("#RES 256", n);
+  expect(r == "#ERR RES driver-readback-mismatch", "Y's driver never answers: a failed read (it decodes as 256) confirms nothing", r);
+  expect(mresAll(7), "every driver restored to MRES 7", mresTxt());
+  g_simTmcNoReply = 0;
+  r = res1("#RES 8", n);
+  expect(r == resOk(8, "13200,800,1200") && mresAll(5), "the bus healthy again: #RES 8 is taken", r);
+}
+#endif
+
 struct Scenario { const char *name; void (*fn)(); };
 static void s_ht0() { s_host_timeout(0); }
 static void s_ht1() { s_host_timeout(1); }
@@ -1397,12 +1621,26 @@ static const Scenario SCENARIOS[] = {
   { "soft-limit-persists-reboot-lost", s_soft_persist },
   { "soft-limit-home", s_soft_home },
   { "soft-limit-eeprom-damaged", s_soft_damaged },
+#ifdef SIM_CHUCK
+  { "res-query-and-set", s_res_query_set },
+  { "res-busy", s_res_busy },
+  { "res-speed-cap", s_res_speed_cap },
+  { "res-readback-mismatch", s_res_readback },
+#endif
 };
+// The chuck build lists what applies to chuck_firmware: the frame-protocol behaviour it shares with stepper_firmware
+// (the other scenarios are the XYZ stage's features, and red on it by design) and its own `res-*`.
+static bool listed(const char *name) {
+  if (STEPREF && !strcmp(name, "parity-frame-protocol")) return false;
+  if (!CHUCK) return true;
+  return !strncmp(name, "res-", 4) || !strcmp(name, "frame-dpad-past-int16") || !strcmp(name, "watchdog-deadman")
+      || !strcmp(name, "host-timeout-unarmed");
+}
 
 int main(int argc, char **argv) {
   g_self = argv[0];
   if (argc < 2 || !strcmp(argv[1], "list")) {
-    for (const Scenario &s : SCENARIOS) if (!(STEPREF && !strcmp(s.name, "parity-frame-protocol"))) printf("%s\n", s.name);
+    for (const Scenario &s : SCENARIOS) if (listed(s.name)) printf("%s\n", s.name);
     return 0;
   }
   for (int i = 2; i < argc; i++) if (!strcmp(argv[i], "-q")) g_verbose = false;
