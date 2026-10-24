@@ -135,7 +135,7 @@ and read the exit code unpiped; a pipeline's exit code is `tail`'s.
 - Speed percent is over per-device ceilings (stepper 3200, chuck 600 steps/s); the
   units not chosen are the small line under the entry, shown on the Dashboard too (2026-10-12).
 - Accounts: Guest = the station defaults; `STATION_PROFILES=0` hides Setup's Account section.
-- Wire protocol untouched (firmware guards added 2026-10-07/08 send no new bytes); every byte on the wire identical to the old app's, pinned by `tests/golden/`.
+- Wire protocol untouched (firmware guards added 2026-10-07/08 send no new bytes); every byte on the wire identical to the old app's, pinned by `tests/golden/`. One capability-gated extension (owner 2026-10-23): the Chuck Positioner's step-resolution lever, `#RES <n>` to a board that answers `DEV: c caps=res`, Fast = 2 (boot) / Fine = 8 (PROVISIONAL); a capless board never sees a `#` byte and its toggle is greyed with the reason.
 - D-7 (DC board has no coil kill) is open, bench-only, owner-only.
 
 Anything on this list that looks "missing" in `src/` is a ruling, not a

@@ -10,6 +10,9 @@ firmware guards - stepper and chuck runaway guards, the heater's host-gone
 watchdog - add no bytes; bench validation is the owner's);
 every byte on the wire is identical to the old app's (the repair tree
 the lab ran Aug 26–Sep 22, 2026; history: tag pre-root-cleanup-2026-10-07), pinned by `tests/golden/`.
+The one sanctioned extension (owner, 2026-10-23, Andrew's request) is capability-gated on
+the identity line, so the pinned bytes stand: the chuck's `#RES` step-resolution lane
+(`DEV: c caps=res`; `docs/rebuild/MEGA_STANDARD.md` §2, `firmware/chuck_firmware/PROTOCOL.md`).
 
 The repository lives at `/Users/ianalbinogonzalez/GitHub/transfer-stage-unified/`:
 one checkout, `main/` (on branch `main`, tracking origin/main; work here; it holds the one venv, `.venv`, the `$PY`
