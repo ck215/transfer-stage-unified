@@ -861,8 +861,11 @@ class SampleMap(store_choice.StorePrompt, Model):
                 return f"the {name} is not open."
             epoch = getattr(stage, "position_epoch", None)
             if reg["position_epoch"] is not None and epoch != reg["position_epoch"]:
-                return (f"the {name}'s position counter restarted (it reconnected). "
-                        "Mark the corners again.")
+                # A new epoch is a reconnect (the firmware's counter restarted)
+                # or, on the chuck, a step-resolution change (its counts
+                # changed scale, 2026-10-23): either way the marks are gone.
+                return (f"the {name}'s position counter restarted (it reconnected, "
+                        "or its step resolution changed). Mark the corners again.")
         if source != self._frame_source():
             return (f"it was marked with {source}, and {self.source or 'no source'} "
                     "is picked now.")

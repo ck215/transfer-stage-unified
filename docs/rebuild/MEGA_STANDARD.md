@@ -59,7 +59,9 @@ DEV: <letter> caps=<token>[,<token>...]
     nothing else. Replies: `#OK RES microsteps=<n> pos=<x>,<y>,<z>` (the
     positions rescaled to the new counts), `#ERR RES
     bad-arg-power-of-2-1..256`, `#ERR RES busy`, `#ERR RES
-    driver-readback-mismatch`. Spelled out in
+    driver-readback-mismatch`, `#ERR RES driver-revert-failed` (the board
+    could not put the old value back on every driver: it has disabled its
+    drivers, and the station latches the stop). Spelled out in
     `firmware/chuck_firmware/PROTOCOL.md`.
 - **What may be listed:** a token is listed only when the firmware has the
   feature. Whether the hardware for it is present is reported per axis by
