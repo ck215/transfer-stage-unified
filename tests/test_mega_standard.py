@@ -619,3 +619,116 @@ def test_a_limit_on_one_axis_while_another_homes_is_not_a_step(make):
         assert wait_for(lambda: "Limit Reached" in seen.text("warning"), 2.0)
     assert "Step was stopped" not in seen.text("warning")
     assert model._homing["Y"] is not None, "the HOME on Y was stopped"
+
+
+# == CR-2: the `res` capability (the chuck's step resolution) ==========================
+
+def test_the_xyz_megas_default_board_does_not_list_res():
+    board = MegaStandardSim()
+    assert "res" not in board.caps
+    board.open()
+    assert board.ask("s") == [f"DEV: m caps={','.join(CAPS)}"]
+    assert board.ask("#RES") == ["#ERR RES unknown-command"]
+
+
+def test_the_sim_res_board_answers_its_identity_and_the_query():
+    board = MegaStandardSim(letter="c", caps=("res",))
+    board.open()
+    assert board.ask("s") == ["DEV: c caps=res"]
+    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=0,0,0"]
+
+
+def test_the_sim_res_set_rescales_toward_zero_like_the_c():
+    board = MegaStandardSim(letter="c", caps=("res",))
+    board.open()
+    board.move_carriage("X", 401)
+    board.move_carriage("Y", -401)
+    board.move_carriage("Z", 7)
+    assert board.ask("#RES 8") == ["#OK RES microsteps=8 pos=1604,-1604,28"]
+    assert board.ask("#RES 8") == ["#OK RES microsteps=8 pos=1604,-1604,28"]   # a no-op
+    assert board.ask("#RES 2") == ["#OK RES microsteps=2 pos=401,-401,7"]
+    board.ask("#RES 8")
+    board.move_carriage("X", board.axes["X"].phys + 1)       # 1605
+    board.move_carriage("Y", board.axes["Y"].phys - 1)       # -1605
+    assert board.ask("#RES 2") == ["#OK RES microsteps=2 pos=401,-401,7"]    # 1605/4, truncated
+    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=401,-401,7"]
+
+
+@pytest.mark.parametrize("text", ["#RES 3", "#RES 0", "#RES 512", "#RES -2", "#RES x",
+                                  "#RES 2 2"])
+def test_the_sim_res_refuses_a_bad_argument_and_changes_nothing(text):
+    board = MegaStandardSim(letter="c", caps=("res",))
+    board.open()
+    assert board.ask(text) == ["#ERR RES bad-arg-power-of-2-1..256"]
+    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=0,0,0"]
+
+
+def test_the_sim_res_is_busy_while_an_axis_moves_or_a_dpad_step_is_in_flight():
+    clock = Clock()
+    board = MegaStandardSim(letter="c", caps=("res",), clock=clock)
+    board.open()
+    board.write(b"e")
+    clock.run(0.05, board)
+    board.write(b"1,1,1,0,400.0,0,0,0,200,0,0,1\n")           # an autonomous move
+    clock.run(0.1, board)
+    assert board.moving
+    assert [l for l in board.ask("#RES 8") if l[0] == "#"] == ["#ERR RES busy"]
+    assert [l for l in board.ask("#RES") if l[0] == "#"][0].startswith("#OK RES microsteps=2")      # a query is fine
+    board.write(b"d")
+    clock.run(0.1, board)
+    assert not board.moving
+    board.write(b"e")
+    clock.run(0.05, board)
+    board.write(struct.pack(JOG_FORMAT, 0xAA, 1, 0, 0, 0, 100, 100, 100, 1.0, 0, 0, 400.0))
+    clock.run(0.1, board)                                     # a D-pad press: a step
+    assert board.dpad_step or board.moving
+    assert [l for l in board.ask("#RES 8") if l[0] == "#"] == ["#ERR RES busy"]
+
+
+def test_the_sim_res_only_board_answers_any_other_hash_line_unknown_and_does_nothing():
+    clock = Clock()
+    board = MegaStandardSim(letter="c", caps=("res",), clock=clock)
+    board.open()
+    for line in ("#INFO", "#LOG 2", "#HOSTTIMEOUT 1000", "#HB", "#HOME X", "#ZERO X",
+                 "#STOP", "#FROB"):
+        assert board.ask(line) == [f"#ERR {line[1:].split()[0]} unknown"], line
+    assert board.frames == type(board.frames)()      # no digit read as a frame
+    clock.run(5.0, board)
+    assert board.host_timeout_ms is None and board.log_level == 1
+    assert not any(line.startswith("#EVT") for line in board.drain_lines())
+
+
+def test_the_sim_res_reboot_is_back_at_two():
+    board = MegaStandardSim(letter="c", caps=("res",))
+    board.open()
+    board.ask("#RES 8")
+    board.reboot()
+    assert board.ask("#RES") == ["#OK RES microsteps=2 pos=0,0,0"]
+
+
+def test_a_res_board_with_ext1_keeps_its_ext_lane_and_adds_res():
+    board = MegaStandardSim(letter="c", caps=("ext1", "res"))
+    board.open()
+    assert board.ask("#RES 4") == ["#OK RES microsteps=4 pos=0,0,0"]
+    assert board.ask("#FROB") == ["#ERR FROB unknown-command"]
+
+
+def test_the_sim_res_is_accepted_at_rest_in_manual_mode_and_busy_mid_jog():
+    """The firmware's busy is "moving" only (axis speed, a D-pad step, a frame
+    not yet done): a chuck at rest in manual mode after a jog, sticks centred,
+    takes the lever, the way an operator uses it."""
+    clock = Clock()
+    board = MegaStandardSim(letter="c", caps=("res",), clock=clock)
+    board.open()
+    board.write(b"e")
+    clock.run(0.05, board)
+    jog = lambda x: struct.pack(JOG_FORMAT, 0xAA, 1, x, 0, 0, 1, 1, 1, 0, 0, 0, 400.0)
+    clock.run(0.3, board, beat=jog(1.0))                       # mid-jog
+    assert board.moving
+    assert [l for l in board.ask("#RES 8") if l[0] == "#"] == ["#ERR RES busy"]
+    clock.run(0.5, board, beat=jog(0.0))                       # centred: at rest, still manual
+    assert not board.moving and board.manual_on
+    answer = [l for l in board.ask("#RES 8") if l[0] == "#"]
+    assert answer and answer[0].startswith("#OK RES microsteps=8 pos="), answer
+    clock.run(0.2, board, beat=jog(1.0))                       # and it jogs again afterwards
+    assert board.moving

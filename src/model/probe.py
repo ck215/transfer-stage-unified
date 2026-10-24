@@ -47,6 +47,7 @@ import time
 import schema as sch
 from devices import gamepad as gamepad_device
 from devices import serial_port as serial_device
+from devices.mega_standard_sim import MegaStandardPort, MegaStandardSim
 from events import events
 from model.base import Model
 from model.gamepad_input import GamepadInput
@@ -139,6 +140,11 @@ AXES = ("X", "Y", "Z")
 #: The capability that opens the `#` extension channel, protocol 1
 #: (MEGA_STANDARD section 2). No `#` byte goes to a board without it.
 EXT = "ext1"
+#: The step-resolution capability (CR-2, the chuck): the `#` lane carries
+#: `#RES` and nothing else. A board may list it WITHOUT `ext1`.
+RES = "res"
+#: The caps under which a board parses `#` lines at all.
+HASH_CAPS = frozenset({EXT, RES})
 #: The features the schema offers when the caps list them (section 6).
 EXT_FEATURES = ("home", "limits")
 
@@ -349,6 +355,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
         self._ext_beat_at = 0.0
         self._ext_info = {}               # the latest #OK INFO fields
         self._ext_warned = set()
+        self._resolution = None           # `res` boards: microsteps, None = not answered
+        self._res_epoch = None            # the link epoch `#RES` was asked in
         self._homing = {axis: None for axis in AXES}   # None | starting | running
         self._home_phase = {axis: "" for axis in AXES}
         self._homed = {axis: False for axis in AXES}
@@ -1023,7 +1031,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 events.debug("Sample Failed", str(exc), source=self.NAME,
                              exception=exc, every=5.0)
             # The `#` channel (ext1 boards only): configure on link-up, act
-            # on what the board reported, keep its host timeout fed.
+            # on what the board reported, keep its host timeout fed. (A
+            # `res`-only board's one query is asked from the same turn.)
             try:
                 self._service_ext()
             except Exception as exc:
@@ -1108,7 +1117,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
             line = line.strip()
             if not line or line.startswith("DEV:"):
                 continue   # the handshake's answer is not a dropped packet
-            if line.startswith("#") and self._ext_on:
+            if line.startswith("#") and self._hash_on:
                 self._on_ext_line(line)
                 continue
             if not line.startswith("POS:"):
@@ -1210,6 +1219,10 @@ class Probe(GamepadInput, IdleInterlock, Model):
                     "snapped to zero while enabled; the board may have reset "
                     "and its drivers are off. Leave the mode and enter it "
                     "again.", source=self.NAME, ack=True)
+        # A reset boots at the firmware's default resolution: what was
+        # learned is not carried on, and the sampler asks again.
+        self._resolution = None
+        self._res_epoch = None
 
     def _link_stream_state(self):
         return {"dropped": int(self._dropped), "stalls": int(self._stalls),
@@ -1358,9 +1371,26 @@ class Probe(GamepadInput, IdleInterlock, Model):
 
     @property
     def _ext_on(self):
-        """The board listed `ext1`: the only condition for a `#` byte."""
+        """The board listed `ext1`: everything of the extension channel
+        (INFO, LOG, HOSTTIMEOUT, HB, HOME, ZERO) keys on this."""
         caps = self.caps
         return bool(caps) and EXT in caps
+
+    @property
+    def _hash_on(self):
+        """The board speaks `#` lines at all: its caps list `ext1` or `res`.
+        The only condition for a `#` byte; a `res`-only board is then sent
+        `#RES` and nothing else (`_may_send`)."""
+        caps = self.caps
+        return bool(caps) and bool(caps & HASH_CAPS)
+
+    def _may_send(self, command):
+        """May this `#` command go to this board? ext1: any. `res` alone:
+        `#RES` only. Anything else: no (its parser would misread it)."""
+        if self._ext_on:
+            return True
+        word = str(command).split()[0].upper() if str(command).split() else ""
+        return word == "RES" and self._hash_on
 
     def _schema_caps(self):
         """The caps the schema draws from: the board's, or, before it has
@@ -1423,6 +1453,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
     def _service_ext(self):
         """The sampler's turn at the `#` channel: configure a link that came
         up, act on what the board reported, keep its host timeout fed."""
+        self._service_res()
         if not self._ext_on or not self._link_up:
             return
         if self._ext_epoch != self._position_epoch:
@@ -1433,6 +1464,51 @@ class Probe(GamepadInput, IdleInterlock, Model):
         if now - self._ext_beat_at >= self.EXT_HEARTBEAT_INTERVAL:
             self._ext_beat_at = now
             self._ext_send("HB")
+
+    def _service_res(self):
+        """A `res` board is asked its resolution once per link epoch (and
+        again after a suspected reset, which clears the marker): one `#RES`
+        query, answered by `#OK RES`. Until it lands the resolution is
+        unknown, never assumed."""
+        caps = self.caps
+        if not caps or RES not in caps or not self._link_up:
+            return
+        if self._res_epoch == self._position_epoch:
+            return
+        self._res_epoch = self._position_epoch
+        self._resolution = None
+        if not self._ext_send("RES"):
+            self._res_epoch = None              # try again on the next pass
+
+    def _take_res(self, fields):
+        """A `#OK RES microsteps=<n> pos=x,y,z`: the board's resolution. A
+        scale that CHANGED under us carries the board's own positions, taken
+        at once (counts rescaled: no reset warning, no velocity spike)."""
+        try:
+            microsteps = int(fields.get("microsteps", ""))
+        except ValueError:
+            return
+        if microsteps < 1:
+            return
+        changed = self._resolution is not None and self._resolution != microsteps
+        self._resolution = microsteps
+        if changed:
+            self._adopt_position(fields.get("pos"))
+
+    def _adopt_position(self, text):
+        """The position a reply names, as the position now: the counts were
+        rescaled, so this is neither a reset (L6) nor motion (no velocity)."""
+        try:
+            position = tuple(int(v) for v in str(text).split(","))
+        except ValueError:
+            return
+        if len(position) != 3:
+            return
+        self._jump_ok_until = time.monotonic() + self.EXT_JUMP_GRACE
+        self._moving_deadline = None
+        self._position = position
+        self._position_time = time.monotonic()
+        self._velocity = (0.0, 0.0, 0.0)
 
     def _ext_link_up(self):
         """Once per link-up (a reconnected board may have rebooted and
@@ -1465,7 +1541,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
     def _ext_send(self, command):
         """One `#` line on the ordinary lane, not waiting for its reply.
         -> True when written. Never to a board without ext1."""
-        if self.port is None or not self._ext_on:
+        if self.port is None or not self._may_send(command):
             return False
         try:
             return bool(self.port.write(self._ext_line(command)))
@@ -1485,7 +1561,7 @@ class Probe(GamepadInput, IdleInterlock, Model):
         write (the reply says which). The sampler reads the reply; with
         no sampler running, the wait reads the link itself."""
         word = command.split()[0].upper()
-        if self.port is None or not self._ext_on:
+        if self.port is None or not self._may_send(command):
             return ExtReply(word, False, reason="the board has no extension channel")
         waiter = _ExtWaiter(word)
         with self._ext_lock:
@@ -1543,6 +1619,8 @@ class Probe(GamepadInput, IdleInterlock, Model):
                 events.debug("Board Reply", line[:200], source=self.NAME)
             if command == "INFO" and reply.ok:
                 self._take_info(reply.fields)
+            if command == "RES" and reply.ok:
+                self._take_res(reply.fields)
             if not reply.ok and command in ("INFO", "LOG", "HOSTTIMEOUT"):
                 self._warn_once(command, f"The {self.NAME} refused #{command} "
                                 f"({reply.reason or 'no reason'}).")
@@ -2593,3 +2671,125 @@ class ChuckPositioner(Probe):
         Param("y_step", "int", default=2, minimum=1, label="Y Step Size"),
         Param("z_step", "int", default=2, minimum=1, label="Z Step Size"),
     )}}
+
+    #: CR-2, the step-resolution lever (CONTRACT: `#RES`, caps token `res`):
+    #: microsteps per full step, as the firmware takes them. Fast is the
+    #: sketch's boot value (half steps). Fine = 8 is PROVISIONAL: a bench
+    #: value for the owner (the Stepper Probe's resolution on the same
+    #: TMC2209 stack); the firmware takes any power of two 1..256, so
+    #: changing the preset is host-only.
+    RESOLUTIONS = {"fast": 2, "fine": 8}
+
+    def _build_port(self, port, sim):
+        """A MegaStandardPort: "SIM" (or `sim=True`) puts the chuck's
+        simulated board (letter `c`, caps `res`) behind the real transport,
+        so the lever can be flipped without hardware; a port name is the
+        board. A port object handed in (a test's) is used as it is."""
+        if port is None or isinstance(port, str):
+            if sim or port in (None, "SIM"):
+                return MegaStandardPort("SIM", simulator=MegaStandardSim(
+                    letter=self.IDENTITY, caps=(RES,)), owner=self.NAME)
+        return super()._build_port(port, sim)
+
+    # -- the step resolution -----------------------------------------------
+    @property
+    def resolution(self):
+        """Microsteps per full step the board reported, or None until it
+        has answered (never assumed)."""
+        return self._resolution
+
+    @property
+    def is_fine(self):
+        """Finer than Fast. False while unknown."""
+        return self._resolution is not None and self._resolution > self.RESOLUTIONS["fast"]
+
+    @property
+    def resolution_ready(self):
+        """The firmware listed `res`: it has the switch."""
+        caps = self.caps
+        return bool(caps) and RES in caps
+
+    @property
+    def resolution_text(self):
+        n, fast = self._resolution, self.RESOLUTIONS["fast"]
+        if n is None:
+            return "unknown until the board answers"
+        step = {1: "full", 2: "½", 4: "¼", 8: "⅛", 16: "1/16", 32: "1/32"}.get(n, f"1/{n}")
+        if n == fast:
+            return f"{step} step per count · fastest"
+        if n > fast:
+            k = n // fast if n % fast == 0 else n / fast
+            return (f"{step} step per count · {k}× finer, {k}× slower at the "
+                    "same steps/s")
+        return f"{step} step per count · coarser than Fast"
+
+    _NO_RES = ("The Chuck Positioner's firmware has no step-resolution switch. "
+               "Flash it from Setup to get one.")
+
+    def _resolution_blocked(self):
+        """Anything the station believes is moving: a Step in flight, a HOME,
+        or a jog in manual."""
+        return self.is_moving or any(self._axis_busy(a) for a in AXES)
+
+    def set_resolution(self, which):
+        """Step resolution: `fast` (2) or `fine` (8), `#RES <n>`. Only at
+        standstill; the write itself is abandoned if a stop or a move lands
+        first. On `#OK` the reply's counts are the position at once."""
+        choice = str(which).strip().lower()
+        if choice not in self.RESOLUTIONS:
+            self._refuse(f"Step resolution must be one of "
+                         f"{', '.join(self.RESOLUTIONS)}.")
+        self._guard("Step resolution")
+        if not self.resolution_ready:
+            self._refuse(self._NO_RES)
+        if self._resolution_blocked():
+            self._refuse("The chuck is moving. Wait for it to stop, then change "
+                         "the step resolution.")
+        n = self.RESOLUTIONS[choice]
+        if self._resolution == n:
+            return n
+        reply = self._ext_request(f"RES {n}", abort_if=lambda: (
+            self._estop.is_set() or self._resolution_blocked()))
+        if not reply.ok:
+            if reply.aborted and not self._estop.is_set():
+                self._refuse("The chuck started moving. Wait for it to stop, "
+                             "then change the step resolution.")
+            self._refuse(f"The step resolution did not change ({reply.why}).")
+        self._take_res(reply.fields)
+        if self._resolution != n:
+            self._refuse("The board answered with a different step resolution "
+                         f"({self.resolution_text}).")
+        self._adopt_position(reply.fields.get("pos"))
+        events.info("Step Resolution", f"The {self.NAME} now takes {self.resolution_text}; "
+                    f"its position reads {self._position[0]}, {self._position[1]}, "
+                    f"{self._position[2]} in the new counts.", source=self.NAME)
+        return n
+
+    @property
+    def schema(self):
+        built = super().schema
+        sections = built["sections"]
+        toggle = sch.toggle(
+            "Step resolution:", "is_fine", "set_resolution",
+            "Fine · ⅛ step (press for Fast)", "Fast · ½ step (press for Fine)",
+            on_args=["fine"], off_args=["fast"], on_role="neutral",
+            off_role="neutral", disabled_when=("latched", "fault"))
+        toggle["enabled_by"] = "resolution_ready"
+        toggle["enabled_by_reason"] = ("this firmware has no step-resolution "
+                                       "switch; flash it from Setup")
+        section = sch.section(
+            "Step resolution", toggle,
+            sch.readonly("resolution", "resolution_text", secondary=True,
+                         dashboard=True, lead="Now:"),
+            layout="group")
+        at = next((i for i, sec in enumerate(sections) if sec["title"] == "Position"),
+                  -1) + 1
+        sections.insert(at, section)
+        return built
+
+    @property
+    def state(self):
+        snapshot = super().state
+        snapshot["resolution"] = self.resolution
+        snapshot["values"]["resolution_ready"] = self.resolution_ready
+        return snapshot

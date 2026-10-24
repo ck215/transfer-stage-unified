@@ -23,6 +23,11 @@ pyserial handle `SerialPort` drives (`write`, `read`, `in_waiting`, ...), as
   counts of travel), `#EVT REFUSED` for a frame it will not run, the host
   timeout and its 10 s disable, driver faults, absent hardware inert, and a
   switch seen once;
+* with the `res` capability (CR-2, the chuck): `#RES` and `#RES <n>` on a
+  board that may have no `ext1`. The `#` lane of such a board carries that
+  one command; any other `#<CMD>` line is `#ERR <CMD> unknown`. A set
+  rescales every position `(pos * n) // old` toward zero, as the C does, and
+  is refused (`busy`) while anything moves;
 * with the `soft` capability, the soft travel limit (section 4, X-14):
   `#SOFTLIMIT A [counts]` kept like the EEPROM block it is (it survives a
   reboot), the reference LS1 gives when it trips toward the end it guards,
@@ -70,6 +75,14 @@ AXES = ("X", "Y", "Z")
 CAPS = ("ext1", "log", "hostto", "home", "limits", "tmc")
 #: The soft travel limit's capability token (a sketch that has it adds it).
 SOFT = "soft"
+#: The step-resolution capability (CR-2): `#RES` and nothing else on the `#`
+#: lane, so a board may list it WITHOUT `ext1` (the chuck does). Not in
+#: `CAPS`: the XYZ Mega's default board does not have it.
+RES = "res"
+#: `#RES`'s range: a power of two, 1..256. A res board boots at 2 (half
+#: steps, the chuck sketch's `microstepMode`).
+RES_BOOT = 2
+RES_MAX = 256
 #: `#SOFTLIMIT`'s ceiling (STD_SOFT_MAX: 100 mm), counts.
 SOFT_MAX = 160000
 #: The XYZ Mega's identity letter (section 2). Taken: s, d, c, t, x.
@@ -265,6 +278,11 @@ class MegaStandardSim:
     def ext(self):
         return "ext1" in self.caps
 
+    @property
+    def hash_lane(self):
+        """The board parses `#` lines at all: ext1, or `res` alone."""
+        return self.ext or self.has(RES)
+
     def has(self, token):
         return token in self.caps
 
@@ -296,6 +314,7 @@ class MegaStandardSim:
         self._timed_out = False
         self._timed_out_at = None
         self.log_level = 1
+        self.microsteps = RES_BOOT      # `res` boards: a reboot is back at 2
         self.rejected_packets = 0
         self._next_print = now + self.PRINT_INTERVAL
         for axis in self.axes.values():
@@ -576,7 +595,7 @@ class MegaStandardSim:
                     return
                 self.received.append((self.clock(), line))
                 self._frame(line)
-            elif head == ord("#") and self.ext:
+            elif head == ord("#") and self.hash_lane:
                 line = self._take_line()
                 if line is None:
                     return
@@ -719,6 +738,13 @@ class MegaStandardSim:
             return
         command = words[0].upper()
         args = words[1:]
+        if not self.ext:
+            # A res-only board: the `#` lane is `#RES` and nothing else.
+            if command == "RES":
+                self._x_res(command, args)
+            else:
+                self._err(command, "unknown")
+            return
         if command != "HB":
             self._dbg(f"rx={text}")
         handler = getattr(self, "_x_" + command.lower(), None)
@@ -837,6 +863,34 @@ class MegaStandardSim:
 
     def _x_hb(self, command, args):
         self._ok(command)
+
+    def _x_res(self, command, args):
+        """`#RES` (query) and `#RES <n>` (set), the chuck's step resolution.
+        One reply, `#OK RES microsteps=<n> pos=x,y,z` (the positions in the
+        counts after the command), or an `#ERR`. Busy: any axis moving or a
+        D-pad step in flight. A set rescales each position `(pos * n) / old`
+        in C `long` arithmetic (toward zero) and leaves the carriage where it
+        stands. (Max-speed capping is not modelled here, as nowhere else.)"""
+        if not self.has(RES):
+            return self._err(command, "unknown-command")
+        if args:
+            try:
+                n = int(args[0])
+            except ValueError:
+                n = 0
+            if len(args) != 1 or not 1 <= n <= RES_MAX or n & (n - 1):
+                return self._err(command, "bad-arg-power-of-2-1..256")
+            if self._busy() or self.dpad_step:
+                return self._err(command, "busy")
+            old = self.microsteps
+            if n != old:
+                for axis in self.axes.values():
+                    counter = axis.counter
+                    scaled = (abs(counter) * n // old) * (1 if counter >= 0 else -1)
+                    axis.origin = axis.phys - scaled
+                self.microsteps = n
+        pos = ",".join(str(self.axes[a].counter) for a in AXES)
+        self._ok(command, f"microsteps={self.microsteps} pos={pos}")
 
     def _x_stop(self, command, args):
         self._halt_motion("stop")
