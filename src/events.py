@@ -79,6 +79,11 @@ BROWSER_GONE = "Browser Gone - FULL STOP"
 TEMPERATURE_DISCONNECTED = "Temperature Disconnected"
 ROTATOR_UNREACHABLE = "Rotator Unreachable"
 HEATER_OFF_NOT_SENT = "Heater Off Not Sent"
+#: 2026-11-24: the board held a setpoint well above the block and did not
+#: heat (integral windup into the firmware's error >= 10 cut-off), and the
+#: board's own thermocouple-fault line (temp_controller.ino, proposed).
+HEATER_NOT_HEATING = "Heater Not Heating"
+THERMOCOUPLE_FAULT = "Thermocouple Fault"
 #: rb-restart R2: Setup's two update prompts. Each carries an action.
 UPDATE_READY = "Update Ready"
 RESTART_NEEDED = "Restart Needed"
@@ -110,7 +115,8 @@ SETUP_PANEL = "__setup__"
 ATTENTION = frozenset({IDLE_TIMEOUT, TEMPERATURE_DISCONNECTED,
                        ROTATOR_UNREACHABLE, HEATER_OFF_NOT_SENT,
                        UPDATE_READY, RESTART_NEEDED, FIRMWARE_OUT_OF_DATE,
-                       LINK_LOST, BOARD_RESET_SUSPECTED})
+                       LINK_LOST, BOARD_RESET_SUSPECTED,
+                       HEATER_NOT_HEATING, THERMOCOUPLE_FAULT})
 
 
 def _action(action, needs_ack):
@@ -345,7 +351,8 @@ class EventLog:
 events = EventLog()
 for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSER_SILENT",
               "BROWSER_GONE", "TEMPERATURE_DISCONNECTED", "ROTATOR_UNREACHABLE",
-              "HEATER_OFF_NOT_SENT", "UPDATE_READY", "RESTART_NEEDED",
+              "HEATER_OFF_NOT_SENT", "HEATER_NOT_HEATING", "THERMOCOUPLE_FAULT",
+              "UPDATE_READY", "RESTART_NEEDED",
               "FIRMWARE_OUT_OF_DATE", "LINK_LOST", "LINK_RESTORED",
               "BOARD_RESET_SUSPECTED", "SAMPLE_STORE_NOT_CHOSEN",
               "TRIAL_STORE_NOT_CHOSEN",
