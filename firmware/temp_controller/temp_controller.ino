@@ -54,6 +54,27 @@ int state;
 const unsigned long HOST_GONE_MS = 5000;     // owner's number to tune at the bench
 unsigned long hostSeenAt = 0;
 
+// PROPOSED 2026-11-24 - NOT FLASHED, NEEDS BENCH VALIDATION.
+// (1) Integral anti-windup. 2026-11-24 16:01 the setpoint dropped 110 -> 80
+// with the block at 113 C. While it cooled, `sum` piled up negative error
+// (I term about -56, full scale is 8), so the output stayed below zero until
+// the block was 10 C under the setpoint - and there the `problem` cut-off
+// (error >= 10 -> heater off) took over, so it never heated again: 77 -> 48.5 C
+// over 15 min at sp 80, until a new frame re-based the setpoint at 16:26.
+// Replaying this loop's math on the logged readings reproduces it. Clamping
+// the I term to the output's full scale makes the heater come back on at
+// about 4 C under the setpoint, long before the cut-off.
+const float I_TERM_MAX = 8.0;                  // newdelay's full scale (>= 8 = full heat)
+// (2) Sensor faults. MAX6675::read() returns a status the sketch ignored; on
+// a failed SPI read (0xFFFF) the library keeps the LAST temperature, so a
+// dead sensor link read as a frozen temperature the PID kept acting on. Now
+// SENSOR_FAULT_READS bad reads in a row cut the heater (as `problem`) and
+// print one "ERR: ..." line per reading; the station's parser skips lines
+// with fewer than three fields, so the reading frame itself is unchanged.
+const int SENSOR_FAULT_READS = 3;              // ~1.7 s of bad reads
+int badReads = 0;
+boolean sensorFault = false;
+
 const byte numChars = 32;
 char receivedChars[numChars];
 boolean newData = false;
@@ -157,8 +178,15 @@ void loop(){
   
   if(counter == 60){                                      // every half-second (roughly - it is actually more like 0.5766s)
     timer = (millis() - starttime)*(0.001);               // Timer (measure time)
-    ktc.read();
+    uint8_t ktcStatus = ktc.read();
     temp = ktc.getCelsius() + offset;                    // Read Temperature
+    if (ktcStatus == STATUS_OK) {                        // PROPOSED (2): see SENSOR_FAULT_READS
+      badReads = 0;
+      sensorFault = false;
+    } else if (++badReads >= SENSOR_FAULT_READS) {
+      badReads = SENSOR_FAULT_READS;
+      sensorFault = true;
+    }
     
     counter2 = counter2 + 1;                                            // count every half-second
       if(counter2 >= 1.73425*spdelay && setpoint < endpoint){           // after the setpoint delay (ramp rate) and if setpoint is less than endpoint. (1.73425 is number of counts per second - almost 2)
@@ -177,6 +205,11 @@ void loop(){
     propterm = kp*error;                                        // p term - directly proportional to error
     
     sum = sum + error;                                          // add error over time
+    if (ki > 0) {                                               // PROPOSED (1): anti-windup, see I_TERM_MAX
+      float sumMax = I_TERM_MAX / (ki * 0.008333);
+      if (sum > sumMax) sum = sumMax;
+      if (sum < -sumMax) sum = -sumMax;
+    }
     intterm = ki*sum*0.008333;                                  // i term - proportional to the sum * waveform period
     
     diff = (error - olderror)/0.008333;                         // difference between the current error and the previous error
@@ -185,7 +218,7 @@ void loop(){
     
     newdelay = intterm + propterm + diffterm;                   // value that controls the heater behavior of the next cycle
 
-    if(error >=10){
+    if(error >=10 || sensorFault){                              // PROPOSED (2): a sensor fault also cuts the heater
       problem = true;
     }
     else{
@@ -224,6 +257,10 @@ void loop(){
     Serial.print(temp);
     Serial.print(" , ");
     Serial.println(setpoint);
+    if (sensorFault) {                                  // PROPOSED (2): its own line, never a reading
+      Serial.print("ERR: thermocouple status 0x");
+      Serial.println(ktcStatus, HEX);
+    }
     counter = 0;                                                                   // reset counter //
   }
 }

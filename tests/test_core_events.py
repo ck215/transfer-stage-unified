@@ -533,10 +533,14 @@ def test_the_attention_set_is_exactly_the_titles_the_lead_named():
     # firmware check asks once, and Flash now is its action.
     # Owner 2026-09-30 (L4, "track dropped packets like events and display
     # warnings"): a lost serial link asks too.
+    # PROPOSED 2026-11-24 (fix/heater-stall-lockout, owner to rule): a
+    # heater that holds a setpoint and does not heat, and a thermocouple
+    # the board cannot read, ask too.
     assert events_module.ATTENTION == frozenset({
         "Idle Timeout", "Temperature Disconnected", "Rotator Unreachable",
         "Heater Off Not Sent", "Update Ready", "Restart Needed",
-        "Firmware Out of Date", "Connection Lost", "Board Reset Suspected"})
+        "Firmware Out of Date", "Connection Lost", "Board Reset Suspected",
+        "Heater Not Heating", "Thermocouple Fault"})
     assert isinstance(events_module.ATTENTION, frozenset)
     # The countdown, the silent browser and the map's soft notices stay
     # tray lines.

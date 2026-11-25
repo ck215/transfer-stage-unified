@@ -139,6 +139,20 @@ class Heater(Model):
     #: out anyway, unchecked.
     CONNECT_CHECK_SECONDS = BOOT_GRACE_SEC + OFF_CONFIRM_SECONDS
 
+    #: 2026-11-24 16:10-16:26: the board reported sp 80 while the block fell
+    #: from 77 to 48.5 C and never heated (temp_controller.ino: the I term
+    #: wound up while it cooled from 113, then the error >= 10 cut-off held
+    #: the heater off). Nothing said so. Now a reported setpoint at least
+    #: STALL_GAP_C above the temperature, with the temperature not rising by
+    #: STALL_RISE_C for STALL_SECONDS, warns once; closing the gap, or a
+    #: real rise, says it is heating again. Re-sending the settings is what
+    #: freed the board that day (a new frame re-bases its ramp).
+    STALL_GAP_C = 8.0
+    STALL_RISE_C = 1.0
+    STALL_SECONDS = 120.0
+    #: s without an `ERR:` line before a thermocouple fault counts as over.
+    SENSOR_FAULT_CLEAR_SECONDS = 5.0
+
     #: One reading as a record (`subscribe_readings`, `last_reading`): the
     #: clocks it was read on, what the board reported, then the fields of
     #: the frame in force (None before any frame reached the wire) and
@@ -214,6 +228,15 @@ class Heater(Model):
         #: `clock()` value the connect check gives up waiting for a first
         #: reading at; None = no check (no `open()`, or SIM / a test double).
         self._connect_check_until = None
+        #: Stall watch (STALL_*): clock() the gap opened at and the
+        #: temperature then, or None; and whether it has warned.
+        self._stall_since = None
+        self._stall_from = None
+        self._stall_warned = False
+        #: clock() of the last board `ERR:` line, or None; and whether the
+        #: fault has warned.
+        self._sensor_error_at = None
+        self._sensor_warned = False
         #: The outcome of the last off read-back: True (the board reported
         #: setpoint 0), False (it did not, within the budget), None (never
         #: checked, or nothing to check: SIM, a double, a port never open).
@@ -922,6 +945,9 @@ class Heater(Model):
         text = line.strip()
         if not text:
             return
+        if text.startswith("ERR:"):
+            self._note_sensor_error(text)
+            return
         fields = text.split(",")
         if len(fields) < 3:
             events.debug("Parse Skipped", f"{len(fields)} field(s): {text!r}",
@@ -947,10 +973,67 @@ class Heater(Model):
             self._off_pending = None
             pending["landed"].set()
         self._touch()
+        self._watch_heating(temperature, setpoint)
         self._publish_reading(seconds, temperature, setpoint)
         events.debug("Reading", f"t={seconds:g}s temp={temperature:.2f}C "
                      f"sp={setpoint:.2f}C", source=self.NAME, every=5.0)
         return setpoint
+
+    def _watch_heating(self, temperature, setpoint):
+        """Warn once when the board holds a setpoint well above the block
+        and the block is not warming (STALL_*); clear when it is."""
+        now = self._clock()
+        if self._sensor_warned and (
+                self._sensor_error_at is None
+                or now - self._sensor_error_at > self.SENSOR_FAULT_CLEAR_SECONDS):
+            self._sensor_warned = False
+            events.info("Thermocouple Reading Again", "The Temperature "
+                        "Controller's thermocouple reads again.",
+                        source=self.NAME, resolves=events.THERMOCOUPLE_FAULT)
+        holding = (bool(self._commanded_setpoint)
+                   and setpoint > self.OFF_SETPOINT_MAX)
+        if not holding or setpoint - temperature < self.STALL_GAP_C:
+            self._clear_stall(temperature, "it is within "
+                              f"{self.STALL_GAP_C:g} °C of its setpoint")
+            return
+        if self._stall_since is None or (
+                temperature >= self._stall_from + self.STALL_RISE_C):
+            if self._stall_warned:
+                self._clear_stall(temperature, "the temperature is rising")
+            self._stall_since, self._stall_from = now, temperature
+            return
+        if (not self._stall_warned
+                and now - self._stall_since >= self.STALL_SECONDS):
+            self._stall_warned = True
+            events.warn(events.HEATER_NOT_HEATING,
+                        f"The Temperature Controller is not heating: "
+                        f"{temperature:.1f} °C, {setpoint - temperature:.1f} °C "
+                        f"under its setpoint of {setpoint:.1f} °C, and not "
+                        f"rising for {self.STALL_SECONDS / 60:g} min. Apply "
+                        f"the settings again to restart its ramp, or stop it.",
+                        source=self.NAME, ack=True)
+
+    def _clear_stall(self, temperature, why):
+        if self._stall_warned:
+            events.info("Heater Heating Again", f"The Temperature Controller "
+                        f"is heating again ({temperature:.1f} °C): {why}.",
+                        source=self.NAME, resolves=events.HEATER_NOT_HEATING)
+        self._stall_since = self._stall_from = None
+        self._stall_warned = False
+
+    def _note_sensor_error(self, text):
+        """The board's `ERR: thermocouple ...` line: its heater is cut
+        while the sensor reads badly. Warn once per fault."""
+        self._sensor_error_at = self._clock()
+        events.debug("Board Error Line", repr(text), source=self.NAME,
+                     every=5.0)
+        if not self._sensor_warned:
+            self._sensor_warned = True
+            events.warn(events.THERMOCOUPLE_FAULT, "The Temperature "
+                        "Controller cannot read its thermocouple, so it has "
+                        "cut the heater. The temperature shown is stale. "
+                        f"Check the thermocouple and its wiring ({text}).",
+                        source=self.NAME, ack=True)
 
     # -- the reading record (P1, reshaped 2026-10-08) -------------------------
     @property
