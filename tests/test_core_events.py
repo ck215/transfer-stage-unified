@@ -540,7 +540,13 @@ def test_the_attention_set_is_exactly_the_titles_the_lead_named():
         "Idle Timeout", "Temperature Disconnected", "Rotator Unreachable",
         "Heater Off Not Sent", "Update Ready", "Restart Needed",
         "Firmware Out of Date", "Connection Lost", "Board Reset Suspected",
-        "Heater Not Heating", "Thermocouple Fault"})
+        "Heater Not Heating", "Thermocouple Fault",
+        # PROPOSED 2026-11-27 (fix/heater-safety-followup, owner to rule):
+        # the board's hard limit, a clamped setpoint, lost zero-cross, an
+        # unknown board error, a silent board and a watchdog reset.
+        "Heater Over Temperature", "Heater Setpoint Limited",
+        "Heater Zero-Cross Lost", "Temperature Controller Error",
+        "Temperature Board Silent", "Heater Board Watchdog Reset"})
     assert isinstance(events_module.ATTENTION, frozenset)
     # The countdown, the silent browser and the map's soft notices stay
     # tray lines.
