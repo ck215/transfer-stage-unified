@@ -172,3 +172,13 @@ def test_the_watch_starts_afresh_after_a_reconnect(heater, clock):
         clock.now += 4.0
         heater._watch_silence()
     assert len(seen.titled(events_module.TEMPERATURE_BOARD_SILENT)) == 1
+
+
+# -- the station's cap matches the board's hard limit -------------------------
+def test_the_station_refuses_a_setpoint_the_board_would_clamp(heater):
+    assert Heater.MAX_SETPOINT == 260.0
+    assert Heater.PARAMS["setpoint"].maximum == 260.0
+    inputs = {name: getattr(heater, name) for name in Heater.FRAME_FIELDS}
+    assert heater.run("apply_settings", inputs=dict(inputs, setpoint=260.0)).is_ok
+    refused = heater.run("apply_settings", inputs=dict(inputs, setpoint=260.5))
+    assert refused.is_refused and "260" in refused.reason

@@ -87,12 +87,28 @@ boolean sensorFault = false;
 // complete for WDOG_TIMEOUT_MS the chip resets. Every pin returns to its
 // reset state (disabled, high impedance), and startup_early_hook() below
 // drives the heater pin LOW within the first microseconds of boot, before
-// the core's ~300 ms USB start-up delay. After the reset the board comes up
+// the core's ~300 ms USB start-up delay. WDOG_TIMEOUT_MS is 2000, not 1000:
+// it is a crash catcher (the other cut-offs act within one cycle), and the
+// block's worst case under faults that are not crashes must never reach it.
+// Kick to kick (block start to block start, plus one block): normal ~577 ms;
+// zero-cross lost 577 ms (millis() timer); lost-then-restored and flapping at
+// most READ_FALLBACK_MS = 680 ms, because the block is due on EITHER 60
+// pulses or the timer, so a pulse count frozen by a glitch never stretches
+// it; plus at most one 8.3 ms half-cycle of PWM delay. One block is ~90 ms
+// normally (the LCD: ~59 bytes x 6 I2C transactions); its worst cases are
+// the LCD (see (6): ~0.13 s once its bus fails) and USB serial. Teensy's
+// usb_serial waits up to 70 ms only when it needs a new 64-byte packet, and
+// after one timeout returns at once until a packet frees: a host that holds
+// the port and stops reading costs one 70 ms wait per block. The pathological
+// host that frees one packet every ~70 ms could make about half of the
+// block's ~24 write calls wait (every ERR line active): ~0.85 s. Worst
+// interval: 680 + 8 + 130 + 850 = ~1.7 s - over 1000 ms, under 2000 ms.
+// After the reset the board comes up
 // as from power-on: endpoint 0, heater off, until the station sends a frame.
 // "BOOT: reset=..." says why the board last reset; after a watchdog reset it
 // is repeated every BOOT_REPEAT_READS readings, so a station that connects
 // later still sees it.
-const uint16_t WDOG_TIMEOUT_MS = 1000;         // the block runs every ~577 ms
+const uint16_t WDOG_TIMEOUT_MS = 2000;         // see the interval budget above
 const int BOOT_REPEAT_READS = 10;              // ~5.8 s
 boolean resetByWatchdog = false;
 const char *resetCause = "other";
@@ -118,9 +134,66 @@ boolean endpointClamped = false;
 // with each reading. Edges resuming restores normal control.
 const unsigned long ZC_LOST_MS = 100;          // 60 Hz mains: an edge every 8.3 or 16.7 ms
 const unsigned long READ_PERIOD_MS = 577;      // the measured zero-cross cadence (0.5766 s)
+const unsigned long READ_FALLBACK_MS = 680;    // with pulses: a cap that never pre-empts the count
 volatile unsigned long zcEdgeAt = 0;
 boolean zcLost = false;
 unsigned long lastReadAt = 0;
+// (6) A faulty LCD bus must not stall the control loop. LiquidCrystal_I2C
+// ignores Wire's errors, and Teensy Wire waits up to ~17 ms per transaction
+// on a stuck bus (wait_idle: 16 ms, then a 9-clock recovery); the ~354
+// transactions of one full update would then take ~6 s, a watchdog reset
+// every block - the heater off for an LCD fault. Now each block first probes
+// the LCD's address (one transaction: <= ~17 ms when stuck, microseconds
+// when the backpack is unplugged and NACKs). A failed probe skips the LCD
+// for that block; a probe that succeeds after a failure re-initialises the
+// LCD (a replugged backpack comes up blank or garbled). During an update a
+// character that takes over LCD_STEP_MAX_MS (normal ~1.5 ms; stuck ~6 x 17 =
+// ~100 ms) abandons the rest of it, so a bus that fails mid-update costs at
+// most ~0.13 s. LCD faults are not reported on the serial line.
+const uint8_t LCD_ADDR = 0x27;
+const unsigned long LCD_STEP_MAX_MS = 10;
+boolean lcdUp = true;                          // set up in setup()
+boolean lcdOk = true;                          // this block's update still going
+
+void lcdText(uint8_t col, uint8_t row, const char *text) {
+  if (!lcdOk) return;
+  unsigned long t0 = millis();
+  lcd.setCursor(col, row);
+  if (millis() - t0 > LCD_STEP_MAX_MS) { lcdOk = false; lcdUp = false; return; }
+  for (const char *c = text; *c; c++) {
+    t0 = millis();
+    lcd.write((uint8_t)*c);
+    if (millis() - t0 > LCD_STEP_MAX_MS) { lcdOk = false; lcdUp = false; return; }
+  }
+}
+
+void lcdValue(uint8_t col, uint8_t row, const char *label, float value, const char *unit) {
+  char buf[32];
+  char num[16];
+  dtostrf(value, 0, 2, num);                   // as lcd.print(float): 2 decimals
+  snprintf(buf, sizeof(buf), "%s%s%s", label, num, unit);
+  lcdText(col, row, buf);
+}
+
+void lcdUpdate() {
+  Wire.beginTransmission(LCD_ADDR);
+  if (Wire.endTransmission() != 0) {           // NACK (unplugged) or bus timeout (stuck)
+    lcdUp = false;
+    return;
+  }
+  if (!lcdUp) {                                // back after a fault: start it afresh
+    lcd.init();
+    lcd.backlight();
+    lcdUp = true;
+  }
+  lcdOk = true;
+  lcdValue(0, 0, "SP=", endpoint, "C");
+  lcdValue(11, 0, "CT=", temp, "C");
+  lcdValue(4, 1, "RR =", spdelay, "s/C");
+  lcdValue(1, 2, "Kp=", kp, "");
+  lcdValue(10, 2, "Ki=", ki, "");
+  lcdValue(6, 3, "Kd=", kd, "");
+}
 
 void zcEdge() {
   zcEdgeAt = millis();
@@ -281,8 +354,8 @@ void loop(){
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%//  Temperature Read  //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   
-  boolean readDue = zcLost ? (now - lastReadAt >= READ_PERIOD_MS)   // PROPOSED (5): millis() fallback
-                           : (counter >= 60);
+  boolean readDue = counter >= 60                                   // PROPOSED (5): pulses OR the timer
+      || now - lastReadAt >= (zcLost ? READ_PERIOD_MS : READ_FALLBACK_MS);
   if(readDue){                                            // every half-second (roughly - it is actually more like 0.5766s)
     lastReadAt = now;
     timer = (millis() - starttime)*(0.001);               // Timer (measure time)
@@ -341,27 +414,7 @@ void loop(){
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%// LCD and Serial Print //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-    lcd.setCursor(0,0);
-    lcd.print("SP=");
-    lcd.print(endpoint);
-    lcd.print("C");
-    lcd.setCursor(11,0);
-    lcd.print("CT=");
-    lcd.print(temp);
-    lcd.print("C");
-    lcd.setCursor(4,1);
-    lcd.print("RR =");
-    lcd.print(spdelay);
-    lcd.print("s/C");
-    lcd.setCursor(1,2);
-    lcd.print("Kp=");
-    lcd.print(kp);
-    lcd.setCursor(10,2);
-    lcd.print("Ki=");
-    lcd.print(ki);
-    lcd.setCursor(6,3);
-    lcd.print("Kd=");
-    lcd.print(kd);
+    lcdUpdate();                                        // PROPOSED (6): same text, fault-bounded
 
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% PLOT THIS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%//
   

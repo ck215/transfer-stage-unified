@@ -65,7 +65,10 @@ class Heater(Model):
     #: nothing in the firmware states a limit (`endpoint` is a bare float),
     #: so this is wide enough not to refuse real work and is the owner's to
     #: tighten at the bench. The MAX6675 tops out around 1024 C.
-    MAX_SETPOINT = 300.0
+    #: Owner, 2026-11-27: 260 C, the board's own hard limit (TEMP_MAX_C in
+    #: temp_controller.ino, PROPOSED): the UI refuses what the board would
+    #: clamp. Was 300 (provisional).
+    MAX_SETPOINT = 260.0
 
     PARAMS = {
         "setpoint": Param("setpoint", "float", default=0, minimum=0,
