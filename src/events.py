@@ -84,6 +84,16 @@ HEATER_OFF_NOT_SENT = "Heater Off Not Sent"
 #: board's own thermocouple-fault line (temp_controller.ino, proposed).
 HEATER_NOT_HEATING = "Heater Not Heating"
 THERMOCOUPLE_FAULT = "Thermocouple Fault"
+#: PROPOSED 2026-11-27 (fix/heater-safety-followup, owner to rule): the
+#: board's other `ERR:` lines (its 260 C hard limit, a clamped endpoint, lost
+#: mains zero-cross), a board that stops reporting while connected, and a
+#: board that says its last reset was its hardware watchdog.
+HEATER_OVER_TEMPERATURE = "Heater Over Temperature"
+HEATER_SETPOINT_LIMITED = "Heater Setpoint Limited"
+HEATER_ZERO_CROSS_LOST = "Heater Zero-Cross Lost"
+HEATER_BOARD_ERROR = "Temperature Controller Error"
+TEMPERATURE_BOARD_SILENT = "Temperature Board Silent"
+HEATER_WATCHDOG_RESET = "Heater Board Watchdog Reset"
 #: rb-restart R2: Setup's two update prompts. Each carries an action.
 UPDATE_READY = "Update Ready"
 RESTART_NEEDED = "Restart Needed"
@@ -116,7 +126,10 @@ ATTENTION = frozenset({IDLE_TIMEOUT, TEMPERATURE_DISCONNECTED,
                        ROTATOR_UNREACHABLE, HEATER_OFF_NOT_SENT,
                        UPDATE_READY, RESTART_NEEDED, FIRMWARE_OUT_OF_DATE,
                        LINK_LOST, BOARD_RESET_SUSPECTED,
-                       HEATER_NOT_HEATING, THERMOCOUPLE_FAULT})
+                       HEATER_NOT_HEATING, THERMOCOUPLE_FAULT,
+                       HEATER_OVER_TEMPERATURE, HEATER_SETPOINT_LIMITED,
+                       HEATER_ZERO_CROSS_LOST, HEATER_BOARD_ERROR,
+                       TEMPERATURE_BOARD_SILENT, HEATER_WATCHDOG_RESET})
 
 
 def _action(action, needs_ack):
@@ -352,6 +365,9 @@ events = EventLog()
 for _name in ("STOP_NOT_CONFIRMED", "IDLE_TIMEOUT_SOON", "IDLE_TIMEOUT", "BROWSER_SILENT",
               "BROWSER_GONE", "TEMPERATURE_DISCONNECTED", "ROTATOR_UNREACHABLE",
               "HEATER_OFF_NOT_SENT", "HEATER_NOT_HEATING", "THERMOCOUPLE_FAULT",
+              "HEATER_OVER_TEMPERATURE", "HEATER_SETPOINT_LIMITED",
+              "HEATER_ZERO_CROSS_LOST", "HEATER_BOARD_ERROR",
+              "TEMPERATURE_BOARD_SILENT", "HEATER_WATCHDOG_RESET",
               "UPDATE_READY", "RESTART_NEEDED",
               "FIRMWARE_OUT_OF_DATE", "LINK_LOST", "LINK_RESTORED",
               "BOARD_RESET_SUSPECTED", "SAMPLE_STORE_NOT_CHOSEN",

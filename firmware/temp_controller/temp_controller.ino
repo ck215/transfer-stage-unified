@@ -75,6 +75,88 @@ const int SENSOR_FAULT_READS = 3;              // ~1.7 s of bad reads
 int badReads = 0;
 boolean sensorFault = false;
 
+// PROPOSED 2026-11-27 - NOT FLASHED, NEEDS BENCH VALIDATION.
+// Owner, 2026-11-27: "the heater was left operating once the firmware
+// crashed". Four independent cut-offs follow; each prints its own "ERR: ..."
+// line (never a reading - the reading frame and the host-to-board bytes are
+// unchanged).
+//
+// (3) Hardware watchdog (Kinetis WDOG, 1 kHz LPO clock). Serviced ONLY at the
+// end of the temperature-read/PID/print block, so it proves the control loop
+// itself ran - not merely that loop() is spinning. If that block does not
+// complete for WDOG_TIMEOUT_MS the chip resets. Every pin returns to its
+// reset state (disabled, high impedance), and startup_early_hook() below
+// drives the heater pin LOW within the first microseconds of boot, before
+// the core's ~300 ms USB start-up delay. After the reset the board comes up
+// as from power-on: endpoint 0, heater off, until the station sends a frame.
+// "BOOT: reset=..." says why the board last reset; after a watchdog reset it
+// is repeated every BOOT_REPEAT_READS readings, so a station that connects
+// later still sees it.
+const uint16_t WDOG_TIMEOUT_MS = 1000;         // the block runs every ~577 ms
+const int BOOT_REPEAT_READS = 10;              // ~5.8 s
+boolean resetByWatchdog = false;
+const char *resetCause = "other";
+int bootRepeat = 0;
+// (4) Absolute over-temperature cut-off. Until now the only cut-offs were
+// relative to the setpoint (error >= 10, temp - endpoint > 10), and endpoint
+// was any float a frame asked for. At or above TEMP_MAX_C the heater is cut
+// (as `problem`) until the block is OVER_TEMP_HYST_C below it. A frame whose
+// endpoint is above TEMP_MAX_C is CLAMPED to TEMP_MAX_C (not refused: the
+// rest of the frame - ramp, gains, offset - still applies, and the board's
+// reported setpoint shows the clamped value); "ERR: endpoint clamped" repeats
+// with each reading until a frame within the limit arrives.
+const float TEMP_MAX_C = 260.0;                // owner, 2026-11-27
+const float OVER_TEMP_HYST_C = 10.0;
+boolean overTemp = false;
+boolean endpointClamped = false;
+// (5) Zero-cross loss. The temperature read, PID, LCD and serial output all
+// ran every 60 zero-cross pulses, so with no pulses the board went silent and
+// its LCD froze. Now a RISING edge on the zero-cross pin (interrupt, not the
+// polled level - a pin stuck high has no edges) must arrive every ZC_LOST_MS.
+// Without one the heater is held off, the read/print block runs on a millis()
+// timer every READ_PERIOD_MS instead, and "ERR: zero-cross lost" goes out
+// with each reading. Edges resuming restores normal control.
+const unsigned long ZC_LOST_MS = 100;          // 60 Hz mains: an edge every 8.3 or 16.7 ms
+const unsigned long READ_PERIOD_MS = 577;      // the measured zero-cross cadence (0.5766 s)
+volatile unsigned long zcEdgeAt = 0;
+boolean zcLost = false;
+unsigned long lastReadAt = 0;
+
+void zcEdge() {
+  zcEdgeAt = millis();
+}
+
+// Runs from ResetHandler before .data/.bss are set up and before any clock but
+// the core's: only constants and registers here. It replaces the core's weak
+// default, so it must also do what that does (leave the WDOG disabled but
+// updatable). Pin 3 is PTA12 on the Teensy 3.5 (core_pins.h, GPIOA_PDOR).
+extern "C" void startup_early_hook(void) {
+  WDOG_STCTRLH = WDOG_STCTRLH_ALLOWUPDATE;     // as the core's default hook
+  SIM_SCGC5 |= SIM_SCGC5_PORTA;                // the port's clock, for its PCR
+  pinMode(3, OUTPUT);                          // PDOR resets to 0: drives LOW
+  digitalWriteFast(3, LOW);
+}
+
+void watchdogStart() {
+  noInterrupts();
+  WDOG_UNLOCK = WDOG_UNLOCK_SEQ1;
+  WDOG_UNLOCK = WDOG_UNLOCK_SEQ2;
+  __asm__ volatile ("nop");
+  __asm__ volatile ("nop");
+  WDOG_TOVALH = 0;
+  WDOG_TOVALL = WDOG_TIMEOUT_MS;               // LPO 1 kHz, prescaler 1: 1 count = 1 ms
+  WDOG_PRESC = 0;
+  WDOG_STCTRLH = WDOG_STCTRLH_WDOGEN;          // LPO clock; ALLOWUPDATE cleared: locked until reset
+  interrupts();
+}
+
+void watchdogKick() {
+  noInterrupts();
+  WDOG_REFRESH = 0xA602;
+  WDOG_REFRESH = 0xB480;
+  interrupts();
+}
+
 const byte numChars = 32;
 char receivedChars[numChars];
 boolean newData = false;
@@ -84,6 +166,14 @@ boolean problem = false;
 //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 void setup() {
+  pinMode(pwmPin, OUTPUT);                        // PROPOSED (3): heater off first (already low from startup_early_hook)
+  digitalWrite(pwmPin, 0);
+  uint8_t srs0 = RCM_SRS0;                        // PROPOSED (3): why the chip last reset
+  resetByWatchdog = (srs0 & RCM_SRS0_WDOG) != 0;
+  if (resetByWatchdog) resetCause = "watchdog";
+  else if (srs0 & RCM_SRS0_POR) resetCause = "power-on";
+  else if (srs0 & RCM_SRS0_PIN) resetCause = "pin";
+  else if (srs0 & RCM_SRS0_LVD) resetCause = "low-voltage";
   Serial.begin(115200);                           // put your setup code here, to run once:
                                                 // initialize serial communication at 115200 bits per second:
   delay(500);                                   // give the MAX a little time to settle
@@ -110,6 +200,12 @@ void setup() {
   kd = 0.1;                                           // Int constant
   starttime = millis();
   hostSeenAt = millis();                          // boot grace for the host-gone watchdog
+  attachInterrupt(digitalPinToInterrupt(zcross), zcEdge, RISING);   // PROPOSED (5)
+  zcEdgeAt = millis();                            // boot grace for zero-cross loss
+  lastReadAt = millis();
+  Serial.print("BOOT: reset=");                   // PROPOSED (3); usually unheard (no host yet)
+  Serial.println(resetCause);
+  watchdogStart();                                // PROPOSED (3): last, after the slow set-up
 }
 
 // PROPOSED (see HOST_GONE_MS): no host holding the port for HOST_GONE_MS ->
@@ -141,9 +237,18 @@ void loop(){
   showNewData();
   hostGoneWatchdog();                             // PROPOSED, see HOST_GONE_MS
 
+  unsigned long now = millis();                   // PROPOSED (5): see ZC_LOST_MS
+  noInterrupts();
+  unsigned long lastEdge = zcEdgeAt;
+  interrupts();
+  zcLost = (now - lastEdge > ZC_LOST_MS);
+  if (zcLost) {
+    digitalWrite(pwmPin, 0);                      // no mains timing: no heat
+  }
+
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%//PWM Modulator//%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-  if(zcrossstate == 1){                                       // when ac current reaches zero, modulate the next half-wavelength. half-wavelength duration is 8300us 
+  if(zcrossstate == 1 && !zcLost){                                      // when ac current reaches zero, modulate the next half-wavelength. half-wavelength duration is 8300us 
     if(problem){
       digitalWrite(pwmPin, 0);                                               // PWM pin off: modulate for entire period
       delayMicroseconds(8300);
@@ -176,7 +281,10 @@ void loop(){
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%//  Temperature Read  //%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   
-  if(counter == 60){                                      // every half-second (roughly - it is actually more like 0.5766s)
+  boolean readDue = zcLost ? (now - lastReadAt >= READ_PERIOD_MS)   // PROPOSED (5): millis() fallback
+                           : (counter >= 60);
+  if(readDue){                                            // every half-second (roughly - it is actually more like 0.5766s)
+    lastReadAt = now;
     timer = (millis() - starttime)*(0.001);               // Timer (measure time)
     uint8_t ktcStatus = ktc.read();
     temp = ktc.getCelsius() + offset;                    // Read Temperature
@@ -187,7 +295,12 @@ void loop(){
       badReads = SENSOR_FAULT_READS;
       sensorFault = true;
     }
-    
+    if (temp >= TEMP_MAX_C) {                            // PROPOSED (4): see TEMP_MAX_C
+      overTemp = true;
+    } else if (temp < TEMP_MAX_C - OVER_TEMP_HYST_C) {
+      overTemp = false;
+    }
+
     counter2 = counter2 + 1;                                            // count every half-second
       if(counter2 >= 1.73425*spdelay && setpoint < endpoint){           // after the setpoint delay (ramp rate) and if setpoint is less than endpoint. (1.73425 is number of counts per second - almost 2)
         setpoint = setpoint + 1;                                        // increase setpoint (this allows you to control ramping rate)
@@ -218,7 +331,7 @@ void loop(){
     
     newdelay = intterm + propterm + diffterm;                   // value that controls the heater behavior of the next cycle
 
-    if(error >=10 || sensorFault){                              // PROPOSED (2): a sensor fault also cuts the heater
+    if(error >=10 || sensorFault || overTemp || zcLost){        // PROPOSED (2), (4), (5): each also cuts the heater
       problem = true;
     }
     else{
@@ -261,7 +374,27 @@ void loop(){
       Serial.print("ERR: thermocouple status 0x");
       Serial.println(ktcStatus, HEX);
     }
+    if (overTemp) {                                     // PROPOSED (4)
+      Serial.print("ERR: over-temperature ");
+      Serial.print(temp);
+      Serial.print(" C, limit ");
+      Serial.print(TEMP_MAX_C);
+      Serial.println(" C");
+    }
+    if (endpointClamped) {                              // PROPOSED (4)
+      Serial.print("ERR: endpoint clamped to ");
+      Serial.print(TEMP_MAX_C);
+      Serial.println(" C");
+    }
+    if (zcLost) {                                       // PROPOSED (5)
+      Serial.println("ERR: zero-cross lost");
+    }
+    if (resetByWatchdog && ++bootRepeat >= BOOT_REPEAT_READS) {   // PROPOSED (3)
+      bootRepeat = 0;
+      Serial.println("BOOT: reset=watchdog");
+    }
     counter = 0;                                                                   // reset counter //
+    watchdogKick();                                     // PROPOSED (3): the control loop completed
   }
 }
 
@@ -323,6 +456,10 @@ void parseData() {                                                              
   
   strtokIndx = strtok(receivedChars, ",");      // get the first part - the string
   endpoint = atof(strtokIndx); //         // convert this part to a float
+  endpointClamped = !(endpoint <= TEMP_MAX_C);  // PROPOSED (4): also catches NaN
+  if (endpointClamped) {
+    endpoint = TEMP_MAX_C;
+  }
 
   strtokIndx = strtok(NULL, ","); // this continues where the previous call left off
   spdelay = atof(strtokIndx);     // convert this part to a float

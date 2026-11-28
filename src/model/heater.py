@@ -152,6 +152,12 @@ class Heater(Model):
     STALL_SECONDS = 120.0
     #: s without an `ERR:` line before a thermocouple fault counts as over.
     SENSOR_FAULT_CLEAR_SECONDS = 5.0
+    #: PROPOSED 2026-11-27: s without a reading, while the port is open and
+    #: past the boot window, before the board counts as silent. The board
+    #: reads every ~0.58 s; with the deployed sketch a lost mains zero-cross
+    #: stops its readings (and freezes its LCD) while the port stays up, and
+    #: until now that only greyed the reading out.
+    SILENT_SECONDS = 5.0
 
     #: One reading as a record (`subscribe_readings`, `last_reading`): the
     #: clocks it was read on, what the board reported, then the fields of
@@ -237,6 +243,15 @@ class Heater(Model):
         #: fault has warned.
         self._sensor_error_at = None
         self._sensor_warned = False
+        #: PROPOSED 2026-11-27: the board's other `ERR:` kinds in force, as
+        #: {title: clock() of the last line}; a title here has warned.
+        self._board_errors = {}
+        #: Silent-board watch (SILENT_SECONDS): clock() of the last reading,
+        #: or of the first look after a (re)connect; and whether it warned.
+        self._heard_at = None
+        self._silent_warned = False
+        #: Whether the board's `BOOT: reset=watchdog` line has warned.
+        self._watchdog_warned = False
         #: The outcome of the last off read-back: True (the board reported
         #: setpoint 0), False (it did not, within the budget), None (never
         #: checked, or nothing to check: SIM, a double, a port never open).
@@ -846,6 +861,9 @@ class Heater(Model):
             if why is None:
                 if line:
                     self._parse_line(line)
+                if self._can_read_back():   # SIM and test doubles send no readings
+                    self._watch_silence()
+                if line:
                     if is_warned or self._is_link_lost:
                         events.info("Temperature Reading Resumed",
                                     f"after {failures} failed read(s)",
@@ -864,6 +882,7 @@ class Heater(Model):
                 continue
 
             failures += 1
+            self._heard_at = None   # a reconnect starts the silence watch afresh
             if self._is_booting():
                 events.debug("Reader Boot Grace",
                              f"failure {failures} inside the "
@@ -946,7 +965,10 @@ class Heater(Model):
         if not text:
             return
         if text.startswith("ERR:"):
-            self._note_sensor_error(text)
+            self._note_board_error(text)
+            return
+        if text.startswith("BOOT:"):
+            self._note_boot_line(text)
             return
         fields = text.split(",")
         if len(fields) < 3:
@@ -973,6 +995,7 @@ class Heater(Model):
             self._off_pending = None
             pending["landed"].set()
         self._touch()
+        self._note_heard()
         self._watch_heating(temperature, setpoint)
         self._publish_reading(seconds, temperature, setpoint)
         events.debug("Reading", f"t={seconds:g}s temp={temperature:.2f}C "
@@ -990,6 +1013,7 @@ class Heater(Model):
             events.info("Thermocouple Reading Again", "The Temperature "
                         "Controller's thermocouple reads again.",
                         source=self.NAME, resolves=events.THERMOCOUPLE_FAULT)
+        self._clear_board_errors(now)
         holding = (bool(self._commanded_setpoint)
                    and setpoint > self.OFF_SETPOINT_MAX)
         if not holding or setpoint - temperature < self.STALL_GAP_C:
@@ -1020,6 +1044,125 @@ class Heater(Model):
                         source=self.NAME, resolves=events.HEATER_NOT_HEATING)
         self._stall_since = self._stall_from = None
         self._stall_warned = False
+
+    #: PROPOSED 2026-11-27: what says each `ERR:` kind is over (it resolves
+    #: once its lines stop for SENSOR_FAULT_CLEAR_SECONDS).
+    _BOARD_ERROR_CLEARED = {
+        events.HEATER_OVER_TEMPERATURE: (
+            "Heater Below Temperature Limit",
+            "The Temperature Controller's block is back under its hard limit; "
+            "the board heats again."),
+        events.HEATER_SETPOINT_LIMITED: (
+            "Heater Setpoint Within Limit",
+            "The Temperature Controller's setpoint is within its hard limit."),
+        events.HEATER_ZERO_CROSS_LOST: (
+            "Heater Zero-Cross Restored",
+            "The Temperature Controller sees its mains zero-cross again; the "
+            "board heats again."),
+        events.HEATER_BOARD_ERROR: (
+            "Temperature Controller Error Over",
+            "The Temperature Controller stopped reporting an error."),
+    }
+
+    def _note_board_error(self, text):
+        """An `ERR:` line from the board: never a reading. The kind is the
+        text after `ERR:`; each kind warns once while its lines continue."""
+        kind = text[4:].strip().lower()
+        if kind.startswith("thermocouple"):
+            self._note_sensor_error(text)
+            return
+        events.debug("Board Error Line", repr(text), source=self.NAME,
+                     every=5.0)
+        if kind.startswith("over-temperature"):
+            title = events.HEATER_OVER_TEMPERATURE
+        elif kind.startswith("endpoint clamped"):
+            title = events.HEATER_SETPOINT_LIMITED
+        elif kind.startswith("zero-cross lost"):
+            title = events.HEATER_ZERO_CROSS_LOST
+        else:
+            title = events.HEATER_BOARD_ERROR
+        is_new = title not in self._board_errors
+        self._board_errors[title] = self._clock()
+        if not is_new:
+            return
+        if title == events.HEATER_OVER_TEMPERATURE:
+            events.warn(events.HEATER_OVER_TEMPERATURE, "The Temperature "
+                        "Controller reached its hard temperature limit, so "
+                        "the board has cut the heater until the block cools "
+                        f"10 °C below it ({text}).", source=self.NAME,
+                        ack=True)
+        elif title == events.HEATER_SETPOINT_LIMITED:
+            events.warn(events.HEATER_SETPOINT_LIMITED, "The Temperature "
+                        "Controller refused a setpoint above its hard limit "
+                        f"and holds the limit instead ({text}). Apply a "
+                        "lower setpoint.", source=self.NAME, ack=True)
+        elif title == events.HEATER_ZERO_CROSS_LOST:
+            events.warn(events.HEATER_ZERO_CROSS_LOST, "The Temperature "
+                        "Controller lost its mains zero-cross signal, so the "
+                        "board has cut the heater; readings continue. Check "
+                        "the heater's mains supply and the zero-cross "
+                        "wiring.", source=self.NAME, ack=True)
+        else:
+            events.warn(events.HEATER_BOARD_ERROR, "The Temperature "
+                        f"Controller reported an error: {text}",
+                        source=self.NAME, ack=True)
+
+    def _clear_board_errors(self, now):
+        for title, at in list(self._board_errors.items()):
+            if now - at > self.SENSOR_FAULT_CLEAR_SECONDS:
+                del self._board_errors[title]
+                info_title, message = self._BOARD_ERROR_CLEARED[title]
+                events.info(info_title, message, source=self.NAME,
+                            resolves=title)
+
+    def _note_boot_line(self, text):
+        """`BOOT: reset=<cause>`. A watchdog reset means the board's control
+        loop stopped for its timeout and the chip restarted with the heater
+        off and its settings gone: warn once per session."""
+        events.debug("Board Boot Line", repr(text), source=self.NAME,
+                     every=5.0)
+        if "watchdog" in text.lower() and not self._watchdog_warned:
+            self._watchdog_warned = True
+            events.warn(events.HEATER_WATCHDOG_RESET, "The Temperature "
+                        "Controller's control loop stopped and its hardware "
+                        "watchdog restarted it. It came back with the heater "
+                        "off and its settings cleared; apply them again if "
+                        "it should heat. Tell the station's owner: this "
+                        "means the board hung.", source=self.NAME, ack=True)
+
+    def _note_heard(self):
+        """A reading arrived: the board is not silent."""
+        self._heard_at = self._clock()
+        if self._silent_warned:
+            self._silent_warned = False
+            events.info("Temperature Board Reporting Again", "The "
+                        "Temperature Controller is sending readings again.",
+                        source=self.NAME,
+                        resolves=events.TEMPERATURE_BOARD_SILENT)
+
+    def _watch_silence(self):
+        """The reader calls this on every pass with the port open. A board
+        that sends nothing for SILENT_SECONDS warns once (ack); the next
+        reading resolves it. A port that is not open is the link's own
+        warnings' business, and so is the boot window."""
+        now = self._clock()
+        if not self._is_readable():
+            self._heard_at = None
+            return
+        if self._is_booting():
+            return
+        if self._heard_at is None:
+            self._heard_at = now        # first look since a (re)connect
+            return
+        if (not self._silent_warned
+                and now - self._heard_at >= self.SILENT_SECONDS):
+            self._silent_warned = True
+            events.warn(events.TEMPERATURE_BOARD_SILENT, "The Temperature "
+                        "Controller is connected but has sent no reading for "
+                        f"{now - self._heard_at:.0f} s. Its heater state is "
+                        "unknown; check the board and its display, and "
+                        "power-cycle it if it does not recover.",
+                        source=self.NAME, ack=True)
 
     def _note_sensor_error(self, text):
         """The board's `ERR: thermocouple ...` line: its heater is cut
